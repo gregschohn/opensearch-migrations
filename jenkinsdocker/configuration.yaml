@@ -4,7 +4,7 @@ jobs:
         
           def repo = '/opensearch-migrations-src'
           def branch = 'main'
-          description("Bootstrap pipeline")
+          description("Build All Pipeline")
         
           definition {
             cpsScm {

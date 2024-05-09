@@ -6,8 +6,10 @@ services:
       context: .
       dockerfile: Dockerfile
     volumes:
+      - ~/.aws:/root/.aws
       - ..:/opensearch-migrations-src
-      - ./bootstrap.xml:/var/jenkins_home/jobs/bootstrap/config.xml
+      - ./buildAll.xml:/var/jenkins_home/jobs/buildAll/config.xml
+      - ./buildFromLocal.xml:/var/jenkins_home/jobs/noGit/config.xml
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - ADMIN_PASSWORD=admin
