@@ -14,7 +14,6 @@ import {
     parseAndMergeArgs
 } from "../common-utilities";
 import { ClusterYaml, RFSBackfillYaml, SnapshotYaml } from "../migration-services-yaml";
-import cluster from "cluster";
 import { OtelCollectorSidecar } from "./migration-otel-collector-sidecar";
 
 
@@ -32,10 +31,6 @@ export class ReindexFromSnapshotStack extends MigrationServiceCore {
 
     constructor(scope: Construct, id: string, props: ReindexFromSnapshotProps) {
         super(scope, id, props)
-        const sourceEndpoint = getMigrationStringParameterValue(this, {
-            ...props,
-            parameter: MigrationSSMParameter.SOURCE_CLUSTER_ENDPOINT,
-        });
 
         let securityGroups = [
             SecurityGroup.fromSecurityGroupId(this, "serviceSG", getMigrationStringParameterValue(this, {
@@ -77,14 +72,14 @@ export class ReindexFromSnapshotStack extends MigrationServiceCore {
         if (props.clusterAuthDetails.basic_auth) {
             targetUser = props.clusterAuthDetails.basic_auth.username,
             targetPassword = props.clusterAuthDetails.basic_auth.password? props.clusterAuthDetails.basic_auth.password : "",
-            targetPasswordArn = props.clusterAuthDetails.basic_auth.password_from_secret_arn? props.clusterAuthDetails.basic_auth.password_from_secret_arn : ""            
+            targetPasswordArn = props.clusterAuthDetails.basic_auth.password_from_secret_arn? props.clusterAuthDetails.basic_auth.password_from_secret_arn : ""
         };
 
         const openSearchPolicy = createOpenSearchIAMAccessPolicy(this.partition, this.region, this.account);
         const openSearchServerlessPolicy = createOpenSearchServerlessIAMAccessPolicy(this.partition, this.region, this.account);
         let servicePolicies = [artifactS3PublishPolicy, openSearchPolicy, openSearchServerlessPolicy];
 
-        const getSecretsPolicy = props.clusterAuthDetails.basic_auth?.password_from_secret_arn ? 
+        const getSecretsPolicy = props.clusterAuthDetails.basic_auth?.password_from_secret_arn ?
             getTargetPasswordAccessPolicy(props.clusterAuthDetails.basic_auth.password_from_secret_arn) : null;
         if (getSecretsPolicy) {
             servicePolicies.push(getSecretsPolicy);
@@ -98,7 +93,7 @@ export class ReindexFromSnapshotStack extends MigrationServiceCore {
             securityGroups: securityGroups,
             taskRolePolicies: servicePolicies,
             cpuArchitecture: props.fargateCpuArch,
-            taskCpuUnits: 1024,
+            taskCpuUnits: 2048,
             taskMemoryLimitMiB: 4096,
             ephemeralStorageGiB: 200,
             environment: {
