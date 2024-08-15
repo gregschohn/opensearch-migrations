@@ -8,6 +8,7 @@ import org.opensearch.migrations.tracing.ActiveContextTracker;
 import org.opensearch.migrations.tracing.ActiveContextTrackerByActivityType;
 import org.opensearch.migrations.tracing.CompositeContextTracker;
 import org.opensearch.migrations.tracing.RootOtelContext;
+import org.opensearch.migrations.utils.ProcessHelpers;
 
 import com.beust.jcommander.JCommander;
 import lombok.extern.slf4j.Slf4j;
@@ -26,7 +27,9 @@ public class MetadataMigration {
         }
 
         var context = new RootMetadataMigrationContext(
-            RootOtelContext.initializeOpenTelemetryWithCollectorOrAsNoop(arguments.otelCollectorEndpoint, "metadata"),
+            RootOtelContext.initializeOpenTelemetryWithCollectorOrAsNoop(arguments.otelCollectorEndpoint,
+                RootMetadataMigrationContext.SCOPE_NAME,
+                ProcessHelpers.getNodeInstanceName()),
             new CompositeContextTracker(new ActiveContextTracker(), new ActiveContextTrackerByActivityType())
         );
 
