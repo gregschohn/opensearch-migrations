@@ -19,10 +19,6 @@ public class RootWorkCoordinationContext extends RootOtelContext {
     public final WorkCoordinationContexts.CompleteWorkItemContext.MetricInstruments completeWorkMetrics;
     public final WorkCoordinationContexts.AcquireNextWorkItemContext.MetricInstruments acquireNextWorkMetrics;
 
-    public RootWorkCoordinationContext(OpenTelemetry sdk, IContextTracker contextTracker) {
-        this(sdk, contextTracker, null);
-    }
-
     public RootWorkCoordinationContext(OpenTelemetry sdk,
                                        IContextTracker contextTracker,
                                        RootOtelContext enclosingScope)

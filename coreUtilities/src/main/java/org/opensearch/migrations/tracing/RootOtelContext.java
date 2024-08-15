@@ -36,7 +36,7 @@ public class RootOtelContext implements IRootOtelContext {
     public static OpenTelemetry initializeOpenTelemetryForCollector(
         @NonNull String collectorEndpoint,
         @NonNull String serviceName,
-        String nodeName
+        @NonNull String nodeName
     ) {
         final var spanProcessor = BatchSpanProcessor.builder(
             OtlpGrpcSpanExporter.builder().setEndpoint(collectorEndpoint).setTimeout(2, TimeUnit.SECONDS).build()

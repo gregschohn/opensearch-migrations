@@ -226,7 +226,7 @@ public class TrafficReplayer {
         var activeContextLogger = LoggerFactory.getLogger(ALL_ACTIVE_CONTEXTS_MONITOR_LOGGER);
         var params = parseArgs(args);
         URI uri;
-        final var workerId = UUID.randomUUID().toString();
+        final var workerId = ProcessHelpers.getNodeInstanceName();
         System.err.println("Starting Traffic Replayer with id=" + workerId);
         System.err.println("Got args: " + String.join("; ", args));
         try {
@@ -263,7 +263,7 @@ public class TrafficReplayer {
         var topContext = new RootReplayerContext(
             RootOtelContext.initializeOpenTelemetryWithCollectorOrAsNoop(params.otelCollectorEndpoint,
                 "replay",
-                ProcessHelpers.getNodeInstanceName()),
+                workerId),
             contextTrackers
         );
 
