@@ -33,7 +33,7 @@ public class RequestTransformerAndSender<T> {
             retryVisitorFactory.getRetryCheckVisitor(transformedResult, finishedAccumulatingResponseFuture);
         return (requestBytes, aggResponse, t) -> {
             resultsConsumer.accept(aggResponse);
-            if (!shouldRetry()) {
+            if (!shouldRetryRequests()) {
                 return TextTrackedFuture.completedFuture(
                     new RequestSenderOrchestrator.DeterminedTransformedResponse<>(
                         RequestSenderOrchestrator.RetryDirective.DONE,
@@ -58,7 +58,7 @@ public class RequestTransformerAndSender<T> {
      * This is called by before passing the response through the visitor returned by the retryVisitorFactory.
      * This is used to suppress retrying when the system is being shut down.
      */
-    protected boolean shouldRetry() {
+    protected boolean shouldRetryRequests() {
         return true;
     }
 
@@ -143,7 +143,7 @@ public class RequestTransformerAndSender<T> {
             log.atDebug().setMessage(() -> logLabel + "  done sending bytes, now finalizing the request").log();
             return packetHandler.finalizeRequest();
         } catch (Exception e) {
-            log.atInfo()
+            log.atWarn()
                 .setCause(e)
                 .setMessage(
                     "Encountered an exception while transforming the http request.  "

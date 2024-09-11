@@ -356,7 +356,7 @@ public class ExhaustiveTrafficStreamGenerator {
             ? generateRandomTrafficStreamsAndSizes(rootContext, IntStream.range(0, count))
             : generateAllIndicativeRandomTrafficStreamsAndSizes(rootContext);
         var testCaseArr = generatedCases.toArray(RandomTrafficStreamAndTransactionSizes[]::new);
-        log.atInfo()
+        log.atDebug()
             .setMessage(
                 () -> "test case array = \n"
                     + Arrays.stream(testCaseArr)

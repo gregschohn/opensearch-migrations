@@ -135,23 +135,24 @@ public class TrafficReplayerRunner {
                         : totalUniqueEverReceived.incrementAndGet();
 
                     var c = counter.incrementAndGet();
-                    log.info("counter=" + c + " totalUnique=" + totalUnique + " runNum=" + runNumber + " key=" + key);
+                    log.trace("counter=" + c + " totalUnique=" + totalUnique + " runNum=" + runNumber + " key=" + key);
                 }, timeShifter);
                 // if this finished running without an exception, we need to stop the loop
                 break;
             } catch (TrafficReplayer.TerminationException e) {
-                log.atLevel(e.originalCause instanceof FabricatedErrorToKillTheReplayer ? Level.INFO : Level.ERROR)
-                    .setCause(e.originalCause)
-                    .setMessage(() -> "broke out of the replayer, with this shutdown reason")
-                    .log();
-                log.atLevel(e.immediateCause == null ? Level.INFO : Level.ERROR)
-                    .setCause(e.immediateCause)
-                    .setMessage(
-                        () -> "broke out of the replayer, with the shutdown cause="
-                            + e.originalCause
-                            + " and this immediate reason"
-                    )
-                    .log();
+                if (!(e.originalCause instanceof FabricatedErrorToKillTheReplayer)) {
+                    log.atLevel(e.originalCause instanceof FabricatedErrorToKillTheReplayer ? Level.INFO : Level.ERROR)
+                        .setCause(e.originalCause)
+                        .setMessage(() -> "broke out of the replayer, with this original shutdown reason")
+                        .log();
+                    log.atLevel(e.immediateCause == null ? Level.INFO : Level.ERROR)
+                        .setCause(e.immediateCause)
+                        .setMessage(
+                            () -> "broke out of the replayer, with this immediate cause"
+                                + e.originalCause
+                        )
+                        .log();
+                }
                 FabricatedErrorToKillTheReplayer killSignalError =
                     e.originalCause instanceof FabricatedErrorToKillTheReplayer
                         ? (FabricatedErrorToKillTheReplayer) e.originalCause
@@ -170,17 +171,11 @@ public class TrafficReplayerRunner {
             } finally {
                 if (!skipFinally) {
                     waitForWorkerThreadsToStop(targetConnectionPoolPrefix);
-                    log.info(
-                        "Upon appending.... counter="
-                            + counter.get()
-                            + " totalUnique="
-                            + totalUniqueEverReceived.get()
-                            + " runNumber="
-                            + runNumber
-                            + "\n"
-                            + completelyHandledItems.keySet().stream().sorted().collect(Collectors.joining("\n"))
-                    );
-                    log.info(Strings.repeat("\n", 20));
+                    log.atInfo().setMessage(()->"Upon appending.... counter=" + counter.get() +
+                        " totalUniqueRequests=" + totalUniqueEverReceived.get() + " runNumber=" + runNumber + "\n" +
+                        completelyHandledItems.keySet().stream().sorted().collect(Collectors.joining("\n")))
+                        .log();
+                    log.info(Strings.repeat("\n", 2));
                     receivedPerRun.add(counter.get());
                     totalUniqueEverReceivedSizeAfterEachRun.add(totalUniqueEverReceived.get());
                 }

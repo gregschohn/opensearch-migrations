@@ -34,6 +34,7 @@ import lombok.Lombok;
 import lombok.NonNull;
 import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
+import org.slf4j.event.Level;
 
 @Slf4j
 public abstract class TrafficReplayerCore extends RequestTransformerAndSender<TransformedTargetRequestAndResponseList> {
@@ -89,7 +90,15 @@ public abstract class TrafficReplayerCore extends RequestTransformerAndSender<Tr
         stopReadingRef = new AtomicBoolean();
     }
 
-    protected abstract CompletableFuture<Void> shutdown(Error error);
+    public CompletableFuture<Void> shutdown(Error error) {
+        return shutdown(error, Optional.empty());
+    }
+
+    public abstract CompletableFuture<Void> shutdown(Error error, Optional<Level> levelToLogError);
+
+    Level getLogLevelForException(Throwable e) {
+        return Level.ERROR;
+    }
 
     @AllArgsConstructor
     class TrafficReplayerAccumulationCallbacks implements AccumulationCallbacks {
@@ -194,14 +203,10 @@ public abstract class TrafficReplayerCore extends RequestTransformerAndSender<Tr
                     throw Lombok.sneakyThrow(t);
                 }
             } catch (Error error) {
-                log.atError()
-                    .setCause(error)
-                    .setMessage(() -> "Caught error and initiating TrafficReplayer shutdown")
-                    .log();
-                shutdown(error);
+                shutdown(error, Optional.of(Level.ERROR));
                 throw error;
             } catch (Exception e) {
-                log.atError()
+                log.atLevel(getLogLevelForException(e))
                     .setMessage(
                         "Unexpected exception while sending the "
                             + "aggregated response and context for {} to the callback.  "
@@ -279,9 +284,9 @@ public abstract class TrafficReplayerCore extends RequestTransformerAndSender<Tr
         ) {
             log.trace("done sending and finalizing data to the packet handler");
 
-            SourceTargetCaptureTuple requestResponseTuple1;
             if (t != null) {
-                log.error("Got exception in CompletableFuture callback: ", t);
+                log.atLevel(getLogLevelForException(t)).setCause(t)
+                    .setMessage(() -> "Got exception in CompletableFuture callback: ").log();
             }
             try (var requestResponseTuple = new SourceTargetCaptureTuple(tupleHandlingContext, rrPair, summary, t)) {
                 log.atDebug()
@@ -361,9 +366,8 @@ public abstract class TrafficReplayerCore extends RequestTransformerAndSender<Tr
                 trafficStreams = this.nextChunkFutureRef.get().get();
             } catch (ExecutionException ex) {
                 if (ex.getCause() instanceof EOFException) {
-                    log.atWarn()
-                        .setCause(ex.getCause())
-                        .setMessage("Got an EOF on the stream.  " + "Done reading traffic streams.")
+                    log.atInfo()
+                        .setMessage("Got an EOF on the stream.  Done reading traffic streams.")
                         .log();
                     break;
                 } else {
@@ -379,7 +383,7 @@ public abstract class TrafficReplayerCore extends RequestTransformerAndSender<Tr
                 )
                     .filter(s -> !s.isEmpty())
                     .ifPresent(
-                        s -> log.atInfo().setMessage("{}").addArgument("TrafficStream Summary: {" + s + "}").log()
+                        s -> log.atDebug().setMessage("{}").addArgument("TrafficStream Summary: {" + s + "}").log()
                     );
             }
             trafficStreams.forEach(trafficToHttpTransactionAccumulator::accept);

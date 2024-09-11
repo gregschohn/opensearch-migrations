@@ -28,7 +28,7 @@ public class ArrayCursorTrafficCaptureSource implements ISimpleTrafficCaptureSou
         ArrayCursorTrafficSourceContext arrayCursorTrafficSourceContext
     ) {
         var startingCursor = arrayCursorTrafficSourceContext.nextReadCursor.get();
-        log.info("startingCursor = " + startingCursor);
+        log.atDebug().setMessage(()->"startingCursor = " + startingCursor).log();
         this.readCursor = new AtomicInteger(startingCursor);
         this.arrayCursorTrafficSourceContext = arrayCursorTrafficSourceContext;
         cursorHighWatermark = startingCursor;
@@ -40,7 +40,7 @@ public class ArrayCursorTrafficCaptureSource implements ISimpleTrafficCaptureSou
         Supplier<ITrafficSourceContexts.IReadChunkContext> contextSupplier
     ) {
         var idx = readCursor.getAndIncrement();
-        log.info("reading chunk from index=" + idx);
+        log.atDebug().setMessage(()->"reading chunk from index=" + idx).log();
         if (arrayCursorTrafficSourceContext.trafficStreamsList.size() <= idx) {
             return CompletableFuture.failedFuture(new EOFException());
         }
@@ -56,7 +56,8 @@ public class ArrayCursorTrafficCaptureSource implements ISimpleTrafficCaptureSou
     @Override
     public CommitResult commitTrafficStream(ITrafficStreamKey trafficStreamKey) {
         synchronized (pQueue) { // figure out if I need to do something more efficient later
-            log.info("Commit called for " + trafficStreamKey + " with pQueue.size=" + pQueue.size());
+            log.atDebug()
+                .setMessage(()->"Commit called for " + trafficStreamKey + " with pQueue.size=" + pQueue.size()).log();
             var incomingCursor = ((TrafficStreamCursorKey) trafficStreamKey).arrayIndex;
             int topCursor = pQueue.peek().arrayIndex;
             var didRemove = pQueue.remove(trafficStreamKey);
@@ -68,10 +69,16 @@ public class ArrayCursorTrafficCaptureSource implements ISimpleTrafficCaptureSou
                 topCursor = Optional.ofNullable(pQueue.peek())
                     .map(k -> k.getArrayIndex())
                     .orElse(cursorHighWatermark + 1); // most recent cursor was previously popped
-                log.info("Commit called for " + trafficStreamKey + ", and new topCursor=" + topCursor);
+                log.atDebug().setMessage("Commit called for {}, and new topCursor={}")
+                    .addArgument(trafficStreamKey)
+                    .addArgument(topCursor)
+                    .log();
                 arrayCursorTrafficSourceContext.nextReadCursor.set(topCursor);
             } else {
-                log.info("Commit called for " + trafficStreamKey + ", but topCursor=" + topCursor);
+                log.atDebug().setMessage("Commit called for {}, but new topCursor={}")
+                    .addArgument(trafficStreamKey)
+                    .addArgument(topCursor)
+                    .log();
             }
         }
         rootContext.channelContextManager.releaseContextFor(

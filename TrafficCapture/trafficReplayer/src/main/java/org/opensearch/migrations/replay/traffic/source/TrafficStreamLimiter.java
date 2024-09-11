@@ -74,8 +74,9 @@ public class TrafficStreamLimiter implements AutoCloseable {
                             + " enqueued items"
                     )
                     .log();
+                throw e;
             }
-            throw e;
+            // eat exception so that the thread can die as per the previously issued close() call
         }
     }
 

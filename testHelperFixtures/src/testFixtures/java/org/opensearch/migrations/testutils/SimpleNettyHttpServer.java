@@ -112,6 +112,11 @@ public class SimpleNettyHttpServer implements AutoCloseable {
     ) {
         return new SimpleChannelInboundHandler<>() {
             @Override
+            public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) throws Exception {
+                log.atTrace().setCause(cause).setMessage(() -> "caught exception").log();
+            }
+
+            @Override
             protected void channelRead0(ChannelHandlerContext ctx, FullHttpRequest req) {
                 try {
                     if (req.decoderResult().isFailure()) {
@@ -126,9 +131,9 @@ public class SimpleNettyHttpServer implements AutoCloseable {
                         convertHeaders(specifiedResponse.headers),
                         new DefaultHttpHeaders()
                     );
-                    log.atInfo().setMessage(() -> "writing " + fullResponse).log();
+                    log.atTrace().setMessage(() -> "writing " + fullResponse).log();
                     var cf = ctx.writeAndFlush(fullResponse);
-                    log.atInfo().setMessage(() -> "wrote " + fullResponse).log();
+                    log.atTrace().setMessage(() -> "finished writing").log();
                     cf.addListener(
                         f -> log.atInfo()
                             .setMessage(() -> "success=" + f.isSuccess() + " finished writing " + fullResponse)

@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Random;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -135,13 +136,16 @@ public class FullTrafficReplayerTest extends InstrumentationTest {
         public Consumer<SourceTargetCaptureTuple> get() {
             log.info("StopAt=" + nextStopPointRef.get());
             var stopPoint = nextStopPointRef.get();
+            var alreadyThrewForThisIteration = new AtomicBoolean();
             return tuple -> {
                 var key = tuple.getRequestKey();
                 if (((TrafficStreamCursorKey) (key.getTrafficStreamKey())).arrayIndex > stopPoint) {
-                    log.error("Request received after our ingest threshold. Throwing.  Discarding " + key);
-                    var nextStopPoint = stopPoint + new Random(stopPoint).nextInt(stopPoint + 1);
-                    nextStopPointRef.compareAndSet(stopPoint, nextStopPoint);
-                    throw new TrafficReplayerRunner.FabricatedErrorToKillTheReplayer(false);
+                    if (alreadyThrewForThisIteration.compareAndSet(false, true)) {
+                        log.error("Request received after our ingest threshold. Throwing.  Discarding " + key);
+                        var nextStopPoint = stopPoint + new Random(stopPoint).nextInt(stopPoint + 1);
+                        nextStopPointRef.compareAndSet(stopPoint, nextStopPoint);
+                        throw new TrafficReplayerRunner.FabricatedErrorToKillTheReplayer(false);
+                    }
                 }
             };
         }
@@ -252,10 +256,10 @@ public class FullTrafficReplayerTest extends InstrumentationTest {
             );
             var numExpectedRequests = streamAndSizes.numHttpTransactions;
             var trafficStreams = streamAndSizes.stream.collect(Collectors.toList());
-            log.atInfo()
+            log.atDebug()
                 .setMessage(
                     () -> trafficStreams.stream()
-                        .map(ts -> TrafficStreamUtils.summarizeTrafficStream(ts))
+                        .map(TrafficStreamUtils::summarizeTrafficStream)
                         .collect(Collectors.joining("\n"))
                 )
                 .log();
@@ -357,7 +361,7 @@ public class FullTrafficReplayerTest extends InstrumentationTest {
 
     @ParameterizedTest
     @CsvSource(value = { "3,false", "-1,false", "3,true", "-1,true", })
-    @Tag("isolatedTest")
+    @Tag("longTest")
     @ResourceLock("TrafficReplayerRunner")
     public void fullTestWithRestarts(int testSize, boolean randomize) throws Throwable {
 

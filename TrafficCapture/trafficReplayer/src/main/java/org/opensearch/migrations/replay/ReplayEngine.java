@@ -121,27 +121,13 @@ public class ReplayEngine {
             f -> f.whenComplete((v, t) -> Utils.setIfLater(lastCompletedSourceTimeEpochMs, timestamp.toEpochMilli()))
                 .whenComplete((v, t) -> {
                     var newCount = totalCountOfScheduledTasksOutstanding.decrementAndGet();
-                    log.atInfo()
-                        .setMessage(
-                            () -> "Scheduled task '"
-                                + taskDescription
-                                + "' finished ("
-                                + stringableKey
-                                + ") decremented tasksOutstanding to "
-                                + newCount
-                        )
-                        .log();
+                    log.atDebug().setMessage(() -> "Scheduled task '" + taskDescription + "' finished" +
+                        " (" + stringableKey + ") decremented tasksOutstanding to " + newCount).log();
                 })
                 .whenComplete((v, t) -> contentTimeController.stopReadsPast(timestamp))
-                .whenComplete(
-                    (v, t) -> log.atDebug()
-                        .setMessage(
-                            () -> "work finished and used timestamp="
-                                + timestamp
-                                + " to update contentTimeController (tasksOutstanding="
-                                + totalCountOfScheduledTasksOutstanding.get()
-                                + ")"
-                        )
+                .whenComplete((v, t) ->
+                    log.atDebug().setMessage(() -> "work finished and used timestamp=" + timestamp + " to update " +
+                        "contentTimeController (tasksOutstanding=" + totalCountOfScheduledTasksOutstanding.get() + ")")
                         .log()
                 ),
             () -> "Updating fields for callers to poll progress and updating backpressure"
@@ -149,18 +135,8 @@ public class ReplayEngine {
     }
 
     private static void logStartOfWork(Object stringableKey, long newCount, Instant start, String label) {
-        log.atInfo()
-            .setMessage(
-                () -> "Scheduling '"
-                    + label
-                    + "' ("
-                    + stringableKey
-                    + ") to run at "
-                    + start
-                    + " incremented tasksOutstanding to "
-                    + newCount
-            )
-            .log();
+        log.atDebug().setMessage(() -> "Scheduling '" + label + "' (" + stringableKey + ") " +
+                "to run at " + start + " incremented tasksOutstanding to " + newCount).log();
     }
 
     public <T> TrackedFuture<String, T> scheduleTransformationWork(

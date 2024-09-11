@@ -5,6 +5,7 @@ import java.time.Duration;
 import java.util.Arrays;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
@@ -28,6 +29,7 @@ import org.opensearch.migrations.replay.util.TrackedFuture;
 import org.opensearch.migrations.transform.IAuthTransformerFactory;
 import org.opensearch.migrations.transform.IJsonTransformer;
 
+import io.netty.handler.logging.LogLevel;
 import io.netty.handler.ssl.SslContext;
 import io.netty.handler.ssl.SslContextBuilder;
 import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
@@ -363,14 +365,21 @@ public class TrafficReplayerTopLevel extends TrafficReplayerCore implements Auto
     }
 
     @Override
-    protected boolean shouldRetry() {
+    protected boolean shouldRetryRequests() {
         return !stopReadingRef.get();
+    }
+
+    @Override
+    Level getLogLevelForException(Throwable e) {
+        return shutdownFutureRef.get() == null || e instanceof CancellationException ?
+            super.getLogLevelForException(e) :
+            Level.TRACE;
     }
 
     @SneakyThrows
     @Override
-    public @NonNull CompletableFuture<Void> shutdown(Error error) {
-        log.atWarn().setCause(error).setMessage(() -> "Shutting down " + this).log();
+    public @NonNull CompletableFuture<Void> shutdown(Error error, Optional<Level> levelToLogError) {
+        log.atLevel(levelToLogError.orElse(Level.WARN)).setCause(error).setMessage(() -> "Shutting down " + this).log();
         shutdownReasonRef.compareAndSet(null, error);
         if (!shutdownFutureRef.compareAndSet(null, new CompletableFuture<>())) {
             log.atError()
@@ -384,7 +393,6 @@ public class TrafficReplayerTopLevel extends TrafficReplayerCore implements Auto
         }
         stopReadingRef.set(true);
         liveTrafficStreamLimiter.close();
-
 
         var nettyShutdownFuture = clientConnectionPool.shutdownNow();
         nettyShutdownFuture.whenComplete((v, t) -> {
