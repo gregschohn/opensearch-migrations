@@ -91,7 +91,7 @@ public class HttpRetryTest {
             new TransformedOutputAndResult<>(sourceRequestPackets, HttpRequestTransformationStatus.skipped()),
             TextTrackedFuture.completedFuture(new RetryTestUtils.TestRequestResponsePair(sourceResponseBytes),
                 () -> "static rrp"));
-        log.info("Scheduling item to run at " + startTimeForThisRequest);
+        log.atDebug().setMessage(()->"Scheduling item to run at " + startTimeForThisRequest).log();
         return senderOrchestrator.scheduleRequest(
             requestContext.getReplayerRequestKey(),
             requestContext,
@@ -174,7 +174,6 @@ public class HttpRetryTest {
 
             var e = Assertions.assertThrows(Exception.class, f::get);
             var shutdownResult = ccpShutdownFuture.get();
-            log.atInfo().setCause(e).setMessage(() -> "exception: ").log();
             // doubly-nested ExecutionException.  Once for the get() call here and once for the work done in submit,
             // which wraps the scheduled request's future
             Assertions.assertInstanceOf(IllegalStateException.class, e.getCause().getCause());

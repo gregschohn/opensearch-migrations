@@ -29,7 +29,7 @@ public class JsonEmitterTest {
             while (true) {
                 var chunk = pac.partialSerializedContents.toString(StandardCharsets.UTF_8);
                 pac.partialSerializedContents.release();
-                log.info("Got: " + chunk);
+                log.atDebug().setMessage(()->"Got: " + chunk).log();
                 writer.append(chunk);
                 if (pac.nextSupplier == null) {
                     break;

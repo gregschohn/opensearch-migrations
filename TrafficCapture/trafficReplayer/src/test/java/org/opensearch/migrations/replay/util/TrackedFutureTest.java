@@ -24,7 +24,7 @@ class TrackedFutureTest {
                 try {
                     observerSemaphore.release();
                     tfSemaphore.acquire();
-                    log.atInfo().setMessage(() -> "tf[" + finalI + "]" + lastTf).log();
+                    log.atTrace().setMessage(() -> "tf[" + finalI + "]" + lastTf).log();
                 } catch (InterruptedException e) {
                     throw Lombok.sneakyThrow(e);
                 }
@@ -38,8 +38,8 @@ class TrackedFutureTest {
             tfSemaphore.release();
             Thread.sleep(10);
             int finalI = i;
-            log.atInfo().setMessage(() -> "top tf after " + finalI + " releases=" + finalTf).log();
+            log.atTrace().setMessage(() -> "top tf after " + finalI + " releases=" + finalTf).log();
         }
-        log.atInfo().setMessage(() -> "final tf after any ancestor culls=" + finalTf).log();
+        log.atTrace().setMessage(() -> "final tf after any ancestor culls=" + finalTf).log();
     }
 }

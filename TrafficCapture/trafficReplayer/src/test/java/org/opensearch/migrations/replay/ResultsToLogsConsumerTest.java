@@ -87,7 +87,7 @@ class ResultsToLogsConsumerTest extends InstrumentationTest {
             consumer.accept(emptyTuple);
             Assertions.assertEquals(1, closeableLogSetup.getLogEvents().size());
             var contents = closeableLogSetup.getLogEvents().get(0);
-            log.info("Output=" + contents);
+            log.atDebug().setMessage(()->"Output=" + contents).log();
             Assertions.assertTrue(contents.contains(NODE_ID));
         }
     }
@@ -104,7 +104,7 @@ class ResultsToLogsConsumerTest extends InstrumentationTest {
             consumer.accept(emptyTuple);
             Assertions.assertEquals(1, closeableLogSetup.getLogEvents().size());
             var contents = closeableLogSetup.getLogEvents().get(0);
-            log.info("Output=" + contents);
+            log.atDebug().setMessage(()->"Output=" + contents);
             Assertions.assertTrue(contents.contains(NODE_ID));
             Assertions.assertTrue(contents.contains(TEST_EXCEPTION_MESSAGE));
         }
@@ -269,7 +269,7 @@ class ResultsToLogsConsumerTest extends InstrumentationTest {
             consumer.accept(tuple);
             Assertions.assertEquals(1, closeableLogSetup.getLogEvents().size());
             var contents = closeableLogSetup.getLogEvents().get(0);
-            log.info("Output=" + contents);
+            log.atDebug().setMessage(()->"Output=" + contents).log();
             Assertions.assertEquals(normalizeJson(expected), normalizeJson(contents));
         }
         try {

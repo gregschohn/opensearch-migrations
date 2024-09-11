@@ -102,10 +102,10 @@ public class KafkaKeepAliveTests extends InstrumentationTest {
         executor.schedule(() -> {
             try {
                 var k = keysReceived.get(0);
-                log.info("Calling commit traffic stream for " + k);
+                log.atTrace().setMessage(()->"Calling commit traffic stream for " + k).log();
                 trafficSource.commitTrafficStream(k);
-                log.info("finished committing traffic stream");
-                log.info("Stop reads to infinity");
+                log.atTrace().setMessage(()->"finished committing traffic stream").log();
+                log.atTrace().setMessage(()->"Stop reads to infinity").log();
                 // this is a way to signal back to the main thread that this thread is done
                 KafkaTestUtils.produceKafkaRecord(testTopicName, kafkaProducer, 2, sendCompleteCount);
             } catch (Exception e) {
@@ -129,42 +129,37 @@ public class KafkaKeepAliveTests extends InstrumentationTest {
         readNextNStreams(rootContext, trafficSource, keysReceived, 1, 1);
 
         trafficSource.commitTrafficStream(keysReceived.get(0));
-        log.info(
-            "Called commitTrafficStream but waiting long enough for the client to leave the group.  "
-                + "That will make the previous commit a 'zombie-commit' that should easily be dropped."
-        );
+        log.debug("Called commitTrafficStream but waiting long enough for the client to leave the group.  "
+            + "That will make the previous commit a 'zombie-commit' that should easily be dropped.");
 
-        log.info(
-            "1 message was committed, but not synced, 1 message is being processed."
-                + "wait long enough to fall out of the group before we can commit"
-        );
+        log.debug("1 message was committed, but not synced, 1 message is being processed."
+            + "wait long enough to fall out of the group before we can commit");
         Thread.sleep(2 * MAX_POLL_INTERVAL_MS);
 
         var keysReceivedUntilDrop1 = keysReceived;
         keysReceived = new ArrayList<>();
 
-        log.info("re-establish a client connection so that the following commit will work");
-        log.atInfo().setMessage(() -> "1 ..." + renderNextCommitsAsString()).log();
+        log.debug("re-establish a client connection so that the following commit will work");
+        log.atDebug().setMessage(() -> "1 ..." + renderNextCommitsAsString()).log();
         readNextNStreams(rootContext, trafficSource, keysReceived, 0, 1);
-        log.atInfo().setMessage(() -> "2 ..." + renderNextCommitsAsString()).log();
+        log.atDebug().setMessage(() -> "2 ..." + renderNextCommitsAsString()).log();
 
-        log.info("wait long enough to fall out of the group again");
+        log.debug("wait long enough to fall out of the group again");
         Thread.sleep(2 * MAX_POLL_INTERVAL_MS);
 
-        var keysReceivedUntilDrop2 = keysReceived;
         keysReceived = new ArrayList<>();
-        log.atInfo().setMessage(() -> "re-establish... 3 ..." + renderNextCommitsAsString()).log();
+        log.atDebug().setMessage(() -> "re-establish... 3 ..." + renderNextCommitsAsString()).log();
         readNextNStreams(rootContext, trafficSource, keysReceived, 0, 1);
         trafficSource.commitTrafficStream(keysReceivedUntilDrop1.get(1));
-        log.atInfo().setMessage(() -> "re-establish... 4 ..." + renderNextCommitsAsString()).log();
+        log.atDebug().setMessage(() -> "re-establish... 4 ..." + renderNextCommitsAsString()).log();
         readNextNStreams(rootContext, trafficSource, keysReceived, 1, 1);
-        log.atInfo().setMessage(() -> "5 ..." + renderNextCommitsAsString()).log();
+        log.atDebug().setMessage(() -> "5 ..." + renderNextCommitsAsString()).log();
 
         Thread.sleep(2 * MAX_POLL_INTERVAL_MS);
         var keysReceivedUntilDrop3 = keysReceived;
         keysReceived = new ArrayList<>();
         readNextNStreams(rootContext, trafficSource, keysReceived, 0, 3);
-        log.atInfo().setMessage(() -> "6 ..." + kafkaSource.trackingKafkaConsumer.nextCommitsToString()).log();
+        log.atDebug().setMessage(() -> "6 ..." + kafkaSource.trackingKafkaConsumer.nextCommitsToString()).log();
         trafficSource.close();
     }
 
@@ -185,11 +180,11 @@ public class KafkaKeepAliveTests extends InstrumentationTest {
             var trafficStreams = kafkaSource.readNextTrafficStreamChunk(rootContext::createReadChunkContext).get();
             trafficStreams.forEach(ts -> {
                 var tsk = ts.getKey();
-                log.atInfo().setMessage(() -> "checking for " + tsk).log();
+                log.atDebug().setMessage(() -> "checking for " + tsk).log();
                 Assertions.assertFalse(keysReceived.contains(tsk));
                 keysReceived.add(tsk);
             });
-            log.info("Read " + trafficStreams.size() + " traffic streams");
+            log.atDebug().setMessage(()->"Read " + trafficStreams.size() + " traffic streams").log();
             i += trafficStreams.size();
         }
     }

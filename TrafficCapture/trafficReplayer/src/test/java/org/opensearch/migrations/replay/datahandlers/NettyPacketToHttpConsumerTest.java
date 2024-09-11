@@ -228,7 +228,7 @@ public class NettyPacketToHttpConsumerTest extends InstrumentationTest {
                 NettyPacketToHttpConsumerTest::makeResponseContext
             )
         ) {
-            log.atError().setMessage("Got port " + testServer.port).log();
+            log.atTrace().setMessage("Got port " + testServer.port).log();
             var sslContext = !useTls
                 ? null
                 : SslContextBuilder.forClient().trustManager(InsecureTrustManagerFactory.INSTANCE).build();
@@ -274,9 +274,9 @@ public class NettyPacketToHttpConsumerTest extends InstrumentationTest {
         } finally {
             if (clientConnectionPool != null) {
                 var stopFuture = clientConnectionPool.shutdownNow();
-                log.info("waiting for factory to shutdown: " + stopFuture);
+                log.atDebug().setMessage(()->"waiting for factory to shutdown: " + stopFuture).log();
                 stopFuture.get();
-                log.info("done shutting down");
+                log.atDebug().setMessage(()->"done shutting down").log();
             }
 
         }
@@ -325,9 +325,9 @@ public class NettyPacketToHttpConsumerTest extends InstrumentationTest {
                         Instant.now(),
                         Instant.now(),
                         () -> Stream.of(EXPECTED_REQUEST_STRING.getBytes(StandardCharsets.UTF_8)));
-                    log.info("requestFinishFuture=" + requestFinishFuture);
+                    log.atDebug().setMessage(()->"requestFinishFuture=" + requestFinishFuture).log();
                     var aggregatedResponse = requestFinishFuture.get();
-                    log.debug("Got aggregated response=" + aggregatedResponse);
+                    log.atDebug().setMessage(()->"Got aggregated response=" + aggregatedResponse).log();
                     Assertions.assertNull(aggregatedResponse.getError());
                     var responseAsString = getResponsePacketsAsString(aggregatedResponse);
                     if (!largeResponse) {
@@ -341,7 +341,7 @@ public class NettyPacketToHttpConsumerTest extends InstrumentationTest {
                 }
             }
             var stopFuture = clientConnectionPool.shutdownNow();
-            log.info("waiting for factory to shutdown: " + stopFuture);
+            log.atDebug().setMessage(()->"waiting for factory to shutdown: " + stopFuture).log();
             stopFuture.get();
         }
     }
@@ -423,7 +423,7 @@ public class NettyPacketToHttpConsumerTest extends InstrumentationTest {
             var timeShifter = new TimeShifter();
             var firstRequestTime = Instant.now();
             timeShifter.setFirstTimestamp(firstRequestTime);
-            log.atInfo().setMessage("Initial Timestamp: " + firstRequestTime).log();
+            log.atDebug().setMessage("Initial Timestamp: " + firstRequestTime).log();
 
             var replayEngineFactory = new ReplayEngineFactory(responseTimeout,
                 new TestFlowController(),
@@ -442,7 +442,7 @@ public class NettyPacketToHttpConsumerTest extends InstrumentationTest {
                 () -> Stream.of(EXPECTED_REQUEST_STRING.getBytes(StandardCharsets.UTF_8)));
             var maxTimeToWaitForTimeoutOrResponse = Duration.ofSeconds(10);
             var aggregatedResponse = requestFinishFuture.get(maxTimeToWaitForTimeoutOrResponse);
-            log.atInfo().setMessage("RequestFinishFuture finished").log();
+            log.atDebug().setMessage("RequestFinishFuture finished").log();
             Assertions.assertInstanceOf(ReadTimeoutException.class, aggregatedResponse.getError());
         }
     }
@@ -453,14 +453,8 @@ public class NettyPacketToHttpConsumerTest extends InstrumentationTest {
     public void testTimeBetweenRequestsLongerThanResponseTimeout(boolean useTls) throws Exception {
         var responseTimeout = Duration.ofMillis(100);
         var timeBetweenRequests = responseTimeout.plus(Duration.ofMillis(10));
-        log.atInfo()
-            .setMessage(
-                "Running testTimeBetweenRequestsLongerThanResponseTimeout with responseTimeout "
-                    + responseTimeout
-                    + " and timeBetweenRequests"
-                    + timeBetweenRequests
-            )
-            .log();
+        log.atDebug().setMessage("Running testTimeBetweenRequestsLongerThanResponseTimeout with responseTimeout "
+                + responseTimeout + " and timeBetweenRequests" + timeBetweenRequests).log();
         try (
             var testServer = SimpleNettyHttpServer.makeServer(
                 useTls,
@@ -484,7 +478,7 @@ public class NettyPacketToHttpConsumerTest extends InstrumentationTest {
             var timeShifter = new TimeShifter();
             var firstRequestTime = Instant.now();
             timeShifter.setFirstTimestamp(firstRequestTime);
-            log.atInfo().setMessage("Initial Timestamp: " + firstRequestTime).log();
+            log.atDebug().setMessage("Initial Timestamp: " + firstRequestTime).log();
             var replayEngineFactory = new ReplayEngineFactory(responseTimeout,
                 new TestFlowController(),
                 timeShifter
@@ -492,7 +486,7 @@ public class NettyPacketToHttpConsumerTest extends InstrumentationTest {
             int i = 0;
             while (true) {
                 var ctx = rootContext.getTestConnectionRequestContext("TEST", i);
-                log.atInfo().setMessage("Starting transformAndSendRequest for request " + i).log();
+                log.atDebug().setMessage("Starting transformAndSendRequest for request " + i).log();
 
                 var tr = new RequestTransformerAndSender<>(new NoRetryEvaluatorFactory());
                 var requestFinishFuture = tr.transformAndSendRequest(
@@ -505,7 +499,7 @@ public class NettyPacketToHttpConsumerTest extends InstrumentationTest {
                     () -> Stream.of(EXPECTED_REQUEST_STRING.getBytes(StandardCharsets.UTF_8)));
                 var maxTimeToWaitForTimeoutOrResponse = Duration.ofSeconds(10);
                 var aggregatedResponse = requestFinishFuture.get(maxTimeToWaitForTimeoutOrResponse);
-                log.atInfo().setMessage("RequestFinishFuture finished for request " + i).log();
+                log.atDebug().setMessage("RequestFinishFuture finished for request " + i).log();
                 Assertions.assertNull(aggregatedResponse.getError());
                 var responseAsString = getResponsePacketsAsString(aggregatedResponse);
                 Assertions.assertEquals(EXPECTED_RESPONSE_STRING, responseAsString);

@@ -248,7 +248,7 @@ class TrafficReplayerTest extends InstrumentationTest {
                 }
                 trafficAccumulator.close();
                 tr.waitForRemainingWork(Level.INFO, Duration.ofSeconds(10));
-                log.info("done waiting");
+                log.trace("done waiting");
             }
             Assertions.assertEquals(1, byteArrays.size());
             Assertions.assertTrue(byteArrays.stream().allMatch(ba -> ba.size() == 2));

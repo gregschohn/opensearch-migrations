@@ -72,12 +72,12 @@ public class KafkaCommitsWorkBetweenLongPollsTest extends InstrumentationTest {
                     if (i > 0) {
                         blockingSource.stopReadsPast(getTimeAtPoint(i - 1).plus(Duration.ofMillis(1)));
                     }
-                    log.info("PUTMSG\n\n");
+                    log.trace("PUTMSG\n\n");
                     var chunks = itemQueue.take();
                     Assertions.assertEquals(1, chunks.size());
                     var ts = chunks.get(0);
                     Thread.sleep(DEFAULT_POLL_INTERVAL_MS * 2);
-                    log.info("committing " + ts.getKey());
+                    log.atTrace().setMessage(()->"committing " + ts.getKey()).log();
                     blockingSource.commitTrafficStream(ts.getKey());
                     blockingSource.stopReadsPast(getTimeAtPoint(i));
                 }
@@ -91,7 +91,7 @@ public class KafkaCommitsWorkBetweenLongPollsTest extends InstrumentationTest {
                 var chunks = blockingSource.readNextTrafficStreamChunk(rootContext::createReadChunkContext).get();
                 if (!chunks.isEmpty()) {
                     Assertions.assertEquals(1, chunks.size());
-                    log.info("GETMSG\n\n");
+                    log.trace("GETMSG\n\n");
                     itemQueue.put(chunks);
                     break;
                 }

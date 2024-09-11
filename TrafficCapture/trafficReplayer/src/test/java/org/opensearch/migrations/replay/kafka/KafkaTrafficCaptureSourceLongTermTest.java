@@ -84,7 +84,8 @@ public class KafkaTrafficCaptureSourceLongTermTest extends InstrumentationTest {
                     recordsList.get(j).getStream().getConnectionId()
                 );
             }
-            log.info("Got " + recordsList.size() + " records and already had " + i);
+            log.atDebug().setMessage(()->"Got {} records and already had {})")
+                .addArgument(recordsList.size()).addArgument(i).log();
             i += recordsList.size();
         }
 
@@ -100,7 +101,7 @@ public class KafkaTrafficCaptureSourceLongTermTest extends InstrumentationTest {
                         + "TimeoutException because either result would be valid."
                 );
             }
-            log.error("rogue chunk: " + rogueChunk);
+            log.error("Got a rogue chunk instead of timing out: " + rogueChunk);
         });
     }
 

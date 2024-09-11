@@ -137,7 +137,7 @@ class RequestSenderOrchestratorTest extends InstrumentationTest {
                 new NoRetryEvaluatorFactory.NoRetryVisitor()
             );
 
-            log.info("Scheduled item to run at " + startTimeForThisRequest);
+            log.atDebug().setMessage(()->"Scheduled item to run at " + startTimeForThisRequest).log();
             scheduledRequests.add(arrCf);
             lastEndTime = startTimeForThisRequest.plus(perPacketShift.multipliedBy(requestPackets.size()));
         }
@@ -159,24 +159,16 @@ class RequestSenderOrchestratorTest extends InstrumentationTest {
                 pktConsumer.lastCheckIsReady.acquire();
                 int finalI = i;
                 int finalJ = j;
-                log.atInfo()
-                    .setMessage(
-                        () -> "cf @ "
-                            + finalI
-                            + ","
-                            + finalJ
-                            + " =\n"
-                            + reversedScheduledRequests.stream()
-                                .map(sr -> getParentsDiagnosticString(sr, ""))
-                                .collect(Collectors.joining("\n---\n"))
-                    )
-                    .log();
+                log.atDebug().setMessage(() -> "cf @ " + finalI + "," + finalJ + " =\n" +
+                        reversedScheduledRequests.stream()
+                            .map(sr -> getParentsDiagnosticString(sr, ""))
+                            .collect(Collectors.joining("\n---\n"))).log();
                 pktConsumer.consumeIsReady.release();
             }
         }
         for (var cf : scheduledRequests) {
             var arr = cf.get();
-            log.info("Finalized cf=" + getParentsDiagnosticString(cf, ""));
+            log.atDebug().setMessage(()->"Finalized cf=" + getParentsDiagnosticString(cf, "")).log();
             Assertions.assertNull(arr.error);
         }
         closeFuture.get();
@@ -240,7 +232,7 @@ class RequestSenderOrchestratorTest extends InstrumentationTest {
                     requestPackets,
                     new NoRetryEvaluatorFactory.NoRetryVisitor()
                 );
-                log.info("Scheduled item to run at " + startTimeForThisRequest);
+                log.atDebug().setMessage(()->"Scheduled item to run at " + startTimeForThisRequest).log();
                 scheduledItems.add(arr);
                 lastEndTime = startTimeForThisRequest.plus(perPacketShift.multipliedBy(requestPackets.size()));
             }
@@ -254,7 +246,7 @@ class RequestSenderOrchestratorTest extends InstrumentationTest {
 
             Assertions.assertEquals(NUM_REQUESTS_TO_SCHEDULE, scheduledItems.size());
             for (int i = 0; i < scheduledItems.size(); ++i) {
-                log.error("Checking item="+i);
+                log.atTrace().setMessage(()->"Checking item="+i).log();
                 var cf = scheduledItems.get(i);
                 var arr = cf.get();
                 Assertions.assertNull(arr.error);
@@ -287,7 +279,7 @@ class RequestSenderOrchestratorTest extends InstrumentationTest {
                 }
             }
             closeFuture.get();
-            log.error("Done running loop");
+            log.trace("Done running loop");
         } catch (Throwable e) {
             log.atError().setMessage(()->"caught exception(2)").setCause(e).log();
             throw e;

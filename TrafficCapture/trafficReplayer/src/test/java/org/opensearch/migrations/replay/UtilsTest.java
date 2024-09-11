@@ -20,7 +20,7 @@ class UtilsTest {
             .mapToObj(c -> (char) c + "")
             .collect(Utils.foldLeft("", (a, b) -> a + b));
 
-        log.info("stream concatenated value: " + foldedValue);
+        log.atDebug().setMessage(()->"stream concatenated value: " + foldedValue).log();
         Assertions.assertEquals(groundTruth, foldedValue);
 
     }

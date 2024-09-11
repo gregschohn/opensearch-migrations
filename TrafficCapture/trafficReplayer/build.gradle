@@ -52,10 +52,11 @@ dependencies {
     testFixturesImplementation testFixtures(project(path: ':coreUtilities'))
     testFixturesImplementation testFixtures(project(path: ':testHelperFixtures'))
 
-    testFixturesImplementation group: 'org.slf4j', name: 'slf4j-api'
     testFixturesImplementation group: 'com.fasterxml.jackson.core', name: 'jackson-databind'
+    testFixturesImplementation group: 'com.google.guava', name: 'guava'
     testFixturesImplementation group: 'io.netty', name: 'netty-all'
     testFixturesImplementation group: 'org.junit.jupiter', name:'junit-jupiter-api'
+    testFixturesImplementation group: 'org.slf4j', name: 'slf4j-api'
 
     testImplementation testFixtures(project(path: ':testHelperFixtures'))
     testImplementation testFixtures(project(path: ':coreUtilities'))

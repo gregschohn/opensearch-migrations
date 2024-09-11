@@ -41,14 +41,8 @@ public class ExhaustiveCapturedTrafficToHttpTransactionAccumulatorTest extends I
             .flatMap(c -> {
                 seedsThatOfferUniqueTestCases.add(c.randomSeedUsed + "");
                 var n = numTries.getAndIncrement();
-                log.info(
-                    "Found new cases to test with seed="
-                        + c.randomSeedUsed
-                        + " tries="
-                        + n
-                        + " left="
-                        + possibilitiesLeftToTest.size()
-                );
+                log.atInfo().setMessage(()->"Found new cases to test with seed=" + c.randomSeedUsed +
+                    " tries=" + n + " left=" + possibilitiesLeftToTest.size()).log();
 
                 return IntStream.range(0, c.trafficStreams.length)
                     .mapToObj(

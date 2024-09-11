@@ -48,7 +48,7 @@ public class NettyJsonBodySerializeHandlerTest {
     private static Stream<ByteBuf> getByteBufStreamFromChannel(EmbeddedChannel channel) {
         return channel.inboundMessages().stream().filter(x -> x instanceof HttpContent).map(x -> {
             var rval = ((HttpContent) x).content();
-            log.info("refCnt=" + rval.refCnt() + " for " + x);
+            log.atTrace().setMessage(()->"refCnt=" + rval.refCnt() + " for " + x).log();
             return rval;
         });
     }

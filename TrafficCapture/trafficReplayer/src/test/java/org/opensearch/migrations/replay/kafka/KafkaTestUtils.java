@@ -96,9 +96,9 @@ public class KafkaTestUtils {
                     trafficStream.getNodeId(),
                     trafficStream.getConnectionId()
                 );
-                log.info("sending record with trafficStream=" + tsKeyStr);
+                log.atTrace().setMessage(()->"sending record with trafficStream=" + tsKeyStr).log();
                 var sendFuture = kafkaProducer.send(record, (metadata, exception) -> {
-                    log.atInfo()
+                    log.atDebug()
                         .setCause(exception)
                         .setMessage(
                             () -> "completed send of TrafficStream with key=" + tsKeyStr + " metadata=" + metadata
@@ -106,10 +106,12 @@ public class KafkaTestUtils {
                         .log();
                 });
                 var recordMetadata = sendFuture.get();
-                log.info("finished publishing record... metadata=" + recordMetadata);
+                log.atTrace().setMessage(()->"finished publishing record... metadata=" + recordMetadata);
                 break;
             } catch (Exception e) {
-                log.error("Caught exception while trying to publish a record to Kafka.  Blindly retrying.");
+                log.atError().setCause(e)
+                    .setMessage(()->"Caught exception while trying to publish a record to Kafka.  Blindly retrying.")
+                    .log();
                 continue;
             }
         }

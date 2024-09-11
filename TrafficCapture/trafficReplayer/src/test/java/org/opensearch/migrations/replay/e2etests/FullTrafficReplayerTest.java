@@ -134,7 +134,7 @@ public class FullTrafficReplayerTest extends InstrumentationTest {
 
         @Override
         public Consumer<SourceTargetCaptureTuple> get() {
-            log.info("StopAt=" + nextStopPointRef.get());
+            log.atInfo().setMessage(()->"StopAt=" + nextStopPointRef.get()).log();
             var stopPoint = nextStopPointRef.get();
             var alreadyThrewForThisIteration = new AtomicBoolean();
             return tuple -> {
@@ -256,13 +256,10 @@ public class FullTrafficReplayerTest extends InstrumentationTest {
             );
             var numExpectedRequests = streamAndSizes.numHttpTransactions;
             var trafficStreams = streamAndSizes.stream.collect(Collectors.toList());
-            log.atDebug()
-                .setMessage(
-                    () -> trafficStreams.stream()
-                        .map(TrafficStreamUtils::summarizeTrafficStream)
-                        .collect(Collectors.joining("\n"))
-                )
-                .log();
+            log.atDebug().setMessage("Full test streams:{}")
+                .addArgument(() -> trafficStreams.stream()
+                    .map(TrafficStreamUtils::summarizeTrafficStream)
+                    .collect(Collectors.joining("\n"))).log();
             Function<TestContext, ISimpleTrafficCaptureSource> trafficSourceSupplier =
                 rc -> new ISimpleTrafficCaptureSource() {
                     boolean isDone = false;
@@ -380,13 +377,10 @@ public class FullTrafficReplayerTest extends InstrumentationTest {
             );
             var numExpectedRequests = streamAndSizes.numHttpTransactions;
             var trafficStreams = streamAndSizes.stream.collect(Collectors.toList());
-            log.atInfo()
-                .setMessage(
-                    () -> trafficStreams.stream()
-                        .map(ts -> TrafficStreamUtils.summarizeTrafficStream(ts))
-                        .collect(Collectors.joining("\n"))
-                )
-                .log();
+            log.atDebug().setMessage("Full test streams:{}")
+                .addArgument(() -> trafficStreams.stream()
+                    .map(TrafficStreamUtils::summarizeTrafficStream)
+                    .collect(Collectors.joining("\n"))).log();
             var trafficSourceSupplier = new ArrayCursorTrafficSourceContext(trafficStreams);
             TrafficReplayerRunner.runReplayer(
                 numExpectedRequests,
@@ -399,7 +393,6 @@ public class FullTrafficReplayerTest extends InstrumentationTest {
                 trafficSourceSupplier.trafficStreamsList.size(),
                 trafficSourceSupplier.nextReadCursor.get()
             );
-            log.info("done");
         }
     }
 }
