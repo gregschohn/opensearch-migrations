@@ -246,7 +246,7 @@ class RequestSenderOrchestratorTest extends InstrumentationTest {
 
             Assertions.assertEquals(NUM_REQUESTS_TO_SCHEDULE, scheduledItems.size());
             for (int i = 0; i < scheduledItems.size(); ++i) {
-                log.atTrace().setMessage(()->"Checking item="+i).log();
+                log.atTrace().setMessage(()->"Checking item={}").addArgument(i).log();
                 var cf = scheduledItems.get(i);
                 var arr = cf.get();
                 Assertions.assertNull(arr.error);

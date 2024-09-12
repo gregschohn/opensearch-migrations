@@ -135,7 +135,7 @@ public class SimpleNettyHttpServer implements AutoCloseable {
                     var cf = ctx.writeAndFlush(fullResponse);
                     log.atTrace().setMessage(() -> "finished writing").log();
                     cf.addListener(
-                        f -> log.atInfo()
+                        f -> log.atTrace()
                             .setMessage(() -> "success=" + f.isSuccess() + " finished writing " + fullResponse)
                             .log()
                     );
