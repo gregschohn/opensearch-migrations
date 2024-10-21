@@ -23,8 +23,14 @@ plugins {
     id 'java-test-fixtures'
 }
 
-java.sourceCompatibility = JavaVersion.VERSION_11
-java.targetCompatibility = JavaVersion.VERSION_11
+java {
+    sourceCompatibility = JavaVersion.VERSION_11
+    targetCompatibility = JavaVersion.VERSION_11
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17) // for compilation
+        vendor = JvmVendorSpec.AMAZON
+    }
+}
 
 dependencies {
     implementation group: "com.google.protobuf", name: "protobuf-java"

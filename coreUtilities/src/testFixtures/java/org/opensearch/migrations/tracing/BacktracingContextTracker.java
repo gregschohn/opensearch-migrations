@@ -71,6 +71,7 @@ public class BacktracingContextTracker implements IContextTracker, AutoCloseable
         }
     }
 
+    @Override
     public void close() {
         synchronized (lockObject) {
             scopedContextToCallDetails.clear();

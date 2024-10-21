@@ -7,17 +7,227 @@ plugins {
     id 'java'
 }
 
+project.plugins.apply('java')
+project.plugins.apply('jacoco')
+project.plugins.apply('maven-publish')
+project.plugins.apply('net.ltgt.errorprone')
+
+repositories {
+    mavenCentral()
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_11
+    targetCompatibility = JavaVersion.VERSION_11
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17) // for compilation
+        vendor = JvmVendorSpec.AMAZON
+    }
+}
+
 dependencies {
     constraints {
         // Define dependency versions as constraints
         implementation 'org.apache.commons:commons-text:1.10.0'
     }
 
+    // Add Error Prone for semantic linting - further configurations below
+    compileOnly 'com.google.errorprone:error_prone_annotations:2.33.0'
+    errorprone 'com.google.errorprone:error_prone_core:2.33.0'
+    errorproneJavac 'com.google.errorprone:javac:9+181-r4173-1'
+
     // Use JUnit Jupiter for testing.
     testImplementation 'org.junit.jupiter:junit-jupiter:5.9.3'
+}
+
+tasks.withType(JavaCompile).configureEach {
+        options.errorprone.enabled = true
+//        check('Slf4jLogsafeArgs', CheckSeverity.ERROR)
+//        it.release.set(11)
+}
+
+plugins.withId('java-test-fixtures') {
+    tasks.withType(JavaCompile).matching { it.name == 'compileTestFixturesJava' }.configureEach {
+        options.errorprone {
+            disable("UseCorrectAssertInTests")
+        }
+    }
+}
+
+afterEvaluate {
+    if (plugins.hasPlugin('java') && name != 'commonDependencyVersionConstraints') {
+        dependencies {
+            implementation project(":commonDependencyVersionConstraints")
+            annotationProcessor project(":commonDependencyVersionConstraints")
+            if (project.plugins.hasPlugin('java-test-fixtures')) {
+                testFixturesImplementation project(":commonDependencyVersionConstraints")
+            }
+        }
+    }
+}
+
+tasks.withType(Javadoc).configureEach {
+    // There are LOTS of doclinting warnings.  It seems higher value to see the errorprone warnings first.
+    options.addStringOption('Xdoclint:none', '-quiet')
 }
 
 tasks.named('test') {
     // Use JUnit Platform for unit tests.
     useJUnitPlatform()
+}
+
+tasks.withType(Test) {
+    // Getting javadoc to compile is part of the test suite to ensure we are able to publish our artifacts
+    dependsOn project.javadoc
+
+    testLogging {
+        events "passed", "skipped", "failed"
+        exceptionFormat "full"
+        showExceptions true
+        showCauses true
+        showStackTraces true
+    }
+    maxParallelForks = gradle.startParameter.maxWorkerCount
+
+    // Provide way to exclude particular tests from CLI
+    // e.g. ../gradlew test -PexcludeTests=**/KafkaProtobufConsumerLongTermTest*
+    if (project.hasProperty('excludeTests')) {
+        exclude project.property('excludeTests')
+    }
+
+    useJUnitPlatform()
+    //  Disable parallel test execution, see MIGRATIONS-1666
+    systemProperty 'junit.jupiter.execution.parallel.enabled', 'false'
+    systemProperty 'log4j2.contextSelector', 'org.apache.logging.log4j.core.selector.BasicContextSelector'
+    // Verify assertions in tests
+    jvmArgs '-ea'
+    jacoco.enabled = true
+}
+
+// Mutually exclusive tests to avoid duplication
+tasks.named('test') {
+    systemProperty 'migrationLogLevel', 'TRACE'
+    useJUnitPlatform {
+        excludeTags('longTest', 'isolatedTest')
+    }
+}
+
+tasks.register('slowTest', Test) {
+    systemProperty 'migrationLogLevel', 'DEBUG'
+    useJUnitPlatform {
+        includeTags 'longTest'
+        excludeTags 'isolatedTest'
+    }
+}
+
+tasks.register('isolatedTest', Test) {
+    maxParallelForks = 1
+    useJUnitPlatform {
+        includeTags 'isolatedTest'
+    }
+}
+
+tasks.register('fullTest') {
+    dependsOn test
+    dependsOn slowTest
+    dependsOn isolatedTest
+}
+
+task javadocJar(type: Jar, dependsOn: javadoc) {
+    archiveClassifier.set('javadoc')
+    from javadoc.destinationDir
+}
+
+task sourcesJar(type: Jar) {
+    archiveClassifier.set('sources')
+    from sourceSets.main.allSource
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}
+
+def excludedProjectPaths = [
+        ':RFS',
+        ':TrafficCapture',
+        ':TrafficCapture:dockerSolution',
+]
+if (!(project.path in excludedProjectPaths)) {
+    publishing {
+        publications {
+            mavenJava(MavenPublication) {
+                from components.java
+                artifact javadocJar
+                artifact sourcesJar
+
+                group = 'org.opensearch.migrations.trafficcapture'
+
+                // support -Dbuild.version, but include default
+                version = System.getProperty("build.version", "0.1.0")
+
+                // support -Dbuild.snapshot=false, but default to true
+                if (System.getProperty("build.snapshot", "true") == "true") {
+                    version += "-SNAPSHOT"
+                }
+
+                pom {
+                    name = project.name
+                    description = 'Everything opensearch migrations'
+                    url = 'http://github.com/opensearch-project/opensearch-migrations'
+
+                    licenses {
+                        license {
+                            name = 'The Apache License, Version 2.0'
+                            url = 'http://www.apache.org/licenses/LICENSE-2.0.txt'
+                        }
+                    }
+                    developers {
+                        developer {
+                            name = "OpenSearch"
+                            url = "https://github.com/opensearch-project/opensearch-migrations"
+                        }
+                    }
+                    scm {
+                        connection = "scm:git@github.com:opensearch-project/opensearch-migrations.git"
+                        developerConnection = "scm:git@github.com:opensearch-project/opensearch-migrations.git"
+                        url = "git@github.com:opensearch-project/opensearch-migrations.git"
+                    }
+                }
+
+                // Suppress POM metadata warnings for test fixtures
+                suppressPomMetadataWarningsFor('testFixturesApiElements')
+                suppressPomMetadataWarningsFor('testFixturesRuntimeElements')
+            }
+        }
+        repositories {
+            maven { url = "${rootProject.buildDir}/repository"}
+            maven {
+                url "https://aws.oss.sonatype.org/content/repositories/snapshots"
+                name = 'staging'
+            }
+        }
+    }
+}
+
+// Utility task to allow copying required libraries into a 'dependencies' folder for security scanning
+tasks.register('copyDependencies', Sync) {
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+
+    from configurations.runtimeClasspath
+    into "${buildDir}/dependencies"
+}
+
+jacocoTestReport {
+    dependsOn = project.tasks.withType(Test).matching { it.jacoco && it.jacoco.enabled }
+    executionData.from = project.tasks.withType(Test).matching { it.jacoco && it.jacoco.enabled }.collect { it.jacoco.destinationFile }
+    // Exclude protos and load tests from test coverage
+    classDirectories.from = files(subprojects.collect { it.sourceSets.main.output.collect {
+        fileTree(dir: it) {
+            exclude '**/protos/**'
+            exclude '**/JMeterLoadTest**'
+        }
+    } })
+    reports {
+        xml.required = true
+        xml.destination file("${buildDir}/reports/jacoco/test/jacocoTestReport.xml")
+        html.required = true
+        html.destination file("${buildDir}/reports/jacoco/test/html")
+    }
 }

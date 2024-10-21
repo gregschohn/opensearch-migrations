@@ -1,6 +1,7 @@
 package org.opensearch.migrations;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 
@@ -17,7 +18,7 @@ public interface IHttpMessage {
            return Optional.ofNullable(headers().get(key))
                .map(val -> val.get(0))
                .or(() -> {
-                var lowerKey = key.toLowerCase();
+                var lowerKey =  key.toLowerCase(Locale.ROOT);
                 return headers().entrySet().stream().filter(
                         entry -> entry.getKey().equalsIgnoreCase(lowerKey)).findFirst()
                     .map(entry -> entry.getValue().get(0));});

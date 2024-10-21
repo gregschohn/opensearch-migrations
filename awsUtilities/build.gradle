@@ -19,7 +19,6 @@ buildscript {
 plugins {
     id 'org.opensearch.migrations.java-library-conventions'
     id 'io.freefair.lombok'
-    id 'java'
 }
 
 java.sourceCompatibility = JavaVersion.VERSION_11

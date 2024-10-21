@@ -68,14 +68,17 @@ public abstract class BaseSpanContext<S extends IInstrumentConstructor>
         observedExceptionToIncludeInMetrics = e;
     }
 
+    @Override
     public @NonNull Span getCurrentSpan() {
         return this.currentSpan;
     }
 
+    @Override
     public S getRootInstrumentationScope() {
         return this.rootInstrumentationScope;
     }
 
+    @Override
     public Throwable getObservedExceptionToIncludeInMetrics() {
         return this.observedExceptionToIncludeInMetrics;
     }

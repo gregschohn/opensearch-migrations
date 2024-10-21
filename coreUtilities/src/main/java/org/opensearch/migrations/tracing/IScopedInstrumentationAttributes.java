@@ -76,6 +76,7 @@ public interface IScopedInstrumentationAttributes extends IWithStartTimeAndAttri
         meterHistogramMillis(getEndOfScopeDurationMetric());
     }
 
+    @Override
     default void close() {
         endSpan(getContextTracker());
         sendMeterEventsForEnd();

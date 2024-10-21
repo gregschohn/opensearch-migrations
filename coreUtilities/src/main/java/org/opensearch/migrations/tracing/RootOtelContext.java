@@ -47,7 +47,9 @@ public class RootOtelContext implements IRootOtelContext {
                 // "A Prometheus Exporter MUST only support Cumulative Temporality."
                 // .setAggregationTemporalitySelector(AggregationTemporalitySelector.deltaPreferred())
                 .build()
-        ).setInterval(Duration.ofMillis(1000)).build();
+        ).setInterval(Duration.ofSeconds(1)).build();
+
+        //log.atWarn().setMessage("hi"+ System.nanoTime());
 
         var openTelemetrySdk = OpenTelemetrySdk.builder()
             .setTracerProvider(

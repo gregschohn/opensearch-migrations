@@ -67,7 +67,6 @@ public class InMemoryInstrumentationBundle implements AutoCloseable {
 
     /**
      * Waits double the collectionPeriod time (once) before returning the collected metrics
-     * @return
      */
     @SneakyThrows
     public Collection<MetricData> getFinishedMetrics() {
