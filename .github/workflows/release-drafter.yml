@@ -122,4 +122,7 @@ jobs:
           files: |
             artifacts.tar.gz
             traffic-capture-artifacts.tar.gz
-            **/*.spdx.json
+      - name: Upload SBOM to release
+        uses: anchore/sbom-action/publish-sbom@v0.17.7
+        with:
+          sbom-artifact-match: ".*\\.spdx.json$"
