@@ -46,7 +46,9 @@ function convertSourceIndexToTargetViaRegex(sourceIndex, sourceType, regexIndexM
         // Add start (^) and end ($) anchors to the regex to ensure it matches the entire string
         const conjoinedRegexString = `^${idxRegex}/${typeRegex}$`;
         const conjoinedRegex = new RegExp(conjoinedRegexString);
+        console.log("conjoinedRegexString:" + conjoinedRegexString);
         if (conjoinedRegex.test(conjoinedSource)) {
+            console.log("Found regex :" + conjoinedSource.replace(conjoinedRegex, targetIdxPattern));
             return conjoinedSource.replace(conjoinedRegex, targetIdxPattern);
         }
     }
@@ -55,6 +57,7 @@ function convertSourceIndexToTargetViaRegex(sourceIndex, sourceType, regexIndexM
 
 function convertSourceIndexToTarget(sourceIndex, sourceType, indexMappings, regexIndexMappings) {
     if (indexMappings[sourceIndex]) {
+        console.log("Found index mapping: " + indexMappings[sourceIndex]);
         return indexMappings[sourceIndex][sourceType];
     }
     return convertSourceIndexToTargetViaRegex(sourceIndex, sourceType, regexIndexMappings);
@@ -269,15 +272,23 @@ function routeHttpRequest(source_document, context) {
 
 function processBulkIndex(docBackfillPair, context) {
     const parameters = docBackfillPair.index
+    const sourceIndexName = parameters._index;
     const typeName = parameters._type;
+
+    console.log("Process with sourceIndexName: ", sourceIndexName);
+    console.log("Process with typeName: ", typeName);
+
     if (!typeName) return docBackfillPair
 
     const targetIndex = convertSourceIndexToTarget(
-        parameters._index,
+        sourceIndexName,
         typeName,
         context.index_mappings,
         context.regex_index_mappings
     );
+
+    console.log("Target Index: ", targetIndex);
+
 
     if (!targetIndex) return null;
 
@@ -295,6 +306,8 @@ function mapToPlainObjectReplacer(key, value) {
 }
 
 function detectAndTransform(document, context) {
+    console.log("Got Doc: ", JSON.stringify(document, mapToPlainObjectReplacer, 2));
+
     if (!document) {
         throw new Error("No source_document was defined - nothing to transform!");
     }
