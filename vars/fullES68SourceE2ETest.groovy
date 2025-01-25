@@ -5,12 +5,11 @@ def call(Map config = [:]) {
     def migrationContextId = 'full-migration'
     def time = new Date().getTime()
     def testUniqueId = "integ_full_${time}_${currentBuild.number}"
-
     def rfsJsonTransformations = [
         [
                 TypeMappingSanitizationTransformerProvider: [
                         regexIndexMappings: [
-                                ["(test_e2e_0001_$testUniqueId)", ".*", "\$1_transformed"], // Expected Transform
+                                ["(test_e2e_0001_.*)", ".*", "\$1_transformed"], // Expected Transform
                                 ["(.*)", "(.*)", "\$1"] // Type Union otherwise
                         ],
 
@@ -23,6 +22,7 @@ def call(Map config = [:]) {
                 ]
         ],
     ]
+
     def rfsJsonString = JsonOutput.toJson(rfsJsonTransformations)
     def rfsTransformersArg = rfsJsonString.bytes.encodeBase64().toString()
     def source_cdk_context = """
