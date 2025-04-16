@@ -297,18 +297,50 @@ jobs:
           docker stop $(docker ps -q) && docker system prune --volumes -f
           docker image ls --format '{{.Repository}}:{{.Tag}}' | grep '^migrations/' | xargs -I {} docker image rm {}
 
+  discover-node-projects:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.find-projects.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v3
+
+      - id: find-projects
+        run: |
+          matrix=$(find . -name 'package.json' -not -path '*/node_modules/*' -exec dirname {} \; | sort -u | jq -R . | jq -s .)
+          echo "Found projects: $matrix"
+          echo "matrix=$matrix" >> $GITHUB_OUTPUT
+        shell: bash
+
   node-tests:
     runs-on: ubuntu-latest
+    needs: discover-node-projects
     strategy:
       fail-fast: false
       matrix:
-        npm-project:
-          - ./deployment/cdk/opensearch-service-migration
-          - ./deployment/migration-assistant-solution
+        npm-project: ${{ fromJson(needs.discover-node-projects.outputs.matrix) }}
     defaults:
       run:
         working-directory: ${{ matrix.npm-project }}
     steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.node-version }}
+      - name: Install NPM dependencies
+        run: npm ci
+      - name: Run CDK Jest Tests (using mocked images)
+        run: npm run test
+      - name: Get Sanitized Name
+        env:
+          PROJECT: ${{ matrix.npm-project }}
+        run: echo "SANITIZED_PY_PROJECT=${PROJECT//\//-}" >> $GITHUB_ENV
+      - name: Upload Coverage Reports
+        uses: actions/upload-artifact@v4
+        with:
+          if-no-files-found: error
+          name: coverage-reports-node-tests-${{ env.SANITIZED_PY_PROJECT }}
+          path: ${{ matrix.npm-project }}/coverage/*
+
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
