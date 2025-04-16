@@ -306,7 +306,7 @@ jobs:
 
       - id: find-projects
         run: |
-          matrix=$(find . -name 'package.json' -not -path '*/node_modules/*' -exec dirname {} \; | sort -u | jq -R . | jq -s .)
+          matrix=$(find . -name 'package.json' -not -path '*/node_modules/*' -exec dirname {} \; | sort -u | jq -R . | jq -s -c .)
           echo "Found projects: $matrix"
           echo "matrix=$matrix" >> $GITHUB_OUTPUT
         shell: bash
