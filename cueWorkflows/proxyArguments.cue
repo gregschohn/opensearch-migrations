@@ -1,0 +1,4 @@
+#PassArguments: {
+	#in: [string]: #ParameterDetails
+
+}
