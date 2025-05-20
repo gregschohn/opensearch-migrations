@@ -1,9 +1,7 @@
 package mymodule
 
-#ParameterType: bool | string | int
-
 #ParameterDetails: { ...
     type: "bool" | "string" | "int"
-    defaultValue?: #ParameterType
+    defaultValue?: string // Argo limits this to be only a string
     description?: string
 }

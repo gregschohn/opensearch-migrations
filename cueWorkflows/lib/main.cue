@@ -31,4 +31,3 @@ package mymodule
     version?: string
     authConfig?: #HTTP_AUTH_BASIC | #HTTP_AUTH_SIGV4
 })
-

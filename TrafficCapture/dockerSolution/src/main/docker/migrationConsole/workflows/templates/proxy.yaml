@@ -38,8 +38,8 @@ spec:
           - name: endpoint
             valueFrom:
               jsonPath: '{.metadata.name}'
-      successCondition: status.loadBalancer.ingress
       resource:
+        successCondition: status.loadBalancer.ingress
         action: create
         setOwnerReference: true
         flags: [ "--validate=false" ]  # validation requires Cluster permissions rather than just namespace permissions

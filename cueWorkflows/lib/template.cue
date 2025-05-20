@@ -1,8 +1,16 @@
 package mymodule
 
+import (
+	"encoding/json"
+	argo "github.com/opensearch-migrations/workflowconfigs/argo"
+  // argo "github.com/opensearch-migrations/workflowconfigs/argo"
+	// argo "k8s.io/apis_apps_v1"
+) 
+
 #ParameterAndInputPath: #ParameterDetails & {
     parameterName:  string
-    templateInputPath: "{{inputs.parameters['\(parameterName)']}}"
+    exprInputPath: "inputs.parameters['\(parameterName)']"
+    templateInputPath: "{{\(exprInputPath)}}"
 }
 
 #ProxyInputsIntoArguments: {
@@ -10,8 +18,13 @@ package mymodule
 	out: [ for k,v in #in let u=#ParameterAndInputPath & v { name: u.parameterName, value: u.templateInputPath}]
 }
 
-#Template: {
+#ArgoTemplate: argo.#."io.argoproj.workflow.v1alpha1.Template"
+#ArgoResourceTemplate: argo.#."io.argoproj.workflow.v1alpha1.ResourceTemplate"
+
+#Template: #ArgoTemplate &
+{
 	#parameters: [string]: #ParameterDetails
+	steps?: [...]
 	_parametersList: [ for p, details in #parameters { details & #ParameterAndEnvironmentName & { parameterName:  p } } ]
     if _parametersList != [] {
         inputs:
@@ -30,18 +43,17 @@ package mymodule
 		name: string
 		inputs?: {...}
     outputs?: {...}
-    ...
 }
 
 #ResourceTemplate: #Template & {
     name: string
-    resource: {...
-        action: "create"
+    #manifest: _
+    resource: #ArgoResourceTemplate & {...
         setOwnerReference: bool // no default - too important.  Always specify.
-        manifest: string
+        manifest: json.Marshal(#manifest)
     }
 }
 
-#StepTemplate: #Template & { ...
+#StepTemplate: close(#Template & {
 	steps: [...]
-}
+})
