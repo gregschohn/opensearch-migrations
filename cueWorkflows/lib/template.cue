@@ -25,15 +25,14 @@ import (
 		steps?: [...]
 		_parametersList: [for p, details in #parameters {details & #ParameterAndEnvironmentName & {parameterName: p}}]
 		if _parametersList != [] {
-			inputs: parameters:
-			[for p in _parametersList {
-				{
+			inputs: {
+				parameters: [for p in _parametersList {
 					name: p.parameterName
-				}
-				if p.defaultValue != _|_ {
-					value: p.defaultValue
-				}
-			}]
+					if p.defaultValue != _|_ {
+						value: p.defaultValue
+					}
+				}]
+			}
 		}
 		_paramsWithTemplatePathsMap: {for k, v in #parameters {"\(k)": {#ParameterAndInputPath & v & {parameterName: k}}}}
 
