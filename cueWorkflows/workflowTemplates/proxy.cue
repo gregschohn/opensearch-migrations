@@ -16,10 +16,12 @@ spec: {
     name:                        "deploy-service"
     #parameters:                 #serviceParameters
     _paramsWithTemplatePathsMap: _
+
     outputs: parameters: [{
       name: "endpoint"
       valueFrom: expression: "steps['\(CS.name)'].outputs.parameters['endpoint'] + ':' + \(_paramsWithTemplatePathsMap.frontsidePort.exprInputPath)"
     }]
+
     steps: [[
       {
         N=name:   "create-service"
@@ -42,12 +44,12 @@ spec: {
     #manifest: {
       apiVersion: "v1"
       kind:       "Service"
-      metadata: name: _paramsWithTemplatePathsMap.serviceName.templateInputPath
+      metadata: name: (#ForInputParameter & {name: "serviceName", params: #parameters}).out
       labels: app:    "proxy"
       spec: selector: app: "proxy" // Selector should match pod labels directly, not use matchLabels
       ports: [{
-        port:       _paramsWithTemplatePathsMap.frontsidePort.templateInputPath
-        targetPort: _paramsWithTemplatePathsMap.frontsidePort.templateInputPath
+        port:       (#ForInputParameter & {name: "frontsidePort", params: #parameters}).out
+        targetPort: (#ForInputParameter & {name: "frontsidePort", params: #parameters}).out
       }]
       type: "LoadBalancer"
     }
@@ -64,14 +66,14 @@ spec: {
     #containers: [
       #Container & {
         name:              "proxy"
-        #parameters:       #PARAMS
+        #parameters:       PARAMS
         #containerCommand: "/runJavaWithClasspath.sh org.opensearch.CaptureProxy"
         #ports: [{
-          containerPort: (#ForInputParameter & {name: "frontsidePort", params: #PARAMS}).out
+          containerPort: (#ForInputParameter & {name: "frontsidePort", params: #parameters}).out
         }]
       },
     ]
-    #PARAMS: #parameters
+    let PARAMS=#parameters
     #parameters: {
       backsideUriString: type: "string"
       frontsidePort: type:     "int"
@@ -99,7 +101,7 @@ spec: {
     }
     _paramsWithTemplatePathsMap: _
 
-    #manifest: spec: replicas: ((#ForInputParameter & {name: "wrongParameterName", params: #parameters}).out)
+    #manifest: spec: replicas: (#ForInputParameter & {name: "replicas", params: #parameters}).out
     name: "deploy-capture-proxy"
     resource: {
       setOwnerReference: true
