@@ -2,6 +2,8 @@ package mymodule
 
 import "strings"
 
+import k8sAppsV1 "k8s.io/apis_apps_v1"
+
 #ParameterAndEnvironmentName: {
 	parameterName: string
 	envName:       string | *strings.ToUpper(parameterName)
@@ -10,10 +12,10 @@ import "strings"
 
 #FullyProjectedTemplateParameter: #ParameterDetails & #ParameterAndEnvironmentName & #ParameterAndInputPath
 
-#Container: {
+#Container: (#ManifestUnifier & {in: k8sAppsV1.#SchemaMap."io.k8s.api.core.v1.Container"}).out & {
 	#parameters: [string]: #ParameterDetails
 	#containerCommand: string
-	#ports: {...}
+	#ports: [{...}]
 	_projected: [for p, details in #parameters {details & #FullyProjectedTemplateParameter & {parameterName: p}}]
 
 	_args: strings.Join([

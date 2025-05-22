@@ -1,12 +1,9 @@
 package mymodule
 
-import (
-	"encoding/json"
-	argo "github.com/opensearch-migrations/workflowconfigs/argo"
-)
+import argo "github.com/opensearch-migrations/workflowconfigs/argo"
 
 #ParameterAndInputPath: #ParameterDetails & {
-	parameterName:     string
+	parameterName!:    string
 	exprInputPath:     "inputs.parameters['\(parameterName)']"
 	templateInputPath: "{{\(exprInputPath)}}"
 }
@@ -43,11 +40,10 @@ import (
 
 #ResourceTemplate: #Template & {
 	name:      string
-	#manifest: _
+	#manifest: {...}
 	resource: #ArgoResourceTemplate & {
-
 		setOwnerReference: bool // no default - too important.  Always specify.
-		manifest:          json.Marshal(#manifest)
+		manifest:          (#EncodeCueAsJsonText & { in: #manifest } ).out
 		...
 	}
 }

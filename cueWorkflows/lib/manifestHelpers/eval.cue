@@ -1,18 +1,22 @@
 package mymodule
 
+import json "encoding/json"
+
 #ManifestUnifier: {
 	in: _
-	out: {}
+	out: {...}
 }
 
 #ForInputParameter: {
-	name:    string
-	params:  #ParameterAndInputPath
-	default: _
-	let v = #ParameterAndInputPath & params[name] & {parameterName: name}
+	name!:    string
+	params!:  [string]: #ParameterDetails
+	v!: #ParameterAndInputPath & params[name] & { parameterName: name }
 
-	out: [
-		if (v != _|_) {v.templateInputPath},
-		if (v == _|_) {default},
-	][0]
+	out: v.templateInputPath
+	#isConcrete: json.Marshal(out)
+}
+
+#EncodeCueAsJsonText: {
+	in: {...}
+	out: json.Marshal(in)
 }

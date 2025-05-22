@@ -45,10 +45,10 @@ spec: {
 			metadata: name: _paramsWithTemplatePathsMap.serviceName.templateInputPath
 			labels: app:    "proxy"
 			spec: selector: app: "proxy" // Selector should match pod labels directly, not use matchLabels
-			ports: {
+			ports: [{
 				port:       _paramsWithTemplatePathsMap.frontsidePort.templateInputPath
 				targetPort: _paramsWithTemplatePathsMap.frontsidePort.templateInputPath
-			}
+			}]
 			type: "LoadBalancer"
 		}
 		resource: {
@@ -59,12 +59,19 @@ spec: {
 		}
 	})
 
-	templates: [
-		DS, CS,
-
-		(#DeploymentTemplate & {
-			#containerCommand: "/runJavaWithClasspath.sh org.opensearch.CaptureProxy"
-			#ports: containerPort: "\(_paramsWithTemplatePathsMap.frontsidePort.templateInputPath)"
+	let P = (#DeploymentTemplate & {
+			#resourceName: "proxy"
+			#containers: [
+				#Container & {
+						name:              "proxy"
+						#parameters:       #PARAMS
+						#containerCommand: "/runJavaWithClasspath.sh org.opensearch.CaptureProxy"
+						#ports: [{
+							containerPort: (#ForInputParameter & {name: "frontsidePort", params: #PARAMS}).out
+						}]
+				}
+			]
+			#PARAMS: #parameters
 			#parameters: {
 				backsideUriString: type: "string"
 				frontsidePort: type: "int"
@@ -92,12 +99,15 @@ spec: {
 			}
 			_paramsWithTemplatePathsMap: _
 
+			#manifest: spec: replicas: ((#ForInputParameter & {name: "replicas", params: #parameters}).out)
 			name: "deploy-capture-proxy"
 			resource: {
 				setOwnerReference: true
 				action:            "create"
 			}
-		}),
+		})
 
+	templates: [
+		DS, CS, P
 	]
 }
