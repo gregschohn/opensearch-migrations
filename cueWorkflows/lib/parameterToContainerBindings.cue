@@ -12,50 +12,64 @@ import k8sAppsV1 "k8s.io/apis_apps_v1"
 
 #FullyProjectedTemplateParameter: #ParameterDetails & #ParameterAndEnvironmentName & #ParameterAndInputPath
 
-#Container: (#ManifestUnifier & {in: k8sAppsV1.#SchemaMap."io.k8s.api.core.v1.Container"}).out & {
-  #parameters: [string]: #ParameterDetails
-  #containerCommand: string
-  #ports: [{...}]
-  _projected: [for p, details in #parameters {details & #FullyProjectedTemplateParameter & {parameterName: p}}]
+#Container: {
+	Base: (#ManifestUnifier & {in: k8sAppsV1.#SchemaMap."io.k8s.api.core.v1.Container"}).out & {
+			#parameters: [string]: #ParameterDetails
+			#ports: [...{...}]
 
-  _args: strings.Join([
-    for i in _projected {[
-      if (i.type == "bool") != _|_ {
-        """
-            if [ "$\(i.envName)" = "true" ] || [ "$\(i.envName)" = "1" ]; then
-                ARGS="${ARGS} --(i.parameterName)"
-            fi
-            """
-      },
-      if (i.type != "bool") != _|_ {
-        """
-            ARGS=\"${ARGS}${\(i.envName):+ --\(i.parameterName) $\(i.envName)}
-            """
-      }][0]
-    }], "\n")
+			_filteredParameters: { for k,v in #parameters if v.passToContainer { (k): v } }
+			_enrichedParameters: [for p, details in _filteredParameters { 
+				details & #FullyProjectedTemplateParameter & {parameterName: p} 
+			}]
 
-  _commandText:
-    """
-        set -e
+			env: [for p in _enrichedParameters {name: p.envName, value: p.templateInputPath}]
+			if len(#ports) != 0 {
+				ports: #ports
+			}
+		}
 
-        # Build arguments from environment variables
-        ARGS=""
-        \(_args)
+	Jib: Base & {
+		// should be able to use the default entrypoint
+	}
 
-        # Log the configuration
-        echo "Starting \(#containerCommand) with arguments: $ARGS"
+  Bash: Base & {
+			#containerCommand: string
+			_enrichedParameters: _
 
-        # Execute the command
-        exec \(#containerCommand) $ARGS
-        """
+			_args: strings.Join([
+				for i in _enrichedParameters {[
+					if (i.type == "bool") {
+						"""
+						if [ "$\(i.envName)" = "true" ] || [ "$\(i.envName)" = "1" ]; then
+								ARGS="${ARGS} --(i.parameterName)"
+						fi
+						"""
+					},
+					if (i.type != "bool")  {
+						"""
+						ARGS=\"${ARGS}${\(i.envName):+ --\(i.parameterName) $\(i.envName)}
+						"""
+					}][0]
+				}], "\n")
+			_commandText:
+				"""
+				set -e
 
-  env: [for p in _projected {name: p.envName, value: p.templateInputPath}]
-  command: [
-    "/bin/sh",
-    "-c",
-    _commandText,
-  ]
-  if len(#ports) != 0 {
-    ports: #ports
-  }
+				# Build arguments from environment variables
+				ARGS=""
+				\(_args)
+
+				# Log the configuration
+				echo "Starting \(#containerCommand) with arguments: $ARGS"
+
+				# Execute the command
+				exec \(#containerCommand) $ARGS
+				"""
+
+			command: [
+				"/bin/sh",
+				"-c",
+				_commandText,
+			]
+		}
 }

@@ -26,9 +26,10 @@ import "strings"
   #in:    _
   #name!: string | *"DUMMY"
   out: [
-    if (#in == "int") {(#hashCode & {#strToHash: #name}).out},
-    if (#in == "bool") {false},
-    if (#in == "string") {"---DUMMY_VALUE_FOR_TYPE_CHECKING_LATE_BOUND_ARGO_SUBSTITUTIONS_OF: [\(#name)]---"},
+    if (#in == "int") { (#hashCode & {#strToHash: #name}).out },
+    if (#in == "bool") { false},
+    if (#in == "float") { float((#hashCode & {#strToHash: #name}).out) },
+    if (#in == "string") { "---DUMMY_VALUE_FOR_TYPE_CHECKING_LATE_BOUND_ARGO_SUBSTITUTIONS_OF: [\(#name)]---" },
   ][0]
 }
 

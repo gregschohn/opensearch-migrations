@@ -7,14 +7,9 @@ spec: {
   entrypoint:         "deploy-capture-proxy"
   serviceAccountName: "argo-workflow-executor"
 
-  #serviceParameters: {
-    frontsidePort: type: "int"
-    serviceName: {type: "string", defaultValue: "capture-proxy"}
-  }
-
-  let DS = (#StepTemplate & {
+  let DS = (#WFTemplate.Steps & {
     name:                        "deploy-service"
-    #parameters:                 #serviceParameters
+    #parameters: CS.#parameters
     _paramsWithTemplatePathsMap: _
 
     outputs: parameters: [{
@@ -24,16 +19,19 @@ spec: {
 
     steps: [[
       {
-        N=name:   "create-service"
-        template: N
-        arguments: parameters: (#ProxyInputsIntoArguments & {#in: _paramsWithTemplatePathsMap}).out
+        name:      "create-service"
+        template:  name
+				arguments: parameters: (#ProxyInputsIntoArguments & {#in: _paramsWithTemplatePathsMap}).out
       },
     ]]
   })
 
-  let CS = (#ResourceTemplate & {
+  let CS = (#WFTemplate.Resource & {
     name:                        "create-service"
-    #parameters:                 #serviceParameters
+    #parameters:                 {
+    	frontsidePort: { type: "int" }
+    	serviceName: {type: "string", defaultValue: "capture-proxy"}
+    }
     _paramsWithTemplatePathsMap: _
 
     outputs: parameters: [{
@@ -61,15 +59,14 @@ spec: {
     }
   })
 
-  let P = (#DeploymentTemplate & {
+  let P = (#WFTemplate.Deployment & {
     #resourceName: "proxy"
     #containers: [
-      #Container & {
+      #Container.Jib & {
         name:              "proxy"
-        #parameters:       PARAMS
-        #containerCommand: "/runJavaWithClasspath.sh org.opensearch.CaptureProxy"
+        #parameters: PARAMS
         #ports: [{
-          containerPort: (#ForInputParameter & {name: "frontsidePort", params: #parameters}).out
+          containerPort: (#ForInputParameter & {name: "frontsidePort", params: PARAMS}).out
         }]
       },
     ]
@@ -78,9 +75,9 @@ spec: {
       backsideUriString: type: "string"
       frontsidePort: type:     "int"
 
-      image: {type: "string", defaultValue: "migrations/migration-console:latest"}
-      initImage: {type: "string", defaultValue: "migrations/migration-console:latest"}
-      replicas: {type: "int", defaultValue: "1"}
+      image: {type: "string", defaultValue: "migrations/migration-console:latest", passToContainer: false}
+      initImage: {type: "string", defaultValue: "migrations/migration-console:latest", passToContainer: false}
+      replicas: {type: "int", defaultValue: 1, passToContainer: false}
 
       traceDirectory: type:                     "string"
       noCapture: type:                          "bool"
