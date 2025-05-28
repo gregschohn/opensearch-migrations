@@ -10,11 +10,11 @@ import k8sAppsV1 "k8s.io/apis_apps_v1"
   ...
 }
 
-#FullyProjectedTemplateParameter: #ParameterDetails & #ParameterAndEnvironmentName & #ParameterAndInputPath
+#FullyProjectedTemplateParameter: #Parameters.ParameterDetails & #ParameterAndEnvironmentName & #ParameterAndInputPath
 
 #Container: {
 	Base: (#ManifestUnifier & {in: k8sAppsV1.#SchemaMap."io.k8s.api.core.v1.Container"}).out & {
-			#parameters: [string]: #ParameterDetails
+			#parameters: [string]: #Parameters.ParameterDetails
 			#ports: [...{...}]
 
 			_filteredParameters: { for k,v in #parameters if v.passToContainer { (k): v } }

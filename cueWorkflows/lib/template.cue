@@ -3,20 +3,20 @@ package mymodule
 import argo "github.com/opensearch-migrations/workflowconfigs/argo"
 import k8sAppsV1 "k8s.io/apis_apps_v1"
 
-#ParameterAndInputPath: #ParameterDetails & {
+#ParameterAndInputPath: #Parameters.ParameterDetails & {
   parameterName!:    string
   exprInputPath:     "inputs.parameters['\(parameterName)']"
   templateInputPath: "{{\(exprInputPath)}}"
 }
 
 #ProxyInputsIntoArguments: {
-  #in: [string]: #ParameterDetails
+  #in: [string]: #Parameters.ParameterDetails
   out: [for k, v in #in let u = #ParameterAndInputPath & v {name: u.parameterName, value: u.templateInputPath}]
 }
 
 #WFTemplate: {
- Base: argo.#."io.argoproj.workflow.v1alpha1.Template" & {
-		#parameters: [string]: #ParameterDetails
+ #Base: (argo.#."io.argoproj.workflow.v1alpha1.Template" & {
+		#parameters: [string]: #Parameters.ParameterDetails
 		steps?: [...]
 		_parametersList: [for p, details in #parameters { details & #ParameterAndEnvironmentName & {parameterName: p}}]
 		if _parametersList != [] {
@@ -33,25 +33,26 @@ import k8sAppsV1 "k8s.io/apis_apps_v1"
 		name: string
 		inputs?: {...}
 		outputs?: {...}
- }
+ })
 
- Dag: Base & {
+ Dag: (#Base & {
   dag: tasks: [...]
- }
+ })
 
- Steps: Base & {
+ Steps: (#Base & {
   steps: [...]
- }
+ })
 
- Suspend: Base & {
+ Suspend: (#Base & {
   suspend: {}
- }
+ })
 
- DoNothing: Base & {
+ DoNothing: (#Base & {
   steps: [[]]
- }
+ })
 
- Resource: Base & {
+
+ #Resource: (#Base & {
   name: string
   #manifest: {...}
   resource: argo.#."io.argoproj.workflow.v1alpha1.ResourceTemplate" & {
@@ -59,11 +60,11 @@ import k8sAppsV1 "k8s.io/apis_apps_v1"
     manifest: (#EncodeCueAsJsonText & {in: #manifest} ).out
     ...
   }
- }
+ })
 
- Deployment: #WFTemplate.Resource & {
+ #Deployment: close(#Resource & {
   #resourceName!: string
-  #parameters!: [string]: #ParameterDetails
+  #parameters!: [string]: #Parameters.ParameterDetails
   #containers: [{...}]
 
   #manifest: (#ManifestUnifier & {in: k8sAppsV1.#SchemaMap."io.k8s.api.apps.v1.Deployment"}).out &
@@ -84,5 +85,6 @@ import k8sAppsV1 "k8s.io/apis_apps_v1"
         }
       }
     }
- }
+ })
 }
+

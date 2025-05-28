@@ -35,7 +35,7 @@ import "strings"
 
 #ForInputParameter: {
   name!: string
-  params!: [string]: #ParameterDetails
+  params!: [string]: #Parameters.ParameterDetails
   v!: #ParameterAndInputPath & params[name] & {parameterName: name}
 
   // While it seems elegant to allow non-concrete types, it forces us to loosen checks on

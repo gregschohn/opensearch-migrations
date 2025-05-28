@@ -9,15 +9,17 @@ spec: {
 
 	let RUN_ALL = (#WFTemplate.Dag & {
 		#parameters: {
-			sessionName: type: string
+			sessionName: { type: string, requiredArg: true }
+			proxyDestination: { type: string, requiredArg: true }
+			proxyListenPort: { type: int, requiredArg: true }
+			replayerTargetConfig: { type: string, requiredArg: true }
+
 			sourceConfig: type: string
 			providedKafkaBootstrapServers: type: string
 			providedKafkaK8sName: type: string
 			kafkaPrefix: type: string
 			topicName: type: string
 			topicPartition: type: string
-			proxyDestination: type: string
-			replayerTargetConfig: type: string
 		}
 		dag: [
 			{

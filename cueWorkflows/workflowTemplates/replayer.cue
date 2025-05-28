@@ -8,7 +8,7 @@ spec: {
   serviceAccountName: "argo-workflow-executor"
 
 	templates: [
-		(#WFTemplate.Deployment & {
+		(#WFTemplate.#Deployment & {
 	    name:         entrypoint
 	    #resourceName: name
 
