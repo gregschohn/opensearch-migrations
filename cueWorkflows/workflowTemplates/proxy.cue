@@ -26,11 +26,11 @@ spec: {
     ]]
   })
 
-  let CS = (#WFTemplate.Resource & {
+  let CS = (#WFTemplate.#Resource & {
     name:                        "create-service"
     #parameters:                 {
-    	frontsidePort: { type: "int" }
-    	serviceName: {type: "string", defaultValue: "capture-proxy"}
+    	frontsidePort: { type: int }
+    	serviceName: { defaultValue: "capture-proxy"}
     }
     _paramsWithTemplatePathsMap: _
 
@@ -59,7 +59,7 @@ spec: {
     }
   })
 
-  let P = (#WFTemplate.Deployment & {
+  let P = (#WFTemplate.#Deployment & {
     #resourceName: "proxy"
     #containers: [
       #Container.Jib & {
@@ -72,29 +72,29 @@ spec: {
     ]
     let PARAMS=#parameters
     #parameters: {
-      backsideUriString: type: "string"
-      frontsidePort: type:     "int"
+      backsideUriString: type: string
+      frontsidePort: type:     int
 
-      image: {type: "string", defaultValue: "migrations/migration-console:latest", passToContainer: false}
-      initImage: {type: "string", defaultValue: "migrations/migration-console:latest", passToContainer: false}
-      replicas: {type: "int", defaultValue: 1, passToContainer: false}
+      image: { defaultValue: "migrations/migration-console:latest", passToContainer: false}
+      initImage: { defaultValue: "migrations/migration-console:latest", passToContainer: false}
+      replicas: { type: int, defaultValue: 1, passToContainer: false}
 
-      traceDirectory: type:                     "string"
-      noCapture: type:                          "bool"
-      kafkaPropertiesFile: type:                "string"
-      kafkaClientId: type:                      "string"
-      kafkaConnection: type:                    "string"
-      kafkaTopic: type:                         "string"
-      mskAuthEnabled: type:                     "bool"
-      sslConfigFilePath: type:                  "string"
-      maximumTrafficStreamSize: type:           "string"
-      allowInsecureConnectionsToBackside: type: "bool"
-      numThreads: type:                         "string"
-      destinationConnectionPoolSize: type:      "string"
-      destinationConnectionPoolTimeout: type:   "string"
-      otelCollectorEndpoint: {type: "string", defaultValue: "http://otel-collector:4317"}
-      headerOverrides: type:            "string"
-      suppressCaptureHeaderPairs: type: "string"
+      traceDirectory: type:                     string
+      noCapture: type:                          bool
+      kafkaPropertiesFile: type:                string
+      kafkaClientId: type:                      string
+      kafkaConnection: type:                    string
+      kafkaTopic: type:                         string
+      mskAuthEnabled: type:                     bool
+      sslConfigFilePath: type:                  string
+      maximumTrafficStreamSize: type:           string
+      allowInsecureConnectionsToBackside: type: bool
+      numThreads: type:                         string
+      destinationConnectionPoolSize: type:      string
+      destinationConnectionPoolTimeout: type:   string
+      otelCollectorEndpoint: { defaultValue: "http://otel-collector:4317"}
+      headerOverrides: type:            string
+      suppressCaptureHeaderPairs: type: string
     }
     _paramsWithTemplatePathsMap: _
 

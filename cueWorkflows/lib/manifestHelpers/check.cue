@@ -22,20 +22,65 @@ import "strings"
   out:        strconv.ParseInt(strings.SliceRunes(_hexHash, 0, 4), 16, 32)
 }
 
+// This is used where we would otherwise use an argo parameter representation.
+// Since dropping a string like 'input.parameter...' can't be type checked,
+// we instead, for this check.cue implementation use a mock of the argo parameter's type.
+// eval.cue will drop a string in place though manifests won't be type checked.
 #GetDummyConcreteValue: {
-  #in:    _
-  #name!: string | *"DUMMY"
-  out: [
-    if (#in == "int") { (#hashCode & {#strToHash: #name}).out },
-    if (#in == "bool") { false},
-    if (#in == "float") { float((#hashCode & {#strToHash: #name}).out) },
-    if (#in == "string") { "---DUMMY_VALUE_FOR_TYPE_CHECKING_LATE_BOUND_ARGO_SUBSTITUTIONS_OF: [\(#name)]---" },
-  ][0]
+
+  #Base: {
+    type: _
+    val: _
+  }
+
+  #BoolHelper: #Base & {
+    type: bool
+    val: true
+  }
+
+  #IntHelper: #Base & {
+    type: int
+    val: (#hashCode & {#strToHash: name}).out
+  }
+
+  #FloatHelper: #Base & {
+    type: float
+    val: (#hashCode & {#strToHash: name}).out
+  }
+
+  #StringHelper: #Base & {
+    type: string
+    val: "---DUMMY_VALUE_FOR_TYPE_CHECKING_LATE_BOUND_ARGO_SUBSTITUTIONS_OF: [\(name)]---"
+  }
+
+  #ListHelper: #Base & {
+    _lt: _
+    type: [..._lt]
+    val: [(#Replacer & { type: _lt}).val]
+  }
+
+  #StructHelper: #Base & {
+    type: [string]: _
+    val: {for k,v in type {
+    	if (#IsConcreteValue & {#value: v}).concrete {
+    		"\(name)_\(k)": v
+    	}
+    	if (!#IsConcreteValue & {#value: v}).concrete {
+    		"\(name)_\(k)": (#Replacer & { type: v}).val
+    	}
+     }
+    }
+  }
+
+  #Replacer: #BoolHelper | #IntHelper | #FloatHelper | #StringHelper// | #ListHelper | #StructHelper
+  name: string
+  T=type: _
+  value: (#Replacer & { type: T}).val
 }
 
 #ForInputParameter: {
-  name!: string
-  params!: [string]: #Parameters.ParameterDetails
+  N=name!: string
+  params!: [string]: #Parameters.TemplateParameter
   v!: #ParameterAndInputPath & params[name] & {parameterName: name}
 
   // While it seems elegant to allow non-concrete types, it forces us to loosen checks on
@@ -50,7 +95,7 @@ import "strings"
   // However, even with that future deficiency, by using unlikely dummy types for argo parameters,
   // the current templates can find conflicts where a manifest value may be pulled from an argo
   // parameter AND set to a hardcoded value.
-  out!: (#GetDummyConcreteValue & {#in: params[name].type, #name: name}).out
+  out!: (#GetDummyConcreteValue & {type: params[name].type, name: N}).value
   //  out!: params[name].#cueType
 }
 
@@ -58,3 +103,6 @@ import "strings"
   in: {...}
   out: json.Marshal(in)
 }
+
+
+test: (#GetDummyConcreteValue & {type: float, name: "a"}).value

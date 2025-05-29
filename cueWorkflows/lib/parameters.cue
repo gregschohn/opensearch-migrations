@@ -5,29 +5,29 @@ import "strings"
 
 #Parameters: {
 	ParameterType: {
-  	type!:         "bool" | "string" | "int" | "float"
+  	type:         _
 	  defaultValue?: bool | string | number // Argo limits this to be only a string, so we'll have to encode
 		description?:  string
 
+    _typeIsConcrete: (#IsConcreteValue & {#value: type}).concrete & false
 		_hasDefault: (defaultValue != _|_)
-		_checkDefaultType: (#cueType & defaultValue)
+		_checkDefaultType: (type & defaultValue)
+		type: _projectedDefaultValue.t
 
-		_defaultValueAsStr: ([
-				if (defaultValue != null && type == "int") { strconv.FormatInt(defaultValue, 10) },
-				if (defaultValue != null && type == "bool") { strconv.FormatBool(defaultValue) },
-				if (defaultValue != null && type == "float") { strconv.FormatFloat(defaultValue, strings.Runes("f")[0], -1, 32) },
-				if (defaultValue != null && type == "string") { defaultValue },
-				null
+		_projectedDefaultValue: ([
+	  		if (defaultValue & bool) != _|_   { t: bool, v: strconv.FormatBool(defaultValue) },
+				if (defaultValue & int) != _|_    { t: int, v: strconv.FormatInt(defaultValue, 10) },
+				if (defaultValue & float) != _|_  { t: float, v: strconv.FormatFloat(defaultValue, strings.Runes("f")[0], -1, 32) },
+				if (defaultValue & string) != _|_ { t: string, v: defaultValue },
+				if (defaultValue & null) != _|_   { t: null, v: "null" },
+				if (defaultValue & [...]) != _|_  { t: [...], v: "FORMAT THIS List AS JSON" },
+				if (defaultValue & {...}) != _|_  { t: {...}, v: "FORMAT THIS Struct AS JSON" },
+				{ t: _, v: null }
 		][0])
-		#cueType: ([
-				if (type == "int")    { int },
-				if (type == "bool")   { bool },
-				if (type == "float")  { float },
-				if (type == "string") { string }
-		][0])
+		_defaultValueAsStr: _projectedDefaultValue.v
 	}
 
-	ParameterDetails: ParameterType & {
+	TemplateParameter: ParameterType & {
     requiredArg: *false | bool
 		passToContainer: *true | bool
 
@@ -37,6 +37,11 @@ import "strings"
 		}
 	  ...
 	}
-
-	WorkflowDetails: ParameterType
+//
+//	WorkflowParameter: ParameterType
+//
+//	#: "io.argoproj.workflow.v1alpha1.ValueFrom"
+//	ArgumentParameter: ("io.argoproj.workflow.v1alpha1.Parameter" &
+//
+//	)
 }

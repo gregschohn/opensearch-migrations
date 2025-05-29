@@ -3,20 +3,20 @@ package mymodule
 import argo "github.com/opensearch-migrations/workflowconfigs/argo"
 import k8sAppsV1 "k8s.io/apis_apps_v1"
 
-#ParameterAndInputPath: #Parameters.ParameterDetails & {
+#ParameterAndInputPath: #Parameters.TemplateParameter & {
   parameterName!:    string
   exprInputPath:     "inputs.parameters['\(parameterName)']"
   templateInputPath: "{{\(exprInputPath)}}"
 }
 
 #ProxyInputsIntoArguments: {
-  #in: [string]: #Parameters.ParameterDetails
+  #in: [string]: #Parameters.TemplateParameter
   out: [for k, v in #in let u = #ParameterAndInputPath & v {name: u.parameterName, value: u.templateInputPath}]
 }
 
 #WFTemplate: {
  #Base: (argo.#."io.argoproj.workflow.v1alpha1.Template" & {
-		#parameters: [string]: #Parameters.ParameterDetails
+		#parameters: [string]: #Parameters.TemplateParameter
 		steps?: [...]
 		_parametersList: [for p, details in #parameters { details & #ParameterAndEnvironmentName & {parameterName: p}}]
 		if _parametersList != [] {
@@ -31,6 +31,7 @@ import k8sAppsV1 "k8s.io/apis_apps_v1"
 		_paramsWithTemplatePathsMap: {for k, v in #parameters {"\(k)": { #ParameterAndInputPath & v & {parameterName: k} } } }
 
 		name: string
+		i?: bool | *true
 		inputs?: {...}
 		outputs?: {...}
  })
@@ -64,7 +65,7 @@ import k8sAppsV1 "k8s.io/apis_apps_v1"
 
  #Deployment: close(#Resource & {
   #resourceName!: string
-  #parameters!: [string]: #Parameters.ParameterDetails
+  #parameters!: [string]: #Parameters.TemplateParameter
   #containers: [{...}]
 
   #manifest: (#ManifestUnifier & {in: k8sAppsV1.#SchemaMap."io.k8s.api.apps.v1.Deployment"}).out &
