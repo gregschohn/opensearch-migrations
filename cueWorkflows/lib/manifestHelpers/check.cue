@@ -80,7 +80,7 @@ import "strings"
 
 #ForInputParameter: {
   N=name!: string
-  params!: [string]: #Parameters.TemplateParameter
+  params!: [string]: #Parameters.#TemplateParameter
   v!: #ParameterAndInputPath & params[name] & {parameterName: name}
 
   // While it seems elegant to allow non-concrete types, it forces us to loosen checks on
@@ -95,7 +95,7 @@ import "strings"
   // However, even with that future deficiency, by using unlikely dummy types for argo parameters,
   // the current templates can find conflicts where a manifest value may be pulled from an argo
   // parameter AND set to a hardcoded value.
-  out!: (#GetDummyConcreteValue & {type: params[name].type, name: N}).value
+  out!: ({#GetDummyConcreteValue, type: params[name].type, name: N}).value
   //  out!: params[name].#cueType
 }
 
@@ -103,6 +103,3 @@ import "strings"
   in: {...}
   out: json.Marshal(in)
 }
-
-
-test: (#GetDummyConcreteValue & {type: float, name: "a"}).value

@@ -3,22 +3,29 @@ package mymodule
 import argo "github.com/opensearch-migrations/workflowconfigs/argo"
 import k8sAppsV1 "k8s.io/apis_apps_v1"
 
-#ParameterAndInputPath: #Parameters.TemplateParameter & {
+#ParameterAndInputPath: {
+	#Parameters.#TemplateParameter
   parameterName!:    string
   exprInputPath:     "inputs.parameters['\(parameterName)']"
   templateInputPath: "{{\(exprInputPath)}}"
 }
 
 #ProxyInputsIntoArguments: {
-  #in: [string]: #Parameters.TemplateParameter
-  out: [for k, v in #in let u = #ParameterAndInputPath & v {name: u.parameterName, value: u.templateInputPath}]
+  #in: [string]: #Parameters.#TemplateParameter
+  out: [for k, v in #in let u = { #ParameterAndInputPath, v } {name: u.parameterName, value: u.templateInputPath}]
 }
 
 #WFTemplate: {
  #Base: (argo.#."io.argoproj.workflow.v1alpha1.Template" & {
-		#parameters: [string]: #Parameters.TemplateParameter
+		#parameters: [string]: #Parameters.#TemplateParameter
 		steps?: [...]
-		_parametersList: [for p, details in #parameters { details & #ParameterAndEnvironmentName & {parameterName: p}}]
+		_parametersList: [for p, details in #parameters {
+			{
+				details
+				#ParameterAndEnvironmentName
+				parameterName!: p
+			}
+			}]
 		if _parametersList != [] {
 			inputs: {
 				parameters: [for p in _parametersList {
@@ -28,7 +35,7 @@ import k8sAppsV1 "k8s.io/apis_apps_v1"
 				}]
 			}
 		}
-		_paramsWithTemplatePathsMap: {for k, v in #parameters {"\(k)": { #ParameterAndInputPath & v & {parameterName: k} } } }
+		_paramsWithTemplatePathsMap: {for k, v in #parameters {"\(k)": { #ParameterAndInputPath, v, parameterName: k } } }
 
 		name: string
 		i?: bool | *true
@@ -36,39 +43,47 @@ import k8sAppsV1 "k8s.io/apis_apps_v1"
 		outputs?: {...}
  })
 
- Dag: (#Base & {
+ #Dag: {
+ 	#Base
   dag: tasks: [...]
- })
+ }
 
- Steps: (#Base & {
+ #Steps: {
+ 	#Base
   steps: [...]
- })
+ }
 
- Suspend: (#Base & {
+ #Suspend: {
+  #Base
   suspend: {}
- })
+ }
 
- DoNothing: (#Base & {
+ #DoNothing: {
+  #Base
   steps: [[]]
- })
+ }
 
 
- #Resource: (#Base & {
+ #Resource: {
+  #Base
   name: string
-  #manifest: {...}
+  #manifestSchema!: {...}
+  #manifest: (#ManifestUnifier & { in: #manifestSchema }).out
+
   resource: argo.#."io.argoproj.workflow.v1alpha1.ResourceTemplate" & {
     setOwnerReference: bool // no default - too important.  Always specify.
     manifest: (#EncodeCueAsJsonText & {in: #manifest} ).out
-    ...
   }
- })
+ }
 
- #Deployment: close(#Resource & {
+ #Deployment: close({
+ 	#Resource
+  #manifestSchema: k8sAppsV1.#SchemaMap."io.k8s.api.apps.v1.Deployment"
   #resourceName!: string
-  #parameters!: [string]: #Parameters.TemplateParameter
+  #parameters!: [string]: #Parameters.#TemplateParameter
   #containers: [{...}]
 
-  #manifest: (#ManifestUnifier & {in: k8sAppsV1.#SchemaMap."io.k8s.api.apps.v1.Deployment"}).out &
+  #manifest:
     {
       apiVersion: "apps/v1"
       kind:       "Deployment"

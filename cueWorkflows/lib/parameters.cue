@@ -4,12 +4,11 @@ import "strconv"
 import "strings"
 
 #Parameters: {
-	ParameterType: {
-  	type:         _
+	#ParameterType: {
 	  defaultValue?: bool | string | number // Argo limits this to be only a string, so we'll have to encode
 		description?:  string
 
-    _typeIsConcrete: (#IsConcreteValue & {#value: type}).concrete & false
+    _typeIsConcrete: (#IsConcreteValue & { #value: type }).concrete & false
 		_hasDefault: (defaultValue != _|_)
 		_checkDefaultType: (type & defaultValue)
 		type: _projectedDefaultValue.t
@@ -27,7 +26,8 @@ import "strings"
 		_defaultValueAsStr: _projectedDefaultValue.v
 	}
 
-	TemplateParameter: ParameterType & {
+	#TemplateParameter: {
+		#ParameterType
     requiredArg: *false | bool
 		passToContainer: *true | bool
 
@@ -35,13 +35,12 @@ import "strings"
 				if (passToContainer != true) { check: false & requiredArg }
 				if (requiredArg == true)     { check: true & passToContainer }
 		}
-	  ...
 	}
-//
-//	WorkflowParameter: ParameterType
-//
-//	#: "io.argoproj.workflow.v1alpha1.ValueFrom"
-//	ArgumentParameter: ("io.argoproj.workflow.v1alpha1.Parameter" &
-//
-//	)
+
+	#WorkflowParameter: {
+		#ParameterType
+	}
+
+	//#: "io.argoproj.workflow.v1alpha1.ValueFrom"
+	#ArgumentParameter: "io.argoproj.workflow.v1alpha1.Parameter"
 }

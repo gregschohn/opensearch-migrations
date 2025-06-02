@@ -13,9 +13,11 @@ import "list"
 		if (#value & null) != _|_ { false },
 
 		if (#value & [...]) != _|_ {
-			!list.Contains([for v in #value {
-		      (#IsConcreteValue & {#value: v}).concrete
-	        }], false)
+			[
+				if ([_,...] & #value) == _|_ { true }, // empty counts as concrete
+				if ([] & #value) != _|_ { false }, // able to unify to empty - but NOT empty means that we're still unbounded
+				!list.Contains([for v in #value { (#IsConcreteValue & { #value: v }).concrete }], false) // if we have elements, let's check 'em
+			][0]
 		},
 
 		if (#value & {...}) != _|_ {

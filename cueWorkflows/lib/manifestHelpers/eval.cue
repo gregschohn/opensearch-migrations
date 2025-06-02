@@ -9,7 +9,7 @@ import json "encoding/json"
 
 #ForInputParameter: {
 	name!:    string
-	params!:  [string]: #Parameters.TemplateParameter
+	params!:  [string]: #Parameters.#TemplateParameter
 	v!: #ParameterAndInputPath & params[name] & { parameterName: name }
 
 	out: v.templateInputPath

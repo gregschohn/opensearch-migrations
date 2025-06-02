@@ -5,21 +5,26 @@ import "strings"
 import k8sAppsV1 "k8s.io/apis_apps_v1"
 
 #ParameterAndEnvironmentName: {
-  parameterName: string
-  envName:       string | *strings.ToUpper(parameterName)
-  ...
+  parameterName!: string
+  envName:        string | *strings.ToUpper(parameterName)
 }
 
-#FullyProjectedTemplateParameter: #Parameters.TemplateParameter & #ParameterAndEnvironmentName & #ParameterAndInputPath
+#FullyProjectedTemplateParameter: {
+	#Parameters.#TemplateParameter
+	#ParameterAndEnvironmentName
+	#ParameterAndInputPath
+}
 
 #Container: {
-	Base: (#ManifestUnifier & {in: k8sAppsV1.#SchemaMap."io.k8s.api.core.v1.Container"}).out & {
-			#parameters: [string]: #Parameters.TemplateParameter
+	#Base: (#ManifestUnifier & {in: k8sAppsV1.#SchemaMap."io.k8s.api.core.v1.Container"}).out & {
+			#parameters: [string]: #Parameters.#TemplateParameter
 			#ports: [...{...}]
 
 			_filteredParameters: { for k,v in #parameters if v.passToContainer { (k): v } }
 			_enrichedParameters: [for p, details in _filteredParameters { 
-				details & #FullyProjectedTemplateParameter & {parameterName: p} 
+				#FullyProjectedTemplateParameter
+				details,
+				parameterName: p
 			}]
 
 			env: [for p in _enrichedParameters {name: p.envName, value: p.templateInputPath}]
@@ -28,11 +33,13 @@ import k8sAppsV1 "k8s.io/apis_apps_v1"
 			}
 		}
 
-	Jib: Base & {
+	#Jib: {
+		#Base
 		// should be able to use the default entrypoint
 	}
 
-  Bash: Base & {
+  #Bash: {
+  	  #Base
 			#containerCommand: string
 			_enrichedParameters: _
 

@@ -7,7 +7,7 @@ spec: {
   entrypoint:         "deploy-capture-proxy"
   serviceAccountName: "argo-workflow-executor"
 
-  let DS = (#WFTemplate.Steps & {
+  let DS = (#WFTemplate.#Steps & {
     name:                        "deploy-service"
     #parameters: CS.#parameters
     _paramsWithTemplatePathsMap: _
@@ -28,9 +28,10 @@ spec: {
 
   let CS = (#WFTemplate.#Resource & {
     name:                        "create-service"
+    #manifestSchema: {} // TODO - Find the right schema for a service and use that instead!
     #parameters:                 {
-    	frontsidePort: { type: int }
-    	serviceName: { defaultValue: "capture-proxy"}
+    	frontsidePort:  { requiredArg: true, type: int }
+    	serviceName:    defaultValue: "capture-proxy"
     }
     _paramsWithTemplatePathsMap: _
 
@@ -62,7 +63,7 @@ spec: {
   let P = (#WFTemplate.#Deployment & {
     #resourceName: "proxy"
     #containers: [
-      #Container.Jib & {
+      #Container.#Jib & {
         name:              "proxy"
         #parameters: PARAMS
         #ports: [{
@@ -72,29 +73,30 @@ spec: {
     ]
     let PARAMS=#parameters
     #parameters: {
-      backsideUriString: type: string
-      frontsidePort: type:     int
+      backsideUriString: { requiredArg: true, type: string }
+      frontsidePort:     { requiredArg: true, type: int }
 
-      image: { defaultValue: "migrations/migration-console:latest", passToContainer: false}
-      initImage: { defaultValue: "migrations/migration-console:latest", passToContainer: false}
-      replicas: { type: int, defaultValue: 1, passToContainer: false}
+      image:     { passToContainer: false, defaultValue: "migrations/migration-console:latest" }
+      replicas:  { passToContainer: false, defaultValue: 1 }
 
-      traceDirectory: type:                     string
-      noCapture: type:                          bool
-      kafkaPropertiesFile: type:                string
-      kafkaClientId: type:                      string
-      kafkaConnection: type:                    string
-      kafkaTopic: type:                         string
-      mskAuthEnabled: type:                     bool
-      sslConfigFilePath: type:                  string
-      maximumTrafficStreamSize: type:           string
+  		otelCollectorEndpoint: defaultValue: "http://otel-collector:4317"
+
+
+      traceDirectory:                     type: string
+      noCapture:                          type: bool
+      kafkaPropertiesFile:                type: string
+      kafkaClientId:                      type: string
+      kafkaConnection:                    type: string
+      kafkaTopic:                         type: string
+      mskAuthEnabled:                     type: bool
+      sslConfigFilePath:                  type: string
+      maximumTrafficStreamSize:           type: string
       allowInsecureConnectionsToBackside: type: bool
-      numThreads: type:                         string
-      destinationConnectionPoolSize: type:      string
-      destinationConnectionPoolTimeout: type:   string
-      otelCollectorEndpoint: { defaultValue: "http://otel-collector:4317"}
-      headerOverrides: type:            string
-      suppressCaptureHeaderPairs: type: string
+      numThreads:                         type: string
+      destinationConnectionPoolSize:      type: string
+      destinationConnectionPoolTimeout:   type: string
+      headerOverrides:                    type: string
+      suppressCaptureHeaderPairs:         type: string
     }
     _paramsWithTemplatePathsMap: _
 
