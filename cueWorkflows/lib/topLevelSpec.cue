@@ -1,21 +1,19 @@
 package mymodule
 
-//import argo "github.com/opensearch-migrations/workflowconfigs/argo"
+import argo "github.com/opensearch-migrations/workflowconfigs/argo"
 
-#Spec: {
-	...
+#Spec: argo.#."io.argoproj.workflow.v1alpha1.WorkflowSpec" & {
+		#workflowParameters: [string]: #Parameters.#WorkflowParameter
+		steps?: [...]
+		_workflowParameters: { for p, details in #workflowParameters { (p): {#ParameterAndInputPath, details, parameterName: p } } }
+		_workflowParametersList: [ for p, k in _workflowParameters { k }]
+		if _workflowParametersList != [] {
+			arguments: {
+				parameters: [for p in _workflowParametersList {
+					name: p.parameterName
+					p._argoValue.inlineableValue,
+					if (!p.requiredArg && !p._argoValue._hasDefault) { value: "" }
+				}]
+			}
+		}
 }
-//argo.#."io.argoproj.workflow.v1alpha1.WorkflowSpec" & {
-//		#workflowParameters: [string]: #Parameters.#WorkflowParameter
-//		steps?: [...]
-//		_parametersList: [for p, details in #workflowParameters { details & #ParameterAndInputPath & { parameterName: p }}]
-//		if _parametersList != [] {
-//			arguments: {
-//				parameters: [for p in _parametersList {
-//					name: p.parameterName
-//					if p.defaultValue != _|_ { value: p._defaultValueAsStr }
-//					if (!p.requiredArg && !p._hasDefault) { value: "" }
-//				}]
-//			}
-//		}
-//}

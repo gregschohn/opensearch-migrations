@@ -1,5 +1,6 @@
 package mymodule
 
+#MIGRATION_TEMPLATES: PROXY: {
 apiVersion: "argoproj.io/v1alpha1"
 kind:       "WorkflowTemplate"
 metadata: name: "capture-proxy"
@@ -111,4 +112,5 @@ spec: {
   templates: [
     DS, CS, P,
   ]
+}
 }

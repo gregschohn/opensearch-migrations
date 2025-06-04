@@ -1,5 +1,6 @@
 package mymodule
 
+#MIGRATION_TEMPLATES: REPLAYER: {
 apiVersion: "argoproj.io/v1alpha1"
 kind:       "WorkflowTemplate"
 metadata: name: "replayer"
@@ -51,4 +52,5 @@ spec: {
   		}
 		})
 	]
+}
 }

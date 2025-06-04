@@ -10,7 +10,7 @@ import json "encoding/json"
 #ForInputParameter: {
 	name!:    string
 	params!:  [string]: #Parameters.#TemplateParameter
-	v!: #ParameterAndInputPath & params[name] & { parameterName: name }
+	v!: {#ParameterAndInputPath, params[name],  parameterName: name }
 
 	out: v.templateInputPath
 	#isConcrete: json.Marshal(out)

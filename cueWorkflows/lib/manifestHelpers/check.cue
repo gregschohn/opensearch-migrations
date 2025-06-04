@@ -81,7 +81,7 @@ import "strings"
 #ForInputParameter: {
   N=name!: string
   params!: [string]: #Parameters.#TemplateParameter
-  v!: #ParameterAndInputPath & params[name] & {parameterName: name}
+  v!: { #ParameterAndInputPath, params[name], parameterName: name }
 
   // While it seems elegant to allow non-concrete types, it forces us to loosen checks on
   // the rest of the templates.  By converting to dummy, but consistent concrete values, we still

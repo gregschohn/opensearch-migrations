@@ -4,9 +4,10 @@ import argo "github.com/opensearch-migrations/workflowconfigs/argo"
 import k8sAppsV1 "k8s.io/apis_apps_v1"
 
 #ParameterAndInputPath: {
-	#Parameters.#TemplateParameter
+	#Parameters.#BaseParameter
   parameterName!:    string
-  exprInputPath:     "inputs.parameters['\(parameterName)']"
+  parameterSource:   string
+  exprInputPath:     "\(parameterSource).parameters['\(parameterName)']"
   templateInputPath: "{{\(exprInputPath)}}"
 }
 
@@ -16,26 +17,51 @@ import k8sAppsV1 "k8s.io/apis_apps_v1"
 }
 
 #WFTemplate: {
- #Base: (argo.#."io.argoproj.workflow.v1alpha1.Template" & {
+  #ParametersExpansion: {
 		#parameters: [string]: #Parameters.#TemplateParameter
-		steps?: [...]
-		_parametersList: [for p, details in #parameters {
-			{
-				details
-				#ParameterAndEnvironmentName
-				parameterName!: p
-			}
-			}]
+		_parametersList: [for p, details in #parameters { details, #ParameterAndEnvironmentName, parameterName!: p }]
 		if _parametersList != [] {
 			inputs: {
 				parameters: [for p in _parametersList {
 					name: p.parameterName
-					if p.defaultValue != _|_ { value: p._defaultValueAsStr }
-					if (!p.requiredArg && !p._hasDefault) { value: "" }
+					p._argoValue.inlineableValue,
+					if (!p.requiredArg && !p._argoValue._hasDefault) { value: "" }
 				}]
 			}
 		}
 		_paramsWithTemplatePathsMap: {for k, v in #parameters {"\(k)": { #ParameterAndInputPath, v, parameterName: k } } }
+  }
+
+  #ArgumentsExpansion: {
+  	#args: [string]: _ //#Parameters.#ValueFiller
+		_parametersList: [...]
+		if len(#args) > 0 {
+			arguments: {
+				parameters: [for a in #args {
+					name: a.name,
+					(#Parameters.#FillValue & { in: a }).out
+				}]
+			}
+		}
+  }
+
+	#TemplateExpansion: {
+		#templateObj: #Base
+		template: #templateObj.name
+		name: template
+	}
+
+  #WorkflowStepOrTask: {
+  	#ArgumentsExpansion
+  	#TemplateExpansion
+  	...
+//  	argo.#."io.argoproj.workflow.v1alpha1.DAGTask"
+//  	argo.#."io.argoproj.workflow.v1alpha1.WorkflowStep"
+  }
+
+ #Base: (argo.#."io.argoproj.workflow.v1alpha1.Template" & {
+		#ParametersExpansion
+		steps?: [...]
 
 		name: string
 		i?: bool | *true
@@ -45,12 +71,12 @@ import k8sAppsV1 "k8s.io/apis_apps_v1"
 
  #Dag: {
  	#Base
-  dag: tasks: [...]
+  dag: tasks: [...#WorkflowStepOrTask]
  }
 
  #Steps: {
  	#Base
-  steps: [...]
+  steps: [...[...#WorkflowStepOrTask]]
  }
 
  #Suspend: {

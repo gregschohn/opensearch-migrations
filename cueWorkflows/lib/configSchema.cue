@@ -18,36 +18,33 @@ package mymodule
   authConfig?:     #HTTP_AUTH_BASIC | #HTTP_AUTH_SIGV4
 })
 
-#SOURCE_MIGRATION_CONFIG: close({
-  sessionName: "dummy"
-  source: #CLUSTER_CONFIG & {
-    name:           "firstSource"
-    endpoint:       "http://elasticsearch-master:9200"
-    allow_insecure: true
-    authConfig: region: "us-east-2"
-  },
-  snapshotAndMigrationConfigs: [
-  	{
-  		indices: [...string]
-			migrations: [...{
-				metadata: {
-					mappings: {
-						properties: {...}
-					},
-					documentBackfillConfigs: {
-						indices: [...string],
-						config: {
-							batchSize: int,
-							initialReplicas: int
-						}
-					},
+#SNAPSHOT_MIGRATION_CONFIG: {
+	indices: [...string]
+	migrations: [...{
+		metadata: {
+			mappings: {
+				properties: {...}
+			},
+			documentBackfillConfigs: {
+				indices: [...string],
+				config: {
+					batchSize: int,
+					initialReplicas: int
 				}
-			}]
+			},
 		}
-  ],
-  replayerConfig: {
-  	speedupFactor: float
-  	initialReplicas: int
-  }
+	}]
+}
+
+#REPLAYER_CONFIG: {
+	speedupFactor: float
+	initialReplicas: int
+}
+
+#SOURCE_MIGRATION_CONFIG: close({
+  sessionName: string,
+  source: #CLUSTER_CONFIG,
+  snapshotAndMigrationConfigs: [...#SNAPSHOT_MIGRATION_CONFIG],
+  replayerConfig: #REPLAYER_CONFIG
 })
 

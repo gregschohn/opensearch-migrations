@@ -1,5 +1,7 @@
 package mymodule
 
+#MIGRATION_TEMPLATES: CAPTURE_REPLAY: {
+
 apiVersion: "argoproj.io/v1alpha1"
 kind:       "WorkflowTemplate"
 metadata: name: "capture-replay"
@@ -57,4 +59,5 @@ spec: {
   templates: [
     RUN_ALL, GET_BROKERS, GET_USER_CONFIRMATION, ID_GENERATOR
   ]
+}
 }
