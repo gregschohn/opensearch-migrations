@@ -1,13 +1,11 @@
+@if(vet)
+
 package mymodule
 
 import json "encoding/json"
-
 import chksum "crypto/md5"
-
 import hex "encoding/hex"
-
 import "strconv"
-
 import "strings"
 
 #ManifestUnifier: {

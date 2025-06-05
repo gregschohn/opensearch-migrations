@@ -14,6 +14,7 @@ import "list"
 
 		if (#value & [...]) != _|_ {
 			[
+				//FIXME
 				if ([_,...] & #value) == _|_ { true }, // empty counts as concrete
 				if ([] & #value) != _|_ { false }, // able to unify to empty - but NOT empty means that we're still unbounded
 				!list.Contains([for v in #value { (#IsConcreteValue & { #value: v }).concrete }], false) // if we have elements, let's check 'em

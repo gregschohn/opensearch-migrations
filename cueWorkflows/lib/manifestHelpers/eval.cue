@@ -1,3 +1,5 @@
+@if(!vet && (eval || export))
+
 package mymodule
 
 import json "encoding/json"
