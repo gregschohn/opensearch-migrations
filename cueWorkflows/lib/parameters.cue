@@ -85,6 +85,7 @@ import "strings"
   	_argoValue: value: defaultValue,
   	_argoValue: type: type,
 
+		parameterSource: string
   	defaultValue: _argoValue.value,
   	type: _argoValue.type,
 
@@ -93,9 +94,9 @@ import "strings"
   }
 
 	#TemplateParameter: {
-		#BaseParameter
-		parameterSource: "inputs"
-		passToContainer: *true | bool
+		#BaseParameter,
+		parameterSource: "inputs",
+		passToContainer: *true | bool,
 		requiredArg: bool
 
 		_checkRequiredAndPassAgreement: {
@@ -105,7 +106,7 @@ import "strings"
 	}
 
 	#WorkflowParameter: {
-		#BaseParameter
+		#BaseParameter,
 		parameterSource: "workflow"
 	}
 

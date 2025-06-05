@@ -13,14 +13,6 @@ spec: #Spec & {
   entrypoint:         "main"
   serviceAccountName: "argo-workflow-executor"
   parallelism: 100
-
-  #workflowParameters: {
-  		etcdEndpoints:       defaultValue: "http://etcd.ma.svc.cluster.local:2379"
-  		etcdUser:            defaultValue: "root"
-  		etcdPassword:        defaultValue: "password"
-  		etcdImage:           defaultValue: "migrations/migration_console:latest"
-  		s3SnapshotConfigMap: defaultValue: "s3-snapshot-config"
-  }
   _workflowParameters: _ // pull this processed value into the scope for other templates to pull from
 
   let MAIN = (#WFTemplate.#Steps & {

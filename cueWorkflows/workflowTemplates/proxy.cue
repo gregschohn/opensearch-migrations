@@ -15,7 +15,7 @@ spec: {
 
     outputs: parameters: [{
       name: "endpoint"
-      valueFrom: expression: "steps['\(CS.name)'].outputs.parameters['endpoint'] + ':' + \(_paramsWithTemplatePathsMap.frontsidePort.exprInputPath)"
+      valueFrom: expression: "steps['\(CS.name)'].outputs.parameters['endpoint'] + ':' + \(_paramsWithTemplatePathsMap.frontsidePort.parameterPath)"
     }]
 
     steps: [[
@@ -44,12 +44,12 @@ spec: {
     #manifest: {
       apiVersion: "v1"
       kind:       "Service"
-      metadata: name: (#ForInputParameter & {name: "serviceName", params: #parameters}).out
+      metadata: name: (#InlineInputParameter & {name: "serviceName", params: #parameters}).out
       labels: app:    "proxy"
       spec: selector: app: "proxy" // Selector should match pod labels directly, not use matchLabels
       ports: [{
-        port:       (#ForInputParameter & {name: "frontsidePort", params: #parameters}).out
-        targetPort: (#ForInputParameter & {name: "frontsidePort", params: #parameters}).out
+        port:       (#InlineInputParameter & {name: "frontsidePort", params: #parameters}).out
+        targetPort: (#InlineInputParameter & {name: "frontsidePort", params: #parameters}).out
       }]
       type: "LoadBalancer"
     }
@@ -68,7 +68,7 @@ spec: {
         name:              "proxy"
         #parameters: PARAMS
         #ports: [{
-          containerPort: (#ForInputParameter & {name: "frontsidePort", params: PARAMS}).out
+          containerPort: (#InlineInputParameter & {name: "frontsidePort", params: PARAMS}).out
         }]
       },
     ]
@@ -101,7 +101,7 @@ spec: {
     }
     _paramsWithTemplatePathsMap: _
 
-    #manifest: spec: replicas: (#ForInputParameter & {name: "replicas", params: #parameters}).out
+    #manifest: spec: replicas: (#InlineInputParameter & {name: "replicas", params: #parameters}).out
     name: "deploy-capture-proxy"
     resource: {
       setOwnerReference: true

@@ -7,12 +7,11 @@ import json "encoding/json"
 	out: {...}
 }
 
-#ForInputParameter: {
-	name!:    string
-	params!:  [string]: #Parameters.#TemplateParameter
-	v!: {#ParameterAndInputPath, params[name],  parameterName: name }
+#InlineInputParameter: {
+	N=name!:    string
+	params!:  [string]: #Parameters.#BaseParameter
 
-	out: v.templateInputPath
+	out: (#FullyProjectedParameter & { parameterName: N, params[name] }).templateInputPath
 	#isConcrete: json.Marshal(out)
 }
 

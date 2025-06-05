@@ -3,23 +3,21 @@ package mymodule
 import argo "github.com/opensearch-migrations/workflowconfigs/argo"
 import k8sAppsV1 "k8s.io/apis_apps_v1"
 
-#ParameterAndInputPath: {
-	#Parameters.#BaseParameter
-  parameterName!:    string
-  parameterSource:   string
-  exprInputPath:     "\(parameterSource).parameters['\(parameterName)']"
-  templateInputPath: "{{\(exprInputPath)}}"
-}
+let TOP_CONTAINER = #Container
 
 #ProxyInputsIntoArguments: {
   #in: [string]: #Parameters.#TemplateParameter
-  out: [for k, v in #in let u = { #ParameterAndInputPath, v } {name: u.parameterName, value: u.templateInputPath}]
+  out: [
+  	for k, v in #in {
+  		name: k, value: "novalue"//({ (#ParameterAndInputPath & { name3: k, param: v }) }).templateInputPath
+   	}
+  ]
 }
 
 #WFTemplate: {
   #ParametersExpansion: {
 		#parameters: [string]: #Parameters.#TemplateParameter
-		_parametersList: [for p, details in #parameters { details, #ParameterAndEnvironmentName, parameterName!: p }]
+		_parametersList: [for p, details in #parameters { details, parameterName!: p }]
 		if _parametersList != [] {
 			inputs: {
 				parameters: [for p in _parametersList {
@@ -29,7 +27,7 @@ import k8sAppsV1 "k8s.io/apis_apps_v1"
 				}]
 			}
 		}
-		_paramsWithTemplatePathsMap: {for k, v in #parameters {"\(k)": { #ParameterAndInputPath, v, parameterName: k } } }
+		_paramsWithTemplatePathsMap: {for k, v in #parameters {"\(k)": { #FullyProjectedParameter & { parameterName: k, v } } } }
   }
 
   #ArgumentsExpansion: {
@@ -89,6 +87,18 @@ import k8sAppsV1 "k8s.io/apis_apps_v1"
   steps: [[]]
  }
 
+ #Container: {
+ 	#Base,
+ 	container: TOP_CONTAINER.#Base // find the argo type for this part or the parent
+ }
+
+ #Script: {
+ 	#Base
+ 	script: //argo.#."io.argoproj.workflow.v1alpha1.ScriptTemplate" & #Container.#Base &
+ 	{
+
+ 	}
+ }
 
  #Resource: {
   #Base

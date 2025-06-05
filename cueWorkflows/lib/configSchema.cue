@@ -31,7 +31,7 @@ package mymodule
 					batchSize: int,
 					initialReplicas: int
 				}
-			},
+			}
 		}
 	}]
 }

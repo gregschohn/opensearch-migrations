@@ -4,15 +4,13 @@ import "strings"
 
 import k8sAppsV1 "k8s.io/apis_apps_v1"
 
-#ParameterAndEnvironmentName: {
-  parameterName!: string
-  envName:        string | *strings.ToUpper(parameterName)
-}
-
-#FullyProjectedTemplateParameter: {
-	#Parameters.#TemplateParameter
-	#ParameterAndEnvironmentName
-	#ParameterAndInputPath
+#FullyProjectedParameter: {
+	#Parameters.#BaseParameter,
+	parameterSource:   _,
+  parameterName!:    string,
+  envName:           string | *strings.ToUpper(parameterName),
+  parameterPath:     "\(parameterSource).parameters['\(parameterName)']",
+	templateInputPath: "{{\(parameterPath)}}"
 }
 
 #Container: {
@@ -21,12 +19,14 @@ import k8sAppsV1 "k8s.io/apis_apps_v1"
 			#ports: [...{...}]
 
 			_filteredParameters: { for k,v in #parameters if v.passToContainer { (k): v } }
-			_enrichedParameters: [for p, details in _filteredParameters { 
-				#FullyProjectedTemplateParameter
+			_enrichedParameters: [for p, details in _filteredParameters { #FullyProjectedParameter & {
 				details,
 				parameterName: p
-			}]
+			}}]
 
+			name: *"main" | string
+			image: (#InlineInputParameter & {name: "image", params: #parameters}).out | *"SPECIFY_IMAGE_PARAMETER_FIXME"
+			imagePullPolicy: *(#InlineInputParameter & {name: "imagePullPolicy", params: #parameters}).out | "IfNotPresent"
 			env: [for p in _enrichedParameters {name: p.envName, value: p.templateInputPath}]
 			if len(#ports) != 0 {
 				ports: #ports

@@ -78,10 +78,9 @@ import "strings"
   value: (#Replacer & { type: T}).val
 }
 
-#ForInputParameter: {
+#InlineInputParameter: {
   N=name!: string
   params!: [string]: #Parameters.#TemplateParameter
-  v!: { #ParameterAndInputPath, params[name], parameterName: name }
 
   // While it seems elegant to allow non-concrete types, it forces us to loosen checks on
   // the rest of the templates.  By converting to dummy, but consistent concrete values, we still
