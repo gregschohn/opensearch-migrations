@@ -9,7 +9,7 @@ let TOP_CONTAINER = #Container
   #in: [string]: #Parameters.#TemplateParameter
   out: [
   	for k, v in #in {
-  		name: k, value: "novalue"//({ (#ParameterAndInputPath & { name3: k, param: v }) }).templateInputPath
+  		name: k, value: ({ (#FullyProjectedParameter & { parameterName: k, v }) }).templateInputPath
    	}
   ]
 }
@@ -62,42 +62,17 @@ let TOP_CONTAINER = #Container
 		steps?: [...]
 
 		name: string
-		i?: bool | *true
 		inputs?: {...}
 		outputs?: {...}
  })
 
- #Dag: {
- 	#Base
-  dag: tasks: [...#WorkflowStepOrTask]
- }
-
- #Steps: {
- 	#Base
-  steps: [...[...#WorkflowStepOrTask]]
- }
-
- #Suspend: {
-  #Base
-  suspend: {}
- }
-
- #DoNothing: {
-  #Base
-  steps: [[]]
- }
-
- #Container: {
- 	#Base,
- 	container: TOP_CONTAINER.#Base // find the argo type for this part or the parent
- }
-
- #Script: {
- 	#Base
- 	script: //argo.#."io.argoproj.workflow.v1alpha1.ScriptTemplate" & #Container.#Base &
- 	{
-
- 	}
+ #Dag:       { #Base, dag: tasks: [...#WorkflowStepOrTask] }
+ #Steps:     { #Base, steps: [...[...#WorkflowStepOrTask]] }
+ #Suspend:   { #Base, suspend: {} }
+ #DoNothing: { #Base, steps: [[]] }
+ #Container: { #Base, container: TOP_CONTAINER.#Base } // find the argo type for this part or the parent
+ #Script:    { #Base, script: //argo.#."io.argoproj.workflow.v1alpha1.ScriptTemplate" & #Container.#Base &
+ 	{}
  }
 
  #Resource: {

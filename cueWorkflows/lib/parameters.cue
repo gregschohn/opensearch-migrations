@@ -14,8 +14,8 @@ import "strings"
 	}
 
 	#FromConfigMap: {
-		map!: string
-		key!: string
+		map!: (string & #noBracesString | #FromWorkflowParam | #FromTemplateParam)
+		key!: (string & #noBracesString | #FromWorkflowParam | #FromTemplateParam)
 		#type!: _
 	}
 
