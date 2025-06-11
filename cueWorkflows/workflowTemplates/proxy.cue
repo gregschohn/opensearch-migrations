@@ -8,7 +8,7 @@ spec: {
   entrypoint:         "deploy-capture-proxy"
   serviceAccountName: "argo-workflow-executor"
 
-  let DS = (#WFTemplate.#Steps & {
+  let DS = (#WFSteps & {
     name:                        "deploy-service"
     #parameters: CS.#parameters
     _paramsWithTemplatePathsMap: _
@@ -27,7 +27,7 @@ spec: {
     ]]
   })
 
-  let CS = (#WFTemplate.#Resource & {
+  let CS = (#WFResource & {
     name:                        "create-service"
     #manifestSchema: {} // TODO - Find the right schema for a service and use that instead!
     #parameters:                 {
@@ -61,7 +61,7 @@ spec: {
     }
   })
 
-  let P = (#WFTemplate.#Deployment & {
+  let P = (#WFDeployment & {
     #resourceName: "proxy"
     #containers: [
       #Container.#Jib & {

@@ -6,17 +6,16 @@ import k8sAppsV1 "k8s.io/apis_apps_v1"
 let TOP_CONTAINER = #Container
 
 #ProxyInputsIntoArguments: {
-  #in: [string]: #Parameters.#TemplateParameter
+  #in: [string]: #TemplateParameterDefinition
   out: [
   	for k, v in #in {
-  		name: k, value: "novalue"//({ (#ParameterAndInputPath & { name3: k, param: v }) }).templateInputPath
+  		name: k, value: ({ (#ParameterWithName & { parameterName: k, v }) }).templateInputPath
    	}
   ]
 }
 
-#WFTemplate: {
   #ParametersExpansion: {
-		#parameters: [string]: #Parameters.#TemplateParameter
+		#parameters: [string]: (#TemplateParameterDefinition)
 		_parametersList: [for p, details in #parameters { details, parameterName!: p }]
 		if _parametersList != [] {
 			inputs: {
@@ -27,24 +26,24 @@ let TOP_CONTAINER = #Container
 				}]
 			}
 		}
-		_paramsWithTemplatePathsMap: {for k, v in #parameters {"\(k)": { #FullyProjectedParameter & { parameterName: k, v } } } }
+		_paramsWithTemplatePathsMap: {for k, v in #parameters {"\(k)": { #ParameterWithName & { parameterName: k, v } } } }
   }
 
   #ArgumentsExpansion: {
-  	#args: [string]: _ //#Parameters.#ValueFiller
+  	#args: [string]: _ //#ValueFiller
 		_parametersList: [...]
 		if len(#args) > 0 {
 			arguments: {
 				parameters: [for a in #args {
 					name: a.name,
-					(#Parameters.#FillValue & { in: a }).out
+					(#FillValue & { in: a }).out
 				}]
 			}
 		}
   }
 
 	#TemplateExpansion: {
-		#templateObj: #Base
+		#templateObj: #WFBase
 		template: #templateObj.name
 		name: template
 	}
@@ -57,51 +56,26 @@ let TOP_CONTAINER = #Container
 //  	argo.#."io.argoproj.workflow.v1alpha1.WorkflowStep"
   }
 
- #Base: (argo.#."io.argoproj.workflow.v1alpha1.Template" & {
+ #WFBase: (argo.#."io.argoproj.workflow.v1alpha1.Template" & {
 		#ParametersExpansion
 		steps?: [...]
 
 		name: string
-		i?: bool | *true
 		inputs?: {...}
 		outputs?: {...}
  })
 
- #Dag: {
- 	#Base
-  dag: tasks: [...#WorkflowStepOrTask]
+ #WFDag:       { #WFBase, dag: tasks: [...#WorkflowStepOrTask] }
+ #WFSteps:     { #WFBase, steps: [...[...#WorkflowStepOrTask]] }
+ #WFSuspend:   { #WFBase, suspend: {} }
+ #WFDoNothing: { #WFBase, steps: [[]] }
+ #WFContainer: { #WFBase, container: TOP_CONTAINER.#Base } // find the argo type for this part or the parent
+ #WFScript:    { #WFBase, script: //argo.#."io.argoproj.workflow.v1alpha1.ScriptTemplate" & #Container.#Base &
+	{}
  }
 
- #Steps: {
- 	#Base
-  steps: [...[...#WorkflowStepOrTask]]
- }
-
- #Suspend: {
-  #Base
-  suspend: {}
- }
-
- #DoNothing: {
-  #Base
-  steps: [[]]
- }
-
- #Container: {
- 	#Base,
- 	container: TOP_CONTAINER.#Base // find the argo type for this part or the parent
- }
-
- #Script: {
- 	#Base
- 	script: //argo.#."io.argoproj.workflow.v1alpha1.ScriptTemplate" & #Container.#Base &
- 	{
-
- 	}
- }
-
- #Resource: {
-  #Base
+ #WFResource: {
+  #WFBase
   name: string
   #manifestSchema!: {...}
   #manifest: (#ManifestUnifier & { in: #manifestSchema }).out
@@ -112,11 +86,11 @@ let TOP_CONTAINER = #Container
   }
  }
 
- #Deployment: close({
- 	#Resource
+ #WFDeployment: close({
+ 	#WFResource
   #manifestSchema: k8sAppsV1.#SchemaMap."io.k8s.api.apps.v1.Deployment"
   #resourceName!: string
-  #parameters!: [string]: #Parameters.#TemplateParameter
+  #parameters!: [string]: #TemplateParameterDefinition
   #containers: [{...}]
 
   #manifest:
@@ -138,5 +112,5 @@ let TOP_CONTAINER = #Container
       }
     }
  })
-}
+
 

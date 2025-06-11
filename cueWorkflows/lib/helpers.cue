@@ -1,6 +1,17 @@
 package mymodule
 
 import "list"
+import base64 "encoding/base64"
+
+// Not every part of an argo config can do handlebar substitutions, so this doesn't need to be applied everywhere.
+// strings can also unify to this, so we can decorate only definitions
+#noBracesString: !~"[{]{2}|[}]{2}"
+#base64: =~"^[-A-Za-z0-9+/]*={0,3}$"
+
+#DecodeBase64: {
+	in: #base64
+	out: "\(base64.Decode(null, in))"
+}
 
 #IsConcreteValue: {
 	#value: _
@@ -14,10 +25,16 @@ import "list"
 
 		if (#value & [...]) != _|_ {
 			[
-				//FIXME
-				if ([_,...] & #value) == _|_ { true }, // empty counts as concrete
-				if ([] & #value) != _|_ { false }, // able to unify to empty - but NOT empty means that we're still unbounded
-				!list.Contains([for v in #value { (#IsConcreteValue & { #value: v }).concrete }], false) // if we have elements, let's check 'em
+				// check that only a non-empty list can NOT unify with the value so that we can count [] as concrete
+				if ([_,...] & #value) == _|_ { true },
+				// check that the value can unify to empty, which will include [] AND [...],
+				// but the previous case matches [] and we're ONLY going to use the first matched item in this switch
+				// so this result won't matter for [].
+				// When the previous line didn't match and this one does, #value must be [...], which SHOULD be considered
+				// unbounded, hence the false
+				if ([] & #value) != _|_ { false },
+				// The easy case, don't need to worry about ambiguity between [] and [...].  If we have elements, check them.
+				!list.Contains([for v in #value { (#IsConcreteValue & { #value: v }).concrete }], false)
 			][0]
 		},
 

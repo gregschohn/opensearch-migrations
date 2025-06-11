@@ -11,9 +11,9 @@ import json "encoding/json"
 
 #InlineInputParameter: {
 	N=name!:    string
-	params!:  [string]: #Parameters.#BaseParameter
+	params!:  [string]: (#BaseParameterDefinition | #TemplateParameterDefinition)
 
-	out: (#FullyProjectedParameter & { parameterName: N, params[name] }).templateInputPath
+	out: (#ParameterWithName & { parameterName: N, params[name] }).templateInputPath
 	#isConcrete: json.Marshal(out)
 }
 

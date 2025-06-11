@@ -15,7 +15,7 @@ spec: #Spec & {
   parallelism: 100
   _workflowParameters: _ // pull this processed value into the scope for other templates to pull from
 
-  let MAIN = (#WFTemplate.#Steps & {
+  let MAIN = (#WFSteps & {
     name:                        "main"
 		let s3ParamMap = _workflowParameters.s3SnapshotConfigMap.templateInputPath
 		let s3ParamToConfigMapKeyMapping = {
@@ -28,7 +28,7 @@ spec: #Spec & {
     	targets:                type: [ ...#CLUSTER_CONFIG ],
     	{
     		for k,v in #S3_PARAMS {
-	  			"\(k)": defaultValue: #Parameters.#FromConfigMap & { #type: string, map: s3ParamMap, key: s3ParamToConfigMapKeyMapping[k] }
+	  			"\(k)": defaultValue: #FromConfigMap & { #type: string, map: s3ParamMap, key: s3ParamToConfigMapKeyMapping[k] }
 			  }
 			}
     }
@@ -38,7 +38,7 @@ spec: #Spec & {
       {
       	name: "foo"
       	template: "foo"
-//        #args: [string]: #Parameters.#ValueFiller
+//        #args: [string]: #ValueFiller
 //		  	let s3ParamMap = _workflowParameters.s3SnapshotConfigMap.templateInputPath
         #args: {
 //					{ to: "#S3_PARAMS.s3AwsRegion",  map: s3ParamMap, key: "AWS_REGION" },

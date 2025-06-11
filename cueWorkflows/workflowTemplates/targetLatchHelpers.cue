@@ -1,7 +1,6 @@
 package mymodule
 
 import argo "github.com/opensearch-migrations/workflowconfigs/argo"
-import base64 "encoding/base64"
 
 _resource_targetLatchHelpers_init_sh: string @tag(resource_targetLatchHelpers_init_sh)
 _resource_targetLatchHelpers_decrement_sh: string @tag(resource_targetLatchHelpers_decrement_sh)
@@ -15,7 +14,7 @@ apiVersion: "argoproj.io/v1alpha1"
 kind:       "WorkflowTemplate"
 metadata: name: "target-latch-helpers"
 spec: #Spec & {
-  let INIT = (#WFTemplate.#Container & {
+  let INIT = (#WFContainer & {
     name: "init"
 
     #parameters: {
@@ -27,12 +26,12 @@ spec: #Spec & {
     container: command: [
     	"/bin/sh",
     	"-c",
-      "\(base64.Decode(null, _resource_targetLatchHelpers_init_sh))"
+      (#DecodeBase64 & {in: _resource_targetLatchHelpers_init_sh}).out
     ]
     _paramsWithTemplatePathsMap: _
   })
 
-  let DECREMENT = (#WFTemplate.#Script & {
+  let DECREMENT = (#WFScript & {
   	name: "decrement"
     #parameters: {
     	processor: type: string
@@ -42,11 +41,11 @@ spec: #Spec & {
     _paramsWithTemplatePathsMap: _
     script: {
     	image: (#InlineInputParameter & {name: "etcdImage", params: #WORKFLOW_PARAMS}).out,
-    	source: "\(base64.Decode(null, _resource_targetLatchHelpers_decrement_sh))"
+    	source: (#DecodeBase64 & {in: _resource_targetLatchHelpers_decrement_sh}).out
     }
   })
 
-  let CLEANUP = (#WFTemplate.#Container & {
+  let CLEANUP = (#WFContainer & {
     name: "init"
     #parameters: {
     	prefix: type: string
@@ -55,7 +54,7 @@ spec: #Spec & {
 		container: command: [
     	"/bin/sh",
     	"-c",
-    	"\(base64.Decode(null, _resource_targetLatchHelpers_cleanup_sh))"
+    	(#DecodeBase64 & {in: _resource_targetLatchHelpers_cleanup_sh}).out
     ]
 
   })

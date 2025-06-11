@@ -1,7 +1,7 @@
 package mymodule
 
-#TEMPLATE_PARAM_SET: [string]: #Parameters.#TemplateParameter
-#WORKFLOW_PARAM_SET: [string]: #Parameters.#WorkflowParameter
+#TEMPLATE_PARAM_SET: [string]: #TemplateParameterDefinition
+#WORKFLOW_PARAM_SET: [string]: #WorkflowParameterDefinition
 
 #S3_PARAMS: #TEMPLATE_PARAM_SET & {
 	s3AwsRegion: type: string,

@@ -9,7 +9,7 @@ spec: {
   entrypoint:         "run-all"
   serviceAccountName: "argo-workflow-executor"
 
-	let RUN_ALL = (#WFTemplate.#Dag & {
+	let RUN_ALL = (#WFDag & {
 		name: entrypoint
 		#parameters: {
 			sessionName:          { requiredArg: true, type: string }
@@ -37,15 +37,15 @@ spec: {
 		]
 	})
 
-	let GET_BROKERS = (#WFTemplate.#Steps & {
+	let GET_BROKERS = (#WFSteps & {
 		name: "get-brokers"
 	})
 
-	let GET_USER_CONFIRMATION = (#WFTemplate.#Suspend & {
+	let GET_USER_CONFIRMATION = (#WFSuspend & {
 		name: "get-user-confirmation"
 	})
 
-	let ID_GENERATOR = (#WFTemplate.#DoNothing & {
+	let ID_GENERATOR = (#WFDoNothing & {
 		name: "id-generator"
 		#parameters: {
 			proxyEndpoint: type: string
