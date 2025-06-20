@@ -9,72 +9,71 @@ let TOP_CONTAINER = #Container
   #in: [string]: #TemplateParameterDefinition
   out: [
   	for k, v in #in {
-  		name: k, value: ({ (#ParameterWithName & { parameterName: k, v }) }).templateInputPath
+  		name: k, value: ({ (#ParameterWithName & { parameterName: k, parameterDefinition: v }) }).templateInputPath
    	}
   ]
 }
 
-  #ParametersExpansion: {
-		#parameters: [string]: (#TemplateParameterDefinition)
-		_parametersList: [for p, details in #parameters { details, parameterName!: p }]
-		if _parametersList != [] {
-			inputs: {
-				parameters: [for p in _parametersList {
-					name: p.parameterName
-					p._argoValue.inlineableValue,
-					if (!p.requiredArg && !p._argoValue._hasDefault) { value: "" }
-				}]
-			}
-		}
-		_paramsWithTemplatePathsMap: {for k, v in #parameters {"\(k)": { #ParameterWithName & { parameterName: k, v } } } }
-  }
-
-  #ArgumentsExpansion: {
-  	#args: [string]: _ //#ValueFiller
-		_parametersList: [...]
-		if len(#args) > 0 {
-			arguments: {
-				parameters: [for a in #args {
-					name: a.name,
-					(#FillValue & { in: a }).out
-				}]
-			}
-		}
-  }
-
-	#TemplateExpansion: {
-		#templateObj: #WFBase
-		template: #templateObj.name
-		name: template
+#ParametersExpansion: {
+	#in: {...}
+	_parametersList: [for p, details in #in { parameterDefinition: details, parameterName!: p }]
+	inputs: {
+		parameters: [for p in _parametersList {
+			name: p.parameterName
+			p.parameterDefinition.parameterContents
+		}]
 	}
+	_paramsWithTemplatePathsMap: {
+		for k, v in #in {"\(k)": { #ParameterWithName & { parameterName: k, parameterDefinition: v } } }
+	}
+}
 
-  #WorkflowStepOrTask: {
-  	#ArgumentsExpansion
-  	#TemplateExpansion
-  	...
+//#ArgumentsExpansion: {
+// 	#args: [string]: _ //#ValueFiller
+//	_parametersList: [...]
+//	if len(#args) > 0 {
+//		arguments: {
+//			parameters: [for a in #args {
+//				name: a.name,
+//				(#FillValue & { in: a }).out
+//			}]
+//		}
+//	}
+//}
+
+#WorkflowStepOrTask: {
+	//#ArgumentsExpansion
+	#templateObj: #WFBase
+	template: #templateObj.name
+	name: template
+  ...
 //  	argo.#."io.argoproj.workflow.v1alpha1.DAGTask"
 //  	argo.#."io.argoproj.workflow.v1alpha1.WorkflowStep"
   }
 
- #WFBase: (argo.#."io.argoproj.workflow.v1alpha1.Template" & {
-		#ParametersExpansion
-		steps?: [...]
+#WFBase: (argo.#."io.argoproj.workflow.v1alpha1.Template" & {
+	#parameters: [string]: (#TemplateParameterDefinition)
+	#args: [string]: _
 
-		name: string
-		inputs?: {...}
-		outputs?: {...}
- })
+	if len(#parameters) != 0 {
+		_expandedParameters: (#ParametersExpansion) & { #in: #parameters }
+		inputs: _expandedParameters.inputs
+	}
+	name: string
+	steps?: [...]
+	outputs?: {...}
+})
 
- #WFDag:       { #WFBase, dag: tasks: [...#WorkflowStepOrTask] }
- #WFSteps:     { #WFBase, steps: [...[...#WorkflowStepOrTask]] }
- #WFSuspend:   { #WFBase, suspend: {} }
- #WFDoNothing: { #WFBase, steps: [[]] }
- #WFContainer: { #WFBase, container: TOP_CONTAINER.#Base } // find the argo type for this part or the parent
- #WFScript:    { #WFBase, script: //argo.#."io.argoproj.workflow.v1alpha1.ScriptTemplate" & #Container.#Base &
+#WFDag:       { #WFBase, dag: tasks: [...#WorkflowStepOrTask] }
+#WFSteps:     { #WFBase, steps: [...[...#WorkflowStepOrTask]] }
+#WFSuspend:   { #WFBase, suspend: {} }
+#WFDoNothing: { #WFBase, steps: [[]] }
+#WFContainer: { #WFBase, container: TOP_CONTAINER.#Base } // find the argo type for this part or the parent
+#WFScript:    { #WFBase, script: //argo.#."io.argoproj.workflow.v1alpha1.ScriptTemplate" & #Container.#Base &
 	{}
- }
+}
 
- #WFResource: {
+#WFResource: {
   #WFBase
   name: string
   #manifestSchema!: {...}
@@ -84,33 +83,32 @@ let TOP_CONTAINER = #Container
     setOwnerReference: bool // no default - too important.  Always specify.
     manifest: (#EncodeCueAsJsonText & {in: #manifest} ).out
   }
- }
+}
 
- #WFDeployment: close({
+#WFDeployment: close({
  	#WFResource
   #manifestSchema: k8sAppsV1.#SchemaMap."io.k8s.api.apps.v1.Deployment"
   #resourceName!: string
   #parameters!: [string]: #TemplateParameterDefinition
   #containers: [{...}]
 
-  #manifest:
-    {
-      apiVersion: "apps/v1"
-      kind:       "Deployment"
-      metadata: {
-        generateName: "\(#resourceName)-"
-        labels: app: #resourceName
-      }
+  #manifest: {
+  	apiVersion: "apps/v1"
+     kind:       "Deployment"
+     metadata: {
+     	generateName: "\(#resourceName)-"
+       labels: app: #resourceName
+    }
 
-      spec: {
-        replicas!: _
-        selector: matchLabels: app: #resourceName
-        template: {
-          metadata: labels: app: #resourceName
-          spec: containers: #containers
-        }
+    spec: {
+    	replicas!: _
+      selector: matchLabels: app: #resourceName
+      template: {
+      	metadata: labels: app: #resourceName
+        spec: containers: #containers
       }
     }
- })
+  }
+})
 
 

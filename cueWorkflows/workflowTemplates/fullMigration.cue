@@ -32,7 +32,6 @@ spec: #Spec & {
 			  }
 			}
     }
-    _paramsWithTemplatePathsMap: _
 
     steps: [[
       {

@@ -28,7 +28,6 @@ spec: #Spec & {
     	"-c",
       (#DecodeBase64 & {in: _resource_targetLatchHelpers_init_sh}).out
     ]
-    _paramsWithTemplatePathsMap: _
   })
 
   let DECREMENT = (#WFScript & {
@@ -38,7 +37,6 @@ spec: #Spec & {
     	target:    type: string
     	prefix:    type: string
     }
-    _paramsWithTemplatePathsMap: _
     script: {
     	image: (#InlineInputParameter & {name: "etcdImage", params: #WORKFLOW_PARAMS}).out,
     	source: (#DecodeBase64 & {in: _resource_targetLatchHelpers_decrement_sh}).out
@@ -50,7 +48,6 @@ spec: #Spec & {
     #parameters: {
     	prefix: type: string
     }
-    _paramsWithTemplatePathsMap: _
 		container: command: [
     	"/bin/sh",
     	"-c",

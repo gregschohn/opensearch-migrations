@@ -13,7 +13,7 @@ import json "encoding/json"
 	N=name!:    string
 	params!:  [string]: (#BaseParameterDefinition | #TemplateParameterDefinition)
 
-	out: (#ParameterWithName & { parameterName: N, params[name] }).templateInputPath
+	out: (#ParameterWithName & { parameterName: N, parameterDefinition: params[name], ... }).templateInputPath
 	#isConcrete: json.Marshal(out)
 }
 

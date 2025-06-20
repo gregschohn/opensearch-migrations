@@ -29,7 +29,6 @@ spec: {
 			{
 				name: ID_GENERATOR.name
 				template: name
-				_paramsWithTemplatePathsMap: _
 				arguments: parameters: {
 					(#ProxyInputsIntoArguments & {#in: _paramsWithTemplatePathsMap}).out
 				}

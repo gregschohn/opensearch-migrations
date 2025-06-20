@@ -5,6 +5,9 @@ import base64 "encoding/base64"
 
 // Not every part of an argo config can do handlebar substitutions, so this doesn't need to be applied everywhere.
 // strings can also unify to this, so we can decorate only definitions
+
+// Not every part of an argo config can do handlebar substitutions, so this doesn't need to be applied everywhere.
+// strings can also unify to this, so we can decorate only definitions
 #noBracesString: !~"[{]{2}|[}]{2}"
 #base64: =~"^[-A-Za-z0-9+/]*={0,3}$"
 
@@ -47,4 +50,3 @@ import base64 "encoding/base64"
 		false
 	][0]
 }
-

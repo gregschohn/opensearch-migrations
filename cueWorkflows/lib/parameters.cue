@@ -1,92 +1,93 @@
 package mymodule
 
 import "strconv"
-
 import "strings"
 
-#FromWorkflowParam: {
-	fromW: string
-}
-
-#FromTemplateParam: {
-	fromT: string
+#FromParam: {
+	paramWithName: { #ParameterWithName }
 }
 
 #FromConfigMap: {
 	map!:   string
 	key!:   string
-	#type!: _
+	type!: _
 }
 
 #FromExpression: {
 	e: string
 }
 
-#FillValue: {
-	in: #ComputedValue
-	out: [
-		if (in & #FromWorkflowParam) != _|_ {},
-		if (in & #FromConfigMap) != _|_ {
-			valueFrom: configMapKeyRef: {
-				name: in.map
-				key:  in.key
-			}
+#LiteralValue:   bool | string | number
+#ComputedValue:  #FromParam | #FromConfigMap | #FromExpression
+#ArgoValue: #LiteralValue | #ComputedValue
+
+// Every defined parameter can have a value, which this represents.
+// For our enhanced schema, values may be types beyond just strings.
+// They can be numbers, booleans, compound datatypes, or strings.
+// This object represents _some_ runtime object, maybe literal values, like 1, "value".
+// The value can also represent a reference to another value, a configmap, or an expression,
+// which are all natively supported by Argo.
+//
+// We want to model a bit more than just what Argo supports so that we can 1) check that the
+// usage of a value will be consistent with the context that it's being used within (e.g. replicas
+// should represent an integer).  2) We want to make sure that we're referring to values that are
+// defined elsewhere, rather than letting a bad identifier go unnoticed.  3) This can minimize the
+// amount of space that it takes to specify a parameter.
+#ArgoValueProperties: {
+	if (#in & #LiteralValue) != _|_ {
+		_checkTypeIsConcrete: (#IsConcreteValue & {#value: #in}).concrete & true
+	}
+
+	#in: #ArgoValue
+	// What type does the incoming value belong to
+	inferredType: _parsedValue.t
+  // what should be the contents dumped into the parameters object to signify this value...
+  // a string, "value": "{{...parameter.name}}", "valueFrom": {...}
+	parameterContents: _parsedValue.inlinedValue
+
+	_parsedValue: ([
+  	if (#in & #FromParam) != _|_ {
+			t: #in.paramWithName.parameterDefinition.type,
+			inlinedValue: value: #in.paramWithName.templateInputPath
 		},
-		//			if (in & #FromExpression) != _|_ {},
-		in,
-	][0]
-}
-
-#LiteralValue:  bool | string | number
-#ComputedValue: #FromWorkflowParam | #FromTemplateParam | #FromConfigMap | #FromExpression
-
-#ArgoValue: {
-	value: #LiteralValue | #ComputedValue | *null
-	_typeIsConcrete: (#IsConcreteValue & {#value: type}).concrete & false
-	_hasDefault: (value & null) == _|_
-	type:        _projectedvalue.t
-
-	_projectedvalue: ({t: _, v: _, f: _}) & ([
-		if (value & null) != _|_ {t: _, inlined: {}},
-		if (value & #LiteralValue) != _|_ {
-			{
-				let typeAndVal = [
-					if (value & bool) != _|_ {t: bool, v: strconv.FormatBool(value)},
-					if (value & int) != _|_ {t: int, v: strconv.FormatInt(value, 10)},
-					if (value & float) != _|_ {t: float, v: strconv.FormatFloat(value, strings.Runes("f")[0], -1, 32)},
-					if (value & string) != _|_ {t: string, v: value},
-					if (value & [...]) != _|_ {t: [...], v: "FORMAT THIS List AS JSON"},
-					if (value & {...}) != _|_ {t: {...}, v: "FORMAT THIS Struct AS JSON"},
-					{t: _},
-				][0]
-				{t: typeAndVal.t, inlined: value: typeAndVal.v}
-			}
+		if (#in & #FromConfigMap) != _|_ {
+			t: #in.type,
+			inlinedValue: valueFrom: configMapKeyRef: {
+					name: #in.map
+					key:  #in.key
+				}
 		},
-		if (value & #ComputedValue) != _|_ {
-			[
-				if (value & #FromWorkflowParam) != _|_ {
-					t: null, inlined: {}
-				},
-				if (value & #FromConfigMap) != _|_ {
-					t: value.#type, inlined: (#FillValue & {in: value}).out
-				},
-			][0]},
-		{t: _, inlined: {}},
+
+		if (#in & bool)       != _|_ {t: bool,   inlinedValue: value: strconv.FormatBool(#in)},
+		if (#in & int)        != _|_ {t: int,    inlinedValue: value: strconv.FormatInt(#in, 10)},
+		if (#in & float)      != _|_ {t: float,  inlinedValue: value: strconv.FormatFloat(#in, strings.Runes("f")[0], -1, 32)},
+		if (#in & string)     != _|_ {t: string, inlinedValue: value: #in},
+
+		if (#in & [...])      != _|_ {t: [...], inlinedValue: value: "FORMAT THIS List AS JSON"},
+		if (#in & {...})      != _|_ {t: {...}, inlinedValue: value: "FORMAT THIS Struct AS JSON"},
+
+		{t: _, inlinedValue: value: "badstuff"}
 	][0])
-	inlineableValue: _projectedvalue.inlined
 }
 
 #BaseParameterDefinition: {
-	_argoValue: #ArgoValue
-	_argoValue: value: defaultValue
-	_argoValue: type:  type
-
-	parameterSource: "inputs" | "workflow"
-	defaultValue:    _argoValue.value
-	type:            _argoValue.type
-
-	description?: string
+	parameterSource: "inputs"| "workflow"
+	defaultValue?:   #ArgoValue
+  description?: string
 	requiredArg:  *false | bool
+
+	_hasDefault: (defaultValue & _) != _|_
+	if (_hasDefault) {
+		type: (#ArgoValueProperties & { #in: defaultValue }).inferredType
+		parameterContents: (#ArgoValueProperties & { #in: defaultValue }).parameterContents
+	}
+	if (!_hasDefault) {
+		type: _
+		if (!requiredArg) {
+			parameterContents: value: ""
+		}
+		if (requiredArg) { parameterContents: {} }
+	}
 }
 
 #TemplateParameterDefinition: {
@@ -106,14 +107,13 @@ import "strings"
 	parameterSource: "workflow"
 }
 
-//#: "io.argoproj.workflow.v1alpha1.ValueFrom"
-#ArgumentParameter: "io.argoproj.workflow.v1alpha1.Parameter"
+//_: "io.argoproj.workflow.v1alpha1.ValueFrom"
+_ArgumentParameter: "io.argoproj.workflow.v1alpha1.Parameter"
 
 #ParameterWithName: {
-	#BaseParameterDefinition
-	parameterSource:   _
+	parameterDefinition: (#TemplateParameterDefinition | #WorkflowParameterDefinition)
 	parameterName!:    string
 	envName:           string | *strings.ToUpper(parameterName)
-	parameterPath:     "\(parameterSource).parameters['\(parameterName)']"
+	parameterPath:     "\(parameterDefinition.parameterSource).parameters['\(parameterName)']"
 	templateInputPath: "{{\(parameterPath)}}"
 }

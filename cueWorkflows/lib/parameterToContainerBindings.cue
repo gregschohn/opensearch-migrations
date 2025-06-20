@@ -12,14 +12,14 @@ import k8sAppsV1 "k8s.io/apis_apps_v1"
 			_filteredContainerParameters: { for k,v in #parameters if v.passToContainer { (k): v } }
 			_enrichedContainerParameters: [... #ParameterWithName ] &
 			[for p, details in _filteredContainerParameters { #ParameterWithName & {
-				details,
+				parameterDefinition: details,
 				parameterName: p
 			}}]
 
 			name: *"main" | string
 			image: (#InlineInputParameter & {name: "image", params: #parameters}).out | *"SPECIFY_IMAGE_PARAMETER_FIXME"
 			imagePullPolicy: *(#InlineInputParameter & {name: "imagePullPolicy", params: #parameters}).out | "IfNotPresent"
-			env: [for p in _enrichedContainerParameters {name: p.envName, value: p.templateInputPath}]
+			env: [for p in _enrichedContainerParameters { name: p.envName, value: p.templateInputPath}]
 			if len(#ports) != 0 {
 				ports: #ports
 			}

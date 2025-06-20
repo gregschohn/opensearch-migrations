@@ -38,7 +38,6 @@ spec: {
 				kafkaTrafficTopic:             type: string
 				kafkaTrafficProperties:        type: string
 			}
-			_paramsWithTemplatePathsMap: _
 			#manifest: spec: replicas: (#InlineInputParameter & {name: "replicas", params: #parameters}).out
   		#containers: [
 	  		#Container.#Jib & {
