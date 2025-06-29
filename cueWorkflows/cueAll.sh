@@ -12,10 +12,11 @@ if [ $# -eq 0 ]; then
 fi
 
 MODE=$1
+shift
 CUE=~/cue_v0.14.0-alpha.1_darwin_arm64/cue
 FLAGS=""
 if [ "$MODE" = "eval" ]; then
-    FLAGS="-c"
+    FLAGS=""
 elif [ "$MODE" != "export" ] && [ "$MODE" != "vet" ]; then
     usage
     exit 2
@@ -23,11 +24,11 @@ fi
 
 cd "$(dirname "$0")" || exit 3
 
-$CUE ${MODE} `find lib workflowTemplates -name \*.cue` allWorkflows.cue $FLAGS 2>& 1 \
+$CUE ${MODE} `find lib workflowTemplates -name \*.cue | grep -v tests` allWorkflows.cue $FLAGS 2>& 1 \
 $(
   find workflowTemplates/scripts -type f | while read file; do
     key="resource_$(echo "${file#workflowTemplates/scripts/}" | tr '/.' '__')"
     val=$(base64 < "$file" | tr -d '\n')
     printf -- '--inject %s=%s ' "$key" "$val"
   done
-) -t ${MODE}
+) -t ${MODE} "$@"

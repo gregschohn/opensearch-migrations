@@ -11,18 +11,18 @@ spec: {
   let DS = (#WFSteps & {
     name:                        "deploy-service"
     #parameters: CS.#parameters
-    _paramsWithTemplatePathsMap: _
+    _parsedParams: { ... }
 
     outputs: parameters: [{
       name: "endpoint"
-      valueFrom: expression: "steps['\(CS.name)'].outputs.parameters['endpoint'] + ':' + \(_paramsWithTemplatePathsMap.frontsidePort.parameterPath)"
+      valueFrom: expression: "steps['\(CS.name)'].outputs.parameters['endpoint'] + ':' + \(_parsedParams._parameterMap.frontsidePort.parameterPath)"
     }]
 
     steps: [[
       {
         name:      "create-service"
         template:  name
-				arguments: parameters: (#ProxyInputsIntoArguments & {#in: _paramsWithTemplatePathsMap}).out
+				arguments: parameters: (#ProxyInputsIntoArguments & {#in: _parsedParams._parameterMap}).out
       },
     ]]
   })
@@ -34,7 +34,6 @@ spec: {
     	frontsidePort:  { requiredArg: true, type: int }
     	serviceName:    defaultValue: "capture-proxy"
     }
-    _paramsWithTemplatePathsMap: _
 
     outputs: parameters: [{
       name: "endpoint"
@@ -99,7 +98,6 @@ spec: {
       headerOverrides:                    type: string
       suppressCaptureHeaderPairs:         type: string
     }
-    _paramsWithTemplatePathsMap: _
 
     #manifest: spec: replicas: (#InlineInputParameter & {name: "replicas", params: #parameters}).out
     name: "deploy-capture-proxy"

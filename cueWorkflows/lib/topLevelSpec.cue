@@ -13,12 +13,11 @@ import argo "github.com/opensearch-migrations/workflowconfigs/argo"
 			}
 		}
 		_workflowParametersList: [ for p, v in _workflowParameters { v } ]
-		if _workflowParametersList != [] {
+		if (_workflowParametersList & []) == _|_ {
 			arguments: {
 				parameters: [for p in _workflowParametersList {
 					name: p.parameterName,
-					p._argoValue.inlineableValue,
-					if (!p.parameterDefinition.requiredArg && !p.parameterDefinition._argoValue._hasDefault) { value: "" }
+					(#ValuePropertiesFromParameter & { #parameterDefinition: p.parameterDefinition }).parameterContents
 				}]
 			}
 		}

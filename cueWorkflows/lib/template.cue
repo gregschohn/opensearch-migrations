@@ -6,10 +6,11 @@ import k8sAppsV1 "k8s.io/apis_apps_v1"
 let TOP_CONTAINER = #Container
 
 #ProxyInputsIntoArguments: {
-  #in: [string]: #TemplateParameterDefinition
+  #in: {...}
   out: [
   	for k, v in #in {
-  		name: k, value: ({ (#ParameterWithName & { parameterName: k, parameterDefinition: v }) }).templateInputPath
+  		name: k,
+  		value: v.templateInputPath
    	}
   ]
 }
@@ -56,7 +57,7 @@ let TOP_CONTAINER = #Container
 	#args: [string]: _
 
 	if len(#parameters) != 0 {
-		_parsedParams: ((#ParametersExpansion) & { #in: #parameters })
+		_parsedParams: (#ParametersExpansion & { #in: #parameters })
 		inputs: _parsedParams.inputs
 		//_parameterMap: ((#ParametersExpansion) & { #in: #parameters })._parameterMap
 		//pm: _parameterMap

@@ -17,7 +17,7 @@ spec: #Spec & {
 
   let MAIN = (#WFSteps & {
     name:                        "main"
-		let s3ParamMap = _workflowParameters.s3SnapshotConfigMap.templateInputPath
+		let s3ParamMap = _workflowParameters.s3SnapshotConfigMap
 		let s3ParamToConfigMapKeyMapping = {
 			s3AwsRegion: "AWS_REGION",
 			s3Endpoint:  "ENDPOINT",
@@ -28,7 +28,11 @@ spec: #Spec & {
     	targets:                type: [ ...#CLUSTER_CONFIG ],
     	{
     		for k,v in #S3_PARAMS {
-	  			"\(k)": defaultValue: #FromConfigMap & { #type: string, map: s3ParamMap, key: s3ParamToConfigMapKeyMapping[k] }
+	  			"\(k)": defaultValue: #FromConfigMap & {
+	  				#type: string,
+	  				 map: paramWithName: s3ParamMap,
+	  				 key: s3ParamToConfigMapKeyMapping[k]
+	  			}
 			  }
 			}
     }

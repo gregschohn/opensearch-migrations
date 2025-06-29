@@ -72,11 +72,6 @@ import "strings"
 		if (#in & int)        != _|_ {t: int,    inlinedValue: value: strconv.FormatInt(#in, 10)},
 		if (#in & float)      != _|_ {t: float,  inlinedValue: value: strconv.FormatFloat(#in, strings.Runes("f")[0], -1, 32)},
 		if (#in & string)     != _|_ {t: string, inlinedValue: value: #in},
-
-		if (#in & [...])      != _|_ {t: [...], inlinedValue: value: "FORMAT THIS List AS JSON"},
-		if (#in & {...})      != _|_ {t: {...}, inlinedValue: value: "FORMAT THIS Struct AS JSON"},
-
-		{t: _, inlinedValue: value: "badstuff"}
 	][0])
 }
 
@@ -122,9 +117,11 @@ import "strings"
 _ArgumentParameter: "io.argoproj.workflow.v1alpha1.Parameter"
 
 #ParameterWithName: {
-	parameterDefinition: (#TemplateParameterDefinition | #WorkflowParameterDefinition)
+	// this looks weird, but it forces the parameterDefinition.parameterSource to be fully realized
+	// so that the interpolation below works correctly
+	parameterDefinition: (#TemplateParameterDefinition | #WorkflowParameterDefinition) & {}
 	parameterName!:    string
 	envName:           string | *strings.ToUpper(parameterName)
-	parameterPath:     "\(parameterDefinition.parameterSource).parameters['\(parameterName)']" | *_ // *error("Don't have a concrete parameterSource for \(parameterName)")
-	templateInputPath: "{{\(parameterPath)}}" | *_ //*error("Don't have a concrete parameterSource for a parameter!")
+	parameterPath:     "\(parameterDefinition.parameterSource).parameters['\(parameterName)']"
+	templateInputPath: "{{\(parameterPath)}}"
 }
