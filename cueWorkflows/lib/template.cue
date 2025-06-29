@@ -16,15 +16,15 @@ let TOP_CONTAINER = #Container
 
 #ParametersExpansion: {
 	#in: {...}
-	_parametersList: [for p, details in #in { parameterDefinition: details, parameterName!: p }]
+	_parametersList: [for p, details in #in { parameterDefinition: #TemplateParameterDefinition & details, parameterName!: p }]
 	inputs: {
 		parameters: [for p in _parametersList {
-			name: p.parameterName
-			p.parameterDefinition.parameterContents
+			name: p.parameterName,
+			(#ValuePropertiesFromParameter & { #parameterDefinition: p.parameterDefinition }).parameterContents
 		}]
 	}
-	_paramsWithTemplatePathsMap: {
-		for k, v in #in {"\(k)": { #ParameterWithName & { parameterName: k, parameterDefinition: v } } }
+	_parameterMap: {
+		for k, v in #in {"\(k)": { #ParameterWithName & {..., parameterName: k, parameterDefinition: v } } }
 	}
 }
 
@@ -56,8 +56,10 @@ let TOP_CONTAINER = #Container
 	#args: [string]: _
 
 	if len(#parameters) != 0 {
-		_expandedParameters: (#ParametersExpansion) & { #in: #parameters }
-		inputs: _expandedParameters.inputs
+		_parsedParams: ((#ParametersExpansion) & { #in: #parameters })
+		inputs: _parsedParams.inputs
+		//_parameterMap: ((#ParametersExpansion) & { #in: #parameters })._parameterMap
+		//pm: _parameterMap
 	}
 	name: string
 	steps?: [...]

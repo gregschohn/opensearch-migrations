@@ -1,4 +1,4 @@
 module: "github.com/opensearch-migrations/workflowconfigs"
 language: {
-	version: "v0.9.0"
+	version: "v0.14.0"
 }

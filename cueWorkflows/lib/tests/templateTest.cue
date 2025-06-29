@@ -42,7 +42,7 @@ Test: {
 							typeNum:  type: string
 					}
 				}
-				_assertUnify: close(obj) & close({
+				_assertUnify: close(obj) & ({
 					name: "allKindsOfLiterals"
 					inputs: {
 							parameters: [{
@@ -90,7 +90,7 @@ Test: {
 						}
 					}
 				}
-				_assertUnify: obj & close({
+				_assertUnify: close(obj) & ({
             name: "emptyTemplateName"
             steps: [[]]
             inputs: {
@@ -110,15 +110,17 @@ Test: {
 			FromParameter: {
 				obj: #WFDoNothing & {
 					name: "emptyTemplateName"
-					_expandedParameters: {...}
+					_parsedParams: { ... }
 					#parameters: {
 						baseParam: defaultValue: "baseValue"
-						p: defaultValue: {
-							paramWithName: _expandedParameters._paramsWithTemplatePathsMap["baseParam"]
+						p: {
+							defaultValue: {
+							 paramWithName: #ParameterWithName & _parsedParams._parameterMap["baseParam"]
+							}
 						}
 					}
 				}
-				_assertUnify: obj & {
+				_assertUnify: close(obj) & {...
 	        inputs: {
   	          parameters: [{
       	          name:  "baseParam"
@@ -130,7 +132,45 @@ Test: {
         	}
         }
 			}
+
+			FromConfigMapWithParam: {
+				obj: #WFDoNothing & {
+					name: "emptyTemplateName"
+					_parsedParams: { ... }
+					_parameterMap: [string]: #ParameterWithName
+					#parameters: {
+						rootMap: type: string
+						rootKey: type: string
+						p: defaultValue: {
+							map: paramWithName: #ParameterWithName & _parsedParams._parameterMap["rootMap"]
+							key: paramWithName: #ParameterWithName & _parsedParams._parameterMap["rootKey"]
+							type: string
+						}
+					}
+				}
+				_assertUnify: close(obj) & ({
+            name: "emptyTemplateName"
+            steps: [[]]
+            inputs: {
+                parameters: [{
+                	name: "rootMap"
+                },{
+                	name: "rootKey"
+                },
+                {
+                    name: "p"
+                    valueFrom: {
+                        configMapKeyRef: {
+                            name:  "{{inputs.parameters['rootMap']}}"
+                            key: "{{inputs.parameters['rootKey']}}"
+                        }
+                    }
+                }]
+            }
+        })
+			}
 		}
+
 		StepsTemplate: {
 
 			innerTemplate: #WFDoNothing & {
@@ -147,7 +187,7 @@ Test: {
 				steps: [[{
 					#templateObj: innerTemplate
 					#args: {
-						to: innerTemplate._expandedParameters._paramsWithTemplatePathsMap['dummy2'],
+						to: innerTemplate.parameterMap['dummy2'],
 					  map: "testConfigMap",
 					  key: "testKey",
 					  type2: string

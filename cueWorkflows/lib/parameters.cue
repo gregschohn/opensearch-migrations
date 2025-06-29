@@ -8,8 +8,8 @@ import "strings"
 }
 
 #FromConfigMap: {
-	map!:   string
-	key!:   string
+	map!:   string | #FromParam
+	key!:   string | #FromParam
 	type!: _
 }
 
@@ -53,8 +53,18 @@ import "strings"
 		if (#in & #FromConfigMap) != _|_ {
 			t: #in.type,
 			inlinedValue: valueFrom: configMapKeyRef: {
-					name: #in.map
-					key:  #in.key
+					if (#in.key & #FromParam) != _|_ {
+						key: #in.key.paramWithName.templateInputPath
+					}
+					if (#in.key & string) != _|_ {
+						key:  #in.key
+					}
+					if (#in.map & #FromParam) != _|_ {
+						name: #in.map.paramWithName.templateInputPath
+					}
+					if (#in.map & string) != _|_ {
+						name: #in.map
+					}
 				}
 		},
 
@@ -70,24 +80,25 @@ import "strings"
 	][0])
 }
 
+#ValuePropertiesFromParameter: {
+	#parameterDefinition: #BaseParameterDefinition
+	if (#parameterDefinition._hasDefault) {
+		(#ArgoValueProperties & { #in: #parameterDefinition.defaultValue })
+	}
+	if (!#parameterDefinition._hasDefault) {
+		type: #parameterDefinition.type
+		parameterContents: {}
+	}
+}
+
 #BaseParameterDefinition: {
 	parameterSource: "inputs"| "workflow"
 	defaultValue?:   #ArgoValue
   description?: string
 	requiredArg:  *false | bool
+	type: _
 
-	_hasDefault: (defaultValue & _) != _|_
-	if (_hasDefault) {
-		type: (#ArgoValueProperties & { #in: defaultValue }).inferredType
-		parameterContents: (#ArgoValueProperties & { #in: defaultValue }).parameterContents
-	}
-	if (!_hasDefault) {
-		type: _
-		if (!requiredArg) {
-			parameterContents: value: ""
-		}
-		if (requiredArg) { parameterContents: {} }
-	}
+	_hasDefault: defaultValue != _|_
 }
 
 #TemplateParameterDefinition: {
@@ -114,6 +125,6 @@ _ArgumentParameter: "io.argoproj.workflow.v1alpha1.Parameter"
 	parameterDefinition: (#TemplateParameterDefinition | #WorkflowParameterDefinition)
 	parameterName!:    string
 	envName:           string | *strings.ToUpper(parameterName)
-	parameterPath:     "\(parameterDefinition.parameterSource).parameters['\(parameterName)']"
-	templateInputPath: "{{\(parameterPath)}}"
+	parameterPath:     "\(parameterDefinition.parameterSource).parameters['\(parameterName)']" | *_ // *error("Don't have a concrete parameterSource for \(parameterName)")
+	templateInputPath: "{{\(parameterPath)}}" | *_ //*error("Don't have a concrete parameterSource for a parameter!")
 }
