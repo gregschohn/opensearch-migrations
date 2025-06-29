@@ -21,6 +21,7 @@ spec: #Spec & {
     	configurations: type: [...#SOURCE_MIGRATION_CONFIG]
     	targets:        type: [ ...#CLUSTER_CONFIG ],
     	prefix:         type: string
+    	//etcdEndpoint:   default
     }
 
     container: command: [
@@ -44,7 +45,7 @@ spec: #Spec & {
   })
 
   let CLEANUP = (#WFContainer & {
-    name: "init"
+    name: "cleanup"
     #parameters: {
     	prefix: type: string
     }

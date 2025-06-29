@@ -8,8 +8,8 @@ import "strings"
 }
 
 #FromConfigMap: {
-	map!:   string | #FromParam
-	key!:   string | #FromParam
+	map!:   string & #noBracesString | #FromParam
+	key!:   string & #noBracesString | #FromParam
 	type!: _
 }
 
