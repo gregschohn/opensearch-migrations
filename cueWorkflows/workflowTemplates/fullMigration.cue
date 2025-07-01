@@ -17,20 +17,21 @@ spec: #Spec & {
 
   let MAIN = (#WFSteps & {
     name:                        "main"
-		let s3ParamMap = _workflowParameters.s3SnapshotConfigMap
+		let s3ConfigMapParameter = _workflowParameters.s3SnapshotConfigMap
 		let s3ParamToConfigMapKeyMapping = {
 			s3AwsRegion: "AWS_REGION",
 			s3Endpoint:  "ENDPOINT",
 			s3RepoUri:   "repo_uri"
 		}
     #parameters: {
-    	sourceMigrationConfigs: type: [ ...#SOURCE_MIGRATION_CONFIG ],
-    	targets:                type: [ ...#CLUSTER_CONFIG ],
+    	sourceMigrationConfigs: type: [] | [ #SOURCE_MIGRATION_CONFIG,... ],
+    	targets:                type: [] | [ #CLUSTER_CONFIG,... ],
+    	//
     	{
     		for k,v in #S3_PARAMS {
 	  			"\(k)": defaultValue: #FromConfigMap & {
 	  				#type: string,
-	  				 map: paramWithName: s3ParamMap,
+	  				 map: paramWithName: s3ConfigMapParameter,
 	  				 key: s3ParamToConfigMapKeyMapping[k]
 	  			}
 			  }
@@ -38,19 +39,21 @@ spec: #Spec & {
     }
 
     steps: [[
-      {
-      	name: "foo"
-      	template: "foo"
-//        #args: [string]: #ValueFiller
-//		  	let s3ParamMap = _workflowParameters.s3SnapshotConfigMap.templateInputPath
-        #args: {
-//					{ to: "#S3_PARAMS.s3AwsRegion",  map: s3ParamMap, key: "AWS_REGION" },
+      #WorkflowStepOrTask & {
+      	#templateObj: #MIGRATION_TEMPLATES.TARGET_LATCH_HELPERS.#INIT
+//		  	let s3ConfigMapParameter = _workflowParameters.s3SnapshotConfigMap
+        #argMappings: {
+					prefix: argoReadyString: "workflow-{{workflow.uid}}",
+//					targets: {},
+//					configurations: {}
+//					{ toNamedParameter:  "...",  value: { map: s3ParamMap, key: "AWS_REGION", type: string } },
 //					{ to: "#S3_PARAMS.s3Endpoint", map: s3ParamMap, key: "ENDPOINT" },
 //					{ to: "#S3_PARAMS.s3RepoUri",    map: s3ParamMap, key: "repo_uri" }
 				}
 			}
     ]]
   })
+
 
   templates: [
     MAIN,

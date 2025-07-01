@@ -17,9 +17,13 @@ import "strings"
 	e: string
 }
 
+#ArgoTemplateString: {
+	argoReadyString: string
+}
+
 #LiteralValue:   bool | string | number
 #ComputedValue:  #FromParam | #FromConfigMap | #FromExpression
-#ArgoValue: #LiteralValue | #ComputedValue
+#ArgoValue: #LiteralValue | #ComputedValue | #ArgoTemplateString
 
 // Every defined parameter can have a value, which this represents.
 // For our enhanced schema, values may be types beyond just strings.
@@ -49,6 +53,10 @@ import "strings"
   	if (#in & #FromParam) != _|_ {
 			t: #in.paramWithName.parameterDefinition.type,
 			inlinedValue: value: #in.paramWithName.templateInputPath
+		},
+		if (#in & #ArgoTemplateString) != _|_ {
+			t: _,
+			inlinedValue: value: #in.argoReadyString
 		},
 		if (#in & #FromConfigMap) != _|_ {
 			t: #in.type,

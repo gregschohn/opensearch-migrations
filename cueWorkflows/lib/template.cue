@@ -2,6 +2,8 @@ package mymodule
 
 import argo "github.com/opensearch-migrations/workflowconfigs/argo"
 import k8sAppsV1 "k8s.io/apis_apps_v1"
+import "strings"
+import "strconv"
 
 let TOP_CONTAINER = #Container
 
@@ -17,9 +19,9 @@ let TOP_CONTAINER = #Container
 
 #ParametersExpansion: {
 	#in: {...}
-	_parametersList: [for p, details in #in { parameterDefinition: #TemplateParameterDefinition & details, parameterName!: p }]
+	let PARAMS_LIST = [for p, details in #in { parameterDefinition: #TemplateParameterDefinition & details, parameterName!: p }]
 	inputs: {
-		parameters: [for p in _parametersList {
+		parameters: [for p in PARAMS_LIST {
 			name: p.parameterName,
 			(#ValuePropertiesFromParameter & { #parameterDefinition: p.parameterDefinition }).parameterContents
 		}]
@@ -29,28 +31,32 @@ let TOP_CONTAINER = #Container
 	}
 }
 
-//#ArgumentsExpansion: {
-// 	#args: [string]: _ //#ValueFiller
-//	_parametersList: [...]
-//	if len(#args) > 0 {
-//		arguments: {
-//			parameters: [for a in #args {
-//				name: a.name,
-//				(#FillValue & { in: a }).out
-//			}]
-//		}
-//	}
-//}
-
-#WorkflowStepOrTask: {
-	//#ArgumentsExpansion
-	#templateObj: #WFBase
-	template: #templateObj.name
-	name: template
-  ...
+#WorkflowStepOrTask: {...
 //  	argo.#."io.argoproj.workflow.v1alpha1.DAGTask"
 //  	argo.#."io.argoproj.workflow.v1alpha1.WorkflowStep"
-  }
+	#templateObj: #WFBase
+	#argMappings: [string]: #ArgoValue
+
+	template: #templateObj.name
+	name: template
+
+  // The balance of this struct handles arguments and their agreement with the target
+	let TARGET_PARAMS = #templateObj.#parameters | *error("Cannot find params for \(#templateObj.name) template")
+	if len(#argMappings) > 0 {
+		arguments: {
+			parameters: [for k, v in #argMappings {
+				name: k,
+				let AVP = #ArgoValueProperties & { #in: v}
+				AVP.parameterContents,
+				_parameterExists: (TARGET_PARAMS[k] & {...}) | *error("Could not find parameter \(k)")
+				_typesAgree: (AVP.inferredType & TARGET_PARAMS[k].type) | *error("The argument and parameter types don't agree for \(k)")
+			}]
+		}
+	}
+	let MISSING_REQUIRED_ARGS = [ for k,v in TARGET_PARAMS if (#argMappings[k] == _|_) { k } ]
+	_check: (len(MISSING_REQUIRED_ARGS) & 0) |
+	  *error("Missing (\(strconv.FormatInt(len(MISSING_REQUIRED_ARGS),10))) required arguments to \(#templateObj.name): \(strings.Join(MISSING_REQUIRED_ARGS, ", "))")
+}
 
 #WFBase: (argo.#."io.argoproj.workflow.v1alpha1.Template" & {
 	#parameters: [string]: (#TemplateParameterDefinition)
@@ -59,8 +65,6 @@ let TOP_CONTAINER = #Container
 	if len(#parameters) != 0 {
 		_parsedParams: (#ParametersExpansion & { #in: #parameters })
 		inputs: _parsedParams.inputs
-		//_parameterMap: ((#ParametersExpansion) & { #in: #parameters })._parameterMap
-		//pm: _parameterMap
 	}
 	name: string
 	steps?: [...]

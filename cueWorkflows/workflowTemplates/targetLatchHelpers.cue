@@ -8,19 +8,13 @@ _resource_targetLatchHelpers_cleanup_sh: string @tag(resource_targetLatchHelpers
 
 #MIGRATION_TEMPLATES: TARGET_LATCH_HELPERS: {
 
-argo.#."io.argoproj.workflow.v1alpha1.WorkflowTemplate" & {
-
-apiVersion: "argoproj.io/v1alpha1"
-kind:       "WorkflowTemplate"
-metadata: name: "target-latch-helpers"
-spec: #Spec & {
-  let INIT = (#WFContainer & {
+  #INIT: (#WFContainer & {
     name: "init"
 
     #parameters: {
-    	configurations: type: [...#SOURCE_MIGRATION_CONFIG]
-    	targets:        type: [ ...#CLUSTER_CONFIG ],
-    	prefix:         type: string
+    	configurations: { requiredArg: true, type: [...#SOURCE_MIGRATION_CONFIG] },
+    	targets:        { requiredArg: true, type: [ ...#CLUSTER_CONFIG ] },
+    	prefix:         { requiredArg: true, type: string }
     	//etcdEndpoint:   default
     }
 
@@ -54,12 +48,16 @@ spec: #Spec & {
     	"-c",
     	(#DecodeBase64 & {in: _resource_targetLatchHelpers_cleanup_sh}).out
     ]
-
   })
 
-  templates: [
-    INIT, DECREMENT, CLEANUP
-  ]
-}
-}
+
+  argo.#."io.argoproj.workflow.v1alpha1.WorkflowTemplate" & {
+		apiVersion: "argoproj.io/v1alpha1"
+		kind:       "WorkflowTemplate"
+		metadata: name: "target-latch-helpers"
+
+		spec: #Spec & {
+		templates: [ #INIT, DECREMENT, CLEANUP ]
+		}
+	}
 }

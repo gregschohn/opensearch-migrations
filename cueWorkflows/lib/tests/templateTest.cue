@@ -137,7 +137,6 @@ Test: {
 				obj: #WFDoNothing & {
 					name: "emptyTemplateName"
 					_parsedParams: { ... }
-					_parameterMap: [string]: #ParameterWithName
 					#parameters: {
 						rootMap: type: string
 						rootKey: type: string
@@ -169,6 +168,25 @@ Test: {
             }
         })
 			}
+
+			FromArgoReadyLiteral: {
+				obj: #WFDoNothing & {
+					name: "test"
+					#parameters: {
+						argoSubs: defaultValue: argoReadyString: "{{workflow.uid}}"
+					}
+				},
+				_assertUnify: close(obj) & close({
+					inputs: {
+						parameters: [close({
+								name:  "argoSubs"
+								value: "{{workflow.uid}}"
+						})]
+					}
+					steps: _
+					name: _
+				})
+			}
 		}
 
 		StepsTemplate: {
@@ -187,10 +205,10 @@ Test: {
 				steps: [[{
 					#templateObj: innerTemplate
 					#args: {
-						to: innerTemplate.parameterMap['dummy2'],
-					  map: "testConfigMap",
-					  key: "testKey",
-					  type2: string
+						#toParameter: innerTemplate.parameterMap['dummy2'],
+//					  map: "testConfigMap",
+//					  key: "testKey",
+//					  type2: string
 					 }
 				}]]
 			}

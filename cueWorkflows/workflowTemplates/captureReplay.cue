@@ -24,26 +24,20 @@ spec: {
 			topicName:                     type: string
 			topicPartition:                type: string
 		}
+
 		dag:
 		 tasks: [
 			{
 				name: ID_GENERATOR.name
 				template: name
 				_parameterMap: {...}
-				arguments: parameters: {
-					(#ProxyInputsIntoArguments & {#in: _parameterMap}).out
-				}
+				arguments: parameters: (#ProxyInputsIntoArguments & {#in: _parameterMap}).out
 			}
 		]
 	})
 
-	let GET_BROKERS = (#WFSteps & {
-		name: "get-brokers"
-	})
-
-	let GET_USER_CONFIRMATION = (#WFSuspend & {
-		name: "get-user-confirmation"
-	})
+	let GET_BROKERS = (#WFSteps & { name: "get-brokers"	})
+	let GET_USER_CONFIRMATION = (#WFSuspend & { name: "get-user-confirmation"	})
 
 	let ID_GENERATOR = (#WFDoNothing & {
 		name: "id-generator"
@@ -51,9 +45,7 @@ spec: {
 			proxyEndpoint: type: string
 			serviceName:   type: string
 		}
-
 	})
-
 
 
   templates: [
