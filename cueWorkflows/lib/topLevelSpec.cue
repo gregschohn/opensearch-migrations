@@ -2,23 +2,27 @@ package mymodule
 
 import argo "github.com/opensearch-migrations/workflowconfigs/argo"
 
-#Spec: argo.#."io.argoproj.workflow.v1alpha1.WorkflowSpec" & {
-		#workflowParameters: [string]: #WorkflowParameterDefinition
-	  #workflowParameters: #WORKFLOW_PARAMS
+#K8sWorkflowTemplate: argo.#."io.argoproj.workflow.v1alpha1.WorkflowTemplate" & {
+	#name!: string
+	#parameters: #WORKFLOW_PARAM_SET,
+	#templates: [string]: #WFBase
 
-		steps?: [...]
-		_workflowParameters: {
-			for p, details in #workflowParameters {
-				(p): {#ParameterWithName & { parameterName: p, parameterDefinition: details } }
-			}
-		}
-		_workflowParametersList: [ for p, v in _workflowParameters { v } ]
-		if (_workflowParametersList & []) == _|_ {
-			arguments: {
-				parameters: [for p in _workflowParametersList {
-					name: p.parameterName,
-					(#ValuePropertiesFromParameter & { #parameterDefinition: p.parameterDefinition }).parameterContents
-				}]
-			}
-		}
+	apiVersion:     "argoproj.io/v1alpha1"
+	kind:           "WorkflowTemplate"
+	metadata: name: #name
+
+  spec: {
+		_workflowParameters: (#ParametersExpansion & { #in: #parameters })
+		arguments: parameters: _workflowParameters.parameters
+		templates: _templateList
+	}
+
+	_templateList: [...]
+//	#in: #K8sWorkflowTemplate,
+	if (len(#templates) > 0) {
+		_templateSignaturesMap: { for k, v in #templates {
+			"\(k)": #TemplateSignature & { name: k, parameters: v.#parameters, containingKubernetesResourceName: #name }
+	   } }
+		_templateList: [ for k, v in #templates { name: "\(k)", v } ]
+	}
 }

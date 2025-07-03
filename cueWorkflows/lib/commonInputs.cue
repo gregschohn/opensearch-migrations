@@ -4,9 +4,9 @@ package mymodule
 #WORKFLOW_PARAM_SET: [string]: #WorkflowParameterDefinition
 
 #S3_PARAMS: #TEMPLATE_PARAM_SET & {
-	s3AwsRegion: type: string,
-	s3Endpoint:  type: string,
-	s3RepoUri:   type: string
+//	s3AwsRegion: type: string,
+//	s3Endpoint:  type: string,
+//	s3RepoUri:   type: string
 }
 
 #WORKFLOW_PARAMS: #WORKFLOW_PARAM_SET & {

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -e -x
+set -e
 
 usage() {
     echo "Usage: $0 <vet|eval|export>"

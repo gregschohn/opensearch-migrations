@@ -203,9 +203,9 @@ Test: {
 				}
 
 				steps: [[{
-					#templateObj: innerTemplate
-					#args: {
-						#toParameter: innerTemplate.parameterMap['dummy2'],
+					#templateSignature: (#GetTemplateSignature & { #template: innerTemplate, #containingKubernetesResourceName: "local" }).out
+					#argumentMappings: {
+//						#toParameter: innerTemplate.parameterMap['dummy2'],
 //					  map: "testConfigMap",
 //					  key: "testKey",
 //					  type2: string

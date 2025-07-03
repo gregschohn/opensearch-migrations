@@ -5,28 +5,22 @@ import k8sAppsV1 "k8s.io/apis_apps_v1"
 import "strings"
 import "strconv"
 
+@experiment(structcmp)
+
 let TOP_CONTAINER = #Container
 
-#ProxyInputsIntoArguments: {
-  #in: {...}
-  out: [
-  	for k, v in #in {
-  		name: k,
-  		value: v.templateInputPath
-   	}
-  ]
-}
-
 #ParametersExpansion: {
-	#in: {...}
-	let PARAMS_LIST = [for p, details in #in { parameterDefinition: #TemplateParameterDefinition & details, parameterName!: p }]
-	inputs: {
-		parameters: [for p in PARAMS_LIST {
-			name: p.parameterName,
-			(#ValuePropertiesFromParameter & { #parameterDefinition: p.parameterDefinition }).parameterContents
-		}]
-	}
-	_parameterMap: {
+	// constrain that all parameterSource values must be the same
+	#in: [string]: { ..., parameterSource: _parameterSource }
+	_parameterSource: string
+
+	let PARAMS_LIST = [for p, details in #in { parameterDefinition: #BaseParameterDefinition & details, parameterName!: p }]
+	parameters: [for p in PARAMS_LIST {
+		name: p.parameterName,
+		(#ValuePropertiesFromParameter & { #parameterDefinition: p.parameterDefinition }).parameterContents,
+	}]
+
+	parameterMap: {
 		for k, v in #in {"\(k)": { #ParameterWithName & {..., parameterName: k, parameterDefinition: v } } }
 	}
 }
@@ -34,39 +28,59 @@ let TOP_CONTAINER = #Container
 #WorkflowStepOrTask: {...
 //  	argo.#."io.argoproj.workflow.v1alpha1.DAGTask"
 //  	argo.#."io.argoproj.workflow.v1alpha1.WorkflowStep"
-	#templateObj: #WFBase
-	#argMappings: [string]: #ArgoValue
+	#templateSignature!: #TemplateSignature,
+	#argumentMappings: [string]: #ArgoParameterValue
 
-	template: #templateObj.name
-	name: template
+	templateRef: #templateSignature.templateRef,
+	name: "\(#templateSignature.containingKubernetesResourceName)--\(#templateSignature.name)",
 
   // The balance of this struct handles arguments and their agreement with the target
-	let TARGET_PARAMS = #templateObj.#parameters | *error("Cannot find params for \(#templateObj.name) template")
-	if len(#argMappings) > 0 {
+	let TARGET_PARAMS = #templateSignature.parameters | *error("Cannot find params for \(#templateSignature.name) template"),
+	if len(#argumentMappings) > 0 {
 		arguments: {
-			parameters: [for k, v in #argMappings {
+			parameters: [for k, v in #argumentMappings {
 				name: k,
-				let AVP = #ArgoValueProperties & { #in: v}
+				let AVP = #ArgoParameterValueProperties & { #in: v}
 				AVP.parameterContents,
 				_parameterExists: (TARGET_PARAMS[k] & {...}) | *error("Could not find parameter \(k)")
 				_typesAgree: (AVP.inferredType & TARGET_PARAMS[k].type) | *error("The argument and parameter types don't agree for \(k)")
 			}]
 		}
 	}
-	let MISSING_REQUIRED_ARGS = [ for k,v in TARGET_PARAMS if (#argMappings[k] == _|_) { k } ]
+	let MISSING_REQUIRED_ARGS = [ for k,v in TARGET_PARAMS if (v.requiredArg && #argumentMappings[k] == _|_) { k } ]
 	_check: (len(MISSING_REQUIRED_ARGS) & 0) |
-	  *error("Missing (\(strconv.FormatInt(len(MISSING_REQUIRED_ARGS),10))) required arguments to \(#templateObj.name): \(strings.Join(MISSING_REQUIRED_ARGS, ", "))")
+	    *error("Missing (\(strconv.FormatInt(len(MISSING_REQUIRED_ARGS),10))) required arguments to \(#templateSignature.name): \(strings.Join(MISSING_REQUIRED_ARGS, ", "))")
+}
+
+#TemplateSignature: {
+	let N = name,
+	name: string,
+	parameters: {...},
+	containingKubernetesResourceName!: string
+	templateRef: {
+		name:     N
+		template: containingKubernetesResourceName
+	}
+}
+
+#GetTemplateSignature: {
+	#template: #WFBase,
+	#containingKubernetesResourceName!: string
+	out: {
+		name: #template.name,
+		parameters: #template.#parameters,
+		containingKubernetesResourceName: #containingKubernetesResourceName
+	}
 }
 
 #WFBase: (argo.#."io.argoproj.workflow.v1alpha1.Template" & {
 	#parameters: [string]: (#TemplateParameterDefinition)
-	#args: [string]: _
 
 	if len(#parameters) != 0 {
 		_parsedParams: (#ParametersExpansion & { #in: #parameters })
-		inputs: _parsedParams.inputs
+		inputs: parameters: _parsedParams.parameters
 	}
-	name: string
+	name!: string
 	steps?: [...]
 	outputs?: {...}
 })
@@ -89,6 +103,13 @@ let TOP_CONTAINER = #Container
   resource: argo.#."io.argoproj.workflow.v1alpha1.ResourceTemplate" & {
     setOwnerReference: bool // no default - too important.  Always specify.
     manifest: (#EncodeCueAsJsonText & {in: #manifest} ).out
+  }
+  outputs?: {
+  	for i, param in outputs.parameters {
+  		if param.valueFrom.jsonPath == _|_ && param.valueFrom.jqFilter == _|_ {
+  			"_error_\(i)": error("Resource \(name) parameter \(param.name) must use jsonPath or jqFilter")
+			}
+		}
   }
 }
 
