@@ -78,7 +78,7 @@ import "strings"
 
 #InlineInputParameter: {
   N=name!: string
-  params!:  [string]: (#BaseParameterDefinition | #TemplateParameterDefinition)
+  params!:  [string]: (#IncomingParameterDefinition | #TemplateParameterDefinition)
 
   // While it seems elegant to allow non-concrete types, it forces us to loosen checks on
   // the rest of the templates.  By converting to dummy, but consistent concrete values, we still

@@ -22,7 +22,7 @@ elif [ "$MODE" != "export" ] && [ "$MODE" != "vet" ]; then
     exit 2
 fi
 
-cd "$(dirname "$0")" || exit 3
+cd "$(dirname "$0")"/.. || exit 3
 
 $CUE ${MODE} `find lib workflowTemplates -name \*.cue | grep -v tests` allWorkflows.cue $FLAGS 2>& 1 \
 $(

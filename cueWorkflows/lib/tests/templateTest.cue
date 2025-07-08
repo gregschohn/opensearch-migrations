@@ -9,7 +9,7 @@ Test: {
 			Simple: {
 				obj: #WFDoNothing & {
 					name: "emptyTemplateName"
-					#parameters: {
+					#inputParams: {
 						p: type: string
 					}
 				}
@@ -26,16 +26,16 @@ Test: {
 		  AllKindsOfLiterals: {
 		  	obj: #WFBase & {
 					name: "allKindsOfLiterals"
-					#parameters: {
-							image:    { passToContainer: false, defaultValue: "migrations/traffic_replayer:latest" }
+					#inputParams: {
+							image:    { passToContainer: false, parameterValue: "migrations/traffic_replayer:latest" }
 							replicas: { passToContainer: false, type: int }
 
 							requiredParam: { requiredArg: true, type: string }
 
-							defIntParam:  defaultValue: 70
-							defNumParam:  defaultValue: 1.1
-							defBoolParam: defaultValue: false
-							defStrParam:  defaultValue: "testString"
+							defIntParam:  parameterValue: 70
+							defNumParam:  parameterValue: 1.1
+							defBoolParam: parameterValue: false
+							defStrParam:  parameterValue: "testString"
 
 							typeBool: type: bool
 							typeStr:  type: string
@@ -82,8 +82,8 @@ Test: {
 			FromConfigMap: {
 				obj: #WFDoNothing & {
 					name: "emptyTemplateName"
-					#parameters: {
-						p: defaultValue: {
+					#inputParams: {
+						p: parameterValue: {
 							map: "testConfigMapName"
 							key: "testKey"
 							type: string
@@ -110,12 +110,12 @@ Test: {
 			FromParameter: {
 				obj: #WFDoNothing & {
 					name: "emptyTemplateName"
-					_parsedParams: { ... }
-					#parameters: {
-						baseParam: defaultValue: "baseValue"
+					_parsedInputParams: { ... }
+					#inputParams: {
+						baseParam: parameterValue: "baseValue"
 						p: {
-							defaultValue: {
-							 paramWithName: #ParameterWithName & _parsedParams._parameterMap["baseParam"]
+							parameterValue: {
+							 paramWithName: #ParameterWithName & _parsedInputParams._parameterMap["baseParam"]
 							}
 						}
 					}
@@ -136,13 +136,13 @@ Test: {
 			FromConfigMapWithParam: {
 				obj: #WFDoNothing & {
 					name: "emptyTemplateName"
-					_parsedParams: { ... }
-					#parameters: {
+					_parsedInputParams: { ... }
+					#inputParams: {
 						rootMap: type: string
 						rootKey: type: string
-						p: defaultValue: {
-							map: paramWithName: #ParameterWithName & _parsedParams._parameterMap["rootMap"]
-							key: paramWithName: #ParameterWithName & _parsedParams._parameterMap["rootKey"]
+						p: parameterValue: {
+							map: paramWithName: #ParameterWithName & _parsedInputParams._parameterMap["rootMap"]
+							key: paramWithName: #ParameterWithName & _parsedInputParams._parameterMap["rootKey"]
 							type: string
 						}
 					}
@@ -172,8 +172,8 @@ Test: {
 			FromArgoReadyLiteral: {
 				obj: #WFDoNothing & {
 					name: "test"
-					#parameters: {
-						argoSubs: defaultValue: argoReadyString: "{{workflow.uid}}"
+					#inputParams: {
+						argoSubs: parameterValue: argoReadyString: "{{workflow.uid}}"
 					}
 				},
 				_assertUnify: close(obj) & close({
@@ -197,7 +197,7 @@ Test: {
 
 			obj: #WFSteps & {
 				name: "test"
-				#parameters: {
+				#inputParams: {
 					strParam: type: string
 					intParam: type: int
 				}

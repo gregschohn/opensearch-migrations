@@ -13,20 +13,20 @@ spec: {
 	    name:         entrypoint
 	    #resourceName: name
 
-		  PARAMS=#parameters: {
-				image:    { passToContainer: false, defaultValue: "migrations/traffic_replayer:latest" }
+		  PARAMS=#inputParams: {
+				image:    { passToContainer: false, parameterValue: "migrations/traffic_replayer:latest" }
 				replicas: { passToContainer: false, type: int }
 
 				targetUrl: { requiredArg: true, type: string }
 
-				packetTimeoutSeconds:      defaultValue: 70
-				maxConcurrentRequests:     defaultValue: 1024
-				numClientThreads:          defaultValue: 0
-				lookaheadTimeWindow:       defaultValue: 300
-				speedupFactor:             defaultValue: 1.1
-				targetResponseTimeout:     defaultValue: 30
-				insecure:                  defaultValue: false
-				kafkaTrafficEnableMskAuth: defaultValue: false
+				packetTimeoutSeconds:      parameterValue: 70
+				maxConcurrentRequests:     parameterValue: 1024
+				numClientThreads:          parameterValue: 0
+				lookaheadTimeWindow:       parameterValue: 300
+				speedupFactor:             parameterValue: 1.1
+				targetResponseTimeout:     parameterValue: 30
+				insecure:                  parameterValue: false
+				kafkaTrafficEnableMskAuth: parameterValue: false
 
 				removeAuthHeader:              type: bool
 				sigv4AuthHeaderServiceRegion:  type: string
@@ -38,11 +38,11 @@ spec: {
 				kafkaTrafficTopic:             type: string
 				kafkaTrafficProperties:        type: string
 			}
-			#manifest: spec: replicas: (#InlineInputParameter & {name: "replicas", params: #parameters}).out
+			#manifest: spec: replicas: (#InlineInputParameter & {name: "replicas", params: #inputParams}).out
   		#containers: [
 	  		#Container.#Jib & {
 			  	name:        "replayer"
-		  		#parameters: PARAMS
+		  		#inputParams: PARAMS
 	  		}
   		]
   		resource: {

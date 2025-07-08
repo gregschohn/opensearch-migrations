@@ -8,43 +8,46 @@ package mymodule
  	_templateSignaturesMap: [string]: #TemplateSignature
  	_sharedServiceParameters: {
 		frontsidePort:  { requiredArg: true, type: int }
-		serviceName:    defaultValue: "capture-proxy"
+		serviceName:    parameterValue: "capture-proxy"
 	}
 	_sharedServiceParameters: [string]: #TemplateParameterDefinition
 	#templates: {
     deployService: (#WFSteps & {
-      #parameters: _sharedServiceParameters
-      _parsedParams: { ... }
+      #inputParams: _sharedServiceParameters
+      _parsedInputParams: { ... }
 
-      outputs: parameters: [{
-        name: "endpoint"
-//          valueFrom: expression: "steps['\(CS.name)'].outputs.parameters['endpoint'] + ':' + \(_parsedParams._parameterMap.frontsidePort.parameterPath)"
-      }]
+      #outputParams: {
+        endpoint: { expression: #Expr.Concat & {list: [
+//        	  { argoReadyString: "steps['createService'].outputs.parameters['endpoint']" },
+//          	":",
+//         		{ paramWithName: _parsedInputParams._parameterMap.frontsidePort }
+       	  ]}
+       	}
+      }
 
       steps: [[{
         #templateSignature: _templateSignaturesMap.createService
-				#argumentMappings: { for k, v in _parsedParams.parameterMap { "\(k)": paramWithName: v } }
+				#argumentMappings: { for k, v in _parsedInputParams.parameterMap { "\(k)": paramWithName: v } }
       }]]
     }),
 
 	  createService: (#WFResource & {
       #manifestSchema: {} // TODO - Find the right schema for a service and use that instead!
-      #parameters: _sharedServiceParameters
+      #inputParams: _sharedServiceParameters
 
       outputs: parameters: [
       	{ name: "endpoint",    valueFrom: jsonPath:   "{.metadata.name}" },
-//      	{ name: "endpointUrl", valueFrom: expression: "inputs.parameters['frontside-port']" }
       ]
 
       #manifest: {
         apiVersion: "v1"
         kind:       "Service"
-        metadata: name: (#InlineInputParameter & {name: "serviceName", params: #parameters}).out
+        metadata: name: (#InlineInputParameter & {name: "serviceName", params: #inputParams}).out
         labels: app:    "proxy"
         spec: selector: app: "proxy" // Selector should match pod labels directly, not use matchLabels
         ports: [{
-          port:       (#InlineInputParameter & {name: "frontsidePort", params: #parameters}).out
-          targetPort: (#InlineInputParameter & {name: "frontsidePort", params: #parameters}).out
+          port:       (#InlineInputParameter & {name: "frontsidePort", params: #inputParams}).out
+          targetPort: (#InlineInputParameter & {name: "frontsidePort", params: #inputParams}).out
         }]
         type: "LoadBalancer"
       }
@@ -61,21 +64,21 @@ package mymodule
       #containers: [
         #Container.#Jib & {
           name:              "proxy"
-          #parameters: PARAMS
+          #inputParams: PARAMS
           #ports: [{
             containerPort: (#InlineInputParameter & {name: "frontsidePort", params: PARAMS}).out
           }]
         },
       ]
-      let PARAMS=#parameters
-      #parameters: {
+      let PARAMS=#inputParams
+      #inputParams: {
         backsideUriString: { requiredArg: true, type: string }
         frontsidePort:     { requiredArg: true, type: int }
 
-        image:     { passToContainer: false, defaultValue: "migrations/migration-console:latest" }
-        replicas:  { passToContainer: false, defaultValue: 1 }
+        image:     { passToContainer: false, parameterValue: "migrations/migration-console:latest" }
+        replicas:  { passToContainer: false, parameterValue: 1 }
 
-  		  otelCollectorEndpoint: defaultValue: "http://otel-collector:4317"
+  		  otelCollectorEndpoint: parameterValue: "http://otel-collector:4317"
 
         traceDirectory:                     type: string
         noCapture:                          type: bool
@@ -94,7 +97,7 @@ package mymodule
         suppressCaptureHeaderPairs:         type: string
       }
 
-      #manifest: spec: replicas: (#InlineInputParameter & {name: "replicas", params: #parameters}).out
+      #manifest: spec: replicas: (#InlineInputParameter & {name: "replicas", params: #inputParams}).out
       resource: {
         setOwnerReference: true
         action:            "create"

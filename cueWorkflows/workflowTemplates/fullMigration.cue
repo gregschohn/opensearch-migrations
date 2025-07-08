@@ -16,13 +16,13 @@ package mymodule
 	  		s3Endpoint:  "ENDPOINT",
 		  	s3RepoUri:   "repo_uri"
 		  }
-  	  _parsedParams: { ... }
-      #parameters: {
+  	  _parsedInputParams: { ... }
+      #inputParams: {
       	sourceMigrationConfigs: type: [] | [ #SOURCE_MIGRATION_CONFIG,... ],
     	  targets:                type: [] | [ #CLUSTER_CONFIG,... ],
       	{
       		for k,v in #S3_PARAMS {
-	    			"\(k)": defaultValue: #FromConfigMap & {
+	    			"\(k)": parameterValue: #FromConfigMap & {
 	  	  			#type: string,
 	  		  		 map: paramWithName: #workflowParameters.s3SnapshotConfigMap,
 	  			  	 key: s3ParamToConfigMapKeyMapping[k]
@@ -36,8 +36,8 @@ package mymodule
 					#templateSignature:  #MIGRATION_TEMPLATES.TARGET_LATCH_HELPERS._templateSignaturesMap.init
           #argumentMappings: {
 				  	prefix: argoReadyString: "workflow-{{workflow.uid}}",
-  					targets: paramWithName: _parsedParams.parameterMap["targets"],
-	  				configurations: paramWithName: _parsedParams.parameterMap["sourceMigrationConfigs"]
+  					targets: paramWithName: _parsedInputParams.parameterMap["targets"],
+	  				configurations: paramWithName: _parsedInputParams.parameterMap["sourceMigrationConfigs"]
 		  		}
 			  }
       ]]

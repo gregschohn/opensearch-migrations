@@ -14,7 +14,7 @@ import "strings"
 }
 
 #FromExpression: {
-	expression: #Expression
+	expression: {...} // #Expression
 }
 
 #ArgoTemplateString: {
@@ -23,6 +23,7 @@ import "strings"
 
 #LiteralValue:   bool | string | number
 #ArgoExpressionValue: #LiteralValue | #FromParam | #FromExpression | #ArgoTemplateString
+// need to handle from path/jsonPath for output parameters
 #ArgoParameterValue:  #LiteralValue | #FromParam | #FromExpression | #ArgoTemplateString | #FromConfigMap
 
 // Every defined parameter can have a value, which this represents.
@@ -45,33 +46,35 @@ import "strings"
 	#in: #ArgoExpressionValue
 	inferredType: _parsedValue.t	// What type does the incoming value belong to
 	value: _parsedValue.value
+	didUnifyToExpr: (#in & #FromExpression) != _|_
 
 	_parsedValue: ([
-//  	if (#in & #Expression) != _|_ {
-//			t: #in.expression,
-//			value: #in.paramWithName.templateInputPath
-//		},
+  	if (#in & #FromExpression) != _|_ {
+			t: string, // #in.expression.type,
+			value: (#Expr.Evaluate & { #e: #in.expression }).out
+		},
   	if (#in & #FromParam) != _|_ {
 			t: #in.paramWithName.parameterDefinition.type,
 			value: #in.paramWithName.templateInputPath
 		},
 		if (#in & #ArgoTemplateString) != _|_ {
-			t: _,
+			t: string,
 			value: #in.argoReadyString
 		},
 		if (#in & bool)       != _|_ {t: bool,   value: strconv.FormatBool(#in)},
 		if (#in & int)        != _|_ {t: int,    value: strconv.FormatInt(#in, 10)},
 		if (#in & float)      != _|_ {t: float,  value: strconv.FormatFloat(#in, strings.Runes("f")[0], -1, 32)},
 		if (#in & string)     != _|_ {t: string, value: #in},
-//		{ t: _, value: UNKNOWN: #in }
+//		{ t: _, value: "\(#in)" }
 	][0])
 }
+
 #ArgoParameterValueProperties: {
 	#in: #ArgoParameterValue
 	let IN_PARAM_VALUE = #in
 	// What type does the incoming value belong to
 	inferredType: _parsedValue.t
-  // what should be the contents dumped into the parameters object to signify this value...
+  // what should be the contents dumped into the parameters object to express the value...
   // a string, "value": "{{...parameter.name}}", "valueFrom": {...}
 	parameterContents: _parsedValue.inlinedValue
 
@@ -108,28 +111,36 @@ import "strings"
 }
 
 #ValuePropertiesFromParameter: {
-	#parameterDefinition: #BaseParameterDefinition
-	if (#parameterDefinition._hasDefault) {
-		(#ArgoParameterValueProperties & { #in: #parameterDefinition.defaultValue })
+	#parameterDefinition: #IncomingParameterDefinition
+	if (#parameterDefinition.parameterValue != _|_) {
+		(#ArgoParameterValueProperties & { #in: #parameterDefinition.parameterValue })
 	}
-	if (!#parameterDefinition._hasDefault) {
+	if (!#parameterDefinition.parameterValue != _|_) {
 		type: #parameterDefinition.type
 		parameterContents: {}
 	}
 }
-
 #BaseParameterDefinition: {
-	parameterSource: "inputs"| "workflow"
-	defaultValue?:   #ArgoParameterValue
+  parameterSource: "inputs"| "workflow" | "outputs"
   description?: string
-	requiredArg:  *false | bool
 	type: _
+}
 
-	_hasDefault: defaultValue != _|_
+#OutputParameterDefinition: {
+	parameterSource: "outputs"
+	parameterValue: #ArgoParameterValue
+	type: string // parameterValue.type
+}
+
+#IncomingParameterDefinition: {
+  #BaseParameterDefinition
+  parameterValue?: #ArgoParameterValue
+	defaultValue?: parameterValue
+	requiredArg:  *false | bool
 }
 
 #TemplateParameterDefinition: {
-	#BaseParameterDefinition
+	#IncomingParameterDefinition
 	parameterSource: "inputs"
 	passToContainer: *true | bool
 	requiredArg:     bool
@@ -141,7 +152,7 @@ import "strings"
 }
 
 #WorkflowParameterDefinition: {
-	#BaseParameterDefinition
+	#IncomingParameterDefinition
 	parameterSource: "workflow"
 }
 
@@ -154,6 +165,7 @@ _ArgumentParameter: "io.argoproj.workflow.v1alpha1.Parameter"
 	parameterDefinition: (#TemplateParameterDefinition | #WorkflowParameterDefinition) & {}
 	parameterName!:    string
 	envName:           string | *strings.ToUpper(parameterName)
+	//parameterPath:     "\(parameterDefinition.parameterSource).parameters['\(parameterName)']"
 	parameterPath:     "\(parameterDefinition.parameterSource).parameters['\(parameterName)']"
 	templateInputPath: "{{\(parameterPath)}}"
 }

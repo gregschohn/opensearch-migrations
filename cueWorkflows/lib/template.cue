@@ -1,20 +1,18 @@
 package mymodule
 
-import argo "github.com/opensearch-migrations/workflowconfigs/argo"
+import argo "opensearch.org/migrations/workflowconfigs/argo"
 import k8sAppsV1 "k8s.io/apis_apps_v1"
 import "strings"
 import "strconv"
 
 @experiment(structcmp)
 
-let TOP_CONTAINER = #Container
-
 #ParametersExpansion: {
 	// constrain that all parameterSource values must be the same
 	#in: [string]: { ..., parameterSource: _parameterSource }
 	_parameterSource: string
 
-	let PARAMS_LIST = [for p, details in #in { parameterDefinition: #BaseParameterDefinition & details, parameterName!: p }]
+	let PARAMS_LIST = [for p, details in #in { parameterDefinition: #IncomingParameterDefinition & details, parameterName!: p }]
 	parameters: [for p in PARAMS_LIST {
 		name: p.parameterName,
 		(#ValuePropertiesFromParameter & { #parameterDefinition: p.parameterDefinition }).parameterContents,
@@ -68,17 +66,24 @@ let TOP_CONTAINER = #Container
 	#containingKubernetesResourceName!: string
 	out: {
 		name: #template.name,
-		parameters: #template.#parameters,
+		parameters: #template.#inputParams,
 		containingKubernetesResourceName: #containingKubernetesResourceName
 	}
 }
 
 #WFBase: (argo.#."io.argoproj.workflow.v1alpha1.Template" & {
-	#parameters: [string]: (#TemplateParameterDefinition)
+	#inputParams: [string]: (#TemplateParameterDefinition)
+	#outputParams: [string]: (#ArgoExpressionValue)
 
-	if len(#parameters) != 0 {
-		_parsedParams: (#ParametersExpansion & { #in: #parameters })
-		inputs: parameters: _parsedParams.parameters
+	if len(#inputParams) != 0 {
+		_parsedInputParams: (#ParametersExpansion & { #in: #inputParams })
+		inputs: parameters: _parsedInputParams.parameters
+	}
+	if len(#outputParams) != 0 {
+		parsedOutputParams: (#ParametersExpansion & { #in: {
+			for k, v in #outputParams { "\(k)": { parameterValue: v } }
+		} } )
+		outputs: parameters: parsedOutputParams.parameters
 	}
 	name!: string
 	steps?: [...]
@@ -89,7 +94,7 @@ let TOP_CONTAINER = #Container
 #WFSteps:     { #WFBase, steps: [...[...#WorkflowStepOrTask]] }
 #WFSuspend:   { #WFBase, suspend: {} }
 #WFDoNothing: { #WFBase, steps: [[]] }
-#WFContainer: { #WFBase, container: TOP_CONTAINER.#Base } // find the argo type for this part or the parent
+#WFContainer: { #WFBase, container: #Container.#Base } // find the argo type for this part or the parent
 #WFScript:    { #WFBase, script: //argo.#."io.argoproj.workflow.v1alpha1.ScriptTemplate" & #Container.#Base &
 	{}
 }
@@ -117,7 +122,7 @@ let TOP_CONTAINER = #Container
  	#WFResource
   #manifestSchema: k8sAppsV1.#SchemaMap."io.k8s.api.apps.v1.Deployment"
   #resourceName!: string
-  #parameters!: [string]: #TemplateParameterDefinition
+  #inputParams!: [string]: #TemplateParameterDefinition
   #containers: [{...}]
 
   #manifest: {

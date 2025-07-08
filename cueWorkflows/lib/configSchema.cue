@@ -25,6 +25,7 @@ package mymodule
 			mappings: {
 				properties: {...}
 			},
+			//
 			documentBackfillConfigs: {
 				indices: [...string],
 				config: {

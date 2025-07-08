@@ -8,7 +8,7 @@ _resource_targetLatchHelpers_cleanup_sh: string @tag(resource_targetLatchHelpers
 	#name: "target-latch-helpers"
 	#templates: {
 		init: (#WFContainer & {
-	  	#parameters: {
+	  	#inputParams: {
 	  		configurations: { requiredArg: true, type: [...#SOURCE_MIGRATION_CONFIG] },
 			 	targets:        { requiredArg: true, type: [ ...#CLUSTER_CONFIG ] },
 			 	prefix:         { requiredArg: true, type: string }
@@ -22,7 +22,7 @@ _resource_targetLatchHelpers_cleanup_sh: string @tag(resource_targetLatchHelpers
 		 })
 
   	decrement: (#WFScript & {
-  		#parameters: {
+  		#inputParams: {
   			processor: type: string
 			 	target:    type: string
 				prefix:    type: string
@@ -34,7 +34,7 @@ _resource_targetLatchHelpers_cleanup_sh: string @tag(resource_targetLatchHelpers
 	  })
 
   	cleanup: (#WFContainer & {
-		 	#parameters: {
+		 	#inputParams: {
 		 		prefix: type: string
 			}
 			container: command: [

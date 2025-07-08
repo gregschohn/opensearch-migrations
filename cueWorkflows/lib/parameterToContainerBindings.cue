@@ -6,10 +6,10 @@ import k8sAppsV1 "k8s.io/apis_apps_v1"
 
 #Container: {
 	#Base: (#ManifestUnifier & {in: k8sAppsV1.#SchemaMap."io.k8s.api.core.v1.Container"}).out & {
-			#parameters: [string]: #TemplateParameterDefinition
+			#inputParams: [string]: #TemplateParameterDefinition
 			#ports: [...{...}]
 
-			_filteredContainerParameters: { for k,v in #parameters if v.passToContainer { (k): v } }
+			_filteredContainerParameters: { for k,v in #inputParams if v.passToContainer { (k): v } }
 			_enrichedContainerParameters: [... #ParameterWithName ] &
 			[for p, details in _filteredContainerParameters { #ParameterWithName & {
 				parameterDefinition: details,
@@ -17,8 +17,8 @@ import k8sAppsV1 "k8s.io/apis_apps_v1"
 			}}]
 
 			name: *"main" | string
-			image: (#InlineInputParameter & {name: "image", params: #parameters}).out | *"SPECIFY_IMAGE_PARAMETER_FIXME"
-			imagePullPolicy: *(#InlineInputParameter & {name: "imagePullPolicy", params: #parameters}).out | "IfNotPresent"
+			image: (#InlineInputParameter & {name: "image", params: #inputParams}).out | *"SPECIFY_IMAGE_PARAMETER_FIXME"
+			imagePullPolicy: *(#InlineInputParameter & {name: "imagePullPolicy", params: #inputParams}).out | "IfNotPresent"
 			env: [for p in _enrichedContainerParameters { name: p.envName, value: p.templateInputPath}]
 			if len(#ports) != 0 {
 				ports: #ports

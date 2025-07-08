@@ -11,25 +11,30 @@ import "strings"
   	}
   }
 
-  #ArgoExpressionValueProperties: {
-  	#in: #ArgoExpressionValue
-
-  }
-
   EvaluateList: {
-  	#list: [...#ArgoExpressionValue]
-  	out: []
+  	list!: [...#ArgoExpressionValue]
+  	out: [ for v in list { (#ArgoExpressionValueProperties & { #in: v }).value } ]
   }
 
- 	Concat: {
- 		#in: [...(#ArgoParameterValue & { ..., inferredType: string })]
- 		out: strings.Join((EvaluateList & { #list: #in }).out, "")
- 	}
+ 	Concat: //#Expression &
+ 	{
+ 		op: "concat"
+ 		list!: [...#ArgoExpressionValue]
+		type: string
+	}
 
-  UnaryExpression: {...}
-  BinaryExpression: {...}
-  ListExpression: {...}
-  StructExpression: {...}
+	Evaluate: {
+		#e: _
+ 	  out: [
+ 	  	if (#e.op == Concat.op) {
+ 	  		strings.Join((EvaluateList & { list: #e.list }).out, "")
+ 	  	},
+ 	  	// "INVALID_EXPRESSION! \(#e.op)"
+ 		 ][0]
+ 	}
 }
 
-#Expression: {...}//#Expr.UnaryExpression | #Expr.BinaryExpression | #Expr.ListExpression | #Expr.StructExpression
+//#Expression: {...,
+//	op: "concat" | "jsonPath"
+//  type: _
+//}//#Expr.UnaryExpression | #Expr.BinaryExpression | #Expr.ListExpression | #Expr.StructExpression

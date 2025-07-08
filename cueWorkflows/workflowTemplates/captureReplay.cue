@@ -8,7 +8,7 @@ package mymodule
 	_templateSignaturesMap: [string]: #TemplateSignature
 	#templates: {
   	runAll: (#WFDag & {
-			#parameters: {
+			#inputParams: {
 				sessionName:          { requiredArg: true, type: string }
 				proxyDestination:     { requiredArg: true, type: string }
 				proxyListenPort:      { requiredArg: true, type: int }
@@ -21,13 +21,13 @@ package mymodule
 				topicName:                     type: string
 				topicPartition:                type: string
 			}
-  		_parsedParams: {...}
+  		_parsedInputParams: {...}
 
 			dag: {
 			  tasks: [{
 						#templateSignature: _templateSignaturesMap.idGenerator
 					  #argumentMappings: {
-							serviceName: paramWithName: #ParameterWithName & _parsedParams.parameterMap.sessionName
+							serviceName: paramWithName: #ParameterWithName & _parsedInputParams.parameterMap.sessionName
 							//proxyEndpoint: expression:
 						}
 				}
@@ -39,7 +39,7 @@ package mymodule
 		getUserConfirmation: (#WFSuspend & { name: "getUserConfirmation"	})
 
 		idGenerator: (#WFDoNothing & {
-			#parameters: {
+			#inputParams: {
 				proxyEndpoint: { requiredArg: false, type: string }
 				serviceName:   { requiredArg: true, type: string }
 			}

@@ -7,14 +7,14 @@ Test:{
 				av2: #ArgoParameterValueProperties & { #in: "string" }
     },
 		Two: {
-				a: #ParameterWithName & { parameterDefinition: { parameterSource: "workflow", defaultValue: "nine" }, parameterName: "a" }
+				a: #ParameterWithName & { parameterDefinition: { parameterSource: "workflow", parameterValue: "nine" }, parameterName: "a" }
 				// WorkflowParameterDefinition will unify to parameterSource: "workflow"
-				a: #ParameterWithName & { parameterDefinition: #WorkflowParameterDefinition & { defaultValue: "nine" }, parameterName: "a" }
+				a: #ParameterWithName & { parameterDefinition: #WorkflowParameterDefinition & { parameterValue: "nine" }, parameterName: "a" }
 				b: #ParameterWithName & {
 				  parameterName: "b",
 				  parameterDefinition: {
 				    parameterSource: "inputs"
-				    defaultValue: { #FromParam & {paramWithName: a} }
+				    parameterValue: { #FromParam & {paramWithName: a} }
 				  }
 				}
 		}
