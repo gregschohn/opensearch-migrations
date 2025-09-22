@@ -37,8 +37,11 @@ export const CreateOrGetSnapshot = WorkflowBuilder.create({
                     }),
                 }), {when: expr.equals(b.inputs.alreadyDefinedName, expr.literal(""))})
         )
-         .addExpressionOutput("snapshotConfig",
-                 c=> c.steps.createSnapshot.outputs.snapshotConfig))
-
+         .addExpressionOutput("snapshotConfig", c=>
+                     expr.ternary(
+                         expr.equals(c.steps.createSnapshot.status, "Skipped"),
+                         c.inputs.alreadyDefinedName,
+                         c.steps.createSnapshot.outputs.snapshotConfig))
+    )
 
     .getFullScope();

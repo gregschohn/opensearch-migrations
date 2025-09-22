@@ -570,8 +570,8 @@ class ExprBuilder {
         return fn<R>("fromJSON", toExpression(data));
     }
 
-    recordToString<T extends PlainObject>(data: AllowLiteralOrExpression<T>) {
-        return fn<string>("toJSON", toExpression(data));
+    recordToString<T extends AggregateType>(data: AllowLiteralOrExpression<T>) {
+        return fn<Serialized<T>>("toJSON", toExpression(data));
     }
 
     makeDict<R extends Record<string, AllowLiteralOrExpression<PlainObject>>>(

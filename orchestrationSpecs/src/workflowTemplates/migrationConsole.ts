@@ -17,29 +17,9 @@ import {
 } from "@/workflowTemplates/userSchemas";
 import {INTERNAL} from "@/schemas/taskBuilder";
 import {IMAGE_PULL_POLICY} from "@/schemas/containerBuilder";
-import {MissingField, PlainObject, Serialized} from "@/schemas/plainObject";
+import {MissingField} from "@/schemas/plainObject";
 import {selectInputsForRegister} from "@/schemas/parameterConversions";
 import {typeToken} from "@/schemas/sharedTypes";
-
-function conditionalInclude<
-    T extends Serialized<Record<string, PlainObject>>,
-    U extends MissingField | T
->(label: string, contents: BaseExpression<U>): BaseExpression<string> {
-    return expr.ternary(
-        expr.equals(expr.length(expr.keys(expr.nullCoalesce(
-            expr.cast(contents).to<Record<string, PlainObject> | MissingField>(),
-                {}
-            ))), expr.literal(0)),
-        expr.literal(""), // do-nothing branch
-        expr.concat(
-            // Fill out the appropriate line(s) of the config.  Notice that yaml allows inlining JSON,
-            // which makes handling contents, especially at argo runtime, simpler
-            expr.literal(label+": "),
-            expr.recordToString(expr.cast(contents).to<T>()),
-            expr.literal("\n")
-        )
-    );
-}
 
 const KafkaServicesConfig = z.object({
     broker_endpoints: z.string(),
@@ -149,15 +129,12 @@ export const MigrationConsole = WorkflowBuilder.create({
         .addSteps(s=>s
             .addStepGroup(c=>c))
         .addExpressionOutput("configContents", c=>
-            expr.stringToRecord(typeToken<z.infer<typeof CONSOLE_SERVICES_CONFIG_FILE>>(),
-                expr.concat(
-                    conditionalInclude("kafka", c.inputs.kafkaInfo),
-                    conditionalInclude("source_cluster", c.inputs.sourceConfig),
-                    conditionalInclude("target_cluster", c.inputs.targetConfig),
-                    conditionalInclude("target_cluster", c.inputs.targetConfig),
-                    conditionalInclude("snapshot", c.inputs.snapshotConfig),
-                    conditionalInclude("target_cluster", c.inputs.targetConfig)
-                ))
+                expr.recordToString(expr.makeDict({
+                    "kafka": c.inputs.kafkaInfo,
+                    "source_cluster": c.inputs.sourceConfig,
+                    "target_cluster":  c.inputs.targetConfig,
+                    "snapshot": c.inputs.snapshotConfig
+                }))
         )
     )
 

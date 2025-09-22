@@ -60,7 +60,7 @@ export const FullMigration = WorkflowBuilder.create({
 
 
     .addTemplate("pipelineMigrateFromSnapshot", t=>t
-        .addRequiredInput("migrationConfig", typeToken<z.infer<typeof PER_INDICES_SNAPSHOT_MIGRATION_CONFIG>>())
+        .addRequiredInput("migrationConfig", typeToken<string>())//z.infer<typeof PER_INDICES_SNAPSHOT_MIGRATION_CONFIG>>())
         .addRequiredInput("sourceConfig", typeToken<z.infer<typeof SOURCE_MIGRATION_CONFIG>['source']>())
         .addRequiredInput("snapshotConfig", typeToken<z.infer<typeof COMPLETE_SNAPSHOT_CONFIG>>())
         .addRequiredInput("target", typeToken<z.infer<typeof TARGET_CLUSTER_CONFIG>>())
@@ -75,8 +75,9 @@ export const FullMigration = WorkflowBuilder.create({
                 c.register({
                     ...selectInputsForRegister(b, c),
                     targetConfig: b.inputs.target,
-                    indices: expr.jsonPathLoose(b.inputs.migrationConfig, "metadata", "indices"),
-                    metadataMigrationConfig: expr.jsonPathLoose(b.inputs.migrationConfig, "metadata", "options")
+                    indices: expr.nullCoalesce(expr.jsonPathLoose(b.inputs.migrationConfig, "metadata", "indices"), []),
+                    metadataMigrationConfig:
+                        expr.nullCoalesce(expr.jsonPathLoose(b.inputs.migrationConfig, "metadata", "options"), {})
                 }))
             .addStep("bulkLoadDocuments", DocumentBulkLoad, "runBulkLoad", c =>
                 c.register({
