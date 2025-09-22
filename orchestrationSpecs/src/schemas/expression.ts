@@ -240,13 +240,6 @@ type ValueAtSegsMissing<
 export type SegmentsValueMissing<T, S extends readonly unknown[]> =
     ValueAtSegsMissing<NonMissing<T>, S, HasMissing<T>>;
 
-export class ArrayLengthExpression<
-    E extends BaseExpression<any[], CE>,
-    CE extends ExpressionType = ExprC<E>
-> extends BaseExpression<number, CE> {
-    constructor(public readonly array: E) { super("array_length"); }
-}
-
 type ElemFromArrayExpr<A extends BaseExpression<any[], any>> =
     ResultOf<A> extends (infer U)[] ? Extract<U, PlainObject> : never;
 
@@ -508,6 +501,10 @@ class ExprBuilder {
     }
 
     // JSON Handling
+    keys<T extends Record<string, any>>(obj: BaseExpression<T>) {
+        return fn<string[], ExpressionType, "complicatedExpression">("keys", obj);
+    }
+
     jsonPathLoose<
         T extends Record<string, any>,
         K extends Extract<keyof NonMissing<T>, string>
@@ -596,10 +593,6 @@ class ExprBuilder {
     }
 
     // Array operations
-    length<E extends BaseExpression<any[], any>>(arr: E): BaseExpression<number, ExprC<E>> {
-        return new ArrayLengthExpression(arr);
-    }
-
     index<
         A extends BaseExpression<any[], any>,
         I extends BaseExpression<number, any>
@@ -608,6 +601,10 @@ class ExprBuilder {
         i: I
     ): BaseExpression<ElemFromArrayExpr<A>, WidenComplexity2<ExprC<A>, ExprC<I>>> {
         return new ArrayIndexExpression(arr, i);
+    }
+
+    length<T extends PlainObject>(arr: BaseExpression<T[]>) {
+        return fn<number, ExpressionType, "complicatedExpression">("len", arr);
     }
 
     last<T extends PlainObject>(arr: BaseExpression<T[]>) {
