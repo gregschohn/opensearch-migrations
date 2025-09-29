@@ -1,3 +1,5 @@
+set -x
+
 SOURCE_CONFIG=$(echo "$CONFIGURATION")
 TARGETS_CONFIG=$(echo "$TARGETS")
 echo "source config = $SOURCE_CONFIG"
@@ -33,7 +35,7 @@ fi
 
 # Check for duplicate snapshot/metadata/backfill configurations within each source
 echo "Checking for duplicate configurations..."
-echo "$SOURCE_CONFIG" | jq -c '.[] | .["snapshot-and-migration-configs"]' | while read -r configs; do
+echo "$SOURCE_CONFIG" | jq -c '.[] | .["snapshotExtractAndLoadConfigs"]' | while read -r configs; do
   # Check for duplicate indices in snapshot configs
   UNIQUE_INDICES=$(echo "$configs" | jq -r '[.[] | .indices | sort | join(",")] | unique | length')
   TOTAL_CONFIGS=$(echo "$configs" | jq -r 'length')
@@ -57,7 +59,7 @@ done
 
 # Calculate the total number of processors
 # Count the total number of migrations across all sources and snapshot configs
-PROCESSOR_COUNT=$(echo "$SOURCE_CONFIG" | jq -r '[.[] | .["snapshot-and-migration-configs"][] | .migrations | length] | add')
+PROCESSOR_COUNT=$(echo "$SOURCE_CONFIG" | jq -r '[.[] | .["snapshotExtractAndLoadConfigs"][] | .migrations | length] | add')
 echo "Total processor count: $PROCESSOR_COUNT"
 
 echo "$PREFIX" > /tmp/prefix
