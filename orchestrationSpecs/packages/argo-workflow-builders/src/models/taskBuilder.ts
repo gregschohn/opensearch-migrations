@@ -10,6 +10,7 @@ import {
     WorkflowAndTemplatesScope
 } from "./workflowTypes";
 import {Workflow} from "./workflowBuilder";
+import type {TemplateBuilder} from "./templateBuilder";
 import {DeepWiden, NonSerializedPlainObject, PlainObject} from "./plainObject";
 import {UniqueNameConstraintAtDeclaration, UniqueNameConstraintOutsideDeclaration} from "./scopeConstraints";
 import {InputParametersRecord, OutputParamDef, OutputParametersRecord} from "./parameterSchemas";
@@ -183,6 +184,8 @@ export type NormalizeInputsOfWfTemplate<
         ? NormalizeInputs<X> extends InputParametersRecord ? NormalizeInputs<X> : {}
         : {};
 
+type ForbiddenParamsRegistration = { __no_params_allowed__: never };
+
 export type ParamsTuple<
     I extends InputParametersRecord,
     Name extends string,
@@ -192,7 +195,12 @@ export type ParamsTuple<
     OptsType extends TaskOpts<S, Label, LoopT>
 > =
     InputKind<I> extends "empty"
-        ? [opts?: OptsType]
+        ? [opts?: OptsType] | [
+            paramsFn: UniqueNameConstraintOutsideDeclaration<
+                Name, S, ParamsRegistrationFn<S, ForbiddenParamsRegistration, Label, LoopT>
+            >,
+            opts?: OptsType
+        ]
         : InputKind<I> extends "allOptional"
             ? [
                 paramsFn?: UniqueNameConstraintOutsideDeclaration<
@@ -241,14 +249,28 @@ export type IsInternal<Src> = Src extends typeof INTERNAL ? true : false;
 
 export type IsInline<Src> = Src extends typeof INLINE ? true : false;
 
-export type InlineInputsFrom<Fn> = 
-    Fn extends (builder: any) => { inputsScope: infer I }
-        ? I extends InputParametersRecord ? I : {}
+type RuntimeInlineBuilderResult = {
+    getBody(): any;
+    retryParameters?: any;
+    inputsScope?: any;
+    outputsScope?: any;
+};
+
+export type InlineTemplateFn<C extends WorkflowAndTemplatesScope> =
+    (builder: TemplateBuilder<C, {}, {}, {}>) => any;
+
+export type InlineInputsFrom<Fn> =
+    Fn extends (...args: any[]) => infer R
+        ? R extends { inputsScope: infer I }
+            ? I extends InputParametersRecord ? I : {}
+            : {}
         : {};
 
-export type InlineOutputsFrom<Fn> = 
-    Fn extends (builder: any) => { outputsScope: infer O }
-        ? O extends OutputParametersRecord ? O : {}
+export type InlineOutputsFrom<Fn> =
+    Fn extends (...args: any[]) => infer R
+        ? R extends { outputsScope: infer O }
+            ? O extends OutputParametersRecord ? O : {}
+            : {}
         : {};
 
 export type KeyFor<C extends WorkflowAndTemplatesScope, Src> =
@@ -386,7 +408,7 @@ export abstract class TaskBuilder<
     >;
     public addTask<
         Name extends string,
-        InlineFnType extends (builder: any) => { inputsScope: any; outputsScope: any; getBody(): any; retryParameters?: any },
+        InlineFnType extends InlineTemplateFn<C>,
         LoopT extends NonSerializedPlainObject = never,
         OptsType extends TaskOpts<S, Label, LoopT> = TaskOpts<S, Label, LoopT>
     >(
@@ -401,7 +423,7 @@ export abstract class TaskBuilder<
     >;
     public addTask(name: any, sourceOrInline: any, keyOrFn?: any, ...restArgs: any[]): any {
         if (sourceOrInline === INLINE) {
-            const inlineFn = keyOrFn as (builder: any) => { getBody(): any; retryParameters?: any; inputsScope?: any; outputsScope?: any };
+            const inlineFn = keyOrFn as InlineTemplateFn<C>;
             const args = restArgs;
             const {paramsFn, opts} = unpackParams<any, S, Label, any>(args);
             const loopWith = reduceLoopWith(opts?.loopWith, this.getTaskOutputsByTaskName());
@@ -409,7 +431,7 @@ export abstract class TaskBuilder<
             // Import TemplateBuilder dynamically to avoid circular dependency
             const {TemplateBuilder} = require("./templateBuilder");
             const templateBuilder = new TemplateBuilder(this.parentWorkflowScope, {}, {}, {});
-            const bodyBuilder = inlineFn(templateBuilder);
+            const bodyBuilder = inlineFn(templateBuilder) as RuntimeInlineBuilderResult;
             const inputs = bodyBuilder.inputsScope || {};
             const params = this.getParamsFromCallback<any, any>(inputs, paramsFn as any, loopWith);
             const outputs = bodyBuilder.outputsScope || {};
