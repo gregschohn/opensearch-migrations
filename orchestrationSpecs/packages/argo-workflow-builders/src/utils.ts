@@ -101,7 +101,7 @@ export function inputsToEnvVarsList<T extends Record<string, ExpressionOrConfigM
 
 export function toSafeYamlOutput(workflowConfig: any) {
     return toYaml(workflowConfig,
-        (k, v) => {
+        (k: any, v: any) => {
             if (typeof v === 'string') {
                 // Quote strings that could be misinterpreted as booleans
                 const looksLikeBoolean =

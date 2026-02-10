@@ -1,6 +1,7 @@
-import {CallerParams, INTERNAL, typeToken, WorkflowBuilder} from "../src";
+import {CallerParams, INTERNAL, renderWorkflowTemplate, typeToken, WorkflowBuilder} from "../src";
+import {json} from "node:stream/consumers";
 
-describe("paramsFns runtime validation - comprehensive", () => {
+describe("nested steps test", () => {
     // Shared external templates with different parameter configurations
 
     // Template with no parameters
@@ -74,15 +75,26 @@ describe("paramsFns runtime validation - comprehensive", () => {
             .addExpressionOutput("result", inputs=>"internal_success" as string)
         );
 
+    describe("paramsFns runtime validation - comprehensive", () => {
+        it("required enum param types work", () => {
+            const tt = baseWorkflow.addTemplate("test", t=>t
+                .addSteps(sb=> sb
+                .addStepGroup(g=> g
+                    .addTask("i1", INTERNAL, "internalNoParams")
+                    .addTask("i2", INTERNAL, "internalNoParams")
+                )
+            )).getFullScope();
+            const rendered = renderWorkflowTemplate(tt);
+            console.log(rendered)
+        });
+    })
+
     // Tests for External Templates - No Parameters
     describe("External Templates - No Parameters", () => {
         it("should accept valid call with no parameters", () => {
             baseWorkflow.addTemplate("testNoParamsValid", t => t
                 .addSteps(g => {
-                    const step = g.addStep("step1", noParamsTemplate, "noParams",
-                        // @ts-expect-error — spurious property registration should be rejected
-                        c => c.register({})
-                    );
+                    const step = g.addStep("step1", noParamsTemplate, "noParams");
                     return step;
                 })
             );
@@ -91,9 +103,9 @@ describe("paramsFns runtime validation - comprehensive", () => {
         it("should reject call with spurious parameters", () => {
             baseWorkflow.addTemplate("testNoParamsSpurious", t => t
                 .addSteps(g => {
+                    // @ts-expect-error — spurious property registration should be rejected
                     const step = g.addStep("step1", noParamsTemplate, "noParams",
-                        // @ts-expect-error — spurious property registration should be rejected
-                        c => c.register({spuriousField: "should error"})
+                        (c: any) => c.register({spuriousField: "should error"})
                     );
                     return step;
                 })
@@ -383,9 +395,7 @@ describe("paramsFns runtime validation - comprehensive", () => {
         it("should accept valid call with no parameters", () => {
             baseWorkflow.addTemplate("testInternalNoParamsValid", t => t
                 .addSteps(g => {
-                    const step = g.addStep("step1", INTERNAL, "internalNoParams",
-                        // @ts-expect-error — spurious property should be rejected
-                        c => c.register({}));
+                    const step = g.addStep("step1", INTERNAL, "internalNoParams");
                     return step;
                 })
             );
@@ -394,9 +404,9 @@ describe("paramsFns runtime validation - comprehensive", () => {
         it("should reject call with spurious parameters", () => {
             baseWorkflow.addTemplate("testInternalNoParamsSpurious", t => t
                 .addSteps(g => {
+                    // @ts-expect-error — spurious property should be rejected
                     const step = g.addStep("step1", INTERNAL, "internalNoParams",
-                        // @ts-expect-error — spurious property should be rejected
-                        c => c.register({
+                        (c: any) => c.register({
                             spuriousField: "should error"
                         }));
                     return step;

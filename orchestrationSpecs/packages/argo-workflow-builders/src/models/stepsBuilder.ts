@@ -22,9 +22,14 @@ import {
 import {RetryableTemplateBodyBuilder, RetryableTemplateRebinder} from "./templateBodyBuilder";
 import {UniqueNameConstraintAtDeclaration, UniqueNameConstraintOutsideDeclaration} from "./scopeConstraints";
 import {NonSerializedPlainObject, PlainObject} from "./plainObject";
+import {Workflow} from "./workflowBuilder";
 import {
     LabelledAllTasksAsOutputReferenceable,
     getTaskOutputsByTaskName,
+    INTERNAL,
+    INLINE,
+    InlineInputsFrom,
+    InlineOutputsFrom,
     InputsFrom,
     KeyFor,
     OutputsFrom,
@@ -34,6 +39,7 @@ import {
 } from "./taskBuilder";
 import {NamedTask} from "./sharedTypes";
 import {SynchronizationConfig} from "./synchronization";
+import type {TemplateBuilder} from "./templateBuilder";
 
 export interface StepGroup {
     steps: NamedTask[];
@@ -147,7 +153,7 @@ export class StepsBuilder<
     // Convenience method for single step
     public addStep<
         Name extends string,
-        TemplateSource,
+        TemplateSource extends typeof INTERNAL | Workflow<any, any, any>,
         K extends KeyFor<ParentWorkflowScope, TemplateSource>,
         LoopT extends NonSerializedPlainObject = never
     >(
@@ -169,12 +175,24 @@ export class StepsBuilder<
             { [P in Name]: TasksWithOutputs<Name, OutputsFrom<ParentWorkflowScope, TemplateSource, K>> }
         >,
         OutputParamsScope
-    > {
-        return this.addStepGroup(gb => {
-            return gb.addTask<Name, TemplateSource, K, LoopT, TaskOpts<StepsScope, "steps", LoopT>>(
-                name, source, key, ...args
-            );
-        }) as any;
+    >;
+    public addStep<
+        Name extends string,
+        R extends { inputsScope: any; outputsScope: any; retryParameters?: any },
+        LoopT extends NonSerializedPlainObject = never
+    >(
+        name: UniqueNameConstraintAtDeclaration<Name, StepsScope>,
+        source: any,
+        inlineFn: (builder: TemplateBuilder<ParentWorkflowScope, {}, {}, {}>) => R,
+        ...args: any[]
+    ): StepsBuilder<
+        ParentWorkflowScope,
+        InputParamsScope,
+        ExtendScope<StepsScope, { [P in Name]: TasksWithOutputs<Name, R["outputsScope"]> }>,
+        OutputParamsScope
+    >;
+    public addStep(name: any, source: any, keyOrFn?: any, ...restArgs: any[]): any {
+        return this.addStepGroup(gb => gb.addTask(name, source, keyOrFn, ...restArgs)) as any;
     }
 
     protected getBody() {

@@ -1,11 +1,7 @@
 import { z } from 'zod';
 import {OVERALL_MIGRATION_CONFIG} from "./userSchemas";
-import {
-    ARGO_WORKFLOW_SCHEMA,
-    PARAMETERIZED_MIGRATION_CONFIG,
-    PARAMETERIZED_MIGRATION_CONFIG_ARRAYS
-} from "./argoSchemas";
 import {fullUnwrapType, unwrapSchema, ZOD_OPTIONAL_TYPES} from "./schemaUtilities";
+import {ARGO_MIGRATION_CONFIG} from "./argoSchemas";
 
 // Path context for tracking descent through the schema
 export type SchemaPath = string[];
@@ -414,7 +410,7 @@ export async function main() {
         return getRecordKeyPlaceholder(path);
     };
 
-    console.info(schemaToJsonWithCommentsTop(OVERALL_MIGRATION_CONFIG,
+    console.info(schemaToJsonWithCommentsTop(ARGO_MIGRATION_CONFIG,
         (path: SchemaPath) => {
             switch (path[path.length - 1]) {
                 case "sourceClusters": return "source";

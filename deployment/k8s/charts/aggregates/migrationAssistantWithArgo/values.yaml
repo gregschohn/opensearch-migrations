@@ -71,17 +71,9 @@ aws:
 # EKS cluster configuration for Karpenter NodeClass
 cluster:
   # Set to true for EKS clusters with Karpenter, false for other cluster types
-  dedicatedKarpenterNodePoolForMigrationConsole: false
-  useCustomKarpenterNodePool: false
-
-# Migrations NodePool configuration (EKS only)
-workloadsNodePool:
-  architectures: []  # Empty = no constraint (Karpenter picks). Set ["amd64"] or ["arm64"] to restrict.
-  # These limits are keep the entire aggregate compute size under these values.
-  # This is an arbiter on total cost that a deployment can consume per unit of time
-  limits:
-    cpu: "64000m"
-    memory: "128Gi"
+  isEKS: false
+  name: ""  # Set this to your EKS cluster name (required when isEKS: true)
+  nodeInstanceProfile: "KarpenterNodeInstanceProfile"  # Default Karpenter node instance profile
 
 stageName: dev
 
@@ -246,47 +238,33 @@ charts:
 
 
   strimzi-kafka-operator:
-    version: 0.47.0
+    version: 0.50.0
     repository: "https://strimzi.io/charts/"
     values:
-      replicas: 1
-      storageType: ephemeral
-      storageSize: 100Gi
-      storageDeleteClaim: true
-      dedicatedController:
-        replicas: 1
-        storageSize: 10Gi
+      storageType: ephemeral # strimzi is stateless
+      storageSize: 5Gi
 
+      # Increase probe thresholds to prevent unnecessary restarts during high API load.
       readinessProbe:
-        initialDelaySeconds: 5
-        periodSeconds: 2
-        timeoutSeconds: 3
-        failureThreshold: 1
+        initialDelaySeconds: 15
+        periodSeconds: 10
+        timeoutSeconds: 5
+        failureThreshold: 3
       livenessProbe:
-        initialDelaySeconds: 5
-        periodSeconds: 2
-        timeoutSeconds: 3
-        failureThreshold: 1
+        initialDelaySeconds: 15
+        periodSeconds: 15
+        timeoutSeconds: 5
+        failureThreshold: 3
 
-      kafka:
-        template:
-          pod:
-            readinessProbe:
-              initialDelaySeconds: 5
-              periodSeconds: 5
-              timeoutSeconds: 3
-              failureThreshold: 1
+      # Recommended baseline resources to ensure the JVM has enough heap for metadata
+      resources:
+        requests:
+          cpu: "250m"
+          memory: "512Mi"
+        limits:
+          cpu: "1000m"
+          memory: "1Gi"
 
-        readinessProbe:
-          initialDelaySeconds: 5
-          periodSeconds: 2
-          timeoutSeconds: 3
-          failureThreshold: 1
-        livenessProbe:
-          initialDelaySeconds: 5
-          periodSeconds: 2
-          timeoutSeconds: 3
-          failureThreshold: 1
 
   argo-workflows:
     version: "0.47.1"

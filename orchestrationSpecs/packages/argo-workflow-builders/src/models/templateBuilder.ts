@@ -37,6 +37,7 @@ import {DeepWiden, PlainObject} from "./plainObject";
 import {DagBuilder} from "./dagBuilder";
 import {K8sResourceBuilder} from "./k8sResourceBuilder";
 import {SuspendTemplateBuilder, DurationInSeconds} from "./suspendTemplateBuilder";
+import {WaitForResourceBuilder} from "./waitForResourceBuilder";
 import {AllowLiteralOrExpression, expr, isExpression} from "./expression";
 import {typeToken, TypeToken} from "./sharedTypes";
 import {templateInputParametersAsExpressions, workflowParametersAsExpressions} from "./parameterConversions";
@@ -287,6 +288,23 @@ export class TemplateBuilder<
             {},
             undefined
         );
+    }
+
+    addWaitForResource<
+        FinalBuilder extends WaitForResourceBuilder<ParentWorkflowScope, InputParamsScope, any, any>
+    >(
+        builderFn: ScopeIsEmptyConstraint<BodyScope,
+            (b: WaitForResourceBuilder<ParentWorkflowScope, InputParamsScope, {}, {}>) => FinalBuilder>
+    ): FinalBuilder {
+        const fn = builderFn as (b: WaitForResourceBuilder<ParentWorkflowScope, InputParamsScope, {}, {}>) => FinalBuilder;
+        const k8sBuilder = new K8sResourceBuilder(this.parentWorkflowScope, this.inputScope, {}, {}, {});
+        return fn(new WaitForResourceBuilder(
+            this.parentWorkflowScope,
+            this.inputScope,
+            k8sBuilder,
+            {},
+            undefined
+        ));
     }
 
     getTemplateSignatureScope(): InputParamsScope {

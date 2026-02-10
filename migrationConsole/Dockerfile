@@ -38,7 +38,7 @@ RUN ARCH=$(cat /arch.env) && \
     curl --retry 5 --retry-delay 5 --retry-connrefused -fSL "https://get.helm.sh/helm-v${HELM_VERSION}-linux-${ARCH}.tar.gz" | tar -xz && \
     mv linux-${ARCH}/helm /k8s/bin/
 
-# Install stern - used by 'workflow output -f' for multi-pod log tailing
+# Install stern
 RUN ARCH=$(cat /arch.env) && \
     curl --retry 5 --retry-delay 5 --retry-connrefused -fSL \
         "https://github.com/stern/stern/releases/download/v${STERN_VERSION}/stern_${STERN_VERSION}_linux_${ARCH}.tar.gz" | tar -xz && \

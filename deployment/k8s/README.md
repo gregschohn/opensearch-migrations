@@ -21,7 +21,8 @@ the Migration Assistant Helm chart alongside a test chart that creates a source
 and target cluster.
 
 ```bash
-echo "Will start minikube, build images, and install the MA helm chart for those images"
+export BUILD_IMAGES_WITHOUT_DOCKER=false
+echo "Will build images without docker=${BUILD_IMAGES_WITHOUT_DOCKER}"
 $(git rev-parse --show-toplevel)/deployment/k8s/localTesting.sh
 ```
 

@@ -253,7 +253,7 @@ export abstract class RetryableTemplateBodyBuilder<
         inputsScope: InputParamsScope,
         bodyScope: BodyScope,
         outputsScope: OutputParamsScope,
-        protected readonly retryParameters: RetryParameters,
+        public readonly retryParameters: RetryParameters,
         synchronization: SynchronizationConfig | undefined,
         protected readonly retryableRebind: RetryableTemplateRebinder<ParentWorkflowScope, InputParamsScope, BodyBound, ExpressionBuilderContext>
     ) {

@@ -18,8 +18,13 @@ import {
     TasksWithOutputs,
     WorkflowAndTemplatesScope,
 } from "./workflowTypes";
+import {Workflow} from "./workflowBuilder";
 import {
     LabelledAllTasksAsOutputReferenceable,
+    INTERNAL,
+    INLINE,
+    InlineInputsFrom,
+    InlineOutputsFrom,
     InputsFrom,
     KeyFor,
     OutputsFrom,
@@ -33,6 +38,7 @@ import {NonSerializedPlainObject, PlainObject} from "./plainObject";
 import {UniqueNameConstraintAtDeclaration, UniqueNameConstraintOutsideDeclaration} from "./scopeConstraints";
 import {NamedTask} from "./sharedTypes";
 import {SynchronizationConfig} from "./synchronization";
+import type {TemplateBuilder} from "./templateBuilder";
 
 export type DagTaskOpts<TaskScope extends TasksOutputsScope, LoopT extends NonSerializedPlainObject> =
     TaskOpts<TasksOutputsScope, "tasks", LoopT> & { dependencies?: ReadonlyArray<Extract<keyof TaskScope, string>> };
@@ -137,7 +143,7 @@ export class DagBuilder<
 
     public addTask<
         Name extends string,
-        TemplateSource,
+        TemplateSource extends typeof INTERNAL | Workflow<any, any, any>,
         K extends KeyFor<ParentWorkflowScope, TemplateSource>,
         LoopT extends NonSerializedPlainObject = never
     >(
@@ -164,10 +170,28 @@ export class DagBuilder<
             >,
             OutputParamsScope
         >
-    > {
-        return this.taskBuilder.addTask<Name, TemplateSource, K, LoopT, DagTaskOpts<TasksOutputsScope, LoopT>>(
-            name, source, key, ...args
-        );
+    >;
+    public addTask<
+        Name extends string,
+        R extends { inputsScope: any; outputsScope: any; retryParameters?: any },
+        LoopT extends NonSerializedPlainObject = never
+    >(
+        name: UniqueNameConstraintAtDeclaration<Name, TaskScope>,
+        source: any,
+        inlineFn: (builder: TemplateBuilder<ParentWorkflowScope, {}, {}, {}>) => R,
+        ...args: any[]
+    ): UniqueNameConstraintOutsideDeclaration<
+        Name,
+        TaskScope,
+        DagBuilder<
+            ParentWorkflowScope,
+            InputParamsScope,
+            ExtendScope<TaskScope, { [P in Name]: TasksWithOutputs<Name, R["outputsScope"]> }>,
+            OutputParamsScope
+        >
+    >;
+    public addTask(name: any, source: any, keyOrFn?: any, ...restArgs: any[]): any {
+        return this.taskBuilder.addTask(name, source, keyOrFn, ...restArgs);
     }
 
     protected getBody() {
