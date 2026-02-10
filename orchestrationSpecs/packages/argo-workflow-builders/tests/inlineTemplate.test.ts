@@ -17,9 +17,13 @@ describe("inline template tests", () => {
             .getFullScope();
 
         const rendered = renderWorkflowTemplate(wf);
-        expect(JSON.stringify(rendered)).toContain("inline-container");
-        expect(JSON.stringify(rendered)).toContain("\"inline\"");
-        expect(JSON.stringify(rendered)).toContain("busybox");
+        const template = rendered.spec.templates.find((t: any) =>
+            t.steps?.some((g: any) => g.some((s: any) => s.name === "inline-container"))
+        );
+        expect(template).toBeDefined();
+        expect(template.steps[0][0].name).toBe("inline-container");
+        expect(template.steps[0][0].inline.container.image).toBe("busybox");
+        expect(template.steps[0][0].inline.container.command).toEqual(["echo", "hello"]);
     });
 
     it("should support inline steps template in steps", () => {
@@ -42,9 +46,13 @@ describe("inline template tests", () => {
             .getFullScope();
 
         const rendered = renderWorkflowTemplate(wf);
-        expect(JSON.stringify(rendered)).toContain("nested-steps");
-        expect(JSON.stringify(rendered)).toContain("inner-step");
-        expect(JSON.stringify(rendered)).toContain("\"inline\"");
+        const template = rendered.spec.templates.find((t: any) =>
+            t.steps?.some((g: any) => g.some((s: any) => s.name === "nested-steps"))
+        );
+        expect(template).toBeDefined();
+        expect(template.steps[0][0].name).toBe("nested-steps");
+        expect(template.steps[0][0].inline.steps[0][0].name).toBe("inner-step");
+        expect(template.steps[0][0].inline.steps[0][0].inline.container.image).toBe("alpine");
     });
 
     it("should support inline dag template in dag", () => {
@@ -63,9 +71,13 @@ describe("inline template tests", () => {
             .getFullScope();
 
         const rendered = renderWorkflowTemplate(wf);
-        expect(JSON.stringify(rendered)).toContain("inline-task");
-        expect(JSON.stringify(rendered)).toContain("\"inline\"");
-        expect(JSON.stringify(rendered)).toContain("nginx");
+        const template = rendered.spec.templates.find((t: any) =>
+            t.dag?.tasks?.some((task: any) => task.name === "inline-task")
+        );
+        expect(template).toBeDefined();
+        expect(template.dag.tasks[0].name).toBe("inline-task");
+        expect(template.dag.tasks[0].inline.container.image).toBe("nginx");
+        expect(template.dag.tasks[0].inline.container.command).toEqual(["nginx"]);
     });
 
     it("should support inline template with inputs", () => {
@@ -86,9 +98,13 @@ describe("inline template tests", () => {
             .getFullScope();
 
         const rendered = renderWorkflowTemplate(wf);
-        expect(JSON.stringify(rendered)).toContain("with-inputs");
-        expect(JSON.stringify(rendered)).toContain("message");
-        expect(JSON.stringify(rendered)).toContain("hello world");
+        const template = rendered.spec.templates.find((t: any) =>
+            t.steps?.some((g: any) => g.some((s: any) => s.name === "with-inputs"))
+        );
+        expect(template).toBeDefined();
+        expect(template.steps[0][0].arguments.parameters).toEqual([
+            {name: "message", value: "hello world"}
+        ]);
     });
 
     it("should support inline template with outputs", () => {
@@ -115,8 +131,13 @@ describe("inline template tests", () => {
             .getFullScope();
 
         const rendered = renderWorkflowTemplate(wf);
-        expect(JSON.stringify(rendered)).toContain("with-outputs");
-        expect(JSON.stringify(rendered)).toContain("use-output");
-        expect(JSON.stringify(rendered)).toContain("result");
+        const template = rendered.spec.templates.find((t: any) =>
+            t.steps?.some((g: any) => g.some((s: any) => s.name === "with-outputs"))
+        );
+        expect(template).toBeDefined();
+        expect(template.steps[0][0].name).toBe("with-outputs");
+        expect(template.steps[0][0].inline).toBeDefined();
+        expect(template.steps[1][0].name).toBe("use-output");
+        expect(template.steps[1][0].inline).toBeDefined();
     });
 });

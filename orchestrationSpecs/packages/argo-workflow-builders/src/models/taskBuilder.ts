@@ -253,8 +253,6 @@ type InlineBuilderResult = {
     retryParameters?: any;
     inputsScope?: any;
     outputsScope?: any;
-    inputScope?: any;
-    outputScope?: any;
 };
 
 export type InlineTemplateFn<C extends WorkflowAndTemplatesScope> =
@@ -264,18 +262,14 @@ export type InlineInputsFrom<Fn> =
     Fn extends (builder: any) => infer R
         ? R extends { inputsScope: infer I }
             ? I extends InputParametersRecord ? I : {}
-            : R extends { inputScope: infer I2 }
-                ? I2 extends InputParametersRecord ? I2 : {}
-                : {}
+            : {}
         : {};
 
 export type InlineOutputsFrom<Fn> = 
     Fn extends (builder: any) => infer R
         ? R extends { outputsScope: infer O }
             ? O extends OutputParametersRecord ? O : {}
-            : R extends { outputScope: infer O2 }
-                ? O2 extends OutputParametersRecord ? O2 : {}
-                : {}
+            : {}
         : {};
 
 export type KeyFor<C extends WorkflowAndTemplatesScope, Src> =
@@ -437,9 +431,9 @@ export abstract class TaskBuilder<
             const {TemplateBuilder} = require("./templateBuilder");
             const templateBuilder = new TemplateBuilder(this.parentWorkflowScope, {}, {}, {});
             const bodyBuilder = inlineFn(templateBuilder);
-            const inputs = bodyBuilder.inputsScope || bodyBuilder.inputScope || {};
+            const inputs = bodyBuilder.inputsScope || {};
             const params = this.getParamsFromCallback<any, any>(inputs, paramsFn as any, loopWith);
-            const outputs = bodyBuilder.outputsScope || bodyBuilder.outputScope || {};
+            const outputs = bodyBuilder.outputsScope || {};
             
             const inlineCall = this.callInlineTemplate(name as string, bodyBuilder, params, loopWith);
             return this.addTaskHelper(name, inlineCall as any, outputs, opts);
