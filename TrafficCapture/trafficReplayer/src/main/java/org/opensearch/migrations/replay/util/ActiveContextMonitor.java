@@ -133,6 +133,114 @@ public class ActiveContextMonitor implements Runnable {
         );
     }
 
+    private static final org.slf4j.Logger compactSummaryLogger =
+        org.slf4j.LoggerFactory.getLogger("ActiveContextSummary");
+
+    // Activity types considered long-lived (reported as counts only, never flagged as breached)
+    private static final java.util.Set<String> LONG_LIVED_ACTIVITIES = java.util.Set.of(
+        "channel", "tcpConnection", "backPressureBlock"
+    );
+
+    // Expected max age for ephemeral activities (breached if exceeded)
+    private static final java.util.Map<String, Duration> EXPECTED_MAX_AGE = java.util.Map.ofEntries(
+        java.util.Map.entry("recordLifetime", Duration.ofMinutes(5)),
+        java.util.Map.entry("trafficStreamLifetime", Duration.ofMinutes(5)),
+        java.util.Map.entry("httpTransaction", Duration.ofMinutes(2)),
+        java.util.Map.entry("accumulatingRequest", Duration.ofSeconds(30)),
+        java.util.Map.entry("accumulatingResponse", Duration.ofSeconds(60)),
+        java.util.Map.entry("transformation", Duration.ofSeconds(10)),
+        java.util.Map.entry("scheduled", Duration.ofMinutes(5)),
+        java.util.Map.entry("targetTransaction", Duration.ofSeconds(30)),
+        java.util.Map.entry("requestConnecting", Duration.ofSeconds(10)),
+        java.util.Map.entry("requestSending", Duration.ofSeconds(10)),
+        java.util.Map.entry("waitingForResponse", Duration.ofSeconds(30)),
+        java.util.Map.entry("receivingResponse", Duration.ofSeconds(30)),
+        java.util.Map.entry("tupleComparison", Duration.ofSeconds(5)),
+        java.util.Map.entry("touch", Duration.ofSeconds(10)),
+        java.util.Map.entry("kafkaPoll", Duration.ofSeconds(10)),
+        java.util.Map.entry("commit", Duration.ofSeconds(10)),
+        java.util.Map.entry("kafkaCommit", Duration.ofSeconds(10)),
+        java.util.Map.entry("readNextTrafficChunk", Duration.ofSeconds(10)),
+        java.util.Map.entry("waitForNextBackPressureCheck", Duration.ofSeconds(30))
+    );
+
+    /**
+     * Emit a compact one-line summary to the main log. Long-lived types are gauge counts;
+     * ephemeral types that exceed their expected max age are listed with parent chain.
+     */
+    @SuppressWarnings("unchecked")
+    public void logCompactSummary() {
+        var sb = new StringBuilder();
+        sb.append("scopes=").append(globalContextTracker.size());
+
+        // Count by type, split into long-lived and ephemeral
+        var longLived = new java.util.TreeMap<String, Long>();
+        var ephemeral = new java.util.TreeMap<String, Long>();
+        var breached = new java.util.ArrayList<String>();
+
+        perActivityContextTracker.getActiveScopeTypes().forEach(type -> {
+            var count = perActivityContextTracker.numScopesFor(type);
+            // Get a sample to determine the activity name
+            var sample = perActivityContextTracker.getOldestActiveScopes(type).findFirst().orElse(null);
+            if (sample == null) return;
+            var activityName = sample.getActivityName();
+
+            if (LONG_LIVED_ACTIVITIES.contains(activityName)) {
+                longLived.put(activityName, count);
+            } else {
+                ephemeral.put(activityName, count);
+                // Check for breached items
+                var expectedMax = EXPECTED_MAX_AGE.getOrDefault(activityName, Duration.ofMinutes(5));
+                perActivityContextTracker.getOldestActiveScopes(type)
+                    .limit(3)
+                    .forEach(scope -> {
+                        var age = getAge(scope.getStartTimeNano());
+                        if (age.compareTo(expectedMax) > 0) {
+                            var desc = new StringBuilder();
+                            desc.append(activityName).append(" age=").append(formatDuration(age));
+                            // Walk up to nearest long-lived ancestor for context
+                            var parent = scope.getEnclosingScope();
+                            int hops = 0;
+                            while (parent != null && hops < 3) {
+                                var parentName = parent.getActivityName();
+                                desc.append(" → ").append(parentName);
+                                var attrs = parent.getPopulatedSpanAttributes().asMap();
+                                attrs.entrySet().stream()
+                                    .filter(e -> e.getKey().getKey().contains("connectionId")
+                                        || e.getKey().getKey().contains("channelKey"))
+                                    .findFirst()
+                                    .ifPresent(e -> desc.append(" ").append(e.getKey().getKey())
+                                        .append("=").append(e.getValue()));
+                                if (LONG_LIVED_ACTIVITIES.contains(parentName)) break;
+                                parent = parent.getEnclosingScope();
+                                hops++;
+                            }
+                            breached.add(desc.toString());
+                        }
+                    });
+            }
+        });
+
+        sb.append(" longLived=").append(longLived);
+        sb.append(" ephemeral=").append(ephemeral);
+        sb.append(" breached=").append(breached.size());
+        if (!breached.isEmpty()) {
+            sb.append(": ");
+            sb.append(String.join("; ", breached));
+        }
+
+        var level = breached.isEmpty() ? Level.INFO : Level.WARN;
+        compactSummaryLogger.atLevel(level).setMessage("{}").addArgument(sb).log();
+    }
+
+    private static String formatDuration(Duration d) {
+        long totalSeconds = d.getSeconds();
+        if (totalSeconds < 0) return "-" + formatDuration(d.negated());
+        if (totalSeconds < 60) return totalSeconds + "s";
+        if (totalSeconds < 3600) return (totalSeconds / 60) + "m" + (totalSeconds % 60) + "s";
+        return (totalSeconds / 3600) + "h" + ((totalSeconds % 3600) / 60) + "m";
+    }
+
     Duration getAge(long recordedNanoTime) {
         return Duration.ofNanos(System.nanoTime() - recordedNanoTime);
     }

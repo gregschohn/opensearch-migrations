@@ -442,6 +442,7 @@ public class TrafficReplayer {
                     .addArgument(tr.requestWorkTracker::size)
                     .log();
                 finalActiveContextMonitor.run();
+                finalActiveContextMonitor.logCompactSummary();
                 finalBlockingTrafficSource.logHeartbeat();
                 var accum = tr.getCurrentAccumulator();
                 if (accum != null) {
