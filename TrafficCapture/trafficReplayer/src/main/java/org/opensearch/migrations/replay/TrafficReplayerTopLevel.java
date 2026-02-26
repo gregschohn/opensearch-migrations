@@ -45,10 +45,16 @@ public class TrafficReplayerTopLevel extends TrafficReplayerCore implements Auto
 
     public static final AtomicInteger targetConnectionPoolUniqueCounter = new AtomicInteger();
     private volatile CapturedTrafficToHttpTransactionAccumulator currentAccumulator;
+    private volatile ReplayEngine currentReplayEngine;
 
     /** Returns the current accumulator, or null if not yet initialized. */
     public CapturedTrafficToHttpTransactionAccumulator getCurrentAccumulator() {
         return currentAccumulator;
+    }
+
+    /** Returns the current replay engine, or null if not yet initialized. */
+    public ReplayEngine getCurrentReplayEngine() {
+        return currentReplayEngine;
     }
 
     public interface IStreamableWorkTracker<T> extends IWorkTracker<T> {
@@ -164,6 +170,7 @@ public class TrafficReplayerTopLevel extends TrafficReplayerCore implements Auto
             (replaySession, ctx) -> new NettyPacketToHttpConsumer(replaySession, ctx, targetServerResponseTimeout)
         );
         var replayEngine = new ReplayEngine(senderOrchestrator, trafficSource, timeShifter);
+        this.currentReplayEngine = replayEngine;
         // Wire session close callback so KafkaTrafficCaptureSource can track synthetic close drain
         clientConnectionPool.setGlobalOnSessionClose(session ->
             trafficSource.onNetworkConnectionClosed(

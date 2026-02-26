@@ -447,6 +447,10 @@ public class TrafficReplayer {
                 if (accum != null) {
                     accum.logHeartbeat();
                 }
+                var engine = tr.getCurrentReplayEngine();
+                if (engine != null) {
+                    engine.logHeartbeat();
+                }
             }, ACTIVE_WORK_MONITOR_CADENCE_MS, ACTIVE_WORK_MONITOR_CADENCE_MS, TimeUnit.MILLISECONDS);
 
             setupShutdownHookForReplayer(tr);

@@ -197,6 +197,14 @@ public abstract class TrafficReplayerCore extends RequestTransformerAndSender<Tr
                     }
                     // Count the final outcome once per request (not per retry)
                     countFinalOutcome(summary, t);
+                    // Record target response codes for heartbeat reporting
+                    if (summary != null) {
+                        for (var resp : summary.responses()) {
+                            if (resp.getRawResponse() != null) {
+                                replayEngine.recordTargetResponseCode(resp.getRawResponse().status().code());
+                            }
+                        }
+                    }
                     commitTrafficStreams(rrPair.completionStatus, rrPair.trafficStreamKeysBeingHeld);
                     return null;
                 } else {
