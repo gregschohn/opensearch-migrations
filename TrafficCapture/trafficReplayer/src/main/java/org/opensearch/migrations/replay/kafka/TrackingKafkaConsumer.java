@@ -299,9 +299,10 @@ public class TrackingKafkaConsumer implements ConsumerRebalanceListener {
                 throw e;
             } catch (RuntimeException e) {
                 log.atWarn().setCause(e)
-                    .setMessage("Unable to poll the topic: {} with our Kafka consumer. "
+                    .setMessage("Unable to poll the topic: {} with our Kafka consumer ({}). "
                             + "Swallowing and awaiting next metadata refresh to try again.")
                     .addArgument(topic)
+                    .addArgument(this)
                     .log();
             } finally {
                 resume();
@@ -422,9 +423,10 @@ public class TrackingKafkaConsumer implements ConsumerRebalanceListener {
             return records;
         } catch (RuntimeException e) {
             log.atWarn().setCause(e)
-                .setMessage("Unable to poll the topic: {} with our Kafka consumer. "
+                .setMessage("Unable to poll the topic: {} with our Kafka consumer ({}). "
                         + "Swallowing and awaiting next metadata refresh to try again.")
                 .addArgument(topic)
+                .addArgument(this)
                 .log();
             return new ConsumerRecords<>(Collections.emptyMap(), Collections.emptyMap());
         }

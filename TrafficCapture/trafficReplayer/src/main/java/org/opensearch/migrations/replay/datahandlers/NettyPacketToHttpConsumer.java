@@ -124,7 +124,8 @@ public class NettyPacketToHttpConsumer implements IPacketFinalizingConsumer<Aggr
                     if (t != null) {
                         channelCtx.addFailedChannelCreation();
                         channelCtx.addTraceException(channelFuture.cause(), true);
-                        log.atWarn().setCause(t).setMessage("error creating channel, not retrying").log();
+                        log.atWarn().setCause(t).setMessage("{} error creating channel, not retrying")
+                            .addArgument(this::httpContext).log();
                         throw Lombok.sneakyThrow(t);
                     }
 
@@ -140,7 +141,8 @@ public class NettyPacketToHttpConsumer implements IPacketFinalizingConsumer<Aggr
                         // (see the ClientConnectionPool::shutdownNow())
                         channelCtx.addFailedChannelCreation();
                         log.atWarn()
-                            .setMessage("Channel wasn't active, trying to create another for this request").log();
+                            .setMessage("{} Channel wasn't active, trying to create another for this request")
+                            .addArgument(this::httpContext).log();
                         return activateLiveChannel();
                     }
                 }, () -> "acting on ready channelFuture to retry if inactive or to return"),
@@ -214,7 +216,8 @@ public class NettyPacketToHttpConsumer implements IPacketFinalizingConsumer<Aggr
                     var t = TrackedFuture.unwindPossibleCompletionException(tWrapped);
                     if (t != null) {
                         log.atWarn().setCause(t)
-                            .setMessage("Caught exception while trying to get an active channel").log();
+                            .setMessage("{} Caught exception while trying to get an active channel")
+                            .addArgument(channelKeyCtx).log();
                     } else if (!outboundChannelFuture.channel().isActive()) {
                         t = new ChannelNotActiveException();
                     }

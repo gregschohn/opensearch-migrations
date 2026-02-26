@@ -426,6 +426,17 @@ public class TrafficReplayer {
                 trafficStreamLimiter,
                 orderedRequestTracker
             );
+            log.atInfo().setMessage("ReplayerConfig - lookahead={}s speedup={} maxConcurrent={}" +
+                    " serverResponseTimeout={}s observedPacketConnectionTimeout={}s" +
+                    " targetUri={} numClientThreads={}")
+                .addArgument(params.lookaheadTimeSeconds)
+                .addArgument(params.speedupFactor)
+                .addArgument(params.maxConcurrentRequests)
+                .addArgument(params.targetServerResponseTimeoutSeconds)
+                .addArgument(params.observedPacketConnectionTimeout)
+                .addArgument(uri)
+                .addArgument(params.numClientThreads)
+                .log();
             activeContextMonitor = new ActiveContextMonitor(
                 globalContextTracker,
                 perContextTracker,

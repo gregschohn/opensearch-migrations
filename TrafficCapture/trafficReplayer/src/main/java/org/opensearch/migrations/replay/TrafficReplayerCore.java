@@ -432,10 +432,19 @@ public abstract class TrafficReplayerCore extends RequestTransformerAndSender<Tr
                     .filter(s -> !s.isEmpty())
                     .ifPresent(s -> log.atDebug().setMessage("TrafficStream Summary: {{}}").addArgument(s).log());
             }
-            log.atInfo().setMessage("Read {} traffic stream(s) from source")
+            log.atDebug().setMessage("Read {} traffic stream(s) from source")
                 .addArgument(trafficStreams::size)
                 .log();
+            var batchStart = System.nanoTime();
             trafficStreams.forEach(trafficToHttpTransactionAccumulator::accept);
+            var batchDurationMs = (System.nanoTime() - batchStart) / 1_000_000;
+            if (batchDurationMs > 5_000) {
+                log.atWarn().setMessage("Batch processing took {}ms ({} records). " +
+                        "This delays the next Kafka poll. max.poll.interval.ms may be at risk.")
+                    .addArgument(batchDurationMs)
+                    .addArgument(trafficStreams::size)
+                    .log();
+            }
         }
     }
 }
