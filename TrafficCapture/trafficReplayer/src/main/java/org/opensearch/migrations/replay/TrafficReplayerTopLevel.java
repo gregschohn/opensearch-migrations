@@ -44,6 +44,12 @@ public class TrafficReplayerTopLevel extends TrafficReplayerCore implements Auto
     public static final int MAX_ITEMS_TO_SHOW_FOR_LEFTOVER_WORK_AT_INFO_LEVEL = 10;
 
     public static final AtomicInteger targetConnectionPoolUniqueCounter = new AtomicInteger();
+    private volatile CapturedTrafficToHttpTransactionAccumulator currentAccumulator;
+
+    /** Returns the current accumulator, or null if not yet initialized. */
+    public CapturedTrafficToHttpTransactionAccumulator getCurrentAccumulator() {
+        return currentAccumulator;
+    }
 
     public interface IStreamableWorkTracker<T> extends IWorkTracker<T> {
         public Stream<Map.Entry<UniqueReplayerRequestKey, TrackedFuture<String, T>>> getRemainingItems();
@@ -175,6 +181,7 @@ public class TrafficReplayerTopLevel extends TrafficReplayerCore implements Auto
                 new TrafficReplayerAccumulationCallbacks(replayEngine, resultTupleConsumer, trafficSource,
                     quiescentDuration)
             );
+        this.currentAccumulator = trafficToHttpTransactionAccumulator;
         try {
             pullCaptureFromSourceToAccumulator(trafficSource, trafficToHttpTransactionAccumulator);
         } catch (InterruptedException ex) {

@@ -443,6 +443,10 @@ public class TrafficReplayer {
                     .log();
                 finalActiveContextMonitor.run();
                 finalBlockingTrafficSource.logHeartbeat();
+                var accum = tr.getCurrentAccumulator();
+                if (accum != null) {
+                    accum.logHeartbeat();
+                }
             }, ACTIVE_WORK_MONITOR_CADENCE_MS, ACTIVE_WORK_MONITOR_CADENCE_MS, TimeUnit.MILLISECONDS);
 
             setupShutdownHookForReplayer(tr);

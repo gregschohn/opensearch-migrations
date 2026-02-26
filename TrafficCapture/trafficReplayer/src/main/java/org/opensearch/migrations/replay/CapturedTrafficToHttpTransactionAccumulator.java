@@ -55,6 +55,7 @@ public class CapturedTrafficToHttpTransactionAccumulator {
     public static final Duration EXPIRATION_GRANULARITY = Duration.ofSeconds(1);
     private final ExpiringTrafficStreamMap liveStreams;
     private final SpanWrappingAccumulationCallbacks listener;
+    private final Duration connectionTimeout;
 
     private final AtomicInteger requestCounter = new AtomicInteger();
     private final AtomicInteger reusedKeepAliveCounter = new AtomicInteger();
@@ -62,6 +63,8 @@ public class CapturedTrafficToHttpTransactionAccumulator {
     private final AtomicInteger exceptionConnectionCounter = new AtomicInteger();
     private final AtomicInteger connectionsExpiredCounter = new AtomicInteger();
     private final AtomicInteger requestsTerminatedUponAccumulatorCloseCounter = new AtomicInteger();
+    private static final org.slf4j.Logger heartbeatLogger =
+        org.slf4j.LoggerFactory.getLogger("AccumulatorHeartbeat");
 
     public String getStatsString() {
         return new StringJoiner(" ").add("requests: " + requestCounter.get())
@@ -72,11 +75,77 @@ public class CapturedTrafficToHttpTransactionAccumulator {
             .toString();
     }
 
+    /** Emit a periodic heartbeat log summarizing the accumulator state. */
+    public void logHeartbeat() {
+        var sb = new StringBuilder();
+        int waiting = 0, reads = 0, writes = 0, ignoring = 0;
+        String oldestWriteConn = null;
+        long oldestWriteAgeMs = 0;
+        long oldestWriteLastPacketAgeMs = 0;
+        String oldestWriteOffset = null;
+
+        var now = System.currentTimeMillis();
+        var allAccumulations = liveStreams.values().collect(java.util.stream.Collectors.toList());
+        int liveConnections = allAccumulations.size();
+
+        for (var accum : allAccumulations) {
+            switch (accum.state) {
+                case WAITING_FOR_NEXT_READ_CHUNK: waiting++; break;
+                case ACCUMULATING_READS: reads++; break;
+                case ACCUMULATING_WRITES: writes++; break;
+                case IGNORING_LAST_REQUEST: ignoring++; break;
+            }
+            if (accum.state == Accumulation.State.ACCUMULATING_WRITES) {
+                var lastPacketMs = accum.getNewestPacketTimestampInMillisReference().get();
+                var lastPacketAge = lastPacketMs > 0 ? now - lastPacketMs : 0;
+                // Use lastPacketAge as a proxy for how long this accumulation has been stuck
+                if (lastPacketAge > oldestWriteLastPacketAgeMs) {
+                    oldestWriteLastPacketAgeMs = lastPacketAge;
+                    oldestWriteConn = accum.trafficChannelKey.getConnectionId();
+                    oldestWriteOffset = accum.trafficChannelKey.toString();
+                }
+            }
+        }
+
+        sb.append("liveConnections=").append(liveConnections);
+        sb.append(" byState={WAITING=").append(waiting)
+            .append(", READS=").append(reads)
+            .append(", WRITES=").append(writes)
+            .append(", IGNORING=").append(ignoring).append("}");
+
+        if (oldestWriteConn != null) {
+            var shouldHaveExpired = oldestWriteLastPacketAgeMs > connectionTimeout.toMillis();
+            sb.append(" oldestInWrites={conn=").append(oldestWriteConn)
+                .append(", lastPacketAge=").append(formatDuration(Duration.ofMillis(oldestWriteLastPacketAgeMs)))
+                .append(", tsk=").append(oldestWriteOffset);
+            if (shouldHaveExpired) {
+                sb.append(", SHOULD_HAVE_EXPIRED");
+            }
+            sb.append("}");
+        }
+
+        sb.append(" expiryConfig=").append(formatDuration(connectionTimeout));
+        sb.append(" totals={requests=").append(requestCounter.get())
+            .append(", closed=").append(closedConnectionCounter.get())
+            .append(", expired=").append(connectionsExpiredCounter.get())
+            .append(", exceptions=").append(exceptionConnectionCounter.get()).append("}");
+
+        heartbeatLogger.atInfo().setMessage("{}").addArgument(sb).log();
+    }
+
+    private static String formatDuration(Duration d) {
+        long totalSeconds = d.getSeconds();
+        if (totalSeconds < 60) return totalSeconds + "s";
+        if (totalSeconds < 3600) return (totalSeconds / 60) + "m" + (totalSeconds % 60) + "s";
+        return (totalSeconds / 3600) + "h" + ((totalSeconds % 3600) / 60) + "m";
+    }
+
     public CapturedTrafficToHttpTransactionAccumulator(
         Duration minTimeout,
         String hintStringToConfigureTimeout,
         AccumulationCallbacks accumulationCallbacks
     ) {
+        this.connectionTimeout = minTimeout;
         liveStreams = new ExpiringTrafficStreamMap(minTimeout, EXPIRATION_GRANULARITY, new BehavioralPolicy() {
             @Override
             public String appendageToDescribeHowToSetMinimumGuaranteedLifetime() {
