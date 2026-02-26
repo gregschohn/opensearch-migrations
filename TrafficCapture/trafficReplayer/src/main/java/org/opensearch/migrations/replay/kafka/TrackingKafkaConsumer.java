@@ -112,6 +112,12 @@ public class TrackingKafkaConsumer implements ConsumerRebalanceListener {
     private final AtomicInteger consumerConnectionGeneration;
     private final AtomicInteger kafkaRecordsLeftToCommitEventually;
     private final AtomicBoolean kafkaRecordsReadyToCommit;
+    // Heartbeat counters — reset each heartbeat cycle
+    private final AtomicInteger pollsSinceLastHeartbeat = new AtomicInteger();
+    private final AtomicInteger emptyPollsSinceLastHeartbeat = new AtomicInteger();
+    private final AtomicInteger commitsSinceLastHeartbeat = new AtomicInteger();
+    private static final org.slf4j.Logger heartbeatLogger =
+        org.slf4j.LoggerFactory.getLogger("KafkaHeartbeat");
     /** Partitions revoked but not yet confirmed lost — cleared in onPartitionsAssigned. */
     private final Set<Integer> pendingCleanupPartitions = Collections.newSetFromMap(new ConcurrentHashMap<>());
     /** Called with truly lost partition numbers after onPartitionsAssigned confirms they didn't come back. */
@@ -375,7 +381,7 @@ public class TrackingKafkaConsumer implements ConsumerRebalanceListener {
                 kafkaRecord.partition(),
                 kafkaRecord.offset()
             );
-            offsetTracker.add(offsetDetails.getOffset());
+            offsetTracker.add(offsetDetails.getOffset(), kafkaRecord.key());
             kafkaRecordsLeftToCommitEventually.incrementAndGet();
             log.atTrace().setMessage("records in flight={}").addArgument(kafkaRecordsLeftToCommitEventually::get).log();
             return builder.apply(offsetDetails, kafkaRecord);
@@ -396,6 +402,10 @@ public class TrackingKafkaConsumer implements ConsumerRebalanceListener {
                 .addArgument(records::count)
                 .addArgument(kafkaRecordsLeftToCommitEventually::get)
                 .log();
+            pollsSinceLastHeartbeat.incrementAndGet();
+            if (records.isEmpty()) {
+                emptyPollsSinceLastHeartbeat.incrementAndGet();
+            }
             log.atTrace().setMessage("All positions: {{}}")
                 .addArgument(() ->
                     kafkaConsumer.assignment()
@@ -484,6 +494,7 @@ public class TrackingKafkaConsumer implements ConsumerRebalanceListener {
         }
         try {
             safeCommitStatic(context, kafkaConsumer, nextCommitsMapCopy);
+            commitsSinceLastHeartbeat.incrementAndGet();
             synchronized (commitDataLock) {
                 nextCommitsMapCopy.entrySet()
                     .stream()
@@ -549,6 +560,54 @@ public class TrackingKafkaConsumer implements ConsumerRebalanceListener {
             onCommitKeyCallback.accept(nextKeyHolder.tsk);
             orderedKeyHolders.poll();
         }
+    }
+
+    /** Emit a periodic heartbeat log summarizing the Kafka consumer state. */
+    public void logHeartbeat() {
+        int polls = pollsSinceLastHeartbeat.getAndSet(0);
+        int emptyPolls = emptyPollsSinceLastHeartbeat.getAndSet(0);
+        int commits = commitsSinceLastHeartbeat.getAndSet(0);
+        int inflight = kafkaRecordsLeftToCommitEventually.get();
+        boolean readyToCommit = kafkaRecordsReadyToCommit.get();
+        int generation = consumerConnectionGeneration.get();
+        var partitions = kafkaConsumer.assignment();
+
+        synchronized (commitDataLock) {
+            var sb = new StringBuilder();
+            sb.append("generation=").append(generation);
+            sb.append(" partitions=").append(partitions);
+            sb.append(" inflight=").append(inflight);
+
+            // Report commit head details from the first partition's tracker
+            partitionToOffsetLifecycleTrackerMap.values().stream().findFirst().ifPresent(tracker -> {
+                tracker.peekHeadOffset().ifPresent(headOffset -> {
+                    sb.append(" commitHead={offset=").append(headOffset);
+                    tracker.peekHeadMetadata().ifPresent(meta -> {
+                        sb.append(", conn=").append(meta.connectionId);
+                        var age = Duration.between(meta.addedAt, clock.instant());
+                        sb.append(", age=").append(formatDuration(age));
+                    });
+                    sb.append("}");
+                });
+                sb.append(" commitTail=").append(tracker.getHighWatermark());
+                sb.append(" queueSize=").append(tracker.size());
+            });
+
+            sb.append(" polls=").append(polls);
+            sb.append(" emptyPolls=").append(emptyPolls);
+            sb.append(" commits=").append(commits);
+            sb.append(" readyToCommit=").append(readyToCommit);
+            sb.append(" pendingCommitPartitions=").append(nextSetOfCommitsMap.size());
+
+            heartbeatLogger.atInfo().setMessage("{}").addArgument(sb).log();
+        }
+    }
+
+    private static String formatDuration(Duration d) {
+        long totalSeconds = d.getSeconds();
+        if (totalSeconds < 60) return totalSeconds + "s";
+        if (totalSeconds < 3600) return (totalSeconds / 60) + "m" + (totalSeconds % 60) + "s";
+        return (totalSeconds / 3600) + "h" + ((totalSeconds % 3600) / 60) + "m";
     }
 
     String nextCommitsToString() {
