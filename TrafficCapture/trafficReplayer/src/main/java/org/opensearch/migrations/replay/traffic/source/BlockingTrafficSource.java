@@ -204,6 +204,11 @@ public class BlockingTrafficSource implements ITrafficCaptureSource, BufferedFlo
     }
 
     @Override
+    public void logHeartbeat() {
+        underlyingSource.logHeartbeat();
+    }
+
+    @Override
     public void close() throws Exception {
         underlyingSource.close();
         executorForBlockingActivity.shutdown();

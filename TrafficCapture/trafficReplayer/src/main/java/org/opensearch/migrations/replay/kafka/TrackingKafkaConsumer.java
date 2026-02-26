@@ -570,12 +570,11 @@ public class TrackingKafkaConsumer implements ConsumerRebalanceListener {
         int inflight = kafkaRecordsLeftToCommitEventually.get();
         boolean readyToCommit = kafkaRecordsReadyToCommit.get();
         int generation = consumerConnectionGeneration.get();
-        var partitions = kafkaConsumer.assignment();
 
         synchronized (commitDataLock) {
             var sb = new StringBuilder();
             sb.append("generation=").append(generation);
-            sb.append(" partitions=").append(partitions);
+            sb.append(" partitions=").append(partitionToOffsetLifecycleTrackerMap.keySet());
             sb.append(" inflight=").append(inflight);
 
             // Report commit head details from the first partition's tracker

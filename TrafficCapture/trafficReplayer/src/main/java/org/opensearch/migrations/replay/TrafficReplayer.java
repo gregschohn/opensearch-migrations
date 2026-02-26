@@ -435,12 +435,14 @@ public class TrafficReplayer {
                 activeContextLogger
             );
             ActiveContextMonitor finalActiveContextMonitor = activeContextMonitor;
+            var finalBlockingTrafficSource = blockingTrafficSource;
             scheduledExecutorService.scheduleAtFixedRate(() -> {
                 activeContextLogger.atInfo().setMessage("Total requests outstanding at {}: {}")
                     .addArgument(Instant::now)
                     .addArgument(tr.requestWorkTracker::size)
                     .log();
                 finalActiveContextMonitor.run();
+                finalBlockingTrafficSource.logHeartbeat();
             }, ACTIVE_WORK_MONITOR_CADENCE_MS, ACTIVE_WORK_MONITOR_CADENCE_MS, TimeUnit.MILLISECONDS);
 
             setupShutdownHookForReplayer(tr);

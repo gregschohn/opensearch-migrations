@@ -405,6 +405,15 @@ public class KafkaTrafficCaptureSource implements ISimpleTrafficCaptureSource {
         );
     }
 
+    /**
+     * Log a periodic heartbeat summarizing the Kafka consumer state.
+     * Safe to call from any thread — uses only atomic reads and synchronized blocks.
+     */
+    @Override
+    public void logHeartbeat() {
+        trackingKafkaConsumer.logHeartbeat();
+    }
+
     @Override
     public void close() throws IOException, InterruptedException, ExecutionException {
         if (isClosed.compareAndSet(false, true)) {
