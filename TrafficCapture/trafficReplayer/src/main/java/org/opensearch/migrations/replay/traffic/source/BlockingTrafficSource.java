@@ -52,6 +52,8 @@ public class BlockingTrafficSource implements ITrafficCaptureSource, BufferedFlo
     @Getter
     private final Duration bufferTimeWindow;
     private final ExecutorService executorForBlockingActivity;
+    private static final org.slf4j.Logger heartbeatLogger =
+        org.slf4j.LoggerFactory.getLogger("BackpressureHeartbeat");
 
     public BlockingTrafficSource(ISimpleTrafficCaptureSource underlying, Duration bufferTimeWindow) {
         this.underlyingSource = underlying;
@@ -206,6 +208,32 @@ public class BlockingTrafficSource implements ITrafficCaptureSource, BufferedFlo
     @Override
     public void logHeartbeat() {
         underlyingSource.logHeartbeat();
+        logBackpressureHeartbeat();
+    }
+
+    private void logBackpressureHeartbeat() {
+        var stopAt = stopReadingAtRef.get();
+        var lastTs = lastTimestampSecondsRef.get();
+        var engaged = !stopAt.equals(Instant.EPOCH) && stopAt.isBefore(lastTs);
+        var sb = new StringBuilder();
+        sb.append("engaged=").append(engaged);
+        sb.append(" stopReadingAt=").append(stopAt.equals(Instant.EPOCH) ? "EPOCH" : stopAt);
+        sb.append(" lastTimestamp=").append(lastTs.equals(Instant.EPOCH) ? "EPOCH" : lastTs);
+        if (!stopAt.equals(Instant.EPOCH) && !lastTs.equals(Instant.EPOCH)) {
+            var headroom = Duration.between(lastTs, stopAt);
+            sb.append(" headroom=").append(formatDuration(headroom));
+        }
+        sb.append(" bufferWindow=").append(formatDuration(bufferTimeWindow));
+        sb.append(" readGatePermits=").append(readGate.availablePermits());
+        heartbeatLogger.atInfo().setMessage("{}").addArgument(sb).log();
+    }
+
+    private static String formatDuration(Duration d) {
+        long totalSeconds = d.getSeconds();
+        if (totalSeconds < 0) return "-" + formatDuration(d.negated());
+        if (totalSeconds < 60) return totalSeconds + "s";
+        if (totalSeconds < 3600) return (totalSeconds / 60) + "m" + (totalSeconds % 60) + "s";
+        return (totalSeconds / 3600) + "h" + ((totalSeconds % 3600) / 60) + "m";
     }
 
     @Override
