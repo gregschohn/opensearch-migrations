@@ -331,7 +331,7 @@ public class CapturedTrafficToHttpTransactionAccumulator {
             var o = trafficStream.getSubStreamList().get(i);
             var connectionStatus = addObservationToAccumulation(accum, tsk, o);
             if (CONNECTION_STATUS.CLOSED == connectionStatus) {
-                log.atInfo().setMessage("Connection terminated: removing {}:{} from liveStreams map")
+                log.atDebug().setMessage("Connection terminated: removing {}:{} from liveStreams map")
                     .addArgument(partitionId)
                     .addArgument(connectionId)
                     .log();
