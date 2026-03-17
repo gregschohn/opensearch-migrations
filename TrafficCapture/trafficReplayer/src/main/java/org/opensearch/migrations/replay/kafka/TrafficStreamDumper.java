@@ -9,7 +9,6 @@
 package org.opensearch.migrations.replay.kafka;
 
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.List;
 
 import org.opensearch.migrations.replay.util.TrafficChannelKeyFormatter;
@@ -98,67 +97,50 @@ public class TrafficStreamDumper {
      * just internal framing from the capture proxy's chunking mechanism.
      * Returns the index past the last coalesced observation.
      */
+    @SuppressWarnings("java:S3776") // Cognitive Complexity - parsing logic requires nested structure
     private static int appendCoalesced(StringBuilder sb, List<TrafficObservation> observations,
-                                       int start, boolean reads, int previewBytes) {
-        var allBytes = new ArrayList<byte[]>();
+                                       int cursor, boolean reads, int previewBytes) {
+        var buf = new byte[Math.max(previewBytes, 0)];
+        int copied = 0;
         int totalSize = 0;
-        int i = start;
-        while (i < observations.size()) {
-            var obs = observations.get(i);
-            if (obs.hasSegmentEnd()) {
-                i++; // absorb into current run
-            } else {
+        for (; cursor < observations.size(); cursor++) {
+            var obs = observations.get(cursor);
+            if (!obs.hasSegmentEnd()) {
                 byte[] data = reads ? getReadData(obs) : getWriteData(obs);
-                if (data.length == 0) { break; }
-                allBytes.add(data);
-                totalSize += data.length;
-                i++;
+                if (data == null) {
+                    break;
+                } else {
+                    totalSize += data.length;
+                    if (copied < buf.length) {
+                        int toCopy = Math.min(data.length, buf.length - copied);
+                        System.arraycopy(data, 0, buf, copied, toCopy);
+                        copied += toCopy;
+                    }
+                }
             }
         }
 
         sb.append(' ').append(reads ? 'R' : 'W').append('[').append(totalSize).append(']');
         if (previewBytes > 0 && totalSize > 0) {
-            sb.append(": ").append(buildPreview(allBytes, previewBytes));
+            for (int j = 0; j < copied; j++) {
+                if (buf[j] < 0x20 || buf[j] > 0x7e) buf[j] = '.';
+            }
+            sb.append(": ").append(new String(buf, 0, copied, StandardCharsets.US_ASCII));
+            if (copied < totalSize) sb.append("...");
         }
-        return i;
+        return cursor;
     }
 
     private static byte[] getReadData(TrafficObservation obs) {
         if (obs.hasRead()) return obs.getRead().getData().toByteArray();
         if (obs.hasReadSegment()) return obs.getReadSegment().getData().toByteArray();
-        return new byte[0];
+        return null;
     }
 
     private static byte[] getWriteData(TrafficObservation obs) {
         if (obs.hasWrite()) return obs.getWrite().getData().toByteArray();
         if (obs.hasWriteSegment()) return obs.getWriteSegment().getData().toByteArray();
-        return new byte[0];
-    }
-
-    static String buildPreview(List<byte[]> chunks, int maxBytes) {
-        var buf = new byte[maxBytes];
-        int copied = 0;
-        for (var chunk : chunks) {
-            int toCopy = Math.min(chunk.length, maxBytes - copied);
-            System.arraycopy(chunk, 0, buf, copied, toCopy);
-            copied += toCopy;
-            if (copied >= maxBytes) break;
-        }
-        // Replace non-printable chars with '.'
-        for (int j = 0; j < copied; j++) {
-            if (buf[j] < 0x20 || buf[j] > 0x7e) buf[j] = '.';
-        }
-        var preview = new String(buf, 0, copied, StandardCharsets.US_ASCII);
-        if (copied < totalSize(chunks)) {
-            return preview + "...";
-        }
-        return preview;
-    }
-
-    private static int totalSize(List<byte[]> chunks) {
-        int total = 0;
-        for (var c : chunks) total += c.length;
-        return total;
+        return null;
     }
 
     private static String tokenFor(TrafficObservation obs) {
