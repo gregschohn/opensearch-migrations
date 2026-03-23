@@ -1,11 +1,11 @@
 # Development-specific values for local kubernetes environments
 
 conditionalPackageInstalls:
-  kyverno: true
+  kyverno: false
 
 # Kyverno policy toggles (requires kyverno to be installed)
 kyvernoPolicies:
-  zeroResourceRequests: true
+  zeroResourceRequests: false
   mountLocalAwsCreds: false
   mountLocalAwsCredsPath: "~/.aws"
 

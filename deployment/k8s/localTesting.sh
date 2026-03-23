@@ -5,8 +5,8 @@ set -xeuo pipefail
 MIGRATIONS_REPO_ROOT_DIR=$(git rev-parse --show-toplevel)
 
 ## One time things - will require a restart to minikube if it was already running
-MINIKUBE_CPU_COUNT="${MINIKUBE_CPU_COUNT:-8}"
-MINIKUBE_MEMORY_SIZE="${MINIKUBE_MEMORY_SIZE:-18000}"
+MINIKUBE_CPU_COUNT="${MINIKUBE_CPU_COUNT:-no-limit}"
+MINIKUBE_MEMORY_SIZE="${MINIKUBE_MEMORY_SIZE:-no-limit}"
 echo "Setting minikube config to use ${MINIKUBE_CPU_COUNT} CPUs and ${MINIKUBE_MEMORY_SIZE} MB memory."
 minikube config set cpus $MINIKUBE_CPU_COUNT
 minikube config set memory $MINIKUBE_MEMORY_SIZE
