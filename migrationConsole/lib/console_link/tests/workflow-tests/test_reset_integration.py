@@ -161,6 +161,26 @@ def _wait_for_crd(ext_api, crd_name, timeout=30):
     raise TimeoutError(f"CRD {crd_name} not established in {timeout}s")
 
 
+def _wait_for_crd_endpoint(custom, namespace, plural, timeout=60):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            custom.list_namespaced_custom_object(
+                group=CRD_GROUP,
+                version=CRD_VERSION,
+                namespace=namespace,
+                plural=plural,
+            )
+            return
+        except ApiException as e:
+            if e.status != 404:
+                raise
+            time.sleep(0.5)
+    raise TimeoutError(
+        f"CRD endpoint for {CRD_GROUP}/{CRD_VERSION}/{plural} was not served within {timeout}s"
+    )
+
+
 def _create_crd_instance(namespace, plural, name, phase=None, depends_on=None):
     custom = client.CustomObjectsApi()
     body = {
@@ -177,7 +197,9 @@ def _create_crd_instance(namespace, plural, name, phase=None, depends_on=None):
         "spec": {"dependsOn": depends_on or []},
     }
 
-    create_deadline = time.time() + 15
+    _wait_for_crd_endpoint(custom, namespace, plural)
+
+    create_deadline = time.time() + 60
     while True:
         try:
             custom.create_namespaced_custom_object(
@@ -193,7 +215,7 @@ def _create_crd_instance(namespace, plural, name, phase=None, depends_on=None):
                 raise
             time.sleep(0.5)
     if phase:
-        status_deadline = time.time() + 15
+        status_deadline = time.time() + 60
         while True:
             try:
                 custom.patch_namespaced_custom_object_status(
