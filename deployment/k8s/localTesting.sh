@@ -5,6 +5,19 @@ set -xeuo pipefail
 MIGRATIONS_REPO_ROOT_DIR=$(git rev-parse --show-toplevel)
 
 wait_for_cluster_dns() {
+  echo "Waiting for CoreDNS pod to be created..."
+  local attempt
+  for attempt in $(seq 1 60); do
+    if kubectl get pod -n kube-system -l k8s-app=kube-dns -o name | grep -q .; then
+      break
+    fi
+    if [[ "${attempt}" -eq 60 ]]; then
+      echo "CoreDNS pod was not created within the timeout" >&2
+      return 1
+    fi
+    sleep 2
+  done
+
   echo "Waiting for CoreDNS to become ready..."
   kubectl wait --namespace kube-system \
     --for=condition=ready pod \
@@ -34,7 +47,7 @@ wait_for_ma_runtime() {
   print_step "Waiting for core Migration Assistant workloads"
   kubectl --context "${KUBE_CONTEXT}" -n ma rollout status statefulset/migration-console --timeout=10m
   kubectl --context "${KUBE_CONTEXT}" -n ma wait --for=condition=ready pod -l app.kubernetes.io/name=argo-workflows-server --timeout=10m
-  kubectl --context "${KUBE_CONTEXT}" -n ma wait --for=condition=ready pod -l app.kubernetes.io/name=strimzi-cluster-operator --timeout=10m
+  kubectl --context "${KUBE_CONTEXT}" -n ma rollout status deployment/strimzi-cluster-operator --timeout=10m
 }
 
 wait_for_test_clusters() {
