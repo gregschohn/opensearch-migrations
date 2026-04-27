@@ -19,19 +19,16 @@ def call(Map config = [:]) {
 
     echo "CLEANUP: Deleting isolated VPC ${vpcId} and associated resources for stage ${stage}"
 
-    // 1. Delete NAT gateways (must complete before EIP release and subnet deletion)
+    // 1. Delete NAT gateways (must fully delete before EIP release and IGW detach)
     sh """
-        for nat in \$(aws ec2 describe-nat-gateways --filter Name=vpc-id,Values=${vpcId} Name=state,Values=available,pending \
-          --query 'NatGateways[*].NatGatewayId' --output text --region ${region} 2>/dev/null); do
+        NATS=\$(aws ec2 describe-nat-gateways --filter Name=vpc-id,Values=${vpcId} \
+          --query 'NatGateways[?State!=\`deleted\`].NatGatewayId' --output text --region ${region} 2>/dev/null || echo "")
+        for nat in \$NATS; do
             echo "CLEANUP: Deleting NAT gateway \$nat"
             aws ec2 delete-nat-gateway --nat-gateway-id \$nat --region ${region} || true
         done
-    """
-    // Wait for NAT gateways to be deleted
-    sh """
-        for nat in \$(aws ec2 describe-nat-gateways --filter Name=vpc-id,Values=${vpcId} Name=state,Values=deleting \
-          --query 'NatGateways[*].NatGatewayId' --output text --region ${region} 2>/dev/null); do
-            echo "CLEANUP: Waiting for NAT gateway \$nat to delete..."
+        for nat in \$NATS; do
+            echo "CLEANUP: Waiting for NAT gateway \$nat to reach deleted state..."
             aws ec2 wait nat-gateway-deleted --nat-gateway-ids \$nat --region ${region} || true
         done
     """
