@@ -65,6 +65,7 @@ def call(Map config = [:]) {
                     script {
                         def pool = jobName.startsWith("main-") ? "m" : jobName.startsWith("release-") ? "r" : "p"
                         env.maStageName = "${defaultStageId}-${pool}${currentBuild.number}"
+                        env.buildStageName = "isob-${pool}${currentBuild.number}"
                         buildStackName = "MA-ISO-BUILD-${env.maStageName}"
                         isolatedStackName = "MA-ISO-${env.maStageName}"
                     }
@@ -109,7 +110,7 @@ def call(Map config = [:]) {
                                       --deploy-create-vpc-cfn \
                                       --build \
                                       --stack-name "${buildStackName}" \
-                                      --stage "${env.maStageName}-bld" \
+                                      --stage "${env.buildStageName}" \
                                       --region "${params.REGION}" \
                                       --skip-console-exec \
                                       --base-dir "\$(pwd)" \
