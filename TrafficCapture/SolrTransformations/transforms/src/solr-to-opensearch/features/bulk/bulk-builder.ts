@@ -159,7 +159,8 @@ export function setBulkRequest(
     targetParams.set('refresh', 'true');
   }
   const query = targetParams.toString();
-  ctx.msg.set('URI', `/${collection}/_bulk${query ? `?${query}` : ''}`);
+  const suffix = query ? '?' + query : '';
+  ctx.msg.set('URI', '/' + collection + '/_bulk' + suffix);
   ctx.msg.set('method', 'POST');
 
   // Replace Content-Type case-insensitively. The Java proxy uses headers.add()
