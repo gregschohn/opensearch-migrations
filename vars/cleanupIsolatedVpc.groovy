@@ -22,7 +22,7 @@ def call(Map config = [:]) {
     // 1. Delete NAT gateways (must fully delete before EIP release and IGW detach)
     sh """
         NATS=\$(aws ec2 describe-nat-gateways --filter Name=vpc-id,Values=${vpcId} \
-          --query 'NatGateways[?State!=\`deleted\`].NatGatewayId' --output text --region ${region} 2>/dev/null || echo "")
+          --query "NatGateways[?State!='deleted'].NatGatewayId" --output text --region ${region} 2>/dev/null || echo "")
         for nat in \$NATS; do
             echo "CLEANUP: Deleting NAT gateway \$nat"
             aws ec2 delete-nat-gateway --nat-gateway-id \$nat --region ${region} || true
@@ -89,7 +89,7 @@ def call(Map config = [:]) {
     // 7. Delete security groups (skip default)
     sh """
         for sg in \$(aws ec2 describe-security-groups --filters Name=vpc-id,Values=${vpcId} \
-          --query 'SecurityGroups[?GroupName!=\`default\`].GroupId' --output text --region ${region} 2>/dev/null); do
+          --query "SecurityGroups[?GroupName!='default'].GroupId" --output text --region ${region} 2>/dev/null); do
             echo "CLEANUP: Deleting security group \$sg"
             aws ec2 delete-security-group --group-id \$sg --region ${region} || true
         done
