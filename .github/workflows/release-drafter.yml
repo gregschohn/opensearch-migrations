@@ -243,6 +243,11 @@ jobs:
       - name: Assemble self-contained aws-bootstrap.sh
         run: |
           deployment/k8s/aws/assemble-bootstrap.sh
+      - name: Generate schema HTML reference
+        if: ${{ !github.event.act }}
+        run: |
+          pip install json-schema-for-humans
+          generate-schema-doc workflowMigration.schema.json schema-reference.html
       - name: Draft a release
         if: ${{ !github.event.act }}
         uses: softprops/action-gh-release@v3
@@ -257,5 +262,6 @@ jobs:
             bootstrap-kiro-agent.sh
             migration-assistant-${{ steps.get_data.outputs.version }}.tgz
             workflowMigration.schema.json
+            schema-reference.html
             deployment/k8s/aws/dist/aws-bootstrap.sh
             **/*.spdx.json
