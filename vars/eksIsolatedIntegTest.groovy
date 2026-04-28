@@ -33,7 +33,7 @@ def call(Map config = [:]) {
             string(name: 'REGION', defaultValue: 'us-east-1', description: 'AWS region')
             choice(name: 'SOURCE_VERSION', choices: ['ES_7.10'], description: 'Source cluster version')
             choice(name: 'TARGET_VERSION', choices: ['OS_2.19', 'OS_1.3', 'OS_3.1'], description: 'Target cluster version')
-            string(name: 'TEST_IDS', defaultValue: '0040', description: 'Test IDs to run (comma-separated)')
+            string(name: 'TEST_IDS', defaultValue: '0001', description: 'Test IDs to run (comma-separated)')
         }
 
         options {
