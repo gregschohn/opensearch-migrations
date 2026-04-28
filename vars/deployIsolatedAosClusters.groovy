@@ -117,31 +117,24 @@ def call(Map config = [:]) {
     }
 
     // 5. Add security group rules: EKS → AOS on port 443
+    // Domain names follow the pattern: cluster-<stage>-<clusterId>
     withMigrationsTestAccount(region: region) { accountId ->
         def eksSg = sh(script: """
             aws eks describe-cluster --name ${eksClusterName} --region ${region} \
               --query 'cluster.resourcesVpcConfig.clusterSecurityGroupId' --output text
         """, returnStdout: true).trim()
 
-        def clusterDetails = readJSON text: env.clusterDetailsJson
-        if (clusterDetails.source?.endpoint) {
-            def sourceDomain = clusterDetails.source.endpoint.replaceAll('https://vpc-', '').split('\\.')[0]
-            def sourceSg = sh(script: """
-                aws opensearch describe-domain --domain-name ${sourceDomain} --region ${region} \
+        for (clusterId in ['source', 'target']) {
+            def domainName = "cluster-${stage}-${clusterId}"
+            def sg = sh(script: """
+                aws opensearch describe-domain --domain-name ${domainName} --region ${region} \
                   --query 'DomainStatus.VPCOptions.SecurityGroupIds[0]' --output text 2>/dev/null || echo ''
             """, returnStdout: true).trim()
-            if (sourceSg) {
-                sh "aws ec2 authorize-security-group-ingress --group-id ${sourceSg} --protocol tcp --port 443 --source-group ${eksSg} --region ${region} || true"
-            }
-        }
-        if (clusterDetails.target?.endpoint) {
-            def targetDomain = clusterDetails.target.endpoint.replaceAll('https://vpc-', '').split('\\.')[0]
-            def targetSg = sh(script: """
-                aws opensearch describe-domain --domain-name ${targetDomain} --region ${region} \
-                  --query 'DomainStatus.VPCOptions.SecurityGroupIds[0]' --output text 2>/dev/null || echo ''
-            """, returnStdout: true).trim()
-            if (targetSg) {
-                sh "aws ec2 authorize-security-group-ingress --group-id ${targetSg} --protocol tcp --port 443 --source-group ${eksSg} --region ${region} || true"
+            if (sg) {
+                echo "Adding SG rule: ${sg} (${domainName}) ← ${eksSg} (EKS) on port 443"
+                sh "aws ec2 authorize-security-group-ingress --group-id ${sg} --protocol tcp --port 443 --source-group ${eksSg} --region ${region} || true"
+            } else {
+                echo "WARNING: Could not find security group for domain ${domainName}"
             }
         }
     }
