@@ -174,17 +174,15 @@ def call(Map config = [:]) {
                 steps {
                     timeout(time: 30, unit: 'MINUTES') {
                         script {
-                            withMigrationsTestAccount(region: params.REGION) { accountId ->
-                                deployIsolatedAosClusters(
-                                    region: params.REGION,
-                                    vpcId: env.isolatedVpcId,
-                                    stage: env.maStageName,
-                                    eksClusterName: env.eksClusterName,
-                                    clusterContextFilePath: clusterContextFilePath,
-                                    sourceVer: params.SOURCE_VERSION,
-                                    targetVer: params.TARGET_VERSION
-                                )
-                            }
+                            deployIsolatedAosClusters(
+                                region: params.REGION,
+                                vpcId: env.isolatedVpcId,
+                                stage: env.maStageName,
+                                eksClusterName: env.eksClusterName,
+                                clusterContextFilePath: clusterContextFilePath,
+                                sourceVer: params.SOURCE_VERSION,
+                                targetVer: params.TARGET_VERSION
+                            )
                         }
                     }
                 }
