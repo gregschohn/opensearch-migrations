@@ -227,18 +227,19 @@ class TestRunner:
         helm_uninstall_error = None
         self.k8s_service.cleanup_ack_dashboard_crs()
         self.k8s_service.cleanup_strimzi_crs()
-        # If requested, run 'workflow reset --all --include-proxies --delete-storage'
-        # inside the migration-console pod BEFORE helm uninstall, so the CLI can find
-        # and delete Kafka PVCs while the pod and Strimzi operator are still alive.
-        if self.delete_storage:
-            try:
-                self.k8s_service.exec_migration_console_cmd(
-                    ["/bin/bash", "-lc",
-                     "workflow reset --all --include-proxies --delete-storage"],
-                    unbuffered=False,
-                )
-            except Exception as e:
-                logger.warning(f"workflow reset --delete-storage failed (continuing): {e}")
+        # Run 'workflow reset --all --include-proxies --delete-storage' inside the
+        # migration-console pod BEFORE helm uninstall so the CLI can find and delete
+        # Kafka PVCs while the pod and Strimzi operator are still alive. Without this
+        # step, Kafka PVCs leak between consecutive test runs and cause cluster-ID
+        # conflicts on redeployment.
+        try:
+            self.k8s_service.exec_migration_console_cmd(
+                ["/bin/bash", "-lc",
+                 "workflow reset --all --include-proxies --delete-storage"],
+                unbuffered=False,
+            )
+        except Exception as e:
+            logger.warning(f"workflow reset --delete-storage failed (continuing): {e}")
         try:
             self.k8s_service.helm_uninstall(release_name=MA_RELEASE_NAME)
         except Exception as e:
@@ -247,11 +248,10 @@ class TestRunner:
         self.cleanup_clusters()
         # Belt-and-suspenders: nuke any remaining PVCs before namespace deletion so a
         # stuck PVC finalizer doesn't block namespace teardown.
-        if self.delete_storage:
-            try:
-                self.k8s_service.delete_all_pvcs()
-            except Exception as e:
-                logger.warning(f"delete_all_pvcs failed (continuing): {e}")
+        try:
+            self.k8s_service.delete_all_pvcs()
+        except Exception as e:
+            logger.warning(f"delete_all_pvcs failed (continuing): {e}")
         self.k8s_service.delete_namespace()
         # Assert both namespaces are actually gone
         self.k8s_service.wait_for_namespace_deleted("kyverno-ma", timeout_seconds=60)
