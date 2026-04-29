@@ -100,8 +100,7 @@ def test_call_api_timeout_returns_friendly_message():
 def test_connection_check_serverless_unknown_type_surfaces_warning(requests_mock):
     cluster = create_valid_cluster(
         endpoint="https://abc123.us-east-1.aoss.amazonaws.com",
-        auth_type=AuthMethod.SIGV4,
-        details={"region": "us-east-1", "service": "aoss"}
+        auth_type=AuthMethod.NO_AUTH,
     )
     # GET / returns 404 (serverless)
     requests_mock.get(f"{cluster.endpoint}/", status_code=404)
@@ -121,8 +120,7 @@ def test_connection_check_serverless_unknown_type_surfaces_warning(requests_mock
 def test_connection_check_serverless_known_type_no_warning(requests_mock):
     cluster = create_valid_cluster(
         endpoint="https://abc123.us-east-1.aoss.amazonaws.com",
-        auth_type=AuthMethod.SIGV4,
-        details={"region": "us-east-1", "service": "aoss"}
+        auth_type=AuthMethod.NO_AUTH,
     )
     requests_mock.get(f"{cluster.endpoint}/", status_code=404)
     requests_mock.put(requests_mock_lib.ANY, status_code=400,
