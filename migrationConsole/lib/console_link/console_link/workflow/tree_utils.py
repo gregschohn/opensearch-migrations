@@ -478,7 +478,9 @@ def get_step_rich_label(
         node.get('denial_reason')
     )
     status_suffix = f': {status_output}' if status_output and isinstance(status_output, str) else ''
-    return f"[{color}]{symbol} {full_unformatted_line}{status_suffix} [/{color}]"
+    from rich.markup import escape
+    escaped_line = escape(full_unformatted_line + status_suffix)
+    return f"[{color}]{symbol} {escaped_line} [/{color}]"
 
 
 def _construct_full_label_line(step_name_and_timestamp_str, step_phase, is_approval,
