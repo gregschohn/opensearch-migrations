@@ -472,7 +472,7 @@
             {
               "name": "currentConfigChecksum",
               "valueFrom": {
-                "expression": "steps.tryApply.outputs.parameters.currentConfigChecksum"
+                "expression": "((steps.tryApply.status == 'Succeeded') ? (steps.tryApply.outputs.parameters.currentConfigChecksum) : (''))"
               }
             }
           ]
@@ -653,7 +653,7 @@
             {
               "name": "currentConfigChecksum",
               "valueFrom": {
-                "expression": "steps.tryApply.outputs.parameters.currentConfigChecksum"
+                "expression": "((steps.tryApply.status == 'Succeeded') ? (steps.tryApply.outputs.parameters.currentConfigChecksum) : (''))"
               }
             }
           ]
@@ -801,7 +801,7 @@
             {
               "name": "currentConfigChecksum",
               "valueFrom": {
-                "expression": "steps.tryApply.outputs.parameters.currentConfigChecksum"
+                "expression": "((steps.tryApply.status == 'Succeeded') ? (steps.tryApply.outputs.parameters.currentConfigChecksum) : (''))"
               }
             }
           ]
@@ -851,7 +851,7 @@
             {
               "name": "currentConfigChecksum",
               "valueFrom": {
-                "expression": "steps.tryApply.outputs.parameters.currentConfigChecksum"
+                "expression": "((steps.tryApply.status == 'Succeeded') ? (steps.tryApply.outputs.parameters.currentConfigChecksum) : (''))"
               }
             }
           ]
@@ -988,7 +988,7 @@
             {
               "name": "currentConfigChecksum",
               "valueFrom": {
-                "expression": "steps.tryApply.outputs.parameters.currentConfigChecksum"
+                "expression": "((steps.tryApply.status == 'Succeeded') ? (steps.tryApply.outputs.parameters.currentConfigChecksum) : (''))"
               }
             }
           ]
@@ -1136,7 +1136,7 @@
             {
               "name": "currentConfigChecksum",
               "valueFrom": {
-                "expression": "steps.tryApply.outputs.parameters.currentConfigChecksum"
+                "expression": "((steps.tryApply.status == 'Succeeded') ? (steps.tryApply.outputs.parameters.currentConfigChecksum) : (''))"
               }
             }
           ]

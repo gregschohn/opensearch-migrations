@@ -524,7 +524,12 @@ export const ResourceManagement = WorkflowBuilder.create({
                 {when: c => ({templateExp: expr.equals(c.resetGate.status, "Succeeded")})}
             )
         )
-        .addExpressionOutput("currentConfigChecksum", c => c.steps.tryApply.outputs.currentConfigChecksum)
+        .addExpressionOutput("currentConfigChecksum", c =>
+            expr.ternary(
+                expr.equals(c.steps.tryApply.status, "Succeeded"),
+                c.steps.tryApply.outputs.currentConfigChecksum,
+                expr.literal("")
+            ))
     )
 
     .addTemplate("reconcileCapturedTrafficResource", t => t
@@ -584,7 +589,12 @@ export const ResourceManagement = WorkflowBuilder.create({
                 {when: c => ({templateExp: expr.equals(c.resetGate.status, "Succeeded")})}
             )
         )
-        .addExpressionOutput("currentConfigChecksum", c => c.steps.tryApply.outputs.currentConfigChecksum)
+        .addExpressionOutput("currentConfigChecksum", c =>
+            expr.ternary(
+                expr.equals(c.steps.tryApply.status, "Succeeded"),
+                c.steps.tryApply.outputs.currentConfigChecksum,
+                expr.literal("")
+            ))
     )
 
     .addTemplate("reconcileCaptureProxyResource", t => t
@@ -635,7 +645,12 @@ export const ResourceManagement = WorkflowBuilder.create({
                 {when: c => ({templateExp: expr.equals(c.resetGate.status, "Succeeded")})}
             )
         )
-        .addExpressionOutput("currentConfigChecksum", c => c.steps.tryApply.outputs.currentConfigChecksum)
+        .addExpressionOutput("currentConfigChecksum", c =>
+            expr.ternary(
+                expr.equals(c.steps.tryApply.status, "Succeeded"),
+                c.steps.tryApply.outputs.currentConfigChecksum,
+                expr.literal("")
+            ))
     )
 
     .addTemplate("reconcileDataSnapshotResource", t => t
@@ -652,7 +667,12 @@ export const ResourceManagement = WorkflowBuilder.create({
                 {continueOn: {failed: true}}
             )
         )
-        .addExpressionOutput("currentConfigChecksum", c => c.steps.tryApply.outputs.currentConfigChecksum)
+        .addExpressionOutput("currentConfigChecksum", c =>
+            expr.ternary(
+                expr.equals(c.steps.tryApply.status, "Succeeded"),
+                c.steps.tryApply.outputs.currentConfigChecksum,
+                expr.literal("")
+            ))
     )
 
     .addTemplate("reconcileSnapshotMigrationResource", t => t
@@ -700,7 +720,12 @@ export const ResourceManagement = WorkflowBuilder.create({
                 {when: c => ({templateExp: expr.equals(c.resetGate.status, "Succeeded")})}
             )
         )
-        .addExpressionOutput("currentConfigChecksum", c => c.steps.tryApply.outputs.currentConfigChecksum)
+        .addExpressionOutput("currentConfigChecksum", c =>
+            expr.ternary(
+                expr.equals(c.steps.tryApply.status, "Succeeded"),
+                c.steps.tryApply.outputs.currentConfigChecksum,
+                expr.literal("")
+            ))
     )
 
     .addTemplate("reconcileTrafficReplayResource", t => t
@@ -751,7 +776,12 @@ export const ResourceManagement = WorkflowBuilder.create({
                 {when: c => ({templateExp: expr.equals(c.resetGate.status, "Succeeded")})}
             )
         )
-        .addExpressionOutput("currentConfigChecksum", c => c.steps.tryApply.outputs.currentConfigChecksum)
+        .addExpressionOutput("currentConfigChecksum", c =>
+            expr.ternary(
+                expr.equals(c.steps.tryApply.status, "Succeeded"),
+                c.steps.tryApply.outputs.currentConfigChecksum,
+                expr.literal("")
+            ))
     )
 
     // ── Status updates ───────────────────────────────────────────────────
