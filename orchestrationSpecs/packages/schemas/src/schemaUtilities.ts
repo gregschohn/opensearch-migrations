@@ -106,7 +106,13 @@ export function unwrapSchema(schema: z.ZodTypeAny, constructorNames = ZOD_OPTION
             return unwrapSchema(innerType as z.ZodTypeAny, constructorNames);
         }
     } else if (schema instanceof z.ZodPipe) {
-        const inner = schema._def.in;
+        // ZodPipe is used for both z.preprocess(fn, schema) and schema.transform(fn) / schema.pipe().
+        // - For z.preprocess: _def.in is the ZodTransform (the preprocess fn), _def.out is the real schema.
+        // - For .transform / .pipe: _def.in is the source schema, _def.out is the ZodTransform.
+        // In both cases we want the non-transform side so callers see the structured schema.
+        const d = schema._def as any;
+        const inIsTransform = d.in?.constructor?.name === 'ZodTransform';
+        const inner = inIsTransform ? d.out : d.in;
         return unwrapSchema(inner as any, constructorNames);
     }
 
@@ -150,5 +156,40 @@ export function fullUnwrapType<T extends z.ZodTypeAny>(schema: T) {
         return actualType;
     } else {
         return schema;
+    }
+}
+
+/**
+ * Walk through wrapper schemas (ZodOptional, ZodDefault, ZodNullable, ZodPipe) and
+ * return the first non-empty `.description` found on any level.
+ *
+ * `.describe()` can be called anywhere in the construction chain, e.g.:
+ *   z.string().default("").optional().describe("DOC")   -> description on ZodOptional
+ *   z.string().optional().default("").describe("DOC")   -> description on ZodDefault
+ *   z.string().describe("DOC").default("").optional()   -> description on ZodString
+ *   z.preprocess(fn, inner).describe("DOC").default(d)  -> description on ZodPipe
+ *
+ * fullUnwrapType() only returns the innermost concrete type, so callers reading
+ * `.description` off it miss descriptions attached to any outer wrapper.
+ * Use this helper instead when you want the field's authored documentation.
+ */
+export function getDescription(schema: z.ZodTypeAny): string | undefined {
+    let cur: z.ZodTypeAny = schema;
+    while (true) {
+        if (cur.description) return cur.description;
+        if (cur instanceof z.ZodOptional) {
+            cur = cur.unwrap() as z.ZodTypeAny;
+        } else if (cur instanceof z.ZodDefault) {
+            cur = cur.removeDefault() as z.ZodTypeAny;
+        } else if (cur instanceof z.ZodNullable) {
+            cur = cur.unwrap() as z.ZodTypeAny;
+        } else if (cur instanceof z.ZodPipe) {
+            // Match unwrapSchema()'s preprocess-aware behaviour: skip over the
+            // ZodTransform side and continue walking through the real schema.
+            const d = cur._def as any;
+            cur = (d.in?.constructor?.name === 'ZodTransform' ? d.out : d.in) as z.ZodTypeAny;
+        } else {
+            return undefined;
+        }
     }
 }
