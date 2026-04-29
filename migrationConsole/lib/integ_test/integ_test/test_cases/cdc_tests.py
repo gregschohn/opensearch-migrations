@@ -4,7 +4,7 @@ from .cdc_base import (
     MATestBase, MigrationType, MATestUserArguments,
     CDC_SOURCE_TARGET_COMBINATIONS, REPLAYER_LABEL_SELECTOR,
     wait_for_pod_ready, wait_for_replayer_consuming,
-    make_proxy_cluster, cleanup_cdc_resources,
+    make_proxy_cluster,
 )
 
 logger = logging.getLogger(__name__)
@@ -73,6 +73,3 @@ class Test0030CdcOnlyLiveTraffic(MATestBase):
 
     def test_after(self):
         pass
-
-    def cleanup(self):
-        cleanup_cdc_resources(self.argo_service.namespace)
