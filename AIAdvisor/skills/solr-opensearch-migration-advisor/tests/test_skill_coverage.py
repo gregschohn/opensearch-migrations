@@ -160,7 +160,6 @@ def test_handle_message_pricing_time_series(skill):
 
 
 def test_pricing_prompt_search(skill):
-    state = SessionState.new("s")
     result = skill._pricing_prompt_search()
     assert "search workload" in result.lower()
     assert "Total data size" in result
