@@ -27,16 +27,14 @@ def call(Map config = [:]) {
         agent { label config.workerAgent ?: 'Jenkins-Default-Agent-X64-C5xlarge-Single-Host' }
 
         parameters {
-            string(name: 'GIT_REPO_URL', defaultValue: 'https://github.com/oeyh/opensearch-migrations.git', description: 'Git repository url')
+            string(name: 'GIT_REPO_URL', defaultValue: 'https://github.com/opensearch-project/opensearch-migrations.git', description: 'Git repository url')
             string(name: 'GIT_BRANCH', defaultValue: gitBranchDefault, description: 'Git branch to use')
             string(name: 'GIT_COMMIT', defaultValue: '', description: '(Optional) Specific commit to checkout')
+            string(name: 'STAGE', defaultValue: "${defaultStageId}", description: 'Stage name for deployment environment')
             string(name: 'REGION', defaultValue: 'us-east-1', description: 'AWS region')
             choice(name: 'SOURCE_VERSION', choices: ['ES_7.10'], description: 'Source cluster version')
             choice(name: 'TARGET_VERSION', choices: ['OS_2.19', 'OS_1.3', 'OS_3.1'], description: 'Target cluster version')
-            string(name: 'TEST_IDS', defaultValue: '0001', description: 'Test IDs to run (comma-separated)')
-            booleanParam(name: 'SKIP_DEPLOY', defaultValue: false, description: 'Skip Phases 1-3 (reuse existing infrastructure). Requires STAGE_OVERRIDE.')
-            booleanParam(name: 'SKIP_CLEANUP', defaultValue: false, description: 'Skip cleanup (keep infrastructure for reuse)')
-            string(name: 'STAGE_OVERRIDE', defaultValue: '', description: 'Reuse a specific stage name (e.g. isoint-p8). Required when SKIP_DEPLOY=true.')
+            string(name: 'TEST_IDS', defaultValue: '0040', description: 'Test IDs to run (comma-separated)')
         }
 
         options {
@@ -66,16 +64,9 @@ def call(Map config = [:]) {
             stage('Checkout') {
                 steps {
                     script {
-                        if (params.SKIP_DEPLOY && params.STAGE_OVERRIDE?.trim()) {
-                            env.maStageName = params.STAGE_OVERRIDE.trim()
-                            env.buildStageName = "isob-${env.maStageName.replaceFirst(/^isoint-/, '')}"
-                        } else if (params.SKIP_DEPLOY) {
-                            error("SKIP_DEPLOY requires STAGE_OVERRIDE to be set (e.g. 'isoint-p8')")
-                        } else {
-                            def pool = jobName.startsWith("main-") ? "m" : jobName.startsWith("release-") ? "r" : "p"
-                            env.maStageName = "${defaultStageId}-${pool}${currentBuild.number}"
-                            env.buildStageName = "isob-${pool}${currentBuild.number}"
-                        }
+                        def pool = jobName.startsWith("main-") ? "m" : jobName.startsWith("release-") ? "r" : "p"
+                        env.maStageName = "${params.STAGE}-${pool}${currentBuild.number}"
+                        env.buildStageName = "isob-${pool}${currentBuild.number}"
                         buildStackName = "MA-ISO-BUILD-${env.maStageName}"
                         isolatedStackName = "MA-ISO-${env.maStageName}"
                     }
@@ -90,8 +81,6 @@ def call(Map config = [:]) {
     Source:     ${params.SOURCE_VERSION}
     Target:     ${params.TARGET_VERSION}
     Test IDs:   ${params.TEST_IDS}
-    Skip Deploy: ${params.SKIP_DEPLOY}
-    Skip Cleanup: ${params.SKIP_CLEANUP}
     ================================================================
 """
                 }
@@ -104,7 +93,6 @@ def call(Map config = [:]) {
             }
 
             stage('Build') {
-                when { expression { !params.SKIP_DEPLOY } }
                 steps {
                     timeout(time: 1, unit: 'HOURS') {
                         sh './gradlew clean build -x test --no-daemon --stacktrace'
@@ -113,7 +101,6 @@ def call(Map config = [:]) {
             }
 
             stage('Phase 1: Build Stack') {
-                when { expression { !params.SKIP_DEPLOY } }
                 steps {
                     timeout(time: 90, unit: 'MINUTES') {
                         withMigrationsTestAccount(region: params.REGION, duration: 5400) { accountId ->
@@ -141,7 +128,6 @@ def call(Map config = [:]) {
             }
 
             stage('Phase 2: Isolated Deploy') {
-                when { expression { !params.SKIP_DEPLOY } }
                 steps {
                     timeout(time: 90, unit: 'MINUTES') {
                         withMigrationsTestAccount(region: params.REGION, duration: 5400) { accountId ->
@@ -186,7 +172,6 @@ def call(Map config = [:]) {
             }
 
             stage('Phase 3: Deploy AOS Clusters') {
-                when { expression { !params.SKIP_DEPLOY } }
                 steps {
                     timeout(time: 30, unit: 'MINUTES') {
                         script {
@@ -204,40 +189,7 @@ def call(Map config = [:]) {
                 }
             }
 
-            stage('Reconnect to Existing Infrastructure') {
-                when { expression { params.SKIP_DEPLOY } }
-                steps {
-                    timeout(time: 5, unit: 'MINUTES') {
-                        withMigrationsTestAccount(region: params.REGION) { accountId ->
-                            script {
-                                // Derive names from STAGE_OVERRIDE
-                                def isoExports = parseCfnExports(stackName: isolatedStackName, region: params.REGION)
-                                env.eksClusterName = isoExports['MIGRATIONS_EKS_CLUSTER_NAME']
-                                env.eksKubeContext = "migration-eks-${env.maStageName}"
-
-                                sh """
-                                    aws eks update-kubeconfig \
-                                      --name "${env.eksClusterName}" \
-                                      --region "${params.REGION}" \
-                                      --alias "${env.eksKubeContext}"
-                                """
-
-                                // Look up VPC from EKS cluster
-                                isolatedVpcId = sh(
-                                    script: "aws eks describe-cluster --name ${env.eksClusterName} --region ${params.REGION} --query cluster.resourcesVpcConfig.vpcId --output text",
-                                    returnStdout: true
-                                ).trim()
-                                env.isolatedVpcId = isolatedVpcId
-
-                                echo "Reconnected: EKS=${env.eksClusterName}, VPC=${isolatedVpcId}, context=${env.eksKubeContext}"
-                            }
-                        }
-                    }
-                }
-            }
-
             stage('Post-Cluster Setup') {
-                when { expression { !params.SKIP_DEPLOY } }
                 steps {
                     timeout(time: 15, unit: 'MINUTES') {
                         script {
@@ -311,48 +263,41 @@ def call(Map config = [:]) {
                             sh "mkdir -p libraries/testAutomation/logs"
                             archiveArtifacts artifacts: 'libraries/testAutomation/logs/**', allowEmptyArchive: true
 
-                            if (params.SKIP_CLEANUP) {
-                                echo "SKIP_CLEANUP=true — keeping all infrastructure for reuse"
-                                echo "To rerun tests: SKIP_DEPLOY=true, STAGE_OVERRIDE=${env.maStageName}"
-                            } else {
-                                // CDC + EKS cleanup
-                                if (env.eksClusterName) {
-                                    cdcCleanupStep(kubeContext: env.eksKubeContext)
-                                    eksCleanupStep(
-                                        stackName: isolatedStackName,
-                                        eksClusterName: env.eksClusterName,
-                                        kubeContext: env.eksKubeContext
-                                    )
-                                }
-
-                                // Destroy AOS domains and delete isolated CFN stack in parallel
-                                parallel(
-                                    'Destroy AOS Domains': {
-                                        dir('test') {
-                                            echo "CLEANUP: Destroying AOS domain stacks"
-                                            sh "./awsDeployCluster.sh --stage ${env.maStageName} --context-file ${clusterContextFilePath} --destroy || true"
-                                        }
-                                    },
-                                    'Delete Isolated Stack': {
-                                        echo "CLEANUP: Deleting isolated CFN stack ${isolatedStackName}"
-                                        sh "aws cloudformation delete-stack --stack-name ${isolatedStackName} --region ${region} || true"
-                                        sh "aws cloudformation wait stack-delete-complete --stack-name ${isolatedStackName} --region ${region} || true"
-                                    }
+                            // CDC + EKS cleanup
+                            if (env.eksClusterName) {
+                                cdcCleanupStep(kubeContext: env.eksKubeContext)
+                                eksCleanupStep(
+                                    stackName: isolatedStackName,
+                                    eksClusterName: env.eksClusterName,
+                                    kubeContext: env.eksKubeContext
                                 )
-
-                                // Delete isolated VPC (after CFN stack is gone)
-                                cleanupIsolatedVpc(region: region, vpcId: isolatedVpcId, stage: env.maStageName)
-
-                                // Delete build stack
-                                echo "CLEANUP: Deleting build stack ${buildStackName}"
-                                sh "aws cloudformation delete-stack --stack-name ${buildStackName} --region ${region} || true"
-                                sh "aws cloudformation wait stack-delete-complete --stack-name ${buildStackName} --region ${region} || true"
                             }
+
+                            // Destroy AOS domains and delete isolated CFN stack in parallel
+                            parallel(
+                                'Destroy AOS Domains': {
+                                    dir('test') {
+                                        echo "CLEANUP: Destroying AOS domain stacks"
+                                        sh "./awsDeployCluster.sh --stage ${env.maStageName} --context-file ${clusterContextFilePath} --destroy || true"
+                                    }
+                                },
+                                'Delete Isolated Stack': {
+                                    echo "CLEANUP: Deleting isolated CFN stack ${isolatedStackName}"
+                                    sh "aws cloudformation delete-stack --stack-name ${isolatedStackName} --region ${region} || true"
+                                    sh "aws cloudformation wait stack-delete-complete --stack-name ${isolatedStackName} --region ${region} || true"
+                                }
+                            )
+
+                            // Delete isolated VPC (after CFN stack is gone)
+                            cleanupIsolatedVpc(region: region, vpcId: isolatedVpcId, stage: env.maStageName)
+
+                            // Delete build stack
+                            echo "CLEANUP: Deleting build stack ${buildStackName}"
+                            sh "aws cloudformation delete-stack --stack-name ${buildStackName} --region ${region} || true"
+                            sh "aws cloudformation wait stack-delete-complete --stack-name ${buildStackName} --region ${region} || true"
                         }
 
-                        if (!params.SKIP_CLEANUP) {
-                            sh "kubectl config delete-context ${env.eksKubeContext} 2>/dev/null || true"
-                        }
+                        sh "kubectl config delete-context ${env.eksKubeContext} 2>/dev/null || true"
                     }
                 }
             }
