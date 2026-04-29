@@ -1,4 +1,5 @@
 import heapq
+import sys
 from contextlib import ExitStack
 
 import click
@@ -14,6 +15,15 @@ from ..models.utils import load_k8s_config
 
 
 logger = logging.getLogger(__name__)
+
+# Flags recognized on either side of `--`.  When they appear in the
+# pass-through args they are "promoted" so the command behaves as if
+# the user had placed them before `--`.
+_PROMOTABLE_FLAGS = {
+    '--timestamps': 'timestamps',
+    '-f': 'follow',
+    '--follow': 'follow',
+}
 
 
 def _get_label_selector(selector_str, prefix, workflow_name):
@@ -32,63 +42,116 @@ def _get_label_selector(selector_str, prefix, workflow_name):
     return ",".join(prefixed_parts)
 
 
-@click.command(name="output", context_settings={
-    "ignore_unknown_options": True,
-    "allow_extra_args": True
-})
-@click.option('--workflow-name', default=DEFAULT_WORKFLOW_NAME, shell_complete=get_workflow_completions)
-@click.option('--all-workflows', is_flag=True, default=False, help='Show output for all workflows')
+def _promote_known_flags(extra_args):
+    """Extract known flags from pass-through args so they take effect on both sides of `--`."""
+    promoted = set()
+    remaining = []
+    for arg in extra_args:
+        flag_name = _PROMOTABLE_FLAGS.get(arg)
+        if flag_name:
+            promoted.add(flag_name)
+        else:
+            remaining.append(arg)
+    return promoted, remaining
+
+
+@click.command(name="output")
+@click.option('--workflow-name', default=DEFAULT_WORKFLOW_NAME, shell_complete=get_workflow_completions,
+              help='Workflow name to show output for (default: WORKFLOW_NAME env var)')
+@click.option('--all-workflows', is_flag=True, default=False,
+              help='Show output for all workflows instead of a single workflow')
 @click.option(
     '--argo-server',
     default=DEFAULT_ARGO_SERVER_URL,
     help='Argo Server URL (default: ARGO_SERVER env var, or ARGO_SERVER_SERVICE_HOST:ARGO_SERVER_SERVICE_PORT)'
 )
-@click.option('--namespace', default='ma')
-@click.option('--insecure', is_flag=True, default=True)
+@click.option('--namespace', default='ma', help='Kubernetes namespace (default: ma)')
+@click.option('--insecure', is_flag=True, default=True, help='Skip TLS certificate verification (default: True)')
 @click.option('--token', help='Bearer token for authentication')
-@click.option('--prefix', default='migrations.opensearch.org/', help='Label prefix for filters')
+@click.option('--prefix', default='migrations.opensearch.org/',
+              help='Label prefix for filters (default: migrations.opensearch.org/)')
 @click.option(
     '-l', '--selector',
     help='Label selector (e.g. source=a,target=b)',
     shell_complete=get_label_completions
 )
-# We define these just so Click "eats" them from the command line and keeps ctx.args clean
-@click.option('-f', '--follow', is_flag=True, expose_value=False)
-@click.option('--timestamps', is_flag=True, expose_value=False)
+@click.option('-f', '--follow', is_flag=True, default=False,
+              help='Stream live logs via stern instead of showing history')
+@click.option('--timestamps', is_flag=True, default=False,
+              help='Show timestamps in log output')
+@click.argument('extra_args', nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
-def output_command(ctx, workflow_name, all_workflows, namespace, prefix, selector, **kwargs):
-    """View or tail workflow logs."""
-    _validate_inputs(ctx, all_workflows)
+def output_command(ctx, workflow_name, all_workflows, namespace, prefix, selector,
+                   follow, timestamps, extra_args, **kwargs):
+    """View or tail workflow logs.
+
+    \b
+    Arguments after -- are forwarded to the underlying tool
+    (kubectl logs for history, stern for follow mode).
+    Use -- --help to see what the underlying tool supports.
+
+    \b
+    Examples:
+      workflow output
+      workflow output --timestamps
+      workflow output -f
+      workflow output -l source=mycluster
+      workflow output -- --since=1h --tail=100
+      workflow output -f -- --container=proxy
+      workflow output -- --help
+    """
+    _validate_inputs(ctx, all_workflows, extra_args)
+
+    promoted, passthrough_args = _promote_known_flags(list(extra_args))
+    follow = follow or 'follow' in promoted
+    timestamps = timestamps or 'timestamps' in promoted
+
+    if '--help' in passthrough_args:
+        _show_underlying_help(follow)
+        return
 
     effective_name = None if all_workflows else workflow_name
     full_selector = _get_label_selector(selector, prefix, effective_name)
-    is_follow = ctx.get_parameter_source('follow') != click.core.ParameterSource.DEFAULT
 
-    # 3. Execution Branching
-    if is_follow:
-        _run_tailing_mode(namespace, full_selector, ctx.args)
+    if follow:
+        _run_tailing_mode(namespace, full_selector, timestamps, passthrough_args)
     else:
-        _run_history_mode(ctx, namespace, full_selector)
+        _run_history_mode(ctx, namespace, full_selector, timestamps, passthrough_args)
 
 
-def _validate_inputs(ctx, all_workflows):
-    """Ensure mutually exclusive flags are respected."""
+def _validate_inputs(ctx, all_workflows, extra_args):
+    """Ensure mutually exclusive flags are respected and extra args are intentional."""
     is_wf_set = ctx.get_parameter_source('workflow_name') != click.core.ParameterSource.DEFAULT
     if all_workflows and is_wf_set:
         click.echo("Error: --workflow-name and --all-workflows are mutually exclusive", err=True)
         ctx.exit(1)
+    if extra_args and '--' not in sys.argv:
+        for arg in extra_args:
+            if not arg.startswith('-'):
+                click.echo(f"Error: unexpected argument '{arg}'.\n", err=True)
+                click.echo(ctx.get_help())
+                ctx.exit(1)
 
 
-def _run_tailing_mode(namespace, selector, clean_args):
+def _show_underlying_help(follow):
+    """Run a single --help invocation of the underlying tool."""
+    if follow:
+        subprocess.run(["stern", "--help"])
+    else:
+        subprocess.run(["kubectl", "logs", "--help"])
+
+
+def _run_tailing_mode(namespace, selector, timestamps, passthrough_args):
     """Externalize stern execution."""
-    cmd = ["stern", "-l", selector, "-n", namespace] + clean_args
+    cmd = ["stern", "-l", selector, "-n", namespace]
+    if timestamps:
+        cmd.append("--timestamps")
+    cmd.extend(passthrough_args)
     subprocess.run(cmd)
 
 
-def _run_history_mode(ctx, namespace, selector):
+def _run_history_mode(ctx, namespace, selector, show_timestamps, passthrough_args):
     """Handle the complex merging of historical logs from multiple pods."""
-    user_requested_ts = ctx.get_parameter_source('timestamps') != click.core.ParameterSource.DEFAULT
-
     pods = []
     try:
         load_k8s_config()
@@ -105,7 +168,7 @@ def _run_history_mode(ctx, namespace, selector):
     with ExitStack() as stack:
         processes = []
         for pod in pods.items:
-            cmd = ["kubectl", "logs", "--timestamps", pod.metadata.name, "-n", namespace] + ctx.args
+            cmd = ["kubectl", "logs", "--timestamps", pod.metadata.name, "-n", namespace] + passthrough_args
             p = stack.enter_context(subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1
             ))
@@ -113,7 +176,7 @@ def _run_history_mode(ctx, namespace, selector):
 
         # Merge and Stream
         streams = [p.stdout for _, p in processes]
-        _stream_merged_logs(heapq.merge(*streams), user_requested_ts)
+        _stream_merged_logs(heapq.merge(*streams), show_timestamps)
         _check_process_errors(processes)
 
 
