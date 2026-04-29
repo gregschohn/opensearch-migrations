@@ -304,6 +304,7 @@ RULES:
 8. For "both", populate both requests completely
 9. For vector workloads in managed: if vectorCount and dimensionsCount are provided, set appropriate targetShardSize (45GB default)
 10. For serverless ingest: estimate rates based on data size (e.g., 100GB daily ≈ 4GB/hour avg, 10GB/hour peak)
+11. Set dynamicSizing=true inside the workload object when the user asks for the "best", "optimal", or "recommended" cluster configuration. Leave it false (default) when the user just wants a cost estimate or the cheapest option.
 
 EXAMPLES:
 
@@ -660,7 +661,8 @@ IMPORTANT RULES:
 - For vector workloads, prefer onDisk=true with compressionLevel=32 for cost optimization
 - For production workloads, always use dedicatedManager=true and 3 AZs
 - For dev workloads, minimize resources (1 AZ, 0 replicas, no dedicated manager)
-- Include structuredResponse=true in all tool calls`
+- Include structuredResponse=true in all tool calls
+- Set dynamicSizing=true inside the workload config when the user asks for the "best", "optimal", or "recommended" cluster — this enables workload-aware scoring instead of cheapest-first ranking`
 }
 
 // buildToolUseMessages converts conversation history and current query into Bedrock message format

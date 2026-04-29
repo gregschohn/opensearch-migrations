@@ -321,6 +321,88 @@ func TestCallTool_ServerlessEstimate_ReturnsJSON(t *testing.T) {
 	assert.True(t, json.Valid([]byte(textContent.Text)), "content should be valid JSON, got: %s", textContent.Text)
 }
 
+func TestExecuteProvisioned_DynamicSizing_Search(t *testing.T) {
+	te := newTestToolExecutor(t)
+
+	args := map[string]interface{}{
+		"search": map[string]interface{}{
+			"size":          100.0,
+			"region":        "US East (N. Virginia)",
+			"dynamicSizing": true,
+		},
+		"maxConfigurations": 3.0,
+	}
+
+	resp, err := te.ExecuteProvisioned(args)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	// With dynamicSizing, results are scored and ranked
+	assert.LessOrEqual(t, len(resp.ClusterConfigs), 3)
+	if len(resp.ClusterConfigs) > 0 {
+		assert.Greater(t, resp.ClusterConfigs[0].Score, 0.0, "scored configs should have non-zero Score")
+	}
+}
+
+func TestExecuteProvisioned_DynamicSizing_Vector(t *testing.T) {
+	te := newTestToolExecutor(t)
+
+	args := map[string]interface{}{
+		"vector": map[string]interface{}{
+			"vectorCount":    1000000.0,
+			"dimensionsCount": 768.0,
+			"region":         "US East (N. Virginia)",
+			"dynamicSizing":  true,
+		},
+		"maxConfigurations": 3.0,
+	}
+
+	resp, err := te.ExecuteProvisioned(args)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.LessOrEqual(t, len(resp.ClusterConfigs), 3)
+}
+
+func TestExecuteProvisioned_DynamicSizing_TimeSeries(t *testing.T) {
+	te := newTestToolExecutor(t)
+
+	args := map[string]interface{}{
+		"timeSeries": map[string]interface{}{
+			"size":               50.0,
+			"hotRetentionPeriod": 14.0,
+			"region":             "US East (N. Virginia)",
+			"dynamicSizing":      true,
+		},
+		"maxConfigurations": 3.0,
+	}
+
+	resp, err := te.ExecuteProvisioned(args)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.LessOrEqual(t, len(resp.ClusterConfigs), 3)
+}
+
+func TestExecuteProvisioned_DynamicSizing_Disabled_By_Default(t *testing.T) {
+	te := newTestToolExecutor(t)
+
+	args := map[string]interface{}{
+		"search": map[string]interface{}{
+			"size":   100.0,
+			"region": "US East (N. Virginia)",
+		},
+		"maxConfigurations": 3.0,
+	}
+
+	resp, err := te.ExecuteProvisioned(args)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+
+	// Without dynamicSizing, Score should be 0 (cheapest-first ranking)
+	if len(resp.ClusterConfigs) > 0 {
+		assert.Equal(t, 0.0, resp.ClusterConfigs[0].Score, "without dynamicSizing, Score should be zero")
+	}
+}
+
 func TestCallTool_ProvisionedEstimate_Error_ReturnsInToolResult(t *testing.T) {
 	te := newTestToolExecutor(t)
 

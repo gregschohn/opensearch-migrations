@@ -17,7 +17,8 @@ Exploration strategies — call multiple times with different parameters to comp
 - Storage vs Performance: CPUsPerShard=0 (storage-focused) vs CPUsPerShard=2 (performance-focused)
 - Vector workloads: onDisk=true,compressionLevel=32 vs exactKNN=true
 - Log analytics: vary hotRetentionPeriod, favor instanceFamily=["Storage optimized"]
-- Cost tiers: compare pricingType=OnDemand vs pricingType=AURI1 (1yr reserved)`
+- Cost tiers: compare pricingType=OnDemand vs pricingType=AURI1 (1yr reserved)
+- Best configuration: set dynamicSizing=true when the user wants the best or optimal cluster configuration rather than just the cheapest. This enables workload-aware scoring that balances cost, performance headroom, and storage efficiency.`
 
 const ServerlessToolDescription = `Calculate cost estimates for serverless v2 Amazon OpenSearch Service collections. Uses OpenSearch Compute Units (OCUs) for scaling. Requires ingest configuration; search, timeSeries, and vector are optional.
 
@@ -62,6 +63,7 @@ var ProvisionedRequestSchema = map[string]interface{}{
 				"coldPercentage":         map[string]interface{}{"type": "integer", "description": "Percentage of data in cold/S3 tier (0-100, default: 0)"},
 				"warmInstanceType":       map[string]interface{}{"type": "string", "description": "Override warm instance: ultrawarm1.medium.search, ultrawarm1.large.search, or oi2.*.search"},
 				"autoSelectWarmInstance": map[string]interface{}{"type": "boolean", "description": "Auto-select warm instance type (default: true)"},
+				"dynamicSizing":          map[string]interface{}{"type": "boolean", "description": "Enable workload-aware configuration scoring that ranks results by cost-efficiency, resource headroom, and storage balance instead of cheapest-first. Use when the goal is to find the best cluster configuration, not just the cheapest. (default: false, experimental)"},
 			},
 		},
 		"vector": map[string]interface{}{
@@ -107,6 +109,7 @@ var ProvisionedRequestSchema = map[string]interface{}{
 				"coldPercentage":             map[string]interface{}{"type": "integer", "description": "Percentage of vectors in cold/S3 (0-100, default: 0)"},
 				"warmInstanceType":           map[string]interface{}{"type": "string", "description": "Override UltraWarm instance type"},
 				"autoSelectWarmInstance":     map[string]interface{}{"type": "boolean", "description": "Auto-select warm instance (default: true)"},
+				"dynamicSizing":              map[string]interface{}{"type": "boolean", "description": "Enable workload-aware configuration scoring that ranks results by cost-efficiency, resource headroom, and storage balance instead of cheapest-first. Use when the goal is to find the best cluster configuration, not just the cheapest. (default: false, experimental)"},
 			},
 		},
 		"timeSeries": map[string]interface{}{
@@ -139,6 +142,7 @@ var ProvisionedRequestSchema = map[string]interface{}{
 				"multiAzWithStandby":     map[string]interface{}{"type": "boolean", "description": "Multi-AZ with Standby (requires replicas>=2)"},
 				"warmInstanceType":       map[string]interface{}{"type": "string", "description": "Override warm instance type"},
 				"autoSelectWarmInstance": map[string]interface{}{"type": "boolean", "description": "Auto-select warm instance (default: true)"},
+				"dynamicSizing":          map[string]interface{}{"type": "boolean", "description": "Enable workload-aware configuration scoring that ranks results by cost-efficiency, resource headroom, and storage balance instead of cheapest-first. Use when the goal is to find the best cluster configuration, not just the cheapest. (default: false, experimental)"},
 				"remoteStorage": map[string]interface{}{
 					"type":        "object",
 					"description": "Remote storage for inactive shards",
