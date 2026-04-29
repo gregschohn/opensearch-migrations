@@ -178,6 +178,7 @@ export const FullMigration = WorkflowBuilder.create({
                     topicPartitions: b.inputs.topicPartitions,
                     topicReplicas: b.inputs.topicReplicas,
                     topicConfig: b.inputs.topicConfig,
+                    sourceK8sLabel: expr.dig(expr.deserializeRecord(b.inputs.proxyConfig), ["sourceConfig", "label"], ""),
                 })
             )
         )
@@ -506,6 +507,7 @@ export const FullMigration = WorkflowBuilder.create({
     .addTemplate("runSingleReplay", t => t
         .addRequiredInput("kafkaConfig", typeToken<z.infer<typeof NAMED_KAFKA_CLIENT_CONFIG>>())
         .addRequiredInput("kafkaClusterName", typeToken<string>())
+        .addRequiredInput("sourceLabel", typeToken<string>())
         .addRequiredInput("fromProxy", typeToken<string>())
         .addRequiredInput("fromProxyConfigChecksum", typeToken<string>())
         .addRequiredInput("targetConfig", typeToken<z.infer<typeof NAMED_TARGET_CLUSTER_CONFIG>>())
@@ -665,9 +667,8 @@ export const FullMigration = WorkflowBuilder.create({
                     ...selectInputsForRegister(b, c),
                     proxyConfig: expr.serialize(expr.makeDict({
                         name: expr.get(c.item, "name"),
+                        sourceConfig: expr.deserializeRecord(expr.get(c.item, "sourceConfig")),
                         kafkaConfig: expr.deserializeRecord(expr.get(c.item, "kafkaConfig")),
-                        sourceEndpoint: expr.get(c.item, "sourceEndpoint"),
-                        sourceAllowInsecure: expr.get(c.item, "sourceAllowInsecure"),
                         proxyConfig: expr.deserializeRecord(expr.get(c.item, "proxyConfig")),
                         configChecksum: expr.dig(c.item, ["configChecksum"], ""),
                         topicConfigChecksum: expr.dig(c.item, ["topicConfigChecksum"], ""),

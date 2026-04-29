@@ -159,6 +159,9 @@ function getReplayerDeploymentManifest
     kafkaSecretName: BaseExpression<string>,
     kafkaCaSecretName: BaseExpression<string>,
     ownerUid: BaseExpression<string>,
+    sourceK8sLabel: BaseExpression<string>,
+    targetK8sLabel: BaseExpression<string>,
+    taskK8sLabel: BaseExpression<string>,
 }): Deployment {
     const isScramAuth = expr.equals(args.kafkaAuthType, expr.literal("scram-sha-512"));
     const baseContainerDefinition = {
@@ -228,7 +231,10 @@ function getReplayerDeploymentManifest
             ownerReferences: makeOwnerReferences(args.name, args.ownerUid),
             labels: {
                 app: "replayer",
-                "workflows.argoproj.io/workflow": makeDirectTypeProxy(args.workflowName)
+                "workflows.argoproj.io/workflow": makeDirectTypeProxy(args.workflowName),
+                "migrations.opensearch.org/source": makeStringTypeProxy(args.sourceK8sLabel),
+                "migrations.opensearch.org/target": makeStringTypeProxy(args.targetK8sLabel),
+                "migrations.opensearch.org/task": makeStringTypeProxy(args.taskK8sLabel),
             },
         },
         spec: {
@@ -246,6 +252,9 @@ function getReplayerDeploymentManifest
                     labels: {
                         app: "replayer",
                         "workflows.argoproj.io/workflow": makeDirectTypeProxy(args.workflowName),
+                        "migrations.opensearch.org/source": makeStringTypeProxy(args.sourceK8sLabel),
+                        "migrations.opensearch.org/target": makeStringTypeProxy(args.targetK8sLabel),
+                        "migrations.opensearch.org/task": makeStringTypeProxy(args.taskK8sLabel),
                     },
                 },
                 spec: {
@@ -279,6 +288,9 @@ export const Replayer = WorkflowBuilder.create({
       .addRequiredInput("jvmArgs", typeToken<string>())
       .addRequiredInput("loggingConfigurationOverrideConfigMap", typeToken<string>())
       .addRequiredInput("basicAuthSecretName", typeToken<string>())
+      .addRequiredInput("sourceK8sLabel", typeToken<string>())
+      .addRequiredInput("targetK8sLabel", typeToken<string>())
+      .addOptionalInput("taskK8sLabel", c => "trafficReplayer")
       .addInputsFromRecord(makeRequiredImageParametersForKeys(["TrafficReplayer"]))
       .addRequiredInput("resources", typeToken<ResourceRequirementsType>())
 
@@ -304,6 +316,9 @@ export const Replayer = WorkflowBuilder.create({
                     kafkaSecretName: b.inputs.kafkaSecretName,
                     kafkaCaSecretName: b.inputs.kafkaCaSecretName,
                     ownerUid: b.inputs.ownerUid,
+                    sourceK8sLabel: b.inputs.sourceK8sLabel,
+                    targetK8sLabel: b.inputs.targetK8sLabel,
+                    taskK8sLabel: b.inputs.taskK8sLabel,
                 })
             }))
         .addRetryParameters(K8S_RESOURCE_RETRY_STRATEGY)
@@ -331,6 +346,7 @@ export const Replayer = WorkflowBuilder.create({
       .addRequiredInput("kafkaGroupId", typeToken<string>())
       .addRequiredInput("name", typeToken<string>())
       .addRequiredInput("ownerUid", typeToken<string>())
+      .addRequiredInput("sourceLabel", typeToken<string>())
       .addRequiredInput(
         "targetConfig",
         typeToken<z.infer<typeof NAMED_TARGET_CLUSTER_CONFIG>>(),
@@ -410,6 +426,8 @@ export const Replayer = WorkflowBuilder.create({
               resources: expr.serialize(
                 expr.jsonPathStrict(b.inputs.replayerOptions, "resources"),
               ),
+              sourceK8sLabel: b.inputs.sourceLabel,
+              targetK8sLabel: expr.jsonPathStrict(b.inputs.targetConfig, "label"),
             }),
           );
       }),

@@ -303,6 +303,10 @@
                   {
                     "name": "checksumForReplayer",
                     "value": "{{=sprig.dig('checksumForReplayer', '', fromJSON(inputs.parameters.proxyConfig))}}"
+                  },
+                  {
+                    "name": "sourceK8sLabel",
+                    "value": "{{=sprig.dig('sourceConfig', 'label', '', fromJSON(inputs.parameters.proxyConfig))}}"
                   }
                 ]
               },
@@ -1203,6 +1207,9 @@
               "name": "kafkaClusterName"
             },
             {
+              "name": "sourceLabel"
+            },
+            {
               "name": "fromProxy"
             },
             {
@@ -1414,6 +1421,10 @@
                   {
                     "name": "name",
                     "value": "{{inputs.parameters.name}}"
+                  },
+                  {
+                    "name": "sourceLabel",
+                    "value": "{{inputs.parameters.sourceLabel}}"
                   },
                   {
                     "name": "targetConfig",
@@ -1653,7 +1664,7 @@
                   },
                   {
                     "name": "proxyConfig",
-                    "value": "{{=toJSON(sprig.dict(\"name\", item['name'], \"kafkaConfig\", fromJSON(item['kafkaConfig']), \"sourceEndpoint\", item['sourceEndpoint'], \"sourceAllowInsecure\", item['sourceAllowInsecure'], \"proxyConfig\", fromJSON(item['proxyConfig']), \"configChecksum\", sprig.dig('configChecksum', '', item), \"topicConfigChecksum\", sprig.dig('topicConfigChecksum', '', item), \"checksumForSnapshot\", sprig.dig('checksumForSnapshot', '', item), \"checksumForReplayer\", sprig.dig('checksumForReplayer', '', item), \"resourceUid\", item['resourceUid']))}}"
+                    "value": "{{=toJSON(sprig.dict(\"name\", item['name'], \"sourceConfig\", fromJSON(item['sourceConfig']), \"kafkaConfig\", fromJSON(item['kafkaConfig']), \"proxyConfig\", fromJSON(item['proxyConfig']), \"configChecksum\", sprig.dig('configChecksum', '', item), \"topicConfigChecksum\", sprig.dig('topicConfigChecksum', '', item), \"checksumForSnapshot\", sprig.dig('checksumForSnapshot', '', item), \"checksumForReplayer\", sprig.dig('checksumForReplayer', '', item), \"resourceUid\", item['resourceUid']))}}"
                   },
                   {
                     "name": "kafkaClusterName",
@@ -1877,6 +1888,10 @@
                   {
                     "name": "name",
                     "value": "{{=jsonpath(toJSON(item), '$.name')}}"
+                  },
+                  {
+                    "name": "sourceLabel",
+                    "value": "{{=jsonpath(toJSON(item), '$.sourceLabel')}}"
                   },
                   {
                     "name": "dependsOn",

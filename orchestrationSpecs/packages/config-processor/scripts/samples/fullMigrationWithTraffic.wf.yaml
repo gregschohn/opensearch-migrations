@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=/root/schema/workflowMigration.schema.json
 # Full migration: snapshot + auto-created kafka + capture proxy + replayer
 skipApprovals: false
 kafkaClusterConfiguration:
@@ -11,12 +12,12 @@ sourceClusters:
     version: "ES 7.10"
     authConfig:
       basic:
-        secretName: "source-creds"
+        secretName: "cluster-creds"
     snapshotInfo:
       repos:
         default:
           awsRegion: "us-east-2"
-          endpoint: "localstack://10.97.173.169:4566"
+          endpoint: "localstack://10.96.221.219:4566"
           s3RepoPathUri: "s3://migrations-default-123456789012-dev-us-east-2"
       snapshots:
         snap1:
@@ -30,7 +31,7 @@ targetClusters:
     allowInsecure: true
     authConfig:
       basic:
-        secretName: "target-creds"
+        secretName: "cluster-creds"
 
 snapshotMigrationConfigs:
   - fromSource: "source"
@@ -57,5 +58,3 @@ traffic:
     replay1:
       fromProxy: "capture-proxy"
       toTarget: "target"
-      replayerConfig:
-        removeAuthHeader: true
