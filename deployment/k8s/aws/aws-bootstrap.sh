@@ -364,6 +364,21 @@ validate_args() {
       echo "Error: Unknown --tls-mode: $tls_mode (expected: none, self-signed, pca-existing, pca-create)" >&2
       exit 1 ;;
   esac
+
+  # Early-resolve region and fail fast if unresolvable. Without this, a missing
+  # region only surfaces as "You must specify a region" from the AWS CLI deep
+  # into the run (e.g. after a multi-minute CDK build with --build). We check
+  # --region, then $AWS_CFN_REGION, then `aws configure get region` — mirroring
+  # the fallback used later at deploy time — so the error happens in seconds,
+  # not minutes.
+  if [[ -z "$region" ]]; then
+    region="$(aws configure get region 2>/dev/null || true)"
+  fi
+  if [[ -z "$region" ]]; then
+    echo "Error: AWS region is not set." >&2
+    echo "  Pass --region <region>, set AWS_CFN_REGION, or run 'aws configure'." >&2
+    exit 1
+  fi
 }
 
 validate_args
