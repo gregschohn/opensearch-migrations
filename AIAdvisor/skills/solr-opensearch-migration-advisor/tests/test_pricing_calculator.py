@@ -81,11 +81,27 @@ class TestPricingCalculatorClient(unittest.TestCase):
             region="US East (N. Virginia)",
         )
         self.assertEqual(result["monthlyCost"], 1234.56)
-        # Verify the request body contained the "search" key
+        # Verify the request body matches the README example shape
         call_args = mock_urlopen.call_args[0][0]
         body = json.loads(call_args.data.decode())
         self.assertIn("search", body)
         self.assertEqual(body["search"]["size"], 200)
+        self.assertEqual(body["search"]["azs"], 3)
+        self.assertEqual(body["search"]["replicas"], 1)
+        self.assertEqual(body["search"]["targetShardSize"], 25)
+        self.assertIsInstance(body["search"]["targetShardSize"], int)
+        self.assertEqual(body["search"]["CPUsPerShard"], 1.5)
+        self.assertEqual(body["search"]["pricingType"], "OnDemand")
+        self.assertEqual(body["search"]["region"], "US East (N. Virginia)")
+
+    @patch("urllib.request.urlopen")
+    def test_estimate_provisioned_search_target_shard_size_coerced_to_int(self, mock_urlopen):
+        """targetShardSize must be a JSON integer (Go struct field is int)."""
+        mock_urlopen.return_value = _mock_urlopen(MOCK_PROVISIONED)
+        self.client.estimate_provisioned_search(size_gb=100, target_shard_size_gb=30.0)
+        body = json.loads(mock_urlopen.call_args[0][0].data.decode())
+        self.assertIsInstance(body["search"]["targetShardSize"], int)
+        self.assertEqual(body["search"]["targetShardSize"], 30)
 
     @patch("urllib.request.urlopen")
     def test_estimate_provisioned_time_series(self, mock_urlopen):
@@ -95,9 +111,14 @@ class TestPricingCalculatorClient(unittest.TestCase):
             region="US East (N. Virginia)",
         )
         self.assertEqual(result["instanceCount"], 6)
+        # Verify the request body matches the README example shape
         body = json.loads(mock_urlopen.call_args[0][0].data.decode())
         self.assertIn("timeSeries", body)
+        self.assertEqual(body["timeSeries"]["size"], 500)
         self.assertEqual(body["timeSeries"]["hotRetentionPeriod"], 14)
+        self.assertEqual(body["timeSeries"]["warmRetentionPeriod"], 76)
+        self.assertIsInstance(body["timeSeries"]["targetShardSize"], int)
+        self.assertEqual(body["timeSeries"]["CPUsPerShard"], 1.25)
 
     @patch("urllib.request.urlopen")
     def test_estimate_provisioned_vector(self, mock_urlopen):
@@ -108,29 +129,83 @@ class TestPricingCalculatorClient(unittest.TestCase):
             region="US East (N. Virginia)",
         )
         self.assertIn("monthlyCost", result)
+        # Verify the request body matches the README example shape
         body = json.loads(mock_urlopen.call_args[0][0].data.decode())
         self.assertIn("vector", body)
         self.assertEqual(body["vector"]["vectorCount"], 10_000_000)
+        self.assertEqual(body["vector"]["dimensionsCount"], 768)
         self.assertEqual(body["vector"]["vectorEngineType"], "hnswfp16")
+        self.assertEqual(body["vector"]["maxEdges"], 16)
+        self.assertEqual(body["vector"]["azs"], 3)
+        self.assertEqual(body["vector"]["replicas"], 1)
+        self.assertEqual(body["vector"]["pricingType"], "OnDemand")
+        self.assertEqual(body["vector"]["region"], "US East (N. Virginia)")
 
     # ------------------------------------------------------------------
     # Serverless estimate
     # ------------------------------------------------------------------
 
     @patch("urllib.request.urlopen")
-    def test_estimate_serverless(self, mock_urlopen):
+    def test_estimate_serverless_time_series(self, mock_urlopen):
+        """Verify timeSeries payload matches the README example shape."""
         mock_urlopen.return_value = _mock_urlopen(MOCK_SERVERLESS)
         result = self.client.estimate_serverless(
             collection_type="timeSeries",
-            daily_index_size_gb=10,
+            daily_index_size=10,
             days_in_hot=1, days_in_warm=6,
+            min_query_rate=1, max_query_rate=1,
+            hours_at_max_rate=0,
             region="us-east-1", redundancy=True,
         )
         self.assertEqual(result["monthlyCost"], 450.00)
         body = json.loads(mock_urlopen.call_args[0][0].data.decode())
+        # Top-level keys
         self.assertIn("timeSeries", body)
         self.assertEqual(body["region"], "us-east-1")
         self.assertTrue(body["redundancy"])
+        # Workload fields match README example
+        ts = body["timeSeries"]
+        self.assertEqual(ts["dailyIndexSize"], 10)
+        self.assertEqual(ts["daysInHot"], 1)
+        self.assertEqual(ts["daysInWarm"], 6)
+        self.assertEqual(ts["minQueryRate"], 1)
+        self.assertEqual(ts["maxQueryRate"], 1)
+        self.assertEqual(ts["hoursAtMaxRate"], 0)
+        # Query rates must be integers for Go's int64 unmarshal
+        self.assertIsInstance(ts["minQueryRate"], int)
+        self.assertIsInstance(ts["maxQueryRate"], int)
+
+    @patch("urllib.request.urlopen")
+    def test_estimate_serverless_search(self, mock_urlopen):
+        mock_urlopen.return_value = _mock_urlopen(MOCK_SERVERLESS)
+        result = self.client.estimate_serverless(
+            collection_type="search",
+            daily_index_size=5,
+            days_in_hot=7,
+            min_query_rate=1, max_query_rate=10,
+            hours_at_max_rate=8,
+            region="us-east-1", redundancy=False,
+        )
+        self.assertEqual(result["monthlyCost"], 450.00)
+        body = json.loads(mock_urlopen.call_args[0][0].data.decode())
+        self.assertIn("search", body)
+        # Search uses collectionSize, not dailyIndexSize/daysInHot/daysInWarm
+        self.assertIn("collectionSize", body["search"])
+        self.assertEqual(body["search"]["collectionSize"], 5 * 7)
+        self.assertNotIn("dailyIndexSize", body["search"])
+        self.assertNotIn("daysInHot", body["search"])
+        self.assertFalse(body["redundancy"])
+
+    @patch("urllib.request.urlopen")
+    def test_estimate_serverless_search_explicit_collection_size(self, mock_urlopen):
+        mock_urlopen.return_value = _mock_urlopen(MOCK_SERVERLESS)
+        self.client.estimate_serverless(
+            collection_type="search",
+            collection_size=100,
+            region="us-east-1",
+        )
+        body = json.loads(mock_urlopen.call_args[0][0].data.decode())
+        self.assertEqual(body["search"]["collectionSize"], 100)
 
     # ------------------------------------------------------------------
     # Reference data
@@ -485,7 +560,7 @@ class TestPricingCalculatorIntegration(unittest.TestCase):
     def test_estimate_serverless_time_series_returns_cost(self):
         result = self.client.estimate_serverless(
             collection_type="timeSeries",
-            daily_index_size_gb=10,
+            daily_index_size=10,
             days_in_hot=1,
             days_in_warm=6,
             min_query_rate=1,
@@ -503,7 +578,7 @@ class TestPricingCalculatorIntegration(unittest.TestCase):
     def test_estimate_serverless_search_returns_cost(self):
         result = self.client.estimate_serverless(
             collection_type="search",
-            daily_index_size_gb=5,
+            daily_index_size=5,
             days_in_hot=7,
             days_in_warm=0,
             min_query_rate=1,

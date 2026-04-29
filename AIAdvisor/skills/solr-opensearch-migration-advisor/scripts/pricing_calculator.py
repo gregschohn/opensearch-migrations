@@ -47,7 +47,7 @@ Usage::
     # Serverless collection
     result = client.estimate_serverless(
         collection_type="timeSeries",
-        daily_index_size_gb=10, days_in_hot=1, days_in_warm=6,
+        daily_index_size=10, days_in_hot=1, days_in_warm=6,
         min_query_rate=1, max_query_rate=1, hours_at_max_rate=0,
         region="us-east-1", redundancy=True,
     )
@@ -168,18 +168,25 @@ class PricingCalculatorClient:
         size_gb: float,
         azs: int = 3,
         replicas: int = 1,
-        target_shard_size_gb: float = 25.0,
+        target_shard_size_gb: int = 25,
         cpus_per_shard: float = 1.5,
         pricing_type: Literal["OnDemand", "Reserved"] = "OnDemand",
         region: str = "US East (N. Virginia)",
     ) -> Dict[str, Any]:
         """Estimate costs for a managed OpenSearch search workload.
 
+        Matches the ``POST /provisioned/estimate`` search workload shape::
+
+            {"search": {"size": 200, "azs": 3, "replicas": 1,
+                        "targetShardSize": 25, "CPUsPerShard": 1.5,
+                        "pricingType": "OnDemand",
+                        "region": "US East (N. Virginia)"}}
+
         Args:
             size_gb:               Total data size in GB.
             azs:                   Number of Availability Zones.
             replicas:              Number of replicas per primary shard.
-            target_shard_size_gb:  Target size per shard in GB.
+            target_shard_size_gb:  Target size per shard in GB (integer).
             cpus_per_shard:        CPU cores allocated per shard.
             pricing_type:          ``"OnDemand"`` or ``"Reserved"``.
             region:                AWS region display name
@@ -193,7 +200,7 @@ class PricingCalculatorClient:
                 "size": size_gb,
                 "azs": azs,
                 "replicas": replicas,
-                "targetShardSize": target_shard_size_gb,
+                "targetShardSize": int(target_shard_size_gb),
                 "CPUsPerShard": cpus_per_shard,
                 "pricingType": pricing_type,
                 "region": region,
@@ -207,12 +214,20 @@ class PricingCalculatorClient:
         replicas: int = 1,
         hot_retention_days: int = 14,
         warm_retention_days: int = 76,
-        target_shard_size_gb: float = 45.0,
+        target_shard_size_gb: int = 45,
         cpus_per_shard: float = 1.25,
         pricing_type: Literal["OnDemand", "Reserved"] = "OnDemand",
         region: str = "US East (N. Virginia)",
     ) -> Dict[str, Any]:
         """Estimate costs for a managed OpenSearch time-series workload.
+
+        Matches the ``POST /provisioned/estimate`` timeSeries workload shape::
+
+            {"timeSeries": {"size": 500, "azs": 3, "replicas": 1,
+                            "hotRetentionPeriod": 14, "warmRetentionPeriod": 76,
+                            "targetShardSize": 45, "CPUsPerShard": 1.25,
+                            "pricingType": "OnDemand",
+                            "region": "US East (N. Virginia)"}}
 
         Args:
             size_gb:               Total data size in GB.
@@ -220,7 +235,7 @@ class PricingCalculatorClient:
             replicas:              Number of replicas per primary shard.
             hot_retention_days:    Days data is kept in hot storage.
             warm_retention_days:   Days data is kept in warm storage.
-            target_shard_size_gb:  Target size per shard in GB.
+            target_shard_size_gb:  Target size per shard in GB (integer).
             cpus_per_shard:        CPU cores allocated per shard.
             pricing_type:          ``"OnDemand"`` or ``"Reserved"``.
             region:                AWS region display name.
@@ -235,7 +250,7 @@ class PricingCalculatorClient:
                 "replicas": replicas,
                 "hotRetentionPeriod": hot_retention_days,
                 "warmRetentionPeriod": warm_retention_days,
-                "targetShardSize": target_shard_size_gb,
+                "targetShardSize": int(target_shard_size_gb),
                 "CPUsPerShard": cpus_per_shard,
                 "pricingType": pricing_type,
                 "region": region,
@@ -292,9 +307,10 @@ class PricingCalculatorClient:
     def estimate_serverless(
         self,
         collection_type: Literal["timeSeries", "search", "vector"],
-        daily_index_size_gb: float,
+        daily_index_size: float = 0,
         days_in_hot: int = 1,
         days_in_warm: int = 6,
+        collection_size: float = 0,
         min_query_rate: float = 1.0,
         max_query_rate: float = 1.0,
         hours_at_max_rate: float = 0.0,
@@ -303,13 +319,25 @@ class PricingCalculatorClient:
     ) -> Dict[str, Any]:
         """Estimate costs for an OpenSearch Serverless collection.
 
+        The API expects different workload fields depending on *collection_type*:
+
+        * ``"timeSeries"`` — uses ``daily_index_size``, ``days_in_hot``,
+          ``days_in_warm``, and query-rate parameters.
+        * ``"search"`` — uses ``collection_size`` (total collection size in GB)
+          and query-rate parameters.  If *collection_size* is not provided it is
+          derived from ``daily_index_size * days_in_hot`` for convenience.
+        * ``"vector"`` — currently forwards the same fields as *timeSeries*.
+
         Args:
             collection_type:       ``"timeSeries"``, ``"search"``, or ``"vector"``.
-            daily_index_size_gb:   GB of data indexed per day.
-            days_in_hot:           Days data is retained in hot storage.
-            days_in_warm:          Days data is retained in warm storage.
-            min_query_rate:        Minimum queries per second.
-            max_query_rate:        Peak queries per second.
+            daily_index_size:      GB of data indexed per day (timeSeries / vector).
+            days_in_hot:           Days data is retained in hot storage (timeSeries).
+            days_in_warm:          Days data is retained in warm storage (timeSeries).
+            collection_size:       Total collection size in GB (search).  When omitted
+                                   for a search collection, falls back to
+                                   ``daily_index_size * days_in_hot``.
+            min_query_rate:        Minimum queries per hour.
+            max_query_rate:        Peak queries per hour.
             hours_at_max_rate:     Hours per day running at peak query rate.
             region:                AWS region code (e.g. ``"us-east-1"``).
             redundancy:            Whether to enable multi-AZ redundancy.
@@ -317,14 +345,30 @@ class PricingCalculatorClient:
         Returns:
             Parsed JSON response from the calculator.
         """
-        workload: Dict[str, Any] = {
-            "dailyIndexSize": daily_index_size_gb,
-            "daysInHot": days_in_hot,
-            "daysInWarm": days_in_warm,
-            "minQueryRate": min_query_rate,
-            "maxQueryRate": max_query_rate,
-            "hoursAtMaxRate": hours_at_max_rate,
-        }
+        # The Go API defines minQueryRate / maxQueryRate as int64, so we must
+        # send JSON integers — not floats — to avoid an unmarshal error.
+        min_qr = int(min_query_rate)
+        max_qr = int(max_query_rate)
+
+        if collection_type == "search":
+            size = collection_size if collection_size else daily_index_size * days_in_hot
+            workload: Dict[str, Any] = {
+                "collectionSize": size,
+                "minQueryRate": min_qr,
+                "maxQueryRate": max_qr,
+                "hoursAtMaxRate": hours_at_max_rate,
+            }
+        else:
+            # timeSeries and vector share the same shape
+            workload = {
+                "dailyIndexSize": daily_index_size,
+                "daysInHot": days_in_hot,
+                "daysInWarm": days_in_warm,
+                "minQueryRate": min_qr,
+                "maxQueryRate": max_qr,
+                "hoursAtMaxRate": hours_at_max_rate,
+            }
+
         return self._post("/serverless/v2/estimate", {
             collection_type: workload,
             "region": region,

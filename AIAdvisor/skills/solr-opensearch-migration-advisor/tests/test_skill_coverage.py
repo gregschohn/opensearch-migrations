@@ -199,7 +199,7 @@ def test_estimate_pricing_serverless(skill):
     with patch.object(skill._pricing_client, "estimate_serverless", return_value=mock_result):
         response = skill.estimate_pricing(
             "serverless", "ep-sl",
-            collection_type="search", daily_index_size_gb=5,
+            collection_type="search", daily_index_size=5,
         )
     assert "serverless" in response
 

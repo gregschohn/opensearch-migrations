@@ -522,7 +522,7 @@ client.estimate_provisioned_vector(
 ```python
 client.estimate_serverless(
     collection_type="search",     # "search", "timeSeries", or "vector"
-    daily_index_size_gb=10,
+    daily_index_size=10,
     days_in_hot=1,
     days_in_warm=6,
     min_query_rate=1.0,
