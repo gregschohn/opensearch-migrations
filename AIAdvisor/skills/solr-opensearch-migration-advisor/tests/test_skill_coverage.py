@@ -16,7 +16,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
 from skill import SolrToOpenSearchMigrationSkill
-from storage import InMemoryStorage, SessionState
+from storage import InMemoryStorage
 from pricing_calculator import PricingCalculatorError
 
 
