@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-MIGRATIONS_REPO_ROOT_DIR=$(git rev-parse --show-toplevel)
+MIGRATIONS_REPO_ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && git rev-parse --show-toplevel)
 
 # Use KUBE_CONTEXT env var if set, for explicit context targeting
 CONTEXT_ARGS=()
