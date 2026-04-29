@@ -57,6 +57,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import urllib.error
 import urllib.request
 from typing import Any, Dict, Literal
@@ -82,7 +83,7 @@ class PricingCalculatorClient:
     def __init__(
         self,
         base_url: str | None = None,
-        timeout: int = 30,
+        timeout: int = 300,
     ) -> None:
         self.base_url = (base_url or OPENSEARCH_PRICING_CALCULATOR_BASE_URL).rstrip("/")
         self.timeout = timeout
@@ -91,12 +92,16 @@ class PricingCalculatorClient:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _post(self, path: str, payload: Dict[str, Any], *, timeout: int | None = None) -> Dict[str, Any]:
         """POST *payload* to *path* and return the parsed JSON response.
+
+        Args:
+            timeout: Per-request timeout override. Falls back to ``self.timeout``.
 
         Raises:
             PricingCalculatorError: On HTTP errors or connection failures.
         """
+        effective_timeout = timeout if timeout is not None else self.timeout
         url = f"{self.base_url}{path}"
         data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(
@@ -106,7 +111,7 @@ class PricingCalculatorClient:
             headers={"Content-Type": "application/json"},
         )
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            with urllib.request.urlopen(req, timeout=effective_timeout) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
@@ -119,13 +124,23 @@ class PricingCalculatorClient:
                 "Make sure it is running on port 5050. "
                 f"Details: {exc.reason}"
             ) from exc
+        except socket.timeout as exc:
+            raise PricingCalculatorError(
+                f"Request to pricing calculator at {url} timed out "
+                f"after {effective_timeout}s. The service may still be starting."
+            ) from exc
 
-    def _get(self, path: str) -> Any:
-        """GET *path* and return the parsed JSON response."""
+    def _get(self, path: str, *, timeout: int | None = None) -> Any:
+        """GET *path* and return the parsed JSON response.
+
+        Args:
+            timeout: Per-request timeout override. Falls back to ``self.timeout``.
+        """
+        effective_timeout = timeout if timeout is not None else self.timeout
         url = f"{self.base_url}{path}"
         req = urllib.request.Request(url, method="GET")
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            with urllib.request.urlopen(req, timeout=effective_timeout) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
@@ -137,6 +152,11 @@ class PricingCalculatorClient:
                 f"Could not reach pricing calculator at {url}. "
                 "Make sure it is running on port 5050. "
                 f"Details: {exc.reason}"
+            ) from exc
+        except socket.timeout as exc:
+            raise PricingCalculatorError(
+                f"Request to pricing calculator at {url} timed out "
+                f"after {effective_timeout}s. The service may be overloaded or unreachable."
             ) from exc
 
     # ------------------------------------------------------------------
@@ -337,7 +357,7 @@ class PricingCalculatorClient:
     def health_check(self) -> bool:
         """Return True if the calculator service is reachable and healthy."""
         try:
-            self._get("/health")
+            self._get("/health", timeout=10)
             return True
         except (PricingCalculatorError, OSError):
             return False
