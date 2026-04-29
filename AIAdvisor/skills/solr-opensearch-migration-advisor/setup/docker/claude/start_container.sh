@@ -11,4 +11,3 @@ docker compose -f "$SCRIPT_DIR/docker-compose.yml" --env-file "$SCRIPT_DIR/../..
 
 echo "Switching shell into container and starting up claude"
 docker exec -it claude-container bash ./entrypoint.sh
-

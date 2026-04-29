@@ -299,6 +299,8 @@ class SolrToOpenSearchMigrationSkill:
             return self._pricing_prompt_vector(state)
         if "time" in message_lc and "series" in message_lc:
             return self._pricing_prompt_time_series(state)
+        if "search" in message_lc:
+            return self._pricing_prompt_search(state)
 
         # Default: ask which workload type
         return (

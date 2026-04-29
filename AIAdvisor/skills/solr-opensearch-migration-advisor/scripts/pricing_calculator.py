@@ -14,7 +14,7 @@ or via Docker:
     docker run -p 5050:5050 -p 8081:8081 opensearch-pricing-calculator
 
 The base URL defaults to ``http://opensearch-pricing-calculator:5050`` and can be overridden via
-the ``PRICING_CALCULATOR_URL`` environment variable or the ``base_url``
+the ``OPENSEARCH_PRICING_CALCULATOR_BASE_URL`` environment variable or the ``base_url``
 constructor argument.
 
 Usage::
@@ -61,8 +61,8 @@ import urllib.error
 import urllib.request
 from typing import Any, Dict, Literal
 
-PRICING_CALCULATOR_URL = os.environ.get(
-    "PRICING_CALCULATOR_URL", "http://opensearch-pricing-calculator:5050"
+OPENSEARCH_PRICING_CALCULATOR_BASE_URL = os.environ.get(
+    "OPENSEARCH_PRICING_CALCULATOR_BASE_URL", "http://opensearch-pricing-calculator:5050"
 )
 
 
@@ -84,7 +84,7 @@ class PricingCalculatorClient:
         base_url: str | None = None,
         timeout: int = 30,
     ) -> None:
-        self.base_url = (base_url or PRICING_CALCULATOR_URL).rstrip("/")
+        self.base_url = (base_url or OPENSEARCH_PRICING_CALCULATOR_BASE_URL).rstrip("/")
         self.timeout = timeout
 
     # ------------------------------------------------------------------

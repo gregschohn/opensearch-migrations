@@ -1,1 +1,1 @@
-./tests/scripts/../../SKILL.md
+./../../../SKILL.md
