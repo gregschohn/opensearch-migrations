@@ -375,10 +375,8 @@ export const USER_PROXY_PROCESS_OPTIONS = z.object({
         .changeRestriction('gated'),
     numThreads: z.number().default(1).optional()
         .describe("Number of Netty worker threads for the proxy to handle concurrent connections."),
-    sslConfigFile: z.string().optional()
-        .describe("[Expert] Path to a YAML file with OpenSearch security SSL configuration (plugins.security.ssl.http.* keys). The file must be mounted into the container by the user. For Kubernetes deployments, prefer the 'tls' option instead."),
     tls: PROXY_TLS_CONFIG.optional()
-        .describe("TLS certificate configuration for HTTPS termination at the proxy. When configured, the proxy serves HTTPS and the TLS secret is mounted at /etc/proxy-tls/. Mutually exclusive with sslConfigFile.")
+        .describe("TLS certificate configuration for HTTPS termination at the proxy. When configured, the proxy serves HTTPS and the TLS secret is mounted at /etc/proxy-tls/.")
         .changeRestriction('gated'),
     enableMSKAuth: z.boolean().default(false).optional()
         .describe("Enable SASL/IAM authentication for the proxy's Kafka producer when connecting to Amazon MSK. Uses the pod's IAM role via EKS Pod Identity.")
@@ -407,15 +405,7 @@ export const USER_PROXY_PROCESS_OPTION_KEYS = getZodKeys(USER_PROXY_PROCESS_OPTI
 export const USER_PROXY_OPTIONS = z.object({
     ...USER_PROXY_WORKFLOW_OPTIONS.shape,
     ...USER_PROXY_PROCESS_OPTIONS.shape,
-}).superRefine((data, ctx) => {
-    if (data.sslConfigFile && data.tls) {
-        ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: "sslConfigFile and tls are mutually exclusive. Use tls for Kubernetes deployments or sslConfigFile for legacy non-Kubernetes deployments.",
-            path: ['tls']
-        });
-    }
-});
+}).describe("Process-level and deployment-level configuration options for the capture proxy.");
 
 export const USER_REPLAYER_WORKFLOW_OPTIONS = z.object({
     jvmArgs: z.string().default("").optional()
@@ -432,9 +422,6 @@ export const USER_REPLAYER_WORKFLOW_OPTIONS = z.object({
 }).describe("Kubernetes deployment-level options for the traffic replayer.");
 
 export const USER_REPLAYER_PROCESS_OPTIONS = z.object({
-    authHeaderValue: z.string().default("").optional()
-        .describe("Static value to use for the \"authorization\" header of each request (cannot be used with other auth arguments)")
-        .changeRestriction('gated'),
     kafkaTrafficEnableMSKAuth: z.boolean().default(false).optional()
         .describe("Enable SASL/IAM authentication for the replayer's Kafka consumer when connecting to Amazon MSK. Uses the pod's IAM role via EKS Pod Identity.")
         .changeRestriction('impossible'),
@@ -596,6 +583,14 @@ export const USER_METADATA_PROCESS_OPTIONS = z.object({
         .describe("Inline JSON transformer configuration. Keys are transformer names and values are their configuration." + METADATA_TRANSFORMER_SUFFIX),
     transformerConfigFile: z.string().optional()
         .describe("Path to a JSON file containing transformer configuration." + METADATA_TRANSFORMER_SUFFIX + EXPERT_FILE_SUFFIX),
+    enableSourcelessMigrations: z.boolean().default(false).optional()
+        .describe("Enable migration of indices that have _source disabled or partially filtered (includes/excludes). " +
+            "When enabled, document backfill will reconstruct documents from stored fields and doc_values. " +
+            "Without this flag, metadata migration will fail if any selected index has _source disabled or partially filtered."),
+    useRecoverySource: z.boolean().default(false).optional()
+        .describe("When enabled, treat the _recovery_source stored field (present in ES 7+ / OpenSearch snapshots " +
+            "with soft-deletes) as _source. This field is transient and may not be present for all documents, " +
+            "so results can be inconsistent. Use only when reconstruction from doc_values and stored fields is insufficient."),
 }).describe("Process-level options for the metadata migration command, controlling which metadata is migrated and how it is transformed.");
 
 export const USER_METADATA_WORKFLOW_OPTION_KEYS = getZodKeys(USER_METADATA_WORKFLOW_OPTIONS);
@@ -697,6 +692,18 @@ export const USER_RFS_PROCESS_OPTIONS = z.object({
         .describe("[Expert] Initial delay in milliseconds for coordinator completion retries. Doubles with each attempt up to coordinatorRetryMaxDelayMs."),
     coordinatorRetryMaxDelayMs: z.number().default(64000).optional()
         .describe("[Expert] Maximum delay in milliseconds for any single coordinator completion retry."),
+    enableSourcelessMigrations: z.boolean().default(false).optional()
+        .describe("Enable migration of indices that have _source disabled or partially filtered (includes/excludes). " +
+            "When enabled, documents are reconstructed from stored fields and doc_values instead of _source. " +
+            "Without this flag, migration of sourceless indices will fail with an error.")
+        .checksumFor('replayer')
+        .changeRestriction('impossible'),
+    useRecoverySource: z.boolean().default(false).optional()
+        .describe("When enabled, treat the _recovery_source stored field (present in ES 7+ / OpenSearch snapshots " +
+            "with soft-deletes) as _source. This field is transient and may not be present for all documents, " +
+            "so results can be inconsistent. Use only when reconstruction from doc_values and stored fields is insufficient.")
+        .checksumFor('replayer')
+        .changeRestriction('impossible'),
 }).describe("Process-level options for the RFS document backfill command, controlling indexing behavior, concurrency, and transformations.");
 
 export const USER_RFS_WORKFLOW_OPTION_KEYS = getZodKeys(USER_RFS_WORKFLOW_OPTIONS);
@@ -1120,6 +1127,23 @@ export const OVERALL_MIGRATION_CONFIG = //validateOptionalDefaultConsistency
                             code: z.ZodIssueCode.custom,
                             message: `Replayer '${replayerName}' dependsOnSnapshotMigrations[${j}] references unknown source '${dep.source}'. Available: ${Object.keys(data.sourceClusters).join(', ')}`,
                             path: ['traffic', 'replayers', replayerName, 'dependsOnSnapshotMigrations', j, 'source']
+                        });
+                    }
+                }
+
+                // When the target has sigv4 or basic auth, the workflow auto-derives the replayer's auth
+                // at deploy time. Setting removeAuthHeader alongside that causes a dual-auth startup crash.
+                const targetCluster = data.targetClusters[rc.toTarget];
+                if (targetCluster && rc.replayerConfig && rc.replayerConfig.removeAuthHeader === true) {
+                    const targetHasSigv4 = targetCluster.authConfig && HTTP_AUTH_SIGV4.safeParse(targetCluster.authConfig).success;
+                    const targetHasBasicAuth = targetCluster.authConfig && HTTP_AUTH_BASIC.safeParse(targetCluster.authConfig).success;
+                    if (targetHasSigv4 || targetHasBasicAuth) {
+                        const targetAuthType = targetHasSigv4 ? 'sigv4' : 'basic';
+                        ctx.addIssue({
+                            code: z.ZodIssueCode.custom,
+                            message: `Replayer '${replayerName}' sets 'removeAuthHeader' but target '${rc.toTarget}' uses ${targetAuthType} auth. ` +
+                                `The replayer cannot use both — the target's auth is applied automatically. Remove 'removeAuthHeader' from replayerConfig.`,
+                            path: ['traffic', 'replayers', replayerName, 'replayerConfig', 'removeAuthHeader']
                         });
                     }
                 }

@@ -57,7 +57,6 @@ public class TrafficReplayer {
     private static final String ALL_ACTIVE_CONTEXTS_MONITOR_LOGGER = "AllActiveWorkMonitor";
 
     public static final String SIGV_4_AUTH_HEADER_SERVICE_REGION_ARG = "--sigv4-auth-header-service-region";
-    public static final String AUTH_HEADER_VALUE_ARG = "--auth-header-value";
     public static final String REMOVE_AUTH_HEADER_VALUE_ARG = "--remove-auth-header";
     public static final String PACKET_TIMEOUT_SECONDS_PARAMETER_NAME = "--packet-timeout-seconds";
     public static final String KAFKA_AUTH_TYPE_NONE = "none";
@@ -173,12 +172,6 @@ public class TrafficReplayer {
             arity = 0, description = "Remove the authorization header if present and do not replace it with anything.  "
                 + "(cannot be used with other auth arguments)")
         boolean removeAuthHeader;
-        @Parameter(
-            required = false,
-            names = { AUTH_HEADER_VALUE_ARG, "--authHeaderValue" },
-            arity = 1, description = "Static value to use for the \"authorization\" header of each request "
-                + "(cannot be used with other auth arguments)")
-        String authHeaderValue;
         @Parameter(
             required = false,
             names = { SIGV_4_AUTH_HEADER_SERVICE_REGION_ARG, "--sigv4AuthHeaderServiceRegion" },
@@ -707,14 +700,28 @@ public class TrafficReplayer {
 
             setupShutdownHookForReplayer(tr);
             var tupleWriter = createS3TupleWriterIfConfigured(params);
-            tr.setupRunAndWaitForReplayWithShutdownChecks(
-                Duration.ofSeconds(params.observedPacketConnectionTimeout),
-                serverTimeout,
-                blockingTrafficSource,
-                timeShifter,
-                tupleWriter,
-                Duration.ofMillis(params.quiescentPeriodMs)
-            );
+            if (tupleWriter != null) {
+                tr.setupRunAndWaitForReplayWithShutdownChecks(
+                    Duration.ofSeconds(params.observedPacketConnectionTimeout),
+                    serverTimeout,
+                    blockingTrafficSource,
+                    timeShifter,
+                    tupleWriter,
+                    Duration.ofMillis(params.quiescentPeriodMs)
+                );
+            } else {
+                var resultsToLogsConsumer = new ResultsToLogsConsumer(null, null,
+                        () -> transformationLoader.getTransformerFactoryLoader(tupleTransformerConfig));
+                var tupleLogConsumer = new TupleParserChainConsumer(resultsToLogsConsumer);
+                tr.setupRunAndWaitForReplayWithShutdownChecks(
+                    Duration.ofSeconds(params.observedPacketConnectionTimeout),
+                    serverTimeout,
+                    blockingTrafficSource,
+                    timeShifter,
+                    tupleLogConsumer,
+                    Duration.ofMillis(params.quiescentPeriodMs)
+                );
+            }
             log.info("Done processing TrafficStreams");
         } finally {
             scheduledExecutorService.shutdown();
@@ -803,7 +810,6 @@ public class TrafficReplayer {
         return String.join(
             ", ",
             REMOVE_AUTH_HEADER_VALUE_ARG,
-            AUTH_HEADER_VALUE_ARG,
             SIGV_4_AUTH_HEADER_SERVICE_REGION_ARG,
             ArgNameConstants.TARGET_USERNAME_ARG_KEBAB_CASE + " and " + ArgNameConstants.TARGET_PASSWORD_ARG_KEBAB_CASE
 
@@ -813,7 +819,6 @@ public class TrafficReplayer {
     private static IAuthTransformerFactory buildAuthTransformerFactory(Parameters params) {
         long authOptionsSpecified = Stream.of(
             params.removeAuthHeader,
-            params.authHeaderValue != null,
             params.useSigV4ServiceAndRegion != null,
             params.targetUsername != null || params.targetPassword != null
         ).filter(b -> b).count();
@@ -824,16 +829,11 @@ public class TrafficReplayer {
             );
         }
 
-        var authHeaderValue = params.authHeaderValue;
         if (params.targetUsername != null || params.targetPassword != null) {
             if (params.targetUsername == null || params.targetPassword == null) {
                 throw new ParameterException("Both target username and target password must be specified, when using this basic auth option");
             }
-            authHeaderValue = getBasicAuthHeader(params.targetUsername, params.targetPassword);
-        }
-
-        if (authHeaderValue != null) {
-            return new StaticAuthTransformerFactory(authHeaderValue);
+            return new StaticAuthTransformerFactory(getBasicAuthHeader(params.targetUsername, params.targetPassword));
         } else if (params.useSigV4ServiceAndRegion != null) {
             var serviceAndRegion = params.useSigV4ServiceAndRegion.split(",");
             if (serviceAndRegion.length != 2) {
