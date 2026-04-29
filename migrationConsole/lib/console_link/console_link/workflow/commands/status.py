@@ -67,7 +67,11 @@ class StatusCommandHandler:
             workflow_name, argo_server, namespace, insecure)
 
         if not workflow_data:
-            click.echo(f"Error: Could not find workflow {workflow_name}", err=True)
+            click.echo(
+                f"No workflow named '{workflow_name}' found in namespace "
+                f"{namespace}. Run `workflow --help` for more help.",
+                err=True,
+            )
             raise click.Abort()
 
         self._display_workflow_with_tree(workflow_data, live_check, argo_server, namespace, insecure)
@@ -166,13 +170,13 @@ class WorkflowDataFetcher:
         headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
         url = f"{argo_server}/api/v1/workflows/{namespace}/{workflow_name}"
 
-        logger.warning(
+        logger.info(
             "Fetching workflow data from Argo API: workflow=%s namespace=%s url=%s insecure=%s",
             workflow_name, namespace, url, insecure
         )
         response = requests.get(url, headers=headers, verify=not insecure)
         if response.status_code != 200:
-            logger.warning(
+            logger.info(
                 "Argo API workflow fetch failed: status=%s content_type=%s body=%s",
                 response.status_code,
                 response.headers.get("content-type"),
@@ -180,7 +184,7 @@ class WorkflowDataFetcher:
             )
             return {}
 
-        logger.warning(
+        logger.info(
             "Argo API workflow fetch succeeded: status=%s content_type=%s",
             response.status_code,
             response.headers.get("content-type"),
