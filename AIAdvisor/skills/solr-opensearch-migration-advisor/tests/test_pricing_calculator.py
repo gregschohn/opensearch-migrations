@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 from pricing_calculator import (
     PricingCalculatorClient,
     PricingCalculatorError,
-    OPENSEARCH_PRICING_CALCULATOR_BASE_URL,
+    OPENSEARCH_PRICING_CALCULATOR_URL,
 )
 
 
@@ -52,7 +52,7 @@ class TestPricingCalculatorClient(unittest.TestCase):
 
     def test_default_base_url_from_module_constant(self):
         client = PricingCalculatorClient()
-        self.assertEqual(client.base_url, OPENSEARCH_PRICING_CALCULATOR_BASE_URL.rstrip("/"))
+        self.assertEqual(client.base_url, OPENSEARCH_PRICING_CALCULATOR_URL.rstrip("/"))
 
     def test_explicit_base_url_overrides_env(self):
         client = PricingCalculatorClient(base_url="http://custom:9999/")
@@ -60,11 +60,11 @@ class TestPricingCalculatorClient(unittest.TestCase):
 
     def test_none_base_url_falls_back_to_env(self):
         client = PricingCalculatorClient(base_url=None)
-        self.assertEqual(client.base_url, OPENSEARCH_PRICING_CALCULATOR_BASE_URL.rstrip("/"))
+        self.assertEqual(client.base_url, OPENSEARCH_PRICING_CALCULATOR_URL.rstrip("/"))
 
     def test_env_var_override(self):
-        """OPENSEARCH_PRICING_CALCULATOR_BASE_URL env var is read at module import time."""
-        original = OPENSEARCH_PRICING_CALCULATOR_BASE_URL
+        """OPENSEARCH_PRICING_CALCULATOR_URL env var is read at module import time."""
+        original = OPENSEARCH_PRICING_CALCULATOR_URL
         client = PricingCalculatorClient()
         self.assertEqual(client.base_url, original.rstrip("/"))
 
@@ -459,18 +459,18 @@ class TestPricingCalculatorIntegration(unittest.TestCase):
         python tests/test_pricing_calculator.py TestPricingCalculatorIntegration -v
     """
 
-    OPENSEARCH_PRICING_CALCULATOR_BASE_URL = os.getenv("OPENSEARCH_PRICING_CALCULATOR_BASE_URL", "http://localhost:5050")
+    OPENSEARCH_PRICING_CALCULATOR_URL = os.getenv("OPENSEARCH_PRICING_CALCULATOR_URL", "http://localhost:5050")
 
     @classmethod
     def setUpClass(cls):
         # Use a short timeout so the reachability probe fails fast.
-        probe = PricingCalculatorClient(base_url=cls.OPENSEARCH_PRICING_CALCULATOR_BASE_URL, timeout=2)
+        probe = PricingCalculatorClient(base_url=cls.OPENSEARCH_PRICING_CALCULATOR_URL, timeout=2)
         if not probe.health_check():
             raise unittest.SkipTest(
-                f"opensearch-pricing-calculator is not reachable at {cls.OPENSEARCH_PRICING_CALCULATOR_BASE_URL}. "
+                f"opensearch-pricing-calculator is not reachable at {cls.OPENSEARCH_PRICING_CALCULATOR_URL}. "
                 "Start it before running integration tests."
             )
-        cls.client = PricingCalculatorClient(base_url=cls.OPENSEARCH_PRICING_CALCULATOR_BASE_URL)
+        cls.client = PricingCalculatorClient(base_url=cls.OPENSEARCH_PRICING_CALCULATOR_URL)
 
     # ------------------------------------------------------------------
     # Health / reference data

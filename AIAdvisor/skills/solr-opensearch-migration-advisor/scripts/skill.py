@@ -177,7 +177,7 @@ class SolrToOpenSearchMigrationSkill:
             return self.get_field_type_mapping_reference()
 
         if any(kw in message_lc for kw in ("pricing", "cost estimate", "price estimate", "how much")):
-            return self._handle_pricing(message, message_lc, state)
+            return self._handle_pricing(message_lc, state)
 
         return self._handle_general(message, message_lc)
 
@@ -262,7 +262,7 @@ class SolrToOpenSearchMigrationSkill:
             "migration report."
         )
 
-    def _handle_pricing(self, message: str, message_lc: str, state: SessionState) -> str:
+    def _handle_pricing(self, message_lc: str, state: SessionState) -> str:
         """Handle a pricing estimate request via the opensearch-pricing-calculator.
 
         Checks whether the calculator is reachable. If not, instructs the user
@@ -294,13 +294,13 @@ class SolrToOpenSearchMigrationSkill:
 
         # Determine workload type from context
         if "serverless" in message_lc:
-            return self._pricing_prompt_serverless(state)
+            return self._pricing_prompt_serverless()
         if "vector" in message_lc:
-            return self._pricing_prompt_vector(state)
+            return self._pricing_prompt_vector()
         if "time" in message_lc and "series" in message_lc:
             return self._pricing_prompt_time_series(state)
         if "search" in message_lc:
-            return self._pricing_prompt_search(state)
+            return self._pricing_prompt_search()
 
         # Default: ask which workload type
         return (
@@ -313,7 +313,7 @@ class SolrToOpenSearchMigrationSkill:
             "Also let me know your approximate data size in GB and your AWS region."
         )
 
-    def _pricing_prompt_search(self, state: SessionState) -> str:
+    def _pricing_prompt_search(self) -> str:
         return (
             "For a **search workload** estimate, please provide:\n\n"
             "- Total data size (GB)\n"
@@ -341,7 +341,7 @@ class SolrToOpenSearchMigrationSkill:
             "You can provide just the data size and region if you'd like defaults for the rest."
         )
 
-    def _pricing_prompt_vector(self, state: SessionState) -> str:
+    def _pricing_prompt_vector(self) -> str:
         return (
             "For a **vector search workload** estimate, please provide:\n\n"
             "- Number of vectors\n"
@@ -355,7 +355,7 @@ class SolrToOpenSearchMigrationSkill:
             "You can provide just the vector count, dimensions, and region if you'd like defaults for the rest."
         )
 
-    def _pricing_prompt_serverless(self, state: SessionState) -> str:
+    def _pricing_prompt_serverless(self) -> str:
         return (
             "For a **serverless collection** estimate, please provide:\n\n"
             "- Collection type: `timeSeries`, `search`, or `vector`\n"

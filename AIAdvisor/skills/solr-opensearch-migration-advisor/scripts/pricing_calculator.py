@@ -14,7 +14,7 @@ or via Docker:
     docker run -p 5050:5050 -p 8081:8081 opensearch-pricing-calculator
 
 The base URL defaults to ``http://opensearch-pricing-calculator:5050`` and can be overridden via
-the ``OPENSEARCH_PRICING_CALCULATOR_BASE_URL`` environment variable or the ``base_url``
+the ``OPENSEARCH_PRICING_CALCULATOR_URL`` environment variable or the ``base_url``
 constructor argument.
 
 Usage::
@@ -62,9 +62,12 @@ import urllib.error
 import urllib.request
 from typing import Any, Dict, Literal
 
-OPENSEARCH_PRICING_CALCULATOR_BASE_URL = os.environ.get(
-    "OPENSEARCH_PRICING_CALCULATOR_BASE_URL", "http://opensearch-pricing-calculator:5050"
+OPENSEARCH_PRICING_CALCULATOR_URL = os.environ.get(
+    "OPENSEARCH_PRICING_CALCULATOR_URL", "http://opensearch-pricing-calculator:5050"
 )
+
+DEFAULT_REGION = "US East (N. Virginia)"
+PROVISIONED_ESTIMATE_PATH = "/provisioned/estimate"
 
 
 class PricingCalculatorError(Exception):
@@ -85,7 +88,7 @@ class PricingCalculatorClient:
         base_url: str | None = None,
         timeout: int = 300,
     ) -> None:
-        self.base_url = (base_url or OPENSEARCH_PRICING_CALCULATOR_BASE_URL).rstrip("/")
+        self.base_url = (base_url or OPENSEARCH_PRICING_CALCULATOR_URL).rstrip("/")
         self.timeout = timeout
 
     # ------------------------------------------------------------------
@@ -171,7 +174,7 @@ class PricingCalculatorClient:
         target_shard_size_gb: int = 25,
         cpus_per_shard: float = 1.5,
         pricing_type: Literal["OnDemand", "Reserved"] = "OnDemand",
-        region: str = "US East (N. Virginia)",
+        region: str = DEFAULT_REGION,
     ) -> Dict[str, Any]:
         """Estimate costs for a managed OpenSearch search workload.
 
@@ -195,7 +198,7 @@ class PricingCalculatorClient:
         Returns:
             Parsed JSON response from the calculator.
         """
-        return self._post("/provisioned/estimate", {
+        return self._post(PROVISIONED_ESTIMATE_PATH, {
             "search": {
                 "size": size_gb,
                 "azs": azs,
@@ -217,7 +220,7 @@ class PricingCalculatorClient:
         target_shard_size_gb: int = 45,
         cpus_per_shard: float = 1.25,
         pricing_type: Literal["OnDemand", "Reserved"] = "OnDemand",
-        region: str = "US East (N. Virginia)",
+        region: str = DEFAULT_REGION,
     ) -> Dict[str, Any]:
         """Estimate costs for a managed OpenSearch time-series workload.
 
@@ -243,7 +246,7 @@ class PricingCalculatorClient:
         Returns:
             Parsed JSON response from the calculator.
         """
-        return self._post("/provisioned/estimate", {
+        return self._post(PROVISIONED_ESTIMATE_PATH, {
             "timeSeries": {
                 "size": size_gb,
                 "azs": azs,
@@ -269,7 +272,7 @@ class PricingCalculatorClient:
         azs: int = 3,
         replicas: int = 1,
         pricing_type: Literal["OnDemand", "Reserved"] = "OnDemand",
-        region: str = "US East (N. Virginia)",
+        region: str = DEFAULT_REGION,
     ) -> Dict[str, Any]:
         """Estimate costs for a managed OpenSearch vector search workload.
 
@@ -287,7 +290,7 @@ class PricingCalculatorClient:
         Returns:
             Parsed JSON response from the calculator.
         """
-        return self._post("/provisioned/estimate", {
+        return self._post(PROVISIONED_ESTIMATE_PATH, {
             "vector": {
                 "vectorCount": vector_count,
                 "dimensionsCount": dimensions,
@@ -411,6 +414,60 @@ class PricingCalculatorClient:
     # ------------------------------------------------------------------
 
     @staticmethod
+    def _format_provisioned(configs: list) -> list[str]:
+        """Format a provisioned (clusterConfigs) estimate into Markdown lines."""
+        best = configs[0]
+        lines = [f"- **Lowest monthly cost:** ${best['totalCost']:,.2f}"]
+        hot = best.get("hotNodes", {})
+        if hot.get("type"):
+            lines.append(f"- **Hot node type:** {hot['type']} × {hot.get('count', '?')}")
+        leader = best.get("leaderNodes", {})
+        if leader.get("type"):
+            lines.append(f"- **Manager node type:** {leader['type']} × {leader.get('count', '?')}")
+        if len(configs) > 1:
+            lines.append(
+                f"- **Configurations evaluated:** {len(configs)} "
+                f"(range ${configs[-1]['totalCost']:,.2f} – ${best['totalCost']:,.2f}/mo)"
+            )
+        return lines
+
+    @staticmethod
+    def _format_serverless(price: dict) -> list[str]:
+        """Format a serverless (price) estimate into Markdown lines."""
+        lines: list[str] = []
+        month = price.get("month", {})
+        if "total" in month:
+            lines.append(f"- **Monthly cost:** ${month['total']:,.2f}")
+        if "indexOcu" in month:
+            lines.append(f"  - Index OCU: ${month['indexOcu']:,.2f}")
+        if "searchOcu" in month:
+            lines.append(f"  - Search OCU: ${month['searchOcu']:,.2f}")
+        if "s3Storage" in month:
+            lines.append(f"  - S3 storage: ${month['s3Storage']:,.2f}")
+        year = price.get("year", {})
+        if "total" in year:
+            lines.append(f"- **Annual cost:** ${year['total']:,.2f}")
+        return lines
+
+    @staticmethod
+    def _format_legacy(result: Dict[str, Any]) -> list[str]:
+        """Format a legacy flat-shape estimate into Markdown lines."""
+        lines: list[str] = []
+        if "monthlyCost" in result:
+            lines.append(f"- **Monthly cost:** ${result['monthlyCost']:,.2f}")
+        if "annualCost" in result:
+            lines.append(f"- **Annual cost:** ${result['annualCost']:,.2f}")
+        if "instanceType" in result:
+            lines.append(f"- **Instance type:** {result['instanceType']}")
+        if "instanceCount" in result:
+            lines.append(f"- **Instance count:** {result['instanceCount']}")
+        if "storageGB" in result:
+            lines.append(f"- **Storage:** {result['storageGB']:,} GB")
+        if "shardCount" in result:
+            lines.append(f"- **Shards:** {result['shardCount']}")
+        return lines
+
+    @staticmethod
     def format_estimate(result: Dict[str, Any]) -> str:
         """Return a compact Markdown summary of an estimate response.
 
@@ -418,57 +475,17 @@ class PricingCalculatorClient:
         response shapes. Falls back to pretty-printed JSON for unknown shapes.
         """
         try:
-            lines: list[str] = []
-
-            # Provisioned: response contains a ranked list of cluster configs.
             configs = result.get("clusterConfigs")
-            if configs and isinstance(configs, list) and configs:
-                best = configs[0]
-                lines.append(f"- **Lowest monthly cost:** ${best['totalCost']:,.2f}")
-                hot = best.get("hotNodes", {})
-                if hot.get("type"):
-                    lines.append(f"- **Hot node type:** {hot['type']} × {hot.get('count', '?')}")
-                leader = best.get("leaderNodes", {})
-                if leader.get("type"):
-                    lines.append(f"- **Manager node type:** {leader['type']} × {leader.get('count', '?')}")
-                if len(configs) > 1:
-                    lines.append(
-                        f"- **Configurations evaluated:** {len(configs)} "
-                        f"(range ${configs[-1]['totalCost']:,.2f} – ${best['totalCost']:,.2f}/mo)"
-                    )
-                return "\n".join(lines)
+            if configs and isinstance(configs, list):
+                return "\n".join(PricingCalculatorClient._format_provisioned(configs))
 
-            # Serverless: response contains a "price" dict with day/month/year breakdowns.
             price = result.get("price")
             if price and isinstance(price, dict):
-                month = price.get("month", {})
-                if "total" in month:
-                    lines.append(f"- **Monthly cost:** ${month['total']:,.2f}")
-                if "indexOcu" in month:
-                    lines.append(f"  - Index OCU: ${month['indexOcu']:,.2f}")
-                if "searchOcu" in month:
-                    lines.append(f"  - Search OCU: ${month['searchOcu']:,.2f}")
-                if "s3Storage" in month:
-                    lines.append(f"  - S3 storage: ${month['s3Storage']:,.2f}")
-                year = price.get("year", {})
-                if "total" in year:
-                    lines.append(f"- **Annual cost:** ${year['total']:,.2f}")
+                lines = PricingCalculatorClient._format_serverless(price)
                 if lines:
                     return "\n".join(lines)
 
-            # Legacy flat shape (monthlyCost / annualCost).
-            if "monthlyCost" in result:
-                lines.append(f"- **Monthly cost:** ${result['monthlyCost']:,.2f}")
-            if "annualCost" in result:
-                lines.append(f"- **Annual cost:** ${result['annualCost']:,.2f}")
-            if "instanceType" in result:
-                lines.append(f"- **Instance type:** {result['instanceType']}")
-            if "instanceCount" in result:
-                lines.append(f"- **Instance count:** {result['instanceCount']}")
-            if "storageGB" in result:
-                lines.append(f"- **Storage:** {result['storageGB']:,} GB")
-            if "shardCount" in result:
-                lines.append(f"- **Shards:** {result['shardCount']}")
+            lines = PricingCalculatorClient._format_legacy(result)
             if lines:
                 return "\n".join(lines)
         except (TypeError, KeyError):
