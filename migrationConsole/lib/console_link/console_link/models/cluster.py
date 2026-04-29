@@ -181,7 +181,9 @@ class Cluster:
         """Detect AOSS collection type by mirroring Java OpenSearchClientFactory logic:
         1. Probe GET / — if 200, not serverless (return None). Skip if skip_root_probe=True.
         2. If 404 (or skip_root_probe), probe with invalid KNN index to detect SEARCH/TIMESERIES/VECTOR.
-        Returns 'SEARCH', 'TIMESERIES', 'VECTOR', 'UNKNOWN' (serverless but undetected), or None (not serverless)."""
+        Returns 'SEARCH', 'TIMESERIES', 'VECTOR', 'UNKNOWN' (serverless but undetected), or None (not serverless).
+        When UNKNOWN, sets self._collection_type_probe_error with the diagnostic message."""
+        self._collection_type_probe_error = None
         if not skip_root_probe:
             # Step 1: probe root API (mirrors Java getClusterVersion())
             try:
@@ -201,12 +203,14 @@ class Cluster:
             "settings": {"index.knn": True},
             "mappings": {"properties": {"v": {"type": "knn_vector", "dimension": -1}}}
         })
+        status_code = None
         try:
             r = self.call_api(f"/{probe_index}", method=HttpMethod.PUT,
                               data=probe_body,
                               headers={"Content-Type": "application/json"},
                               raise_error=False, timeout=10)
             body = r.text or ""
+            status_code = r.status_code
             if r.status_code < 400:
                 self.call_api(f"/{probe_index}", method=HttpMethod.DELETE, raise_error=False)
         except Exception as e:
@@ -218,6 +222,7 @@ class Cluster:
             return "SEARCH"
         elif "Dimension value must be greater than 0" in body:
             return "VECTOR"
+        self._collection_type_probe_error = f"HTTP {status_code}: {body}" if status_code else body
         return "UNKNOWN"
 
     @property

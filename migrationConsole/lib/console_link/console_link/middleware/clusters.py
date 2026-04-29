@@ -150,10 +150,16 @@ def connection_check(cluster: Cluster) -> ConnectionResult:
 
     if caught_exception is None and r is not None and r.status_code == 404:
         # Serverless — detect collection type (skip root probe, we already know it's 404)
-        cluster.detect_serverless_collection_type(skip_root_probe=True)
+        collection_type = cluster.detect_serverless_collection_type(skip_root_probe=True)
         try:
             cluster.call_api("/_cat/indices", timeout=3)
-            return ConnectionResult(connection_message="Successfully connected to serverless collection!",
+            msg = "Successfully connected to serverless collection!"
+            if collection_type == "UNKNOWN":
+                probe_err = getattr(cluster, '_collection_type_probe_error', None) or "unknown error"
+                msg += (f"\n⚠ Warning: Could not detect collection type. "
+                        f"The type detection probe failed ({probe_err}). "
+                        f"Ensure the migration IAM role has index creation permissions in the AOSS data access policy.")
+            return ConnectionResult(connection_message=msg,
                                     connection_established=True)
         except Exception as e:
             logger.debug(f"Unable to access AOSS cluster: {cluster} with exception: {e}")
