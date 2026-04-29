@@ -36,8 +36,14 @@ class TreeStateManager:
         nodes = filter_tree_nodes(build_nested_workflow_tree(workflow_data))
         self._update_recursive(self.tree.root, nodes)
 
+    @staticmethod
+    def _sort_key(n: Dict):
+        return (n.get('sort_order', 999),
+                n.get('finished_at') or n.get('started_at') or '9999-12-31T23:59:59Z',
+                n.get('display_name', ''))
+
     def _populate_recursive(self, parent_node: TreeNode, nodes: List[Dict]) -> None:
-        for node in sorted(nodes, key=lambda n: n.get('started_at') or '9'):
+        for node in sorted(nodes, key=self._sort_key):
             label = self._get_label(node)
             tree_node = parent_node.add(label, data=node)
             if node.get('type') == 'Pod' and self._on_new_pod_handler:
@@ -53,27 +59,44 @@ class TreeStateManager:
         }
         new_ids = {node['id'] for node in new_nodes}
 
-        for node in new_nodes:
-            node_id = node['id']
-            label = self._get_label(node)
-            if node_id in existing_children:
-                tree_node = existing_children[node_id]
-                if tree_node.data.get('phase') != node.get('phase'):
-                    tree_node.set_label(label)
-                tree_node.data = node
-            else:
-                tree_node = parent_tree_node.add(label, data=node)
-                tree_node.expand()
-                if node.get('type') == 'Pod' and self._on_new_pod_handler:
-                    self._on_new_pod_handler(node_id)
+        # Detect if any new nodes need inserting or old ones need removing
+        needs_reorder = (
+            any(node['id'] not in existing_children for node in new_nodes) or
+            any(
+                child.data['id'] not in new_ids
+                for child in parent_tree_node.children
+                if child.data and 'id' in child.data and not child.data.get('is_ephemeral')
+            )
+        )
 
-            if node.get('children'):
-                self._update_recursive(tree_node, node['children'])
-
-        for child in parent_tree_node.children:
-            if (child.data and 'id' in child.data and child.data['id'] not in new_ids and
-                    not child.data.get('is_ephemeral')):
+        if needs_reorder:
+            # Rebuild this level to maintain sort order
+            # Preserve expanded state and subtree data from existing children
+            expanded_ids = {
+                child.data['id'] for child in parent_tree_node.children
+                if child.data and child.is_expanded
+            }
+            children_snapshot = list(parent_tree_node.children)
+            for child in children_snapshot:
                 child.remove()
+            for node in sorted(new_nodes, key=self._sort_key):
+                label = self._get_label(node)
+                tree_node = parent_tree_node.add(label, data=node)
+                if node['id'] in expanded_ids or node['id'] not in existing_children:
+                    tree_node.expand()
+                if node.get('type') == 'Pod' and self._on_new_pod_handler and node['id'] not in existing_children:
+                    self._on_new_pod_handler(node['id'])
+                if node.get('children'):
+                    self._update_recursive(tree_node, node['children'])
+        else:
+            # No structural changes — just update labels and recurse
+            for node in new_nodes:
+                tree_node = existing_children[node['id']]
+                if tree_node.data.get('phase') != node.get('phase'):
+                    tree_node.set_label(self._get_label(node))
+                tree_node.data = node
+                if node.get('children'):
+                    self._update_recursive(tree_node, node['children'])
 
     def _get_label(self, node: Dict):
         status_output = get_step_status_output(self._workflow_data, node['id'])
