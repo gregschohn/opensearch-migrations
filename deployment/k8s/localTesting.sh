@@ -2,7 +2,7 @@
 
 set -xeuo pipefail
 
-MIGRATIONS_REPO_ROOT_DIR=$(git rev-parse --show-toplevel)
+MIGRATIONS_REPO_ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && git rev-parse --show-toplevel)
 
 wait_for_cluster_dns() {
   echo "Waiting for CoreDNS to become ready..."
