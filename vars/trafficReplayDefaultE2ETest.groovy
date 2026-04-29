@@ -30,6 +30,7 @@ def call(Map config = [:]) {
         "distVersion": "7.10.2",
         "cidr": "12.0.0.0/16",
         "distributionUrl": "https://artifacts.elastic.co/downloads/elasticsearch/elasticsearch-oss-7.10.2-linux-x86_64.tar.gz",
+        "captureProxyEnabled": true,
         "securityDisabled": true,
         "minDistribution": false,
         "cpuArch": "x64",
@@ -81,6 +82,7 @@ def call(Map config = [:]) {
             migrationContextId: migrationContextId,
             defaultStageId: 'aws-integ',
             jobName: config.jobName ?: 'traffic-replay-default-e2e-test',
+            defaultGitBranch: config.defaultGitBranch ?: 'main',
             //deployStep: {
             //    echo 'Custom Test Step'
             //}

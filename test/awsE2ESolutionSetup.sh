@@ -94,18 +94,8 @@ clean_up_source () {
   fi
 
   cd "$EC2_SOURCE_CDK_PATH" || exit
-  # Do NOT `npm ci` here: the main flow above (line ~294) already ran `npm ci`
-  # in this directory AND overlaid a compatible aws-cdk CLI via
-  # `npm install --no-save aws-cdk@<ver>`. A second `npm ci` would wipe the
-  # overlaid CLI and reinstall the broken 2.139.0 from upstream's
-  # package-lock.json, re-triggering the cloud-assembly schema mismatch on
-  # destroy. `clean_up_source` is only reachable after the main-flow install
-  # (via --clean-up-source-only short-circuit at line ~304 or clean_up_all
-  # at line ~327), so the install state is guaranteed.
   echo "Destroying source CDK app stacks..."
-  # The upstream opensearch-cluster-cdk reads context from cdk.context.json via --context contextKey=<id>
-  cp "$SOURCE_GEN_CONTEXT_FILE" cdk.context.json
-  npx cdk destroy "*" --force --c contextKey="$SOURCE_CONTEXT_ID"
+  npx cdk destroy "*" --force --c contextFile="$SOURCE_GEN_CONTEXT_FILE" --c contextId="$SOURCE_CONTEXT_ID"
   local cdk_rc=$?
   if [ $cdk_rc -ne 0 ]; then
     echo "Error: cdk destroy for source stacks exited with code $cdk_rc."
@@ -123,9 +113,7 @@ clean_up_all () {
 # One-time required CDK bootstrap setup for a given region. Only required if the 'CDKToolkit' CFN stack does not exist
 bootstrap_region () {
   # Picking arbitrary context values to satisfy required values for CDK synthesis. These should not need to be kept in sync with the actual deployment context values
-  # The upstream opensearch-cluster-cdk reads context from cdk.context.json via --context contextKey=<id>
-  cp "$SOURCE_GEN_CONTEXT_FILE" cdk.context.json
-  npx cdk bootstrap --require-approval never --c contextKey="$SOURCE_CONTEXT_ID"
+  npx cdk bootstrap --require-approval never --c contextFile="$SOURCE_GEN_CONTEXT_FILE" --c contextId="$SOURCE_CONTEXT_ID"
 }
 
 usage() {
@@ -293,25 +281,12 @@ if [ "$CLEAN_UP_MIGRATION_ONLY" = true ] ; then
 fi
 
 if [ ! -d "opensearch-cluster-cdk" ]; then
-  git clone https://github.com/opensearch-project/opensearch-cluster-cdk.git
+  git clone https://github.com/lewijacn/opensearch-cluster-cdk.git
 else
   echo "Repo already exists, skipping clone."
 fi
-cd opensearch-cluster-cdk && git pull
+cd opensearch-cluster-cdk && git pull && git checkout migration-es && git pull
 npm ci
-# Upstream opensearch-cluster-cdk pins `aws-cdk` (CLI) 2.139.0 against
-# `aws-cdk-lib` 2.248.0, which emits a cloud-assembly schema (53.0.0) that
-# the pinned CLI (max 36.0.0) cannot read -- `npx cdk deploy|destroy|bootstrap`
-# then fails with "Cloud assembly schema version mismatch". Overlay a newer
-# CLI into ./node_modules/.bin/cdk so every subsequent `npx cdk` in this
-# directory (bootstrap_region, source deploy, and clean_up_source destroy)
-# resolves to a CLI that can read the library's output. `--no-save` keeps
-# upstream's package.json and package-lock.json untouched; newer CDK CLIs
-# are backwards-compatible with older assemblies. Pinned to the same version
-# as the in-tree migration CDK (deployment/cdk/opensearch-service-migration/package.json).
-npm install --no-save --no-audit --no-fund aws-cdk@2.1118.4
-# The upstream opensearch-cluster-cdk reads context from cdk.context.json via --context contextKey=<id>
-cp "$SOURCE_GEN_CONTEXT_FILE" cdk.context.json
 if [ "$BOOTSTRAP_REGION" = true ] ; then
   bootstrap_region
 fi
@@ -327,7 +302,7 @@ fi
 
 if [ "$SKIP_SOURCE_DEPLOY" = false ] && [ "$CLEAN_UP_ALL" = false ] ; then
   # Deploy source cluster on EC2 instances
-  npx cdk deploy "*" --c contextKey="$SOURCE_CONTEXT_ID" --require-approval never
+  npx cdk deploy "*" --c contextFile="$SOURCE_GEN_CONTEXT_FILE" --c contextId="$SOURCE_CONTEXT_ID" --require-approval never
   if [ $? -ne 0 ]; then
     echo "Error: deploy source cluster failed, exiting."
     exit 1
