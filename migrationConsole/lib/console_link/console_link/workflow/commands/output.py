@@ -56,6 +56,8 @@ def _promote_known_flags(extra_args):
 
 
 @click.command(name="output")
+@click.option('--list', 'list_labels', is_flag=True, default=False,
+              help='List available label selectors and exit')
 @click.option('--workflow-name', default=DEFAULT_WORKFLOW_NAME, shell_complete=get_workflow_completions,
               help='Workflow name to show output for (default: WORKFLOW_NAME env var)')
 @click.option('--all-workflows', is_flag=True, default=False,
@@ -81,17 +83,19 @@ def _promote_known_flags(extra_args):
               help='Show timestamps in log output')
 @click.argument('extra_args', nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
-def output_command(ctx, workflow_name, all_workflows, namespace, prefix, selector,
+def output_command(ctx, list_labels, workflow_name, all_workflows, namespace, prefix, selector,
                    follow, timestamps, extra_args, **kwargs):
     """View or tail workflow logs.
 
     \b
+    Use --list to show available label selectors.
     Arguments after -- are forwarded to the underlying tool
     (kubectl logs for history, stern for follow mode).
     Use -- --help to see what the underlying tool supports.
 
     \b
     Examples:
+      workflow output --list
       workflow output
       workflow output --timestamps
       workflow output -f
@@ -101,6 +105,23 @@ def output_command(ctx, workflow_name, all_workflows, namespace, prefix, selecto
       workflow output -- --help
     """
     _validate_inputs(ctx, all_workflows, extra_args)
+
+    if list_labels:
+        from .autocomplete_k8s_labels import _fetch_workflow_labels
+        effective_name = None if all_workflows else workflow_name
+        argo_server = kwargs.get('argo_server', DEFAULT_ARGO_SERVER_URL)
+        token = kwargs.get('token')
+        insecure = kwargs.get('insecure', True)
+        label_map, _ = _fetch_workflow_labels(
+            effective_name or DEFAULT_WORKFLOW_NAME, namespace,
+            argo_server, token, insecure)
+        if not label_map:
+            click.echo("No matching pods found.")
+        else:
+            for key in sorted(label_map):
+                for val in sorted(label_map[key]):
+                    click.echo(f"{key}={val}")
+        return
 
     promoted, passthrough_args = _promote_known_flags(list(extra_args))
     follow = follow or 'follow' in promoted
@@ -125,9 +146,15 @@ def _validate_inputs(ctx, all_workflows, extra_args):
     if all_workflows and is_wf_set:
         click.echo("Error: --workflow-name and --all-workflows are mutually exclusive", err=True)
         ctx.exit(1)
-    if extra_args and '--' not in sys.argv:
+    # Find args that appear before -- in the command line (these are mistakes, not pass-through)
+    if extra_args:
+        try:
+            dashdash_idx = sys.argv.index('--')
+            before_dashdash = sys.argv[:dashdash_idx]
+        except ValueError:
+            before_dashdash = sys.argv
         for arg in extra_args:
-            if not arg.startswith('-'):
+            if not arg.startswith('-') and arg in before_dashdash:
                 click.echo(f"Error: unexpected argument '{arg}'.\n", err=True)
                 click.echo(ctx.get_help())
                 ctx.exit(1)

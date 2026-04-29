@@ -343,10 +343,14 @@ def _delete_targets(targets, namespace):
 def _show_resource_list(resources):
     """Display migration resources and their dependencies."""
     click.echo("Migration resources:")
+    max_width = max(
+        len(f"{DISPLAY_NAMES.get(p, p)}: {n}") for p, n, _, _ in resources
+    ) if resources else 0
     for plural, name, phase, deps in resources:
         display = DISPLAY_NAMES.get(plural, plural)
+        label = f"{display}: {name}"
         dep_str = f" (depends on: {', '.join(deps)})" if deps else ""
-        click.echo(f"  {display}: {name:<35} ({phase}){dep_str}")
+        click.echo(f"  {label:<{max_width}}  ({phase}){dep_str}")
     click.echo()
     click.echo("Use 'workflow reset <name>' to delete a resource.")
     click.echo("Use 'workflow reset --all' to delete everything.")
@@ -558,6 +562,7 @@ def _reset_by_path(ctx, path, namespace, cascade, include_proxies, delete_storag
 @click.command(name="reset")
 @click.argument('path', required=False, default=None, shell_complete=_get_resource_completions)
 @click.option('--all', 'reset_all', is_flag=True, default=False, help='Delete all migration resources')
+@click.option('--list', 'list_resources', is_flag=True, default=False, help='List migration resources and exit')
 @click.option('--cascade', is_flag=True, default=False, help='Also delete dependent resources')
 @click.option('--include-proxies', is_flag=True, default=False,
               help='Also delete capture proxies (they are protected by default)')
@@ -565,15 +570,23 @@ def _reset_by_path(ctx, path, namespace, cascade, include_proxies, delete_storag
               help='Delete Kafka PVCs and orphaned PVs during reset')
 @click.option('--namespace', default='ma')
 @click.pass_context
-def reset_command(ctx, path, reset_all, cascade, include_proxies, delete_storage, namespace):
+def reset_command(ctx, path, reset_all, list_resources, cascade, include_proxies, delete_storage, namespace):
     """Reset workflow resources by deleting CRDs.
 
-    With no arguments, lists migration resources and their status.
+    With no arguments or --list, lists migration resources and their status.
     With a NAME or glob pattern, deletes matching resources.
     With --all, deletes all matching migration resources.
     """
     try:
         load_k8s_config()
+
+        if list_resources:
+            resources = list_migration_resources(namespace)
+            if not resources:
+                click.echo("No migration resources found.")
+            else:
+                _show_resource_list(resources)
+            return
 
         if path is not None:
             _reset_by_path(ctx, path, namespace, cascade, include_proxies, delete_storage)

@@ -21,7 +21,6 @@ RESETTABLE_PLURALS = [
     'datasnapshots',
     'snapshotmigrations',
     'trafficreplays',
-    'approvalgates',
 ]
 
 DISPLAY_NAMES = {
