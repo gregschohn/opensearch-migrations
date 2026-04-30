@@ -83,6 +83,10 @@ see a line with "Audience: " followed by audience ids that match below roles as 
 While walking through the steps, make sure you record all relevant information you collect in the session state json files
 as described in the persistence section below.
 Do not assume in the chat that user actively reads the session state file, but present relevant details as needed.
+Since the answer format for the BSH roles is more free, the user might have already answered some details of later steps
+in previous ones. In this case do not just skip steps without consulting with the user. You can provide a summary of 
+suggestions if enough information was already given, but on each step, confirm these assumptions with the user.
+in each step, check in with the user about whether to continue to next step.
 
 ### Step 0 — Stakeholder Identification
 
