@@ -57,5 +57,3 @@ traffic:
     replay1:
       fromProxy: "capture-proxy"
       toTarget: "target"
-      replayerConfig:
-        removeAuthHeader: true
