@@ -21,20 +21,20 @@ def call(Map config = [:]) {
     sh "aws ec2 modify-vpc-attribute --vpc-id ${vpcId} --enable-dns-hostnames '{\"Value\":true}' --region ${region}"
     sh "aws ec2 modify-vpc-attribute --vpc-id ${vpcId} --enable-dns-support '{\"Value\":true}' --region ${region}"
 
-    def subnet1 = sh(script: """
+    def subnetAz1 = sh(script: """
         aws ec2 create-subnet --vpc-id ${vpcId} --cidr-block 10.213.0.0/24 \
           --availability-zone ${region}a --region ${region} \
           --tag-specifications 'ResourceType=subnet,Tags=[{Key=Name,Value=ma-isolated-${stage}-1},{Key=ma-stage,Value=${stage}}]' \
           --query 'Subnet.SubnetId' --output text
     """, returnStdout: true).trim()
 
-    def subnet2 = sh(script: """
+    def subnetAz2 = sh(script: """
         aws ec2 create-subnet --vpc-id ${vpcId} --cidr-block 10.213.1.0/24 \
           --availability-zone ${region}b --region ${region} \
           --tag-specifications 'ResourceType=subnet,Tags=[{Key=Name,Value=ma-isolated-${stage}-2},{Key=ma-stage,Value=${stage}}]' \
           --query 'Subnet.SubnetId' --output text
     """, returnStdout: true).trim()
 
-    echo "Created isolated VPC ${vpcId} with subnets ${subnet1}, ${subnet2} (no internet routes)"
-    return [vpcId: vpcId, subnetIds: "${subnet1},${subnet2}"]
+    echo "Created isolated VPC ${vpcId} with subnets ${subnetAz1}, ${subnetAz2} (no internet routes)"
+    return [vpcId: vpcId, subnetIds: "${subnetAz1},${subnetAz2}"]
 }

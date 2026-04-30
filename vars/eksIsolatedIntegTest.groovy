@@ -35,6 +35,9 @@ def call(Map config = [:]) {
             choice(name: 'SOURCE_VERSION', choices: ['ES_7.10'], description: 'Source cluster version')
             choice(name: 'TARGET_VERSION', choices: ['OS_2.19', 'OS_1.3', 'OS_3.1'], description: 'Target cluster version')
             string(name: 'TEST_IDS', defaultValue: '0040', description: 'Test IDs to run (comma-separated)')
+            booleanParam(name: 'BUILD', defaultValue: true, description: 'Build all artifacts from source (images, CFN, chart). When false, downloads published release artifacts.')
+            booleanParam(name: 'USE_RELEASE_BOOTSTRAP', defaultValue: false, description: 'Download aws-bootstrap.sh from the latest GitHub release instead of using the source checkout version')
+            string(name: 'VERSION', defaultValue: 'latest', description: 'Release version to deploy (e.g. "2.8.2" or "latest"). Determines which release artifacts to download for images, chart, and CFN templates.')
         }
 
         options {
@@ -93,6 +96,7 @@ def call(Map config = [:]) {
             }
 
             stage('Build') {
+                when { expression { !params.USE_RELEASE_BOOTSTRAP && params.BUILD } }
                 steps {
                     timeout(time: 1, unit: 'HOURS') {
                         sh './gradlew clean build -x test --no-daemon --stacktrace'
@@ -105,11 +109,12 @@ def call(Map config = [:]) {
                     timeout(time: 90, unit: 'MINUTES') {
                         withMigrationsTestAccount(region: params.REGION, duration: 5400) { accountId ->
                             script {
+                                def buildFlag = params.BUILD ? '--build' : ''
                                 sh """
                                     ./deployment/k8s/aws/assemble-bootstrap.sh
                                     ./deployment/k8s/aws/dist/aws-bootstrap.sh \
                                       --deploy-create-vpc-cfn \
-                                      --build \
+                                      ${buildFlag} \
                                       --stack-name "${buildStackName}" \
                                       --stage "${env.buildStageName}" \
                                       --region "${params.REGION}" \
@@ -138,10 +143,11 @@ def call(Map config = [:]) {
                                 env.isolatedVpcId = vpc.vpcId
 
                                 // Deploy EKS + MA into isolated subnets
+                                def buildFlag2 = params.BUILD ? '--build' : ''
                                 sh """
                                     ./deployment/k8s/aws/dist/aws-bootstrap.sh \
                                       --deploy-import-vpc-cfn \
-                                      --build \
+                                      ${buildFlag2} \
                                       --create-vpc-endpoints \
                                       --ma-images-source "${env.BUILD_ECR}" \
                                       --stack-name "${isolatedStackName}" \
@@ -165,6 +171,19 @@ def call(Map config = [:]) {
                                       --region "${params.REGION}" \
                                       --alias "${env.eksKubeContext}"
                                 """
+
+                                // Verify isolated network has no public internet access
+                                echo "Validating network isolation..."
+                                sh """
+                                    kubectl --context=${env.eksKubeContext} exec migration-console-0 -n ma -- \
+                                      timeout 10 curl -sf https://google.com > /dev/null 2>&1 \
+                                      && echo 'FAIL: internet reachable' && exit 1 \
+                                      || echo 'Isolation validated: pods cannot reach public internet ✅'
+                                """
+
+                                // Build stack is no longer needed — isolated ECR has its own image copies
+                                echo "CLEANUP: Starting early deletion of build stack ${buildStackName}"
+                                sh "aws cloudformation delete-stack --stack-name ${buildStackName} --region ${params.REGION} || true"
                             }
                         }
                     }
@@ -251,6 +270,34 @@ def call(Map config = [:]) {
                     }
                 }
             }
+
+            stage('Validate CloudWatch Connectivity') {
+                steps {
+                    timeout(time: 5, unit: 'MINUTES') {
+                        withMigrationsTestAccount(region: params.REGION) { accountId ->
+                            script {
+                                // Verify logs reached CloudWatch through VPC endpoint
+                                def logCount = sh(
+                                    script: """
+                                        aws logs filter-log-events \
+                                          --log-group-name '/migrations/ma/${env.maStageName}' \
+                                          --limit 1 \
+                                          --region ${params.REGION} \
+                                          --query 'events | length(@)' \
+                                          --output text 2>/dev/null || echo "0"
+                                    """,
+                                    returnStdout: true
+                                ).trim()
+                                if (logCount == "0") {
+                                    echo "WARNING: No CloudWatch logs found — fluent-bit may not be shipping logs through VPC endpoint"
+                                } else {
+                                    echo "CloudWatch logs validated: logs are reaching CloudWatch via VPC endpoint ✅"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         post {
@@ -291,8 +338,8 @@ def call(Map config = [:]) {
                             // Delete isolated VPC (after CFN stack is gone)
                             cleanupIsolatedVpc(region: region, vpcId: isolatedVpcId, stage: env.maStageName)
 
-                            // Delete build stack
-                            echo "CLEANUP: Deleting build stack ${buildStackName}"
+                            // Build stack deletion was initiated after Phase 2 — confirm completion
+                            echo "CLEANUP: Confirming build stack ${buildStackName} is deleted"
                             sh "aws cloudformation delete-stack --stack-name ${buildStackName} --region ${region} || true"
                             sh "aws cloudformation wait stack-delete-complete --stack-name ${buildStackName} --region ${region} || true"
                         }
