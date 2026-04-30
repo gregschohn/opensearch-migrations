@@ -150,6 +150,13 @@ mirror_charts_to_ecr() {
   ecr_pass=$(aws ecr get-login-password --region "$region")
   echo "$ecr_pass" | helm registry login "$ecr_host" -u AWS --password-stdin
 
+  # Log helm into public.ecr.aws so pulls of OCI charts hosted there
+  # (e.g. aws-controllers-k8s/acmpca-chart) don't stall on anonymous
+  # rate-limits / credential prompts. Best-effort — anonymous pulls
+  # usually work, but authenticated pulls are more reliable.
+  aws ecr-public get-login-password --region us-east-1 2>/dev/null | \
+    helm registry login public.ecr.aws -u AWS --password-stdin 2>/dev/null || true
+
   echo ""
   echo "=== Mirroring Helm charts ==="
   local _chartlist _chart_fail=0
@@ -162,10 +169,12 @@ mirror_charts_to_ecr() {
     [ -z "$name" ] && continue
 
     echo "  Pulling $name $version from $repo..."
+    # Redirect stdin from /dev/null so helm can never block on a credential
+    # prompt — if auth is missing/expired we want a fast failure, not a hang.
     if echo "$repo" | grep -q '^oci://'; then
-      helm pull "$repo/$name" --version "$version" 2>/dev/null
+      helm pull "$repo/$name" --version "$version" </dev/null 2>/dev/null
     else
-      helm pull "$name" --repo "$repo" --version "$version" 2>/dev/null
+      helm pull "$name" --repo "$repo" --version "$version" </dev/null 2>/dev/null
     fi
 
     local tgz
@@ -177,7 +186,7 @@ mirror_charts_to_ecr() {
 
     aws ecr create-repository --repository-name "charts/${name}" --region "$region" 2>/dev/null || true
     echo "  Pushing $tgz → oci://${ecr_host}/charts"
-    helm push "$tgz" "oci://${ecr_host}/charts" 2>&1 || { echo "  ❌ FAILED to push $name" >&2; _chart_fail=1; }
+    helm push "$tgz" "oci://${ecr_host}/charts" </dev/null 2>&1 || { echo "  ❌ FAILED to push $name" >&2; _chart_fail=1; }
     rm -f "$tgz"
     echo "  ✅ $name $version"
   done < "$_chartlist"
