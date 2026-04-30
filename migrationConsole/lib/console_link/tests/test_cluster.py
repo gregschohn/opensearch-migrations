@@ -349,7 +349,7 @@ def test_run_benchmark_executes_correctly_no_auth(mocker):
                                  " --pipeline=benchmark-only"
                                  " --test-mode --kill-running-processes --workload-params="
                                  "bulk_size:10,bulk_indexing_clients:1 "
-                                 "--client-options=verify_certs:false", shell=True)
+                                 "--client-options=verify_certs:false,use_ssl:true", shell=True)
 
 
 def test_run_benchmark_executes_correctly_sigv4_auth(mocker):
@@ -363,7 +363,7 @@ def test_run_benchmark_executes_correctly_sigv4_auth(mocker):
                                  " --pipeline=benchmark-only"
                                  " --test-mode --kill-running-processes --workload-params="
                                  "bulk_size:10,bulk_indexing_clients:1 "
-                                 "--client-options=verify_certs:false,"
+                                 "--client-options=verify_certs:false,use_ssl:true,"
                                  "amazon_aws_log_in:session,"
                                  "service:aoss,"
                                  "region:eu-west-1", shell=True)
@@ -383,7 +383,7 @@ def test_run_benchmark_executes_correctly_basic_auth_and_https(mocker):
                                  " --pipeline=benchmark-only"
                                  " --test-mode --kill-running-processes --workload-params="
                                  "bulk_size:10,bulk_indexing_clients:1 "
-                                 "--client-options=verify_certs:false,use_ssl:true,"
+                                 "--client-options=use_ssl:true,"
                                  f"basic_auth_user:{auth_details['username']},"
                                  f"basic_auth_password:{auth_details['password']}", shell=True)
 
