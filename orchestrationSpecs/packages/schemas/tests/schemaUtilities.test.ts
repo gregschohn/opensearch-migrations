@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { unwrapSchema, getDescription } from "../src/schemaUtilities";
+import { unwrapSchema, getDescription, fullUnwrapType } from "../src/schemaUtilities";
 
 describe("unwrapSchema through ZodPipe", () => {
     test("z.preprocess(fn, innerSchema) unwraps to the inner schema, not the transform", () => {
@@ -78,5 +78,30 @@ describe("getDescription walks wrapper chains", () => {
         // that's the most recently-applied / most specific override.
         const FIELD = z.string().describe("inner").default("").describe("outer");
         expect(getDescription(FIELD)).toBe("outer");
+    });
+});
+
+describe("fullUnwrapType through ZodPipe", () => {
+    test("z.preprocess(fn, innerSchema) wrapped in optional unwraps to the inner schema, not the transform", () => {
+        // Same latent bug as unwrapSchema/getDescription: z.preprocess puts the
+        // ZodTransform on _def.in, so naively picking .in would hand back the
+        // preprocess fn. fullUnwrapType must walk to _def.out in that case.
+        const INNER = z.object({
+            limits: z.object({ cpu: z.string() }).optional(),
+        });
+        const FIELD = z.preprocess((v) => v ?? {}, INNER).optional();
+
+        const unwrapped = fullUnwrapType(FIELD);
+        expect(unwrapped).toBeInstanceOf(z.ZodObject);
+    });
+
+    test("schema.transform(fn) wrapped in optional unwraps to the source schema", () => {
+        // For .transform() the source schema is on .in and the ZodTransform is
+        // on .out -- the existing .in branch is correct here. This test pins
+        // that the preprocess fix did not regress the transform direction.
+        const FIELD = z.string().transform((s) => s.toUpperCase()).optional();
+
+        const unwrapped = fullUnwrapType(FIELD);
+        expect(unwrapped).toBeInstanceOf(z.ZodString);
     });
 });

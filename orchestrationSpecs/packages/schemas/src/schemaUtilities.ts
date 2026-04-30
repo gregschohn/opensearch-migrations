@@ -110,10 +110,9 @@ export function unwrapSchema(schema: z.ZodTypeAny, constructorNames = ZOD_OPTION
         // - For z.preprocess: _def.in is the ZodTransform (the preprocess fn), _def.out is the real schema.
         // - For .transform / .pipe: _def.in is the source schema, _def.out is the ZodTransform.
         // In both cases we want the non-transform side so callers see the structured schema.
-        const d = schema._def as any;
-        const inIsTransform = d.in?.constructor?.name === 'ZodTransform';
-        const inner = inIsTransform ? d.out : d.in;
-        return unwrapSchema(inner as any, constructorNames);
+        const d = schema._def;
+        const inner = d.in instanceof z.ZodTransform ? d.out : d.in;
+        return unwrapSchema(inner as z.ZodTypeAny, constructorNames);
     }
 
     return schema;
@@ -131,7 +130,12 @@ export function fullUnwrapType<T extends z.ZodTypeAny>(schema: T) {
             const def = (actualType as any).def || (actualType as any)._def;
             const typeName = def?.typeName || def?.type;
             if (actualType instanceof z.ZodPipe) {
-                actualType = actualType._def.in;
+                // Match unwrapSchema()/getDescription(): z.preprocess puts the ZodTransform
+                // on _def.in, so unwrapping to .in would hand back the preprocess fn. Walk
+                // to _def.out in that case; keep .in for .transform()/.pipe() where the
+                // source schema is on .in and the ZodTransform is on .out.
+                const d = actualType._def;
+                actualType = d.in instanceof z.ZodTransform ? d.out : d.in;
             } else if (typeName === 'ZodEffects' || typeName === 'transform') {
                 // For transforms, get the input schema
                 if (typeof (actualType as any).innerType === 'function') {
@@ -186,8 +190,8 @@ export function getDescription(schema: z.ZodTypeAny): string | undefined {
         } else if (cur instanceof z.ZodPipe) {
             // Match unwrapSchema()'s preprocess-aware behaviour: skip over the
             // ZodTransform side and continue walking through the real schema.
-            const d = cur._def as any;
-            cur = (d.in?.constructor?.name === 'ZodTransform' ? d.out : d.in) as z.ZodTypeAny;
+            const d = cur._def;
+            cur = (d.in instanceof z.ZodTransform ? d.out : d.in) as z.ZodTypeAny;
         } else {
             return undefined;
         }
