@@ -33,6 +33,20 @@ import lombok.extern.slf4j.Slf4j;
  *
  * When no such file exists (plain / FIXED layout, e.g. upgraded old repos), we fall
  * back to the classic BaseSnapshotFileFinder behavior.
+ *
+ * <p><b>Authoritative format spec</b> — the on-disk layout, the 0/1/2 enum values, and
+ * the FNV1a-1 hashing scheme are defined by OpenSearch's {@code RemoteStoreEnums}:
+ *
+ * <ul>
+ *   <li>{@code org.opensearch.index.remote.RemoteStoreEnums.PathType} — the FIXED /
+ *       HASHED_PREFIX / HASHED_INFIX enum with the path-assembly logic, at
+ *       <a href="https://github.com/opensearch-project/OpenSearch/blob/main/server/src/main/java/org/opensearch/index/remote/RemoteStoreEnums.java">OpenSearch/server/.../RemoteStoreEnums.java</a>.</li>
+ *   <li>{@code RemoteStoreEnums.PathHashAlgorithm} — the hash algorithms (FNV_1A_BASE64,
+ *       FNV_1A_COMPOSITE_1) whose identifier is the {@code hashAlgo} segment in the
+ *       {@code snapshot_path_*} filename.</li>
+ *   <li>OpenSearch RFC for the remote-backed storage path scheme:
+ *       <a href="https://github.com/opensearch-project/OpenSearch/issues/12567">opensearch-project/OpenSearch#12567</a>.</li>
+ * </ul>
  */
 @Slf4j
 public class SnapshotFileFinder_ES_9_0 extends BaseSnapshotFileFinder {

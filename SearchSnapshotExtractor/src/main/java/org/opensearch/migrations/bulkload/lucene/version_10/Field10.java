@@ -6,7 +6,7 @@ import org.opensearch.migrations.bulkload.common.Uid;
 import org.opensearch.migrations.bulkload.lucene.LuceneField;
 
 import lombok.AllArgsConstructor;
-import org.apache.lucene.index.IndexableField;
+import shadow.lucene10.org.apache.lucene.index.IndexableField;
 
 @AllArgsConstructor
 public class Field10 implements LuceneField {

@@ -12,23 +12,23 @@ import org.opensearch.migrations.bulkload.lucene.LuceneLeafReader;
 
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.lucene.index.BinaryDocValues;
-import org.apache.lucene.index.FieldInfo;
-import org.apache.lucene.index.FilterCodecReader;
-import org.apache.lucene.index.LeafReader;
-import org.apache.lucene.index.NumericDocValues;
-import org.apache.lucene.index.PointValues;
-import org.apache.lucene.index.PostingsEnum;
-import org.apache.lucene.index.SegmentReader;
-import org.apache.lucene.index.SortedNumericDocValues;
-import org.apache.lucene.index.SortedSetDocValues;
-import org.apache.lucene.index.Terms;
-import org.apache.lucene.index.TermsEnum;
-import org.apache.lucene.store.ByteArrayDataInput;
-import org.apache.lucene.util.Bits;
-import org.apache.lucene.util.BytesRef;
-import org.apache.lucene.util.FixedBitSet;
-import org.apache.lucene.util.SparseFixedBitSet;
+import shadow.lucene10.org.apache.lucene.index.BinaryDocValues;
+import shadow.lucene10.org.apache.lucene.index.FieldInfo;
+import shadow.lucene10.org.apache.lucene.index.FilterCodecReader;
+import shadow.lucene10.org.apache.lucene.index.LeafReader;
+import shadow.lucene10.org.apache.lucene.index.NumericDocValues;
+import shadow.lucene10.org.apache.lucene.index.PointValues;
+import shadow.lucene10.org.apache.lucene.index.PostingsEnum;
+import shadow.lucene10.org.apache.lucene.index.SegmentReader;
+import shadow.lucene10.org.apache.lucene.index.SortedNumericDocValues;
+import shadow.lucene10.org.apache.lucene.index.SortedSetDocValues;
+import shadow.lucene10.org.apache.lucene.index.Terms;
+import shadow.lucene10.org.apache.lucene.index.TermsEnum;
+import shadow.lucene10.org.apache.lucene.store.ByteArrayDataInput;
+import shadow.lucene10.org.apache.lucene.util.Bits;
+import shadow.lucene10.org.apache.lucene.util.BytesRef;
+import shadow.lucene10.org.apache.lucene.util.FixedBitSet;
+import shadow.lucene10.org.apache.lucene.util.SparseFixedBitSet;
 
 @Slf4j
 public class LeafReader10 implements LuceneLeafReader {
@@ -138,7 +138,7 @@ public class LeafReader10 implements LuceneLeafReader {
     }
 
     private static DocValueFieldInfo.DocValueType convertDocValuesType(
-            org.apache.lucene.index.DocValuesType luceneType) {
+            shadow.lucene10.org.apache.lucene.index.DocValuesType luceneType) {
         return switch (luceneType) {
             case NUMERIC -> DocValueFieldInfo.DocValueType.NUMERIC;
             case BINARY -> DocValueFieldInfo.DocValueType.BINARY;

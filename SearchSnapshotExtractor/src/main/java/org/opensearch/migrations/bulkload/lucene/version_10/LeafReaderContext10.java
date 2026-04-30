@@ -3,7 +3,7 @@ package org.opensearch.migrations.bulkload.lucene.version_10;
 import org.opensearch.migrations.bulkload.lucene.LuceneLeafReaderContext;
 
 import lombok.AllArgsConstructor;
-import org.apache.lucene.index.LeafReaderContext;
+import shadow.lucene10.org.apache.lucene.index.LeafReaderContext;
 
 @AllArgsConstructor
 public class LeafReaderContext10 implements LuceneLeafReaderContext {

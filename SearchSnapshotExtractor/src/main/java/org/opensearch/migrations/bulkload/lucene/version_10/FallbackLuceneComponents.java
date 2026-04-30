@@ -3,13 +3,13 @@ package org.opensearch.migrations.bulkload.lucene.version_10;
 import java.util.Collections;
 import java.util.Iterator;
 
-import org.apache.lucene.codecs.FieldsProducer;
-import org.apache.lucene.codecs.KnnVectorsReader;
-import org.apache.lucene.index.ByteVectorValues;
-import org.apache.lucene.index.FloatVectorValues;
-import org.apache.lucene.index.Terms;
-import org.apache.lucene.search.AcceptDocs;
-import org.apache.lucene.search.KnnCollector;
+import shadow.lucene10.org.apache.lucene.codecs.FieldsProducer;
+import shadow.lucene10.org.apache.lucene.codecs.KnnVectorsReader;
+import shadow.lucene10.org.apache.lucene.index.ByteVectorValues;
+import shadow.lucene10.org.apache.lucene.index.FloatVectorValues;
+import shadow.lucene10.org.apache.lucene.index.Terms;
+import shadow.lucene10.org.apache.lucene.search.AcceptDocs;
+import shadow.lucene10.org.apache.lucene.search.KnnCollector;
 
 /**
  * Shared fallback implementations for Lucene 9 codecs used in no-op PostingsFormat stubs.

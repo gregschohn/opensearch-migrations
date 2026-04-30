@@ -2,23 +2,21 @@ package org.opensearch.migrations.bulkload.lucene.version_10;
 
 import java.io.IOException;
 
-import org.apache.lucene.codecs.StoredFieldsFormat;
-import org.apache.lucene.codecs.StoredFieldsReader;
-import org.apache.lucene.codecs.StoredFieldsWriter;
-import org.apache.lucene.codecs.lucene90.compressing.Lucene90CompressingStoredFieldsFormat;
-import org.apache.lucene.index.FieldInfos;
-import org.apache.lucene.index.SegmentInfo;
-import org.apache.lucene.store.Directory;
-import org.apache.lucene.store.IOContext;
+import shadow.lucene10.org.apache.lucene.codecs.StoredFieldsFormat;
+import shadow.lucene10.org.apache.lucene.codecs.StoredFieldsReader;
+import shadow.lucene10.org.apache.lucene.codecs.StoredFieldsWriter;
+import shadow.lucene10.org.apache.lucene.codecs.lucene90.compressing.Lucene90CompressingStoredFieldsFormat;
+import shadow.lucene10.org.apache.lucene.index.FieldInfos;
+import shadow.lucene10.org.apache.lucene.index.SegmentInfo;
+import shadow.lucene10.org.apache.lucene.store.Directory;
+import shadow.lucene10.org.apache.lucene.store.IOContext;
 
 /**
  * StoredFieldsFormat shim for segments written by Elasticsearch 8.14+ / 9.x with the
  * ZSTD-backed "Zstd814StoredFieldsFormat" stored-fields writer. Read-only — this codec
  * is only used to decompress stored fields during snapshot migration.
  *
- * <p>Mirrors {@code version_9.Elasticsearch814ZstdFieldsFormat} but targets Lucene 10
- * APIs. Un-relocated {@code org.apache.lucene.*} imports are rewritten to the
- * {@code shadow.lucene10} namespace by the ShadowJar.
+ * <p>Mirrors {@code version_9.Elasticsearch814ZstdFieldsFormat} but targets Lucene 10 APIs.
  */
 public class Elasticsearch814ZstdFieldsFormat extends StoredFieldsFormat {
     public static final String MODE_KEY = "Zstd814StoredFieldsFormat.mode";

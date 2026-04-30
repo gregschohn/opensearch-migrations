@@ -8,10 +8,10 @@ import org.opensearch.migrations.bulkload.lucene.LuceneIndexReader;
 
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.lucene.index.DirectoryReader;
-import org.apache.lucene.index.SoftDeletesDirectoryReaderWrapper;
-import org.apache.lucene.store.Directory;
-import org.apache.lucene.store.FSDirectory;
+import shadow.lucene10.org.apache.lucene.index.DirectoryReader;
+import shadow.lucene10.org.apache.lucene.index.SoftDeletesDirectoryReaderWrapper;
+import shadow.lucene10.org.apache.lucene.store.Directory;
+import shadow.lucene10.org.apache.lucene.store.FSDirectory;
 
 @AllArgsConstructor
 @Slf4j

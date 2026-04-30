@@ -2,11 +2,11 @@ package org.opensearch.migrations.bulkload.lucene.version_10;
 
 import java.io.IOException;
 
-import org.apache.lucene.codecs.FieldsConsumer;
-import org.apache.lucene.codecs.FieldsProducer;
-import org.apache.lucene.codecs.PostingsFormat;
-import org.apache.lucene.index.SegmentReadState;
-import org.apache.lucene.index.SegmentWriteState;
+import shadow.lucene10.org.apache.lucene.codecs.FieldsConsumer;
+import shadow.lucene10.org.apache.lucene.codecs.FieldsProducer;
+import shadow.lucene10.org.apache.lucene.codecs.PostingsFormat;
+import shadow.lucene10.org.apache.lucene.index.SegmentReadState;
+import shadow.lucene10.org.apache.lucene.index.SegmentWriteState;
 
 /**
  * Bloom Filter PostingsFormat fallback for Elasticsearch 8.7+ and 9.x segment formats.

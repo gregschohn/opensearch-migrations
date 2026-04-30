@@ -3,21 +3,19 @@ package org.opensearch.migrations.bulkload.lucene.version_10;
 import java.io.IOException;
 
 import com.github.luben.zstd.Zstd;
-import org.apache.lucene.codecs.compressing.CompressionMode;
-import org.apache.lucene.codecs.compressing.Compressor;
-import org.apache.lucene.codecs.compressing.Decompressor;
-import org.apache.lucene.store.DataInput;
-import org.apache.lucene.util.ArrayUtil;
-import org.apache.lucene.util.BytesRef;
+import shadow.lucene10.org.apache.lucene.codecs.compressing.CompressionMode;
+import shadow.lucene10.org.apache.lucene.codecs.compressing.Compressor;
+import shadow.lucene10.org.apache.lucene.codecs.compressing.Decompressor;
+import shadow.lucene10.org.apache.lucene.store.DataInput;
+import shadow.lucene10.org.apache.lucene.util.ArrayUtil;
+import shadow.lucene10.org.apache.lucene.util.BytesRef;
 
 /**
  * ZSTD Compression Mode (decompression only, no dictionary support) — Lucene 10 variant.
  *
  * <p>Ported from the Lucene 9 shim ({@code version_9.ES8CompatibleZstdNoDictCompressionMode}) so
  * that ES 8.14+ / ES 9.x snapshots whose segments were written by Elasticsearch's custom
- * ZSTD-backed codecs can be read via the relocated Lucene 10 runtime. The source file uses
- * un-relocated {@code org.apache.lucene.*} imports; the ShadowJar rewrites them to
- * {@code shadow.lucene10.org.apache.lucene.*} at packaging time.
+ * ZSTD-backed codecs can be read via the relocated Lucene 10 runtime.
  */
 public class ES8CompatibleZstdNoDictCompressionMode extends CompressionMode {
 

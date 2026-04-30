@@ -5,7 +5,7 @@ import java.util.List;
 import org.opensearch.migrations.bulkload.lucene.LuceneDocument;
 
 import lombok.AllArgsConstructor;
-import org.apache.lucene.document.Document;
+import shadow.lucene10.org.apache.lucene.document.Document;
 
 @AllArgsConstructor
 public class Document10 implements LuceneDocument {

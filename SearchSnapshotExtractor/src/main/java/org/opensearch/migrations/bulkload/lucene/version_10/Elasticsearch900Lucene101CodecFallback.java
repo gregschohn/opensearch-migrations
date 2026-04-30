@@ -1,17 +1,17 @@
 package org.opensearch.migrations.bulkload.lucene.version_10;
 
-import org.apache.lucene.codecs.Codec;
-import org.apache.lucene.codecs.CompoundFormat;
-import org.apache.lucene.codecs.DocValuesFormat;
-import org.apache.lucene.codecs.FieldInfosFormat;
-import org.apache.lucene.codecs.KnnVectorsFormat;
-import org.apache.lucene.codecs.LiveDocsFormat;
-import org.apache.lucene.codecs.NormsFormat;
-import org.apache.lucene.codecs.PointsFormat;
-import org.apache.lucene.codecs.PostingsFormat;
-import org.apache.lucene.codecs.SegmentInfoFormat;
-import org.apache.lucene.codecs.StoredFieldsFormat;
-import org.apache.lucene.codecs.TermVectorsFormat;
+import shadow.lucene10.org.apache.lucene.codecs.Codec;
+import shadow.lucene10.org.apache.lucene.codecs.CompoundFormat;
+import shadow.lucene10.org.apache.lucene.codecs.DocValuesFormat;
+import shadow.lucene10.org.apache.lucene.codecs.FieldInfosFormat;
+import shadow.lucene10.org.apache.lucene.codecs.KnnVectorsFormat;
+import shadow.lucene10.org.apache.lucene.codecs.LiveDocsFormat;
+import shadow.lucene10.org.apache.lucene.codecs.NormsFormat;
+import shadow.lucene10.org.apache.lucene.codecs.PointsFormat;
+import shadow.lucene10.org.apache.lucene.codecs.PostingsFormat;
+import shadow.lucene10.org.apache.lucene.codecs.SegmentInfoFormat;
+import shadow.lucene10.org.apache.lucene.codecs.StoredFieldsFormat;
+import shadow.lucene10.org.apache.lucene.codecs.TermVectorsFormat;
 
 /**
  * Read-only codec shim for segments written by Elasticsearch 9.x using the
@@ -28,9 +28,10 @@ import org.apache.lucene.codecs.TermVectorsFormat;
  *       {@link Elasticsearch814ZstdFieldsFormat} used by ES 8.14+/9.x.</li>
  * </ul>
  *
- * <p>Un-relocated {@code org.apache.lucene.*} imports are rewritten to the
- * {@code shadow.lucene10} namespace by the ShadowJar. The class FQN is registered in
- * {@code META-INF/services/org.apache.lucene.codecs.Codec} on the lucene10 sourceSet.
+ * <p>The class FQN is registered in
+ * {@code src/lucene10/resources/META-INF/services/org.apache.lucene.codecs.Codec} — ShadowJar
+ * relocates the service-file name to {@code shadow.lucene10.org.apache.lucene.codecs.Codec}
+ * when it packs the lucene10-shadow jar.
  */
 public class Elasticsearch900Lucene101CodecFallback extends Codec {
     private static final String BASE_CODEC_NAME = "Lucene101";

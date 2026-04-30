@@ -8,7 +8,7 @@ import org.opensearch.migrations.bulkload.lucene.LuceneDirectoryReader;
 
 import lombok.AllArgsConstructor;
 import lombok.Getter;
-import org.apache.lucene.index.DirectoryReader;
+import shadow.lucene10.org.apache.lucene.index.DirectoryReader;
 
 @AllArgsConstructor
 public class DirectoryReader10 implements LuceneDirectoryReader {

@@ -16,9 +16,6 @@ sourceSets {
         }
     }
     lucene10 {
-        java {
-            srcDir 'src/lucene10/java'
-        }
         resources {
             srcDir 'src/lucene10/resources'
         }
@@ -32,7 +29,6 @@ configurations {
     lucene9
     lucene9Implementation.extendsFrom(lucene9)
     lucene10
-    lucene10Implementation.extendsFrom(lucene10)
 }
 
 tasks.named('processLucene9Resources').configure {
@@ -41,31 +37,6 @@ tasks.named('processLucene9Resources').configure {
 
 tasks.named('processLucene10Resources').configure {
     duplicatesStrategy = DuplicatesStrategy.INCLUDE
-}
-
-// The lucene10 sourceSet contains IndexReader10, which `implements LuceneIndexReader`
-// from the main sourceSet. It therefore needs main's compiled classes (plus their
-// transitive compile dependencies) on its compile classpath. We deliberately do NOT
-// make main depend on lucene10: main loads IndexReader10 reflectively at runtime via
-// the shadowLucene10 jar.
-dependencies {
-    // Only the main sourceSet's compiled classes (for the LuceneIndexReader /
-    // LuceneDirectoryReader interface contract). We deliberately do NOT pull in
-    // main.compileClasspath — that would transitively include shadowLucene10.outputs
-    // via `implementation shadowLucene10.outputs.files` below and create a cycle
-    // (compileJava -> shadowLucene10 -> compileLucene10Java -> compileJava).
-    lucene10Implementation files(sourceSets.main.output.classesDirs)
-    lucene10Implementation project(':RfsCommon')
-    lucene10Implementation libs.slf4j.api
-    lucene10Implementation libs.reactor.core
-}
-
-tasks.named('compileLucene10Java', JavaCompile) {
-    // compileJava runs first so the main sourceSet's compiled classes (used as a
-    // dependency of lucene10Implementation above) are available. The toolchain
-    // is inherited from the root project (JDK 21, Corretto), which is required
-    // for the Lucene 10 class-file major version.
-    dependsOn tasks.named('compileJava')
 }
 
 tasks.register('shadowLucene5', com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar) {
@@ -102,15 +73,12 @@ tasks.register('shadowLucene9', com.github.jengelman.gradle.plugins.shadow.tasks
 }
 
 tasks.register('shadowLucene10', com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar) {
-    dependsOn compileLucene10Java, processLucene10Resources
+    dependsOn processLucene10Resources
     mergeServiceFiles()
     archiveClassifier.set('lucene10-shadow')
     configurations = [project.configurations.lucene10]
     from sourceSets.lucene10.output
     relocate 'org.apache.lucene', 'shadow.lucene10.org.apache.lucene'
-    manifest {
-        attributes 'Multi-Release': 'true'
-    }
 }
 
 tasks.register('prepareShadowJars') {
@@ -179,9 +147,5 @@ dependencies {
     implementation shadowLucene6.outputs.files
     implementation shadowLucene7.outputs.files
     implementation shadowLucene9.outputs.files
-    // The main sourceSet no longer directly imports shadow.lucene10.* — IndexReader10
-    // is loaded reflectively at runtime via LuceneIndexReader.Factory. Keeping this at
-    // compile-time would also create a task cycle:
-    //   compileJava -> shadowLucene10 -> compileLucene10Java -> (main classes) -> compileJava.
-    runtimeOnly shadowLucene10.outputs.files
+    implementation shadowLucene10.outputs.files
 }
