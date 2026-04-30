@@ -8,7 +8,7 @@ from .cdc_base import (
     MATestBase, MigrationType, MATestUserArguments,
     CDC_SOURCE_TARGET_COMBINATIONS, REPLAYER_LABEL_SELECTOR,
     wait_for_pod_ready, wait_for_replayer_consuming,
-    make_proxy_cluster, cleanup_cdc_resources, send_bulk,
+    make_proxy_cluster, send_bulk,
 )
 from ..common_utils import execute_api_call
 
@@ -241,6 +241,8 @@ class Test0033CdcOnlyMixedOperations(MATestBase):
         # Delete composable index templates created by this test from both clusters.
         # These survive index deletion and cause 400 errors on reruns due to
         # conflicting index patterns.
+        # Note: import_existing_clusters() clears target templates at test start,
+        # but source templates need explicit cleanup here.
         for cluster in [self.source_cluster, self.target_cluster]:
             try:
                 execute_api_call(cluster=cluster, method=HttpMethod.DELETE,
@@ -248,4 +250,3 @@ class Test0033CdcOnlyMixedOperations(MATestBase):
                                  max_attempts=1)
             except Exception as e:
                 logger.debug("Failed to delete index template %s: %s", self.template_name, e)
-        cleanup_cdc_resources(self.argo_service.namespace)
