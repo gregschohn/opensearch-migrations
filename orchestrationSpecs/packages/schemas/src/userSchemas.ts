@@ -603,7 +603,8 @@ export const USER_METADATA_OPTIONS = z.object({
 
 export const USER_RFS_WORKFLOW_OPTIONS = z.object({
     podReplicas: z.number().default(1).optional()
-        .describe("Number of RFS (Reindex From Snapshot) pod replicas. Each replica processes shards independently."),
+        .describe("Number of RFS worker pod replicas. Each replica independently acquires and processes snapshot shards in parallel —" + 
+            " throughput scales linearly up to the total number of source shards."),
     jvmArgs: z.string().default("").optional()
         .describe(JVM_ARGS_DESC),
     loggingConfigurationOverrideConfigMap: z.string().default("").optional()
