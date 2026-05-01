@@ -48,12 +48,9 @@ def call(Map config = [:]) {
 
             stage('Docker Compose Up') {
                 steps {
-                    timeout(time: 3, unit: 'MINUTES') {
-                        dir('TrafficCapture/dockerSolution') {
-                            sh 'docker compose -f src/main/docker/docker-compose.yml up -d'
-                            sh 'sleep 30'
-                            sh 'docker ps'
-                        }
+                    timeout(time: 5, unit: 'MINUTES') {
+                        sh './gradlew -p TrafficCapture dockerSolution:composeUp -x test -x spotlessCheck --info --stacktrace'
+                        sh 'docker ps'
                     }
                 }
             }
@@ -78,9 +75,7 @@ def call(Map config = [:]) {
                         done
                     '''
                     archiveArtifacts artifacts: 'logs/docker/**', allowEmptyArchive: true
-                    dir('TrafficCapture/dockerSolution') {
-                        sh 'docker compose -f src/main/docker/docker-compose.yml down --volumes || true'
-                    }
+                    sh './gradlew -p TrafficCapture dockerSolution:composeDown -x test -x spotlessCheck || true'
                 }
             }
         }
