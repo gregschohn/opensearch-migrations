@@ -106,18 +106,14 @@ describe('migration initializer CRD resource generation', () => {
         expect(byKind('ApprovalGate')).toEqual(expect.arrayContaining([
             'source.target.snap1.migration-0.evaluatemetadata',
             'source.target.snap1.migration-0.migratemetadata',
-            // Kafka VAP retry gates
-            'default.kafkacluster.vapretry',
-            'default.kafkanodepool.vapretry',
-            'default.kafkauser.vapretry',
-            'default.kafkatopic.source-proxy.vapretry',
-            // Root KafkaCluster CR reconcile gate
-            'default.vapretry',
+            // Root KafkaCluster CR reconcile gate (only Kafka gate — sub-ops
+            // are Strimzi-managed and don't go through the migrations VAP)
+            'kafkacluster.default.vapretry',
             // Topic and proxy VAP retry gates
-            'source-proxy-topic.capturedtraffic.vapretry',
-            'source-proxy.captureproxy.vapretry',
+            'capturedtraffic.source-proxy-topic.vapretry',
+            'captureproxy.source-proxy.vapretry',
             // Replay VAP retry gate
-            'source-proxy-target-target-replay.trafficreplay.vapretry',
+            'trafficreplay.source-proxy-target-target-replay.vapretry',
         ]));
 
         expect(getResource('KafkaCluster', 'default')?.spec.dependsOn).toBeUndefined();
@@ -159,12 +155,24 @@ describe('migration initializer CRD resource generation', () => {
         const bundle = await initializer.generateMigrationBundle(config, 'my-workflow');
         const gates = bundle.crdResources.items.filter((item: any) => item.kind === 'ApprovalGate');
 
-        // All gates carry the workflow label
+        // All gates carry the workflow label plus per-gate context
         for (const gate of gates) {
-            expect(gate.metadata.labels).toEqual({
-                [MigrationInitializer.APPROVAL_GATE_LABEL_KEY]: 'my-workflow'
-            });
+            expect(gate.metadata.labels[MigrationInitializer.APPROVAL_GATE_LABEL_KEY]).toBe('my-workflow');
+            expect(gate.metadata.labels[MigrationInitializer.GATE_LABEL_RESOURCE_KIND]).toBeDefined();
+            expect(gate.metadata.labels[MigrationInitializer.GATE_LABEL_RESOURCE_NAME]).toBeDefined();
         }
+
+        // SnapshotMigration gates carry source/target/snapshot/migration labels
+        const migGate = gates.find((g: any) => g.metadata.name === 'snapshotmigration.source-target-snap1-migration-0.vapretry');
+        expect(migGate.metadata.labels).toEqual({
+            [MigrationInitializer.APPROVAL_GATE_LABEL_KEY]: 'my-workflow',
+            [MigrationInitializer.GATE_LABEL_RESOURCE_KIND]: 'SnapshotMigration',
+            [MigrationInitializer.GATE_LABEL_RESOURCE_NAME]: 'source-target-snap1-migration-0',
+            [MigrationInitializer.GATE_LABEL_SOURCE]: 'source',
+            [MigrationInitializer.GATE_LABEL_TARGET]: 'target',
+            [MigrationInitializer.GATE_LABEL_SNAPSHOT]: 'snap1',
+            [MigrationInitializer.GATE_LABEL_MIGRATION]: 'migration-0',
+        });
 
         // Cleanup script does label-based delete then per-name fallback
         const cleanup = initializer.generateApprovalGateCleanupScript(bundle.crdResources);
@@ -198,9 +206,11 @@ describe('migration initializer CRD resource generation', () => {
         const bundle = await initializer.generateMigrationBundle(config);
         const gates = bundle.crdResources.items.filter((item: any) => item.kind === 'ApprovalGate');
 
-        // Gates have no labels
+        // Without a workflow name, gates have resource-context labels but
+        // no workflow label.
         for (const gate of gates) {
-            expect(gate.metadata.labels).toBeUndefined();
+            expect(gate.metadata.labels[MigrationInitializer.APPROVAL_GATE_LABEL_KEY]).toBeUndefined();
+            expect(gate.metadata.labels[MigrationInitializer.GATE_LABEL_RESOURCE_KIND]).toBeDefined();
         }
 
         // Cleanup script still has per-name fallback but no label-based delete

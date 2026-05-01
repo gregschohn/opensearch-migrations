@@ -300,96 +300,198 @@ class TestWorkflowCLICommands:
         assert 'workflow-1' in result.output
         assert 'workflow-2' in result.output
 
-    @patch('console_link.workflow.commands.approve.approve_gate')
-    @patch('console_link.workflow.commands.approve._pending_gate_names')
-    @patch('console_link.workflow.commands.approve.load_k8s_config')
-    def test_approve_command_with_exact_key(self, mock_k8s, mock_list, mock_approve):
-        """Test approve command with exact key match."""
-        runner = CliRunner()
+    # ─────────────────────────────────────────────
+    # approve subcommand tests
+    # ─────────────────────────────────────────────
 
-        mock_list.return_value = [
-            'source.target.metadataMigrate',
-            'source.target.backfill',
+    def _make_gate(self, name, category='step', status='waiting', **labels):
+        from console_link.workflow.commands.approve import GateInfo
+        return GateInfo(name=name, category=category, status=status, labels=labels)
+
+    def test_approve_without_subcommand_errors(self):
+        runner = CliRunner()
+        result = runner.invoke(workflow_cli, ['approve'])
+        assert result.exit_code != 0
+
+    @patch('console_link.workflow.commands.approve.approve_gate')
+    @patch('console_link.workflow.commands.approve._gather_gates')
+    @patch('console_link.workflow.commands.approve.load_k8s_config')
+    def test_approve_step_with_exact_name(self, mock_k8s, mock_gather, mock_approve):
+        runner = CliRunner()
+        mock_gather.return_value = [
+            self._make_gate('source.target.evaluatemetadata'),
+            self._make_gate('source.target.migratemetadata'),
         ]
         mock_approve.return_value = True
 
-        result = runner.invoke(workflow_cli, ['approve', 'source.target.metadataMigrate'])
+        result = runner.invoke(
+            workflow_cli,
+            ['approve', 'step', 'source.target.evaluatemetadata']
+        )
 
         assert result.exit_code == 0
         assert 'Approved 1 gate' in result.output
-        mock_approve.assert_called_once_with('ma', 'source.target.metadataMigrate')
+        mock_approve.assert_called_once_with('ma', 'source.target.evaluatemetadata')
 
     @patch('console_link.workflow.commands.approve.approve_gate')
-    @patch('console_link.workflow.commands.approve._pending_gate_names')
+    @patch('console_link.workflow.commands.approve._gather_gates')
     @patch('console_link.workflow.commands.approve.load_k8s_config')
-    def test_approve_command_with_glob_pattern(self, mock_k8s, mock_list, mock_approve):
-        """Test approve command with glob pattern matching multiple steps."""
+    def test_approve_step_with_glob(self, mock_k8s, mock_gather, mock_approve):
         runner = CliRunner()
-
-        mock_list.return_value = [
-            'a.b.metadataMigrate',
-            'x.y.metadataMigrate',
-            'a.b.backfill',
+        mock_gather.return_value = [
+            self._make_gate('a.b.metadatamigrate'),
+            self._make_gate('x.y.metadatamigrate'),
+            self._make_gate('a.b.backfill'),
         ]
         mock_approve.return_value = True
 
-        result = runner.invoke(workflow_cli, ['approve', '*.metadataMigrate'])
+        result = runner.invoke(workflow_cli, ['approve', 'step', '*.metadatamigrate'])
 
         assert result.exit_code == 0
         assert 'Approved 2 gate' in result.output
         assert mock_approve.call_count == 2
 
     @patch('console_link.workflow.commands.approve.approve_gate')
-    @patch('console_link.workflow.commands.approve._pending_gate_names')
+    @patch('console_link.workflow.commands.approve._gather_gates')
     @patch('console_link.workflow.commands.approve.load_k8s_config')
-    def test_approve_command_with_multiple_task_names(self, mock_k8s, mock_list, mock_approve):
-        """Test approve command with multiple task names."""
+    def test_approve_step_all(self, mock_k8s, mock_gather, mock_approve):
         runner = CliRunner()
-
-        mock_list.return_value = ['step1', 'step2', 'step3']
+        mock_gather.return_value = [
+            self._make_gate('a'), self._make_gate('b'), self._make_gate('c'),
+        ]
         mock_approve.return_value = True
 
-        result = runner.invoke(workflow_cli, ['approve', 'step1', 'step3'])
+        result = runner.invoke(workflow_cli, ['approve', 'step', '--all'])
 
         assert result.exit_code == 0
-        assert 'Approved 2 gate' in result.output
-        assert mock_approve.call_count == 2
+        assert 'Approved 3 gate' in result.output
+        assert mock_approve.call_count == 3
 
-    @patch('console_link.workflow.commands.approve._pending_gate_names')
+    @patch('console_link.workflow.commands.approve._gather_gates')
     @patch('console_link.workflow.commands.approve.load_k8s_config')
-    def test_approve_command_no_matches(self, mock_k8s, mock_list):
-        """Test approve command when key matches no pending gates."""
+    def test_approve_step_list(self, mock_k8s, mock_gather):
         runner = CliRunner()
+        mock_gather.return_value = [self._make_gate('gate-one')]
 
-        mock_list.return_value = ['source.target.backfill']
+        result = runner.invoke(workflow_cli, ['approve', 'step', '--list'])
 
-        result = runner.invoke(workflow_cli, ['approve', 'nonexistent'])
+        assert result.exit_code == 0
+        assert 'gate-one' in result.output
 
-        assert result.exit_code != 0
-        assert "No pending gates match" in result.output
-        assert 'source.target.backfill' in result.output
-
-    @patch('console_link.workflow.commands.approve._pending_gate_names')
+    @patch('console_link.workflow.commands.approve._gather_gates')
     @patch('console_link.workflow.commands.approve.load_k8s_config')
-    def test_approve_command_no_pending_gates(self, mock_k8s, mock_list):
-        """Test approve command fails when no gates are pending."""
+    def test_approve_step_list_empty(self, mock_k8s, mock_gather):
         runner = CliRunner()
+        mock_gather.return_value = []
 
-        mock_list.return_value = []
+        result = runner.invoke(workflow_cli, ['approve', 'step', '--list'])
 
-        result = runner.invoke(workflow_cli, ['approve', 'anykey'])
+        assert result.exit_code == 0
+        assert 'No gates available' in result.output
+
+    @patch('console_link.workflow.commands.approve._gather_gates')
+    @patch('console_link.workflow.commands.approve.load_k8s_config')
+    def test_approve_step_no_matches(self, mock_k8s, mock_gather):
+        runner = CliRunner()
+        mock_gather.return_value = [self._make_gate('a.b.c')]
+
+        result = runner.invoke(workflow_cli, ['approve', 'step', 'nonexistent'])
 
         assert result.exit_code != 0
-        assert 'No pending approval gates' in result.output
+        assert 'No gates match' in result.output
+        assert 'a.b.c' in result.output
 
-    def test_approve_command_missing_task_names(self):
-        """Test approve command fails without required task names."""
+    @patch('console_link.workflow.commands.approve._gather_gates')
+    @patch('console_link.workflow.commands.approve.load_k8s_config')
+    def test_approve_step_missing_action_errors(self, mock_k8s, mock_gather):
         runner = CliRunner()
-
-        result = runner.invoke(workflow_cli, ['approve'])
+        mock_gather.return_value = [self._make_gate('a')]
+        result = runner.invoke(workflow_cli, ['approve', 'step'])
 
         assert result.exit_code != 0
-        assert "Missing argument 'TASK_NAMES...'" in result.output
+        assert '--list' in result.output or 'specify one of' in result.output
+
+    def test_approve_retry_rejects_pre_approve(self):
+        runner = CliRunner()
+        result = runner.invoke(workflow_cli, ['approve', 'retry', '--pre-approve', '--list'])
+        # Click treats unknown options as a usage error (exit 2).
+        assert result.exit_code != 0
+        assert '--pre-approve' in result.output.lower() or 'no such option' in result.output.lower()
+
+    @patch('console_link.workflow.commands.approve._resource_still_exists')
+    @patch('console_link.workflow.commands.approve.approve_gate')
+    @patch('console_link.workflow.commands.approve._gather_gates')
+    @patch('console_link.workflow.commands.approve.load_k8s_config')
+    def test_approve_retry_blocks_when_resource_exists(
+        self, mock_k8s, mock_gather, mock_approve, mock_exists
+    ):
+        runner = CliRunner()
+        mock_gather.return_value = [
+            self._make_gate(
+                'captureproxy.capture-proxy.vapretry',
+                category='retry',
+                **{
+                    'migrations.opensearch.org/resource-kind': 'CaptureProxy',
+                    'migrations.opensearch.org/resource-name': 'capture-proxy',
+                }
+            )
+        ]
+        mock_exists.return_value = True  # resource still present → block
+
+        result = runner.invoke(
+            workflow_cli,
+            ['approve', 'retry', 'captureproxy.capture-proxy.vapretry']
+        )
+
+        assert result.exit_code != 0
+        assert 'still exist' in result.output or 'still exist' in result.stderr_bytes.decode('utf-8', errors='replace')
+        assert mock_approve.call_count == 0
+
+    @patch('console_link.workflow.commands.approve._resource_still_exists')
+    @patch('console_link.workflow.commands.approve.approve_gate')
+    @patch('console_link.workflow.commands.approve._gather_gates')
+    @patch('console_link.workflow.commands.approve.load_k8s_config')
+    def test_approve_retry_approves_when_resource_gone(
+        self, mock_k8s, mock_gather, mock_approve, mock_exists
+    ):
+        runner = CliRunner()
+        mock_gather.return_value = [
+            self._make_gate(
+                'captureproxy.capture-proxy.vapretry',
+                category='retry',
+                **{
+                    'migrations.opensearch.org/resource-kind': 'CaptureProxy',
+                    'migrations.opensearch.org/resource-name': 'capture-proxy',
+                }
+            )
+        ]
+        mock_exists.return_value = False  # resource absent → allow
+        mock_approve.return_value = True
+
+        result = runner.invoke(
+            workflow_cli,
+            ['approve', 'retry', 'captureproxy.capture-proxy.vapretry']
+        )
+
+        assert result.exit_code == 0
+        assert 'Approved 1 gate' in result.output
+        mock_approve.assert_called_once_with('ma', 'captureproxy.capture-proxy.vapretry')
+
+    @patch('console_link.workflow.commands.approve.approve_gate')
+    @patch('console_link.workflow.commands.approve._gather_gates')
+    @patch('console_link.workflow.commands.approve.load_k8s_config')
+    def test_approve_change_uses_change_category(self, mock_k8s, mock_gather, mock_approve):
+        runner = CliRunner()
+        mock_gather.return_value = [self._make_gate('cp.captureproxy.vapretry', category='change')]
+        mock_approve.return_value = True
+
+        result = runner.invoke(workflow_cli, ['approve', 'change', '--all'])
+
+        assert result.exit_code == 0
+        # Verify the mock was called with 'change' category
+        args, kwargs = mock_gather.call_args
+        # _gather_gates(namespace, workflow_name, category, pre_approve)
+        assert args[2] == 'change'
 
     @patch('console_link.workflow.commands.submit.delete_workflow')
     @patch('console_link.workflow.commands.submit.stop_workflow')

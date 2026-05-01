@@ -114,7 +114,7 @@ export const FullMigration = WorkflowBuilder.create({
                 .addStep("reconcileKafkaClusterResource", ResourceManagement, "reconcileKafkaClusterResource", c =>
                     c.register({
                         kafkaClusterConfig: b.inputs.kafkaClusterConfig,
-                        retryGateName: expr.concat(b.inputs.clusterName, expr.literal(".vapretry")),
+                        retryGateName: expr.concat(expr.literal("kafkacluster."), b.inputs.clusterName, expr.literal(".vapretry")),
                         retryGroupName_view: expr.concat(expr.literal("KafkaCluster: "), b.inputs.clusterName),
                     })
                 )
@@ -395,7 +395,7 @@ export const FullMigration = WorkflowBuilder.create({
                     return c.register({
                         snapshotMigrationConfig: b.inputs.snapshotMigrationConfig,
                         resourceName: b.inputs.resourceName,
-                        retryGateName: expr.concat(b.inputs.resourceName, expr.literal(".vapretry")),
+                        retryGateName: expr.concat(expr.literal("snapshotmigration."), b.inputs.resourceName, expr.literal(".vapretry")),
                         retryGroupName_view: expr.concat(expr.literal("SnapshotMigration: "), b.inputs.resourceName),
                     });
                 },
@@ -529,7 +529,7 @@ export const FullMigration = WorkflowBuilder.create({
                     name: b.inputs.name,
                     dependsOn: b.inputs.dependsOn,
                     replayerOptions: b.inputs.replayerOptions,
-                    retryGateName: expr.concat(b.inputs.name, expr.literal(".trafficreplay.vapretry")),
+                    retryGateName: expr.concat(expr.literal("trafficreplay."), b.inputs.name, expr.literal(".vapretry")),
                     retryGroupName_view: expr.concat(expr.literal("TrafficReplay: "), b.inputs.name),
                 }),
             )

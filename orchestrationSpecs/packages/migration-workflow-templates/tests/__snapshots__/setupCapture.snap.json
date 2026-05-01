@@ -690,7 +690,7 @@
                   },
                   {
                     "name": "retryGateName",
-                    "value": "{{=inputs.parameters.topicCrName+'.capturedtraffic.vapretry'}}"
+                    "value": "{{='capturedtraffic.'+inputs.parameters.topicCrName+'.vapretry'}}"
                   },
                   {
                     "name": "retryGroupName_view",
@@ -825,7 +825,7 @@
                   },
                   {
                     "name": "retryGateName",
-                    "value": "{{=inputs.parameters.proxyName+'.captureproxy.vapretry'}}"
+                    "value": "{{='captureproxy.'+inputs.parameters.proxyName+'.vapretry'}}"
                   },
                   {
                     "name": "retryGroupName_view",

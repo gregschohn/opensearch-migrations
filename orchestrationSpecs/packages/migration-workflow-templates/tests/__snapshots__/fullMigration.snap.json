@@ -81,7 +81,7 @@
                   },
                   {
                     "name": "retryGateName",
-                    "value": "{{=inputs.parameters.clusterName+'.vapretry'}}"
+                    "value": "{{='kafkacluster.'+inputs.parameters.clusterName+'.vapretry'}}"
                   },
                   {
                     "name": "retryGroupName_view",
@@ -999,7 +999,7 @@
                   },
                   {
                     "name": "retryGateName",
-                    "value": "{{=inputs.parameters.resourceName+'.vapretry'}}"
+                    "value": "{{='snapshotmigration.'+inputs.parameters.resourceName+'.vapretry'}}"
                   },
                   {
                     "name": "retryGroupName_view",
@@ -1281,7 +1281,7 @@
                   },
                   {
                     "name": "retryGateName",
-                    "value": "{{=inputs.parameters.name+'.trafficreplay.vapretry'}}"
+                    "value": "{{='trafficreplay.'+inputs.parameters.name+'.vapretry'}}"
                   },
                   {
                     "name": "retryGroupName_view",

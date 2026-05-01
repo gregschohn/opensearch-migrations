@@ -659,7 +659,7 @@ export const SetupCapture = WorkflowBuilder.create({
                     partitions: b.inputs.topicPartitions,
                     replicas: b.inputs.topicReplicas,
                     topicConfig: b.inputs.topicConfig,
-                    retryGateName: expr.concat(b.inputs.topicCrName, expr.literal(".capturedtraffic.vapretry")),
+                    retryGateName: expr.concat(expr.literal("capturedtraffic."), b.inputs.topicCrName, expr.literal(".vapretry")),
                     retryGroupName_view: expr.concat(expr.literal("CapturedTraffic: "), b.inputs.topicCrName),
                 })
             )
@@ -708,7 +708,7 @@ export const SetupCapture = WorkflowBuilder.create({
                     proxyConfig: b.inputs.proxyConfig,
                     proxyName: b.inputs.proxyName,
                     topicCrName: b.inputs.topicCrName,
-                    retryGateName: expr.concat(b.inputs.proxyName, expr.literal(".captureproxy.vapretry")),
+                    retryGateName: expr.concat(expr.literal("captureproxy."), b.inputs.proxyName, expr.literal(".vapretry")),
                     retryGroupName_view: expr.concat(expr.literal("CaptureProxy: "), b.inputs.proxyName),
                 })
             )
