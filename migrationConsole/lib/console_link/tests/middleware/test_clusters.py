@@ -46,6 +46,23 @@ def test_cat_indices_with_error_prints_cleanly():
     assert response_str == f"Error: Unable to perform cat-indices command with message: {error_message}"
 
 
+def test_cat_indices_always_returns_str(requests_mock):
+    """cat_indices must return str in both success and error paths so callers never need .decode()."""
+    # Success path
+    cluster = create_valid_cluster(auth_type=AuthMethod.NO_AUTH)
+    requests_mock.get(f"{cluster.endpoint}/_cat/indices/_all", text="green open my-index 1 0 5 0 10kb 10kb\n")
+    result = clusters_.cat_indices(cluster, refresh=False)
+    assert isinstance(result, str)
+    assert "my-index" in result
+
+    # Error path
+    err_cluster = mock.Mock(spec=Cluster)
+    err_cluster.call_api.side_effect = ConnectionError("cluster unreachable")
+    result = clusters_.cat_indices(err_cluster, refresh=False)
+    assert isinstance(result, str)
+    assert "Error" in result
+
+
 def test_clear_indices(requests_mock):
     cluster = create_valid_cluster(auth_type=AuthMethod.NO_AUTH)
     mock = requests_mock.delete(f"{cluster.endpoint}/*,-.*,-searchguard*,-sg7*,.migrations_working_state*")

@@ -238,8 +238,8 @@ class MATestBase:
         pass
 
     def display_final_cluster_state(self):
-        source_response = cat_indices(cluster=self.source_cluster, refresh=True).decode("utf-8")
-        target_response = cat_indices(cluster=self.target_cluster, refresh=True).decode("utf-8")
+        source_response = cat_indices(cluster=self.source_cluster, refresh=True)
+        target_response = cat_indices(cluster=self.target_cluster, refresh=True)
         logger.info("Printing document counts for source and target clusters:")
         print("SOURCE CLUSTER")
         print(source_response)
