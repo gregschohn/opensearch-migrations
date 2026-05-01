@@ -81,6 +81,7 @@ def buildKitProjects = [
         ],
         [
 
+
                 serviceName: "reindexFromSnapshot",
                 contextDir: "DocumentsFromSnapshotMigration/docker",
                 imageName:  "reindex_from_snapshot",
