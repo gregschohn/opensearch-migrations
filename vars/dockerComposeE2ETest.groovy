@@ -38,6 +38,26 @@ def call(Map config = [:]) {
                 }
             }
 
+            stage('Install Docker Compose v2') {
+                steps {
+                    // Jenkins AL2023 agents ship Docker 20.x without the Compose v2 plugin,
+                    // so `docker compose` fails with "unknown shorthand flag: 'f' in -f".
+                    // Install the official standalone binary into the user-level
+                    // cli-plugins dir; Docker auto-discovers it there. Idempotent.
+                    sh '''
+                        set -euo pipefail
+                        PLUGIN_DIR="$HOME/.docker/cli-plugins"
+                        mkdir -p "$PLUGIN_DIR"
+                        if ! docker compose version >/dev/null 2>&1; then
+                            ARCH="$(uname -m)"
+                            curl -fsSL -o "$PLUGIN_DIR/docker-compose" "https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-${ARCH}"
+                            chmod +x "$PLUGIN_DIR/docker-compose"
+                        fi
+                        docker compose version
+                    '''
+                }
+            }
+
             stage('Build Docker Images') {
                 steps {
                     timeout(time: 15, unit: 'MINUTES') {
