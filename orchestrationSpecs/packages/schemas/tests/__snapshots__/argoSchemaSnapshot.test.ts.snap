@@ -2839,7 +2839,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
         },
         "required": [
           "fromSource",
-          "toTarget"
+          "toTarget",
+          "perSnapshotConfig"
         ]
       },
       "description": "List of snapshot-based migration configurations. Each entry binds a source cluster to a target cluster and defines which snapshots to migrate with what settings."

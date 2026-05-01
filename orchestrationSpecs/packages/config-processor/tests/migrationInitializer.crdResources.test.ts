@@ -148,7 +148,18 @@ describe('migration initializer CRD resource generation', () => {
                 }
             },
             targetClusters: { target: { endpoint: "https://target.example.com" } },
-            snapshotMigrationConfigs: [{ fromSource: "source", toTarget: "target" }]
+            snapshotMigrationConfigs: [{
+                fromSource: "source",
+                toTarget: "target",
+                perSnapshotConfig: {
+                    "snap1": [{
+                        metadataMigrationConfig: {
+                            skipEvaluateApproval: true,
+                            skipMigrateApproval: true
+                        }
+                    }]
+                }
+            }]
         };
 
         const initializer = new MigrationInitializer();
@@ -199,7 +210,18 @@ describe('migration initializer CRD resource generation', () => {
                 }
             },
             targetClusters: { target: { endpoint: "https://target.example.com" } },
-            snapshotMigrationConfigs: [{ fromSource: "source", toTarget: "target" }]
+            snapshotMigrationConfigs: [{
+                fromSource: "source",
+                toTarget: "target",
+                perSnapshotConfig: {
+                    "snap1": [{
+                        metadataMigrationConfig: {
+                            skipEvaluateApproval: true,
+                            skipMigrateApproval: true
+                        }
+                    }]
+                }
+            }]
         };
 
         const initializer = new MigrationInitializer();

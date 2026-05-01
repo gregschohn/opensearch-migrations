@@ -59,8 +59,6 @@ class AOSSTestBase(MATestBase):
 
     def display_final_cluster_state(self):
         target_response = cat_indices(cluster=self.target_cluster, refresh=True)
-        if isinstance(target_response, bytes):
-            target_response = target_response.decode("utf-8")
         logger.info(f"TARGET CLUSTER (AOSS)\n{target_response}")
 
     def import_existing_clusters(self):
