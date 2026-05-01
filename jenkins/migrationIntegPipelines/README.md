@@ -86,11 +86,7 @@ functionName(jobName: jobNameOverride ?: null)
 | eksAOSSTimeSeriesIntegTestCover.groovy | eksAOSSIntegPipeline | JOB_NAME_OVERRIDE |
 | eksAOSSVectorIntegTestCover.groovy | eksAOSSIntegPipeline | JOB_NAME_OVERRIDE |
 | eksBYOSIntegTestCover.groovy | eksBYOSIntegPipeline | JOB_NAME_OVERRIDE |
-| eksCdcAossCdcOnlyIntegTestCover.groovy | eksCdcAossIntegPipeline | JOB_NAME_OVERRIDE |
 | eksCdcAossFullE2eIntegTestCover.groovy | eksCdcAossIntegPipeline | JOB_NAME_OVERRIDE |
-| eksCdcBulkGenerateDataIntegTestCover.groovy | eksCdcIntegPipeline | JOB_NAME_OVERRIDE |
-| eksCdcIntegTestCover.groovy | eksCdcIntegPipeline | JOB_NAME_OVERRIDE |
-| eksCdcMixedOpsIntegTestCover.groovy | eksCdcIntegPipeline | JOB_NAME_OVERRIDE |
 | eksCdcSimpleBulkE2eIntegTestCover.groovy | eksCdcIntegPipeline | JOB_NAME_OVERRIDE |
 | eksCreateVPCSolutionsCFNTestCover.groovy | eksSolutionsCFNTest | JOB_NAME_OVERRIDE |
 | eksImportVPCSolutionsCFNTestCover.groovy | eksSolutionsCFNTest | JOB_NAME_OVERRIDE |

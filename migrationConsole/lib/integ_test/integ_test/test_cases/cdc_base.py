@@ -1,6 +1,6 @@
 """CDC test base: shared constants, K8s helpers, and proxy utilities.
 
-Test IDs 0030-0039 are reserved for CDC variants.
+Test IDs 0031-0039 are reserved for CDC variants.
 """
 import logging
 import subprocess

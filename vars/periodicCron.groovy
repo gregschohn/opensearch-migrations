@@ -28,9 +28,7 @@ def call(String jobName) {
         case 'main-eks-aoss-search-integ-test':       return 'H H(0-5)/6 * * *'
         case 'main-eks-aoss-timeseries-integ-test':   return 'H H(0-5)/6 * * *'
         case 'main-eks-aoss-vector-integ-test':       return 'H H(0-5)/6 * * *'
-        case 'main-eks-cdc-only-integ-test':          return 'H H(0-5)/6 * * *'
         case 'main-eks-cdc-full-e2e-test':            return 'H H(0-5)/6 * * *'
-        case 'main-eks-cdc-only-aoss-test':           return 'H H(0-5)/6 * * *'
         case 'main-eks-cdc-aoss-e2e-test':            return 'H H(0-5)/6 * * *'
     }
     return ''
