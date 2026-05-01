@@ -28,7 +28,9 @@ RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 WORKDIR /app
 
 COPY --from=builder /build/opensearch-pricing-calculator .
-COPY --from=builder /build/priceCache.json .
+
+# This file does not exist. Is this needed?
+#COPY --from=builder /build/priceCache.json .
 
 # Create logs directory owned by non-root user
 RUN mkdir -p /app/logs && chown -R appuser:appgroup /app
