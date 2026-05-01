@@ -20,7 +20,7 @@ defaultTest:
 prompts:
   - |-
     Do only stick to resources within the the directory set as your cwd, but ignore all resources under the test folder.
-    Load the skill in .claude/skills/migration-advisor (if you have not already done so) before answering the following query: 
+    Load the skill in .claude/skills/solr-opensearch-migration-advisor (if you have not already done so) before answering the following query: 
     {{query}}
 
 tests:
@@ -35,8 +35,8 @@ tests:
     assert:
       - type: llm-rubric
         value: >-
-          Response clarifies the actual role of the user. Provides 2 explicit role examples to choose from:
-          search relevance engineer and devops / platform engineer.
+          Response clarifies the actual role of the user. Provides 3 explicit role examples to choose from:
+          search relevance engineer, devops / platform engineer, and business stakeholder.
         metric: clarify-role
 
   - description: "Ask for Solr version"

@@ -2,7 +2,7 @@
 
 set -xeuo pipefail
 
-MIGRATIONS_REPO_ROOT_DIR=$(git rev-parse --show-toplevel)
+MIGRATIONS_REPO_ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && git rev-parse --show-toplevel)
 source "${MIGRATIONS_REPO_ROOT_DIR}/deployment/k8s/localTestingCommon.sh"
 source "${MIGRATIONS_REPO_ROOT_DIR}/buildImages/backends/k8sHostedBuildkit.sh"
 
