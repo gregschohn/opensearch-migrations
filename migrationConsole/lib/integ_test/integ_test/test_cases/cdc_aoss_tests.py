@@ -21,7 +21,7 @@ from .cdc_base import (
     MATestBase, MigrationType, MATestUserArguments,
     REPLAYER_LABEL_SELECTOR, PROXY_LABEL_SELECTOR,
     wait_for_pod_ready, wait_for_replayer_consuming,
-    cleanup_cdc_resources, run_generate_data,
+    run_generate_data,
 )
 
 logger = logging.getLogger(__name__)
@@ -125,9 +125,6 @@ class Test0034CdcOnlyAossTarget(MATestBase):
 
     def test_after(self):
         pass
-
-    def cleanup(self):
-        cleanup_cdc_resources(self.argo_service.namespace)
 
 
 class Test0041CdcFullE2eAossTarget(MATestBase):
@@ -237,6 +234,3 @@ class Test0041CdcFullE2eAossTarget(MATestBase):
 
     def test_after(self):
         pass
-
-    def cleanup(self):
-        cleanup_cdc_resources(self.argo_service.namespace)

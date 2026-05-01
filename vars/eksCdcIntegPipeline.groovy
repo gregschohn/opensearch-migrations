@@ -48,7 +48,7 @@ def call(Map config = [:]) {
 
         options {
             lock(label: lockLabel, quantity: 1)
-            timeout(time: 3, unit: 'HOURS')
+            timeout(time: 4, unit: 'HOURS')
             buildDiscarder(logRotator(daysToKeepStr: '30'))
             skipDefaultCheckout(true)
         }

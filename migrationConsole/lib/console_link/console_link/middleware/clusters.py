@@ -67,7 +67,7 @@ def cat_indices(cluster: Cluster, refresh=False, as_json=False):
         else:
             cat_indices_path = f"/_cat/indices/_all{as_json_suffix}"
         r = cluster.call_api(cat_indices_path)
-        return r.json() if as_json else r.content
+        return r.json() if as_json else r.content.decode("utf-8")
     except Exception as e:
         logger.debug("Exception occurred when using call_api on cluster: ", exc_info=True)
         return f"Error: Unable to perform cat-indices command with message: {e}"

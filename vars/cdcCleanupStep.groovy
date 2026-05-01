@@ -1,14 +1,15 @@
 /**
  * CDC-specific Kubernetes cleanup before eksCleanupStep.
  *
- * Handles resources unique to CDC pipelines that block clean namespace deletion:
- * - Argo workflows (finalizer hangs)
- * - Helm-managed CDC resources (via testAutomation --delete-only)
- * - Kafka/KafkaNodePool finalizers (Strimzi operator)
- * - Capture proxy LoadBalancer service (NLB deprovisioning)
+ * Runs 'workflow reset --all --include-proxies --delete-storage' via the migration
+ * console CLI to cleanly delete all CDC CRDs (captureproxies, trafficreplays,
+ * snapshotmigrations, kafkaclusters) along with their owned child resources
+ * (services, deployments, certificates, Kafka topics/users/nodepools) and Kafka
+ * PVCs. Then invokes 'pipenv run app --delete-only' which handles the full MA
+ * helm teardown (including a belt-and-suspenders storage cleanup).
  *
- * Call this BEFORE eksCleanupStep, which handles namespace deletion,
- * instance profiles, and orphaned security groups.
+ * Call this BEFORE eksCleanupStep, which handles namespace deletion, instance
+ * profiles, and orphaned security groups.
  *
  * Usage:
  *   cdcCleanupStep(kubeContext: env.eksKubeContext)
@@ -20,15 +21,28 @@ def call(Map config = [:]) {
     dir('libraries/testAutomation') {
         sh "pipenv install --deploy"
         sh "kubectl --context=${kubeContext} -n ma get pods || true"
+        // Run 'workflow reset' with --delete-storage while the migration-console pod
+        // is still alive so the CLI can find and delete Kafka PVCs. This prevents
+        // cluster-ID conflicts on the next pipeline run that reuses the namespace.
+        // The reset CLI also removes captureproxy services/deployments/certificates
+        // and strips stuck finalizers on Kafka/KafkaNodePool CRs.
+        sh """
+          kubectl --context=${kubeContext} -n ma exec migration-console-0 -- \\
+            /bin/bash -lc 'workflow reset --all --include-proxies --delete-storage' || true
+        """
         sh "kubectl --context=${kubeContext} -n ma delete workflows --all --timeout=60s || true"
         sh "pipenv run app --delete-only --kube-context=${kubeContext}"
-        echo "List resources not removed by helm uninstall:"
-        sh "kubectl --context=${kubeContext} get all,pvc,configmap,secret,workflow -n ma -o wide --ignore-not-found || true"
+        echo "Resources remaining in 'ma' namespace after CDC cleanup (expected to be empty):"
         sh """
-          for resource in \$(kubectl --context=${kubeContext} get kafka,kafkanodepool,workflows -n ma -o name 2>/dev/null); do
-            kubectl --context=${kubeContext} patch \$resource -n ma --type=merge -p '{"metadata":{"finalizers":[]}}' || true
-          done
+          kubectl --context=${kubeContext} api-resources --namespaced=true -o name --verbs=list 2>/dev/null | \\
+            grep -v '^events' | sort -u | \\
+            xargs -n1 -I{} sh -c 'echo "=== {} ==="; kubectl --context='"${kubeContext}"' get {} -n ma --ignore-not-found 2>/dev/null' | \\
+            awk '/^=== / {hdr=\$0; buf=""; next} {buf = buf ? buf ORS \$0 : \$0} END{if(buf) print hdr ORS buf}' || true
         """
-        sh "kubectl --context=${kubeContext} delete service capture-proxy -n ma --timeout=30s || true"
+        echo "Orphaned PVs still bound to 'ma' namespace (expected to be empty):"
+        sh """
+          kubectl --context=${kubeContext} get pv -o json 2>/dev/null | \\
+            jq -r '.items[]? | select(.spec.claimRef.namespace == "ma") | .metadata.name' || true
+        """
     }
 }
