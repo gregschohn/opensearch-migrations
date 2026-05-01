@@ -603,7 +603,8 @@ export const USER_METADATA_OPTIONS = z.object({
 
 export const USER_RFS_WORKFLOW_OPTIONS = z.object({
     podReplicas: z.number().default(1).optional()
-        .describe("Number of RFS (Reindex From Snapshot) pod replicas. Each replica processes shards independently."),
+        .describe("Number of RFS worker pod replicas. Each replica independently acquires and processes snapshot shards in parallel —" + 
+            " throughput scales linearly up to the total number of source shards."),
     jvmArgs: z.string().default("").optional()
         .describe(JVM_ARGS_DESC),
     loggingConfigurationOverrideConfigMap: z.string().default("").optional()
@@ -1001,7 +1002,9 @@ export const USER_PER_INDICES_SNAPSHOT_MIGRATION_CONFIG = z.object({
 
 export const SNAPSHOT_MIGRATION_CONFIG_ARRAY =
     z.array(USER_PER_INDICES_SNAPSHOT_MIGRATION_CONFIG)
-    .describe("Ordered list of migration passes to execute for a single snapshot. Each pass can include metadata migration, document backfill, or both.");
+    .describe("List of migrations to execute for a single snapshot. " +
+        " Each migration must configure metadata migration, document backfill, or both." +
+        " These migrations will execute concurrently as dependent snapshots finish.");
 
 export const PER_SNAPSHOT_MIGRATION_CONFIG_RECORD =
     z.record(z.string().regex(/^[a-zA-Z][a-zA-Z0-9]*/),
@@ -1015,7 +1018,7 @@ export const NORMALIZED_PARAMETERIZED_MIGRATION_CONFIG = z.object({
         .describe("Label of the source cluster to migrate from. Must match a key in sourceClusters."),
     toTarget: z.string()
         .describe("Label of the target cluster to migrate to. Must match a key in targetClusters."),
-    perSnapshotConfig: PER_SNAPSHOT_MIGRATION_CONFIG_RECORD.optional()
+    perSnapshotConfig: PER_SNAPSHOT_MIGRATION_CONFIG_RECORD
         .describe("Per-snapshot migration configurations. Each entry maps a snapshot name to one or more migration passes (metadata + document backfill)."),
 }).describe("A snapshot-based migration configuration binding a source cluster to a target cluster with per-snapshot migration settings.").superRefine((data, ctx) => {
     if (!data.perSnapshotConfig) return;
