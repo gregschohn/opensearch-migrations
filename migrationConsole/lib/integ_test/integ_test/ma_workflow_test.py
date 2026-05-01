@@ -10,8 +10,12 @@ logger = logging.getLogger(__name__)
 
 
 def _run_workflow_reset(namespace: str = "ma"):
-    """Run 'workflow reset --all --include-proxies' to delete all migration CRDs."""
-    cmd = ["workflow", "reset", "--all", "--include-proxies", "--namespace", namespace]
+    """Run 'workflow reset --all --include-proxies --delete-storage' to delete all migration CRDs.
+
+    The --delete-storage flag ensures Kafka PVCs are cleaned up between consecutive
+    test runs (e.g. --test-ids=0030,0040), preventing cluster ID conflicts.
+    """
+    cmd = ["workflow", "reset", "--all", "--include-proxies", "--delete-storage", "--namespace", namespace]
     logger.info("Running workflow reset: %s", " ".join(cmd))
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)

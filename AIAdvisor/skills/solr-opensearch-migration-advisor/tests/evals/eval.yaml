@@ -20,7 +20,7 @@ defaultTest:
 prompts:
   - |-
     Do only stick to resources within the the directory set as your cwd, but ignore all resources under the test folder.
-    Load the skill in .claude/skills/migration-advisor (if you have not already done so) before answering the following query: 
+    Load the skill in .claude/skills/solr-opensearch-migration-advisor (if you have not already done so) before answering the following query: 
     {{query}}
 
 tests:
