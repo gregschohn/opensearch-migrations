@@ -380,7 +380,7 @@ class TestResetSingleIntegration:
         result = _invoke_workflow_cli(runner, ["reset", "kafka-a", "--namespace", reset_ns])
         assert result.exit_code != 0
         assert "Cannot delete because dependent resources still exist:" in result.output
-        assert "Captured Traffic: topic-a" in result.output
+        assert "capturedtraffic.topic-a" in result.output
         assert "--cascade" in result.output
         assert _get_phase(reset_ns, "kafkaclusters", "kafka-a") == VALID_PHASES["kafkaclusters"]
         assert _get_phase(reset_ns, "capturedtraffics", "topic-a") == VALID_PHASES["capturedtraffics"]
@@ -399,7 +399,7 @@ class TestResetSingleIntegration:
         result = _invoke_workflow_cli(runner, ["reset", "snap-a", "--namespace", reset_ns])
         assert result.exit_code != 0
         assert "Cannot delete because dependent resources still exist:" in result.output
-        assert "Snapshot Migration: mig-a" in result.output
+        assert "snapshotmigration.mig-a" in result.output
         assert "--cascade" in result.output
 
     def test_reset_with_cascade_deletes_dependents(self, runner, reset_ns):
