@@ -11,7 +11,7 @@ from kubernetes import client
 from .autocomplete_k8s_labels import get_label_completions
 from .autocomplete_workflows import DEFAULT_WORKFLOW_NAME, get_workflow_completions
 from .argo_utils import DEFAULT_ARGO_SERVER_URL
-from ..models.utils import load_k8s_config
+from ..models.utils import load_k8s_config, get_current_namespace
 
 
 logger = logging.getLogger(__name__)
@@ -64,12 +64,14 @@ def _promote_known_flags(extra_args):
               help='Show output for all workflows instead of a single workflow')
 @click.option(
     '--argo-server',
-    default=DEFAULT_ARGO_SERVER_URL,
+    default=DEFAULT_ARGO_SERVER_URL, hidden=True, envvar='ARGO_SERVER',
     help='Argo Server URL (default: ARGO_SERVER env var, or ARGO_SERVER_SERVICE_HOST:ARGO_SERVER_SERVICE_PORT)'
 )
-@click.option('--namespace', default='ma', help='Kubernetes namespace (default: ma)')
-@click.option('--insecure', is_flag=True, default=True, help='Skip TLS certificate verification (default: True)')
-@click.option('--token', help='Bearer token for authentication')
+@click.option('--namespace', default=get_current_namespace, hidden=True, envvar='WORKFLOW_NAMESPACE',
+              help='Kubernetes namespace')
+@click.option('--insecure', is_flag=True, default=True, hidden=True, envvar='WORKFLOW_INSECURE',
+              help='Skip TLS certificate verification (default: True)')
+@click.option('--token', hidden=True, envvar='ARGO_TOKEN', help='Bearer token for authentication')
 @click.option('--prefix', default='migrations.opensearch.org/',
               help='Label prefix for filters (default: migrations.opensearch.org/)')
 @click.option(

@@ -7,7 +7,7 @@ import click
 from kubernetes import client
 from kubernetes.client.rest import ApiException
 
-from ..models.utils import ExitCode, load_k8s_config
+from ..models.utils import ExitCode, load_k8s_config, get_current_namespace
 from .crd_utils import (
     CRD_GROUP,
     CRD_VERSION,
@@ -568,7 +568,7 @@ def _reset_by_path(ctx, path, namespace, cascade, include_proxies, delete_storag
               help='Also delete capture proxies (they are protected by default)')
 @click.option('--delete-storage', is_flag=True, default=False,
               help='Delete Kafka PVCs and orphaned PVs during reset')
-@click.option('--namespace', default='ma')
+@click.option('--namespace', default=get_current_namespace, hidden=True, envvar='WORKFLOW_NAMESPACE')
 @click.pass_context
 def reset_command(ctx, path, reset_all, list_resources, cascade, include_proxies, delete_storage, namespace):
     """Reset workflow resources by deleting CRDs.

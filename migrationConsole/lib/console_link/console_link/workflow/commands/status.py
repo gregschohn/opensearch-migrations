@@ -16,6 +16,7 @@ import requests
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from ..models.utils import ExitCode
+from ..models.utils import get_current_namespace
 from ..services.workflow_service import WorkflowService
 from ..tree_utils import (
     build_nested_workflow_tree,
@@ -463,12 +464,14 @@ class LiveCheckProcessor:
 @click.option('--all-workflows', is_flag=True, default=False, help='Show status for all workflows')
 @click.option(
     '--argo-server',
-    default=DEFAULT_ARGO_SERVER_URL,
+    default=DEFAULT_ARGO_SERVER_URL, hidden=True, envvar='ARGO_SERVER',
     help='Argo Server URL (default: ARGO_SERVER env var, or ARGO_SERVER_SERVICE_HOST:ARGO_SERVER_SERVICE_PORT)'
 )
-@click.option('--namespace', default='ma', help='Kubernetes namespace for the workflow (default: ma)')
-@click.option('--insecure', is_flag=True, default=True, help='Skip TLS certificate verification (default: True)')
-@click.option('--token', help='Bearer token for authentication')
+@click.option('--namespace', default=get_current_namespace, hidden=True, envvar='WORKFLOW_NAMESPACE',
+              help='Kubernetes namespace for the workflow')
+@click.option('--insecure', is_flag=True, default=True, hidden=True, envvar='WORKFLOW_INSECURE',
+              help='Skip TLS certificate verification (default: True)')
+@click.option('--token', hidden=True, envvar='ARGO_TOKEN', help='Bearer token for authentication')
 @click.option('--all', 'show_all', is_flag=True, default=False,
               help='Show all workflows including completed ones (default: only running)')
 @click.option('--live-status', is_flag=True, default=False,

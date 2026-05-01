@@ -6,6 +6,7 @@ import click
 from click.shell_completion import get_completion_class
 
 from .models.utils import ExitCode
+from .models.utils import get_current_namespace
 from .commands.configure import configure_group
 from .commands.submit import submit_command
 from .commands.approve import approve_group
@@ -47,7 +48,7 @@ def workflow_cli(ctx, verbose):
     if 'secret_store' not in ctx.obj:
         ctx.obj['secret_store'] = None
     if 'namespace' not in ctx.obj:
-        ctx.obj['namespace'] = "ma"  # Use 'ma' namespace where the migration console is deployed
+        ctx.obj['namespace'] = get_current_namespace()  # Detect from pod, fallback to 'ma'
 
 
 @workflow_cli.group(name="util")

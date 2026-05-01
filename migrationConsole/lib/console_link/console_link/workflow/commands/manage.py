@@ -12,7 +12,7 @@ from kubernetes import client
 # Internal imports
 from .autocomplete_workflows import DEFAULT_WORKFLOW_NAME, get_workflow_completions
 from .argo_utils import DEFAULT_ARGO_SERVER_URL
-from ..models.utils import ExitCode, load_k8s_config
+from ..models.utils import ExitCode, load_k8s_config, get_current_namespace
 from ..tui.manage_injections import make_argo_service, make_k8s_pod_scraper, WaiterInterface
 from ..tui.workflow_manage_app import WorkflowTreeApp
 
@@ -82,12 +82,12 @@ def _initialize_k8s_client(ctx):
 @click.option('--workflow-name', default=DEFAULT_WORKFLOW_NAME, shell_complete=get_workflow_completions)
 @click.option(
     '--argo-server',
-    default=DEFAULT_ARGO_SERVER_URL,
+    default=DEFAULT_ARGO_SERVER_URL, hidden=True, envvar='ARGO_SERVER',
     help='Argo Server URL (default: ARGO_SERVER env var, or ARGO_SERVER_SERVICE_HOST:ARGO_SERVER_SERVICE_PORT)'
 )
-@click.option('--namespace', default='ma')
-@click.option('--insecure', is_flag=True, default=True)
-@click.option('--token')
+@click.option('--namespace', default=get_current_namespace, hidden=True, envvar='WORKFLOW_NAMESPACE')
+@click.option('--insecure', is_flag=True, default=True, hidden=True, envvar='WORKFLOW_INSECURE')
+@click.option('--token', hidden=True, envvar='ARGO_TOKEN')
 @click.pass_context
 def manage_command(ctx, workflow_name, argo_server, namespace, insecure, token):
     _configure_file_logging()  # Configure logging when command actually runs

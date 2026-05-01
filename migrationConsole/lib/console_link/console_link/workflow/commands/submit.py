@@ -8,7 +8,7 @@ import logging
 import subprocess
 import click
 
-from ..models.utils import ExitCode, load_k8s_config
+from ..models.utils import ExitCode, load_k8s_config, get_current_namespace
 from ..models.workflow_config_store import WorkflowConfigStore
 from ..services.workflow_service import WorkflowService
 from ..services.script_runner import ScriptRunner
@@ -75,8 +75,8 @@ def _remove_existing_workflow(workflow_name, namespace):
 @click.command(name="submit")
 @click.option(
     '--namespace',
-    default='ma',
-    help='Kubernetes namespace for the workflow (default: ma)'
+    default=get_current_namespace, hidden=True, envvar='WORKFLOW_NAMESPACE',
+    help='Kubernetes namespace for the workflow'
 )
 @click.option(
     '--wait',

@@ -16,7 +16,7 @@ from click.shell_completion import CompletionItem
 from kubernetes import client
 from kubernetes.client.rest import ApiException
 
-from ..models.utils import ExitCode, load_k8s_config
+from ..models.utils import ExitCode, load_k8s_config, get_current_namespace
 from .autocomplete_workflows import DEFAULT_WORKFLOW_NAME, get_workflow_completions
 from .argo_utils import DEFAULT_ARGO_SERVER_URL, get_workflow
 from .crd_utils import (
@@ -468,19 +468,21 @@ def approve_gate(namespace, name):
 def _shared_options(func):
     """Apply options common to every approve subcommand."""
     func = click.option(
-        '--token', help='Bearer token for authentication'
+        '--token', hidden=True, envvar='ARGO_TOKEN',
+        help='Bearer token for authentication'
     )(func)
     func = click.option(
-        '--insecure', is_flag=True, default=True,
+        '--insecure', is_flag=True, default=True, hidden=True, envvar='WORKFLOW_INSECURE',
         help='Skip TLS certificate verification (default: True)'
     )(func)
     func = click.option(
-        '--namespace', default='ma',
+        '--namespace', default=get_current_namespace, hidden=True, envvar='WORKFLOW_NAMESPACE',
         help='Kubernetes namespace (default: ma)'
     )(func)
     func = click.option(
         '--argo-server',
         default=lambda: os.environ.get('ARGO_SERVER', DEFAULT_ARGO_SERVER_URL),
+        hidden=True,
         help='Argo Server URL'
     )(func)
     func = click.option(
