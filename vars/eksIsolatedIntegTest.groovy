@@ -280,7 +280,7 @@ def call(Map config = [:]) {
                                 def logCount = sh(
                                     script: """
                                         aws logs filter-log-events \
-                                          --log-group-name '/migrations/ma/${env.maStageName}' \
+                                          --log-group-name '/migration-assistant-${env.maStageName}-${params.REGION}/logs' \
                                           --limit 1 \
                                           --region ${params.REGION} \
                                           --query 'events | length(@)' \
