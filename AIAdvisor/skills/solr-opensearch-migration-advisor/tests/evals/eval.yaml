@@ -682,53 +682,55 @@ tests:
         Yet response shall not give an exact query DSL but describe query in terms of the search functionality
         it enables. Response shall also highlight if any significant engineering effort needed for replication and
         a time estimate for any such effort found (if any). If not significant effort identified, response shall
-        clearly state so and provide a reason for it. Asks the user to validate the information, provide more information or whether to proceed to next step.
-  - description: "Business StakeHolder Chat Customizations"
+        clearly state so and provide a reason for it. Response asks user whether to proceed to next step.
+  - description: "Business StakeHolder Chat Customizations - Step 1"
     metadata:
       continue: true
     vars:
       query: |
         Go ahead.
+    assert:
+      - type: llm-rubric
+        value: >-
+          Response asks user for overview of any customizations the user knows off, such as custom plugins 
+          for adjustment of text processing, search / ranking logic,  
+          auth, security, query and indexing separation, indexing / update logic and multi-tenancy.
+  - description: "Business StakeHolder Chat Customizations - Step 2"
+    metadata:
+      continue: true
+    vars:
+      query: |
+        We added customized scoring which takes into account employee ratings, and times someone utilized 
+        a document in a created report. We do some sanity reference checking in the import pipeline.
+        I heard someone mention kerberos is used.
     assert:
     - type: llm-rubric
       value: >-
         Response gives a high level description of customizations as capabilities and provides an overview of customizations
-        requiring significant engineering effort with a rough effort estimate. Also provides potential third-party vendor
-        work. If none such efforts are identified, response needs to clearly state that and give reason for it, such as
+        requiring significant engineering effort with a rough effort estimate. If none such efforts are identified, 
+        response needs to clearly state that and give reason for it, such as
         that the migration case is pretty standard and does not make extensive customizations necessary.
-        Asks the user to validate the information, provide more information or whether to proceed to next step.
-  - description: "Business StakeHolder Chat Infra Assessment"
+        Asks the user whether to proceed to next step.
+  - description: "Business StakeHolder Chat Infra Assessment - Step 1"
     metadata:
       continue: true
     vars:
       query: |
         Go ahead.
     assert:
-    - type: llm-rubric
-      value: >-
-        Response gives an overview of the topology of a SOLR source system, including the aspects:
-        - Standalone Solr or SolrCloud
-        - Number of nodes, shards, replicas
-        - Document count and index size
-        - Peak query throughput and indexing rates
-        Response asks the user to validate and to provide corrections where needed, but assures user it is ok
-        to proceed if those details are not available to user.
-  - description: "Business StakeHolder Chat Infra Assessment - Step 2"
-    metadata:
-      continue: true
-    vars:
-      query: |
-        I do not know details around infra specifics.
-    assert:
-    - type: llm-rubric
-      value: >-
-        Response presents details based on assumptions so far:
-        - estimated monthly infrastructure cost with instance types, counts and hours
-        - expected query latency
-        - uptime characteristics
-        - cost comparison between self-managed and Amazon OpenSearch
-        Asks the user to validate the information, provide more information or whether to proceed to next step.
-  - description: "Business StakeHolder Chat Client and Front-end Integration"
+      - type: llm-rubric
+        value: >-
+          Response gives an overview of an example topology of a SOLR source system, including 
+          some inferred aspects as plausible for an internal document search system used by 2000 internal employees
+          and with minimum of 500 searches per user per day:
+          - Standalone Solr or SolrCloud
+          - Number of nodes, shards, replicas
+          - Document count and index size
+          - Peak query throughput and indexing rates
+          Response also provides estimated monthly infrastructure cost (instance types × count × hours), 
+          expected query latency, and uptime characteristics without going deep into technical reasoning.
+          Response gives user option to refine the stated assumptions or do proceed.
+  - description: "Business StakeHolder Chat Client and Front-end Integration - Step 1"
     metadata:
       continue: true
     vars:
@@ -763,7 +765,8 @@ tests:
     assert:
     - type: llm-rubric
       value: >-
-        Response contains a migration report covering the following aspects, in the given order:
+        Response contains a migration report covering the following aspects, starting with 
+        a recommendation:
         - total estimated cost
         - proposed timeline with milestones
         - blocker count by severity
@@ -772,3 +775,4 @@ tests:
         Response asks user whether report shall be persisted, suggesting the following content to filename mapping:
         - concise 1-pager for business stakeholder purposes: MIGRATION_REPORT_BUSINESS.md
         - additional details, including more technical detail: MIGRATION_REPORT_DETAILS.md
+        Alternatively it mentions those files have already been saved.

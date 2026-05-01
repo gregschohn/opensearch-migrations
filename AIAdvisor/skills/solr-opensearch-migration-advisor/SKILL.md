@@ -84,9 +84,10 @@ While walking through the steps, make sure you record all relevant information y
 as described in the persistence section below.
 Do not assume in the chat that user actively reads the session state file, but present relevant details as needed.
 Since the answer format for the BSH roles is more free, the user might have already answered some details of later steps
-in previous ones. In this case do not just skip steps without consulting with the user. You can provide a summary of 
-suggestions if enough information was already given, but on each step, confirm these assumptions with the user.
-in each step, check in with the user about whether to continue to next step.
+in previous ones. In this case do not just skip steps without consulting with the user. You can enrich the questions
+for the respective step with suggestions you derived from the chat history where suitable, 
+but on each step, ask the question given for the step. After the user answered, 
+state derived assumptions where applicable, yet in any case confirm with user to proceed to next step.
 
 ### Step 0 — Stakeholder Identification
 
@@ -373,10 +374,19 @@ Store all identified customizations and their OpenSearch mappings in the session
 
 
 For the business audience BSH, do:
-Based on the solr version, record the version-specific notes above. If no solr version available, collect all but clearly distinguish them conditional on the solr version.
-Record them for the final report, and provide a high level description of the points to the user without going too much into technical detail.
+Ask the user for a description of customizations made to the solr setup, such as regarding:
+- custom plugins that change aspects such as text processing, search logic, ranking logic
+- specific authentication methods
+- indexing logic customizations
+- security adjustments
+- multi-tenancy 
+- isolating queries and index updates
+Based on the solr version, also record the version-specific notes above. If no solr version available, collect all but clearly 
+distinguish them conditional on the solr version. Record them for the final report, and provide a high level description 
+of the points to the user without going too much into technical detail.
 While you keep that record of scenarios for information we need to infer at the moment rather than know (if not provided by user),
-only record customizations and the corresponding Opensearch mappings under `facts.customizations` if they were mentioned or confirmed by user.
+only record customizations and the corresponding Opensearch mappings under `facts.customizations` if they were mentioned 
+or confirmed by user.
 Nevertheless include the inferred possibilities as scenarios conditioned on solr version in the migration report.
 
 
