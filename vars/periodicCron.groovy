@@ -24,7 +24,6 @@ def call(String jobName) {
         case 'main-rfs-default-e2e-test':             return '@hourly'
         case 'main-solr-8x-k8s-local-test':           return 'H H(0-5)/6 * * *'
         case 'main-solutions-cfn-create-vpc-test':    return '@hourly'
-        case 'main-traffic-replay-default-e2e-test':  return '@hourly'
         case 'main-eks-byos-integ-test':              return 'H H(0-5)/6 * * *'
         case 'main-eks-aoss-search-integ-test':       return 'H H(0-5)/6 * * *'
         case 'main-eks-aoss-timeseries-integ-test':   return 'H H(0-5)/6 * * *'
