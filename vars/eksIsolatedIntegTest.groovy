@@ -109,22 +109,23 @@ def call(Map config = [:]) {
                     timeout(time: 90, unit: 'MINUTES') {
                         withMigrationsTestAccount(region: params.REGION, duration: 5400) { accountId ->
                             script {
-                                def buildFlag = params.BUILD ? '--build' : ''
-                                sh """
-                                    ./deployment/k8s/aws/assemble-bootstrap.sh
-                                    ./deployment/k8s/aws/dist/aws-bootstrap.sh \
-                                      --deploy-create-vpc-cfn \
-                                      ${buildFlag} \
-                                      --stack-name "${buildStackName}" \
-                                      --stage "${env.buildStageName}" \
-                                      --region "${params.REGION}" \
-                                      --skip-console-exec \
-                                      --base-dir "\$(pwd)" \
-                                      2>&1 | { set +x; while IFS= read -r line; do printf '%s | %s\\n' "\$(date '+%H:%M:%S')" "\$line"; done; }; exit \${PIPESTATUS[0]}
-                                """
+                                def bootstrap = resolveBootstrap(
+                                    useReleaseBootstrap: params.USE_RELEASE_BOOTSTRAP,
+                                    build: params.BUILD,
+                                    skipTestImages: true,
+                                    version: params.VERSION
+                                )
 
-                                def buildExports = parseCfnExports(stackName: buildStackName, region: params.REGION)
-                                env.BUILD_ECR = buildExports['MIGRATIONS_ECR_REGISTRY']
+                                bootstrapMA(
+                                    stackName: buildStackName,
+                                    stage: env.buildStageName,
+                                    region: params.REGION,
+                                    bootstrap: bootstrap,
+                                    eksAccessPrincipalArn: "arn:aws:iam::${accountId}:role/JenkinsDeploymentRole",
+                                    kubectlContext: "migration-eks-build-${env.buildStageName}"
+                                )
+
+                                env.BUILD_ECR = env.registryEndpoint
                                 echo "Build ECR registry: ${env.BUILD_ECR}"
                             }
                         }
@@ -143,25 +144,26 @@ def call(Map config = [:]) {
                                 env.isolatedVpcId = vpc.vpcId
 
                                 // Deploy EKS + MA into isolated subnets
-                                def buildFlag2 = params.BUILD ? '--build' : ''
-                                sh """
-                                    ./deployment/k8s/aws/dist/aws-bootstrap.sh \
-                                      --deploy-import-vpc-cfn \
-                                      ${buildFlag2} \
-                                      --create-vpc-endpoints \
-                                      --ma-images-source "${env.BUILD_ECR}" \
-                                      --stack-name "${isolatedStackName}" \
-                                      --stage "${env.maStageName}" \
-                                      --vpc-id "${vpc.vpcId}" \
-                                      --subnet-ids "${vpc.subnetIds}" \
-                                      --region "${params.REGION}" \
-                                      --skip-console-exec \
-                                      --base-dir "\$(pwd)" \
-                                      2>&1 | { set +x; while IFS= read -r line; do printf '%s | %s\\n' "\$(date '+%H:%M:%S')" "\$line"; done; }; exit \${PIPESTATUS[0]}
-                                """
+                                def bootstrap = resolveBootstrap(
+                                    useReleaseBootstrap: params.USE_RELEASE_BOOTSTRAP,
+                                    build: params.BUILD,
+                                    skipTestImages: true,
+                                    version: params.VERSION
+                                )
+                                bootstrapMA(
+                                    stackName: isolatedStackName,
+                                    stage: env.maStageName,
+                                    region: params.REGION,
+                                    bootstrap: bootstrap,
+                                    eksAccessPrincipalArn: "arn:aws:iam::${accountId}:role/JenkinsDeploymentRole",
+                                    kubectlContext: "migration-eks-${env.maStageName}",
+                                    vpcId: vpc.vpcId,
+                                    subnetIds: vpc.subnetIds,
+                                    createVpcEndpoints: true,
+                                    maImagesSource: env.BUILD_ECR
+                                )
 
-                                def isoExports = parseCfnExports(stackName: isolatedStackName, region: params.REGION)
-                                env.eksClusterName = isoExports['MIGRATIONS_EKS_CLUSTER_NAME']
+                                env.eksClusterName = env.eksClusterName  // already set by bootstrapMA
                                 env.eksKubeContext = "migration-eks-${env.maStageName}"
 
                                 // Configure kubectl context
@@ -176,9 +178,9 @@ def call(Map config = [:]) {
                                 echo "Validating network isolation..."
                                 sh """
                                     kubectl --context=${env.eksKubeContext} exec migration-console-0 -n ma -- \
-                                      timeout 10 curl -sf https://google.com > /dev/null 2>&1 \
+                                      timeout 10 curl -sfI https://aws.amazon.com > /dev/null 2>&1 \
                                       && echo 'FAIL: internet reachable' && exit 1 \
-                                      || echo 'Isolation validated: pods cannot reach public internet ✅'
+                                      || echo 'Isolation validated: pods cannot reach public internet'
                                 """
 
                                 // Build stack is no longer needed — isolated ECR has its own image copies
@@ -291,7 +293,7 @@ def call(Map config = [:]) {
                                 if (logCount == "0") {
                                     echo "WARNING: No CloudWatch logs found — fluent-bit may not be shipping logs through VPC endpoint"
                                 } else {
-                                    echo "CloudWatch logs validated: logs are reaching CloudWatch via VPC endpoint ✅"
+                                    echo "CloudWatch logs validated: logs are reaching CloudWatch via VPC endpoint"
                                 }
                             }
                         }
