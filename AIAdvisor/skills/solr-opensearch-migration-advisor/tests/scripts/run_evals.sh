@@ -6,8 +6,8 @@ SCRIPT_DIR="$(dirname "$0")"
 source "$SCRIPT_DIR"/../../.env
 
 # creating symlink to path where claude sdk expects the skills
-mkdir -p "$SCRIPT_DIR"/../../.claude/skills/migration-advisor
-ln -s "$SCRIPT_DIR"/../../SKILL.md "$SCRIPT_DIR"/../../.claude/skills/migration-advisor/SKILL.md
+mkdir -p "$SCRIPT_DIR"/../../.claude/skills/solr-opensearch-migration-advisor
+ln -s "$SCRIPT_DIR"/../../SKILL.md "$SCRIPT_DIR"/../../.claude/skills/solr-opensearch-migration-advisor/SKILL.md
 
 AWS_REGION=$AWS_REGION \
 AWS_DEFAULT_REGION=$AWS_DEFAULT_REGION \

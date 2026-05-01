@@ -364,6 +364,21 @@ validate_args() {
       echo "Error: Unknown --tls-mode: $tls_mode (expected: none, self-signed, pca-existing, pca-create)" >&2
       exit 1 ;;
   esac
+
+  # Early-resolve region and fail fast if unresolvable. Without this, a missing
+  # region only surfaces as "You must specify a region" from the AWS CLI deep
+  # into the run (e.g. after a multi-minute CDK build with --build). We check
+  # --region, then $AWS_CFN_REGION, then `aws configure get region` — mirroring
+  # the fallback used later at deploy time — so the error happens in seconds,
+  # not minutes.
+  if [[ -z "$region" ]]; then
+    region="$(aws configure get region 2>/dev/null || true)"
+  fi
+  if [[ -z "$region" ]]; then
+    echo "Error: AWS region is not set." >&2
+    echo "  Pass --region <region>, set AWS_CFN_REGION, or run 'aws configure'." >&2
+    exit 1
+  fi
 }
 
 validate_args
@@ -996,7 +1011,10 @@ if [[ "$build" == "true" && -z "$ma_images_source" ]]; then
     # Remove stale builder if it exists but failed health check above (e.g. orphaned
     # from a previous interrupted run). This is safe — the builder is recreated below.
     docker buildx rm "$BUILDER_NAME" 2>/dev/null || true
-    "${base_dir}/buildImages/setUpK8sImageBuildServices.sh"
+    # EKS/bootstrap builds are always Kubernetes-hosted; they cannot assume
+    # direct access to a local Docker daemon from the target environment.
+    source "${base_dir}/buildImages/backends/k8sHostedBuildkit.sh"
+    setup_build_backend
   fi
 
   echo "Building images to MIGRATIONS_ECR_REGISTRY=$MIGRATIONS_ECR_REGISTRY"
