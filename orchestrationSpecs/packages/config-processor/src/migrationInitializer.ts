@@ -319,10 +319,6 @@ export class MigrationInitializer {
         return labels.join('-');
     }
 
-    private makeApprovalGateName(parts: string[], action: string): string {
-        return [...parts, action].join('.').toLowerCase();
-    }
-
     private makeApprovalGateResource(nameParts: string[], labels?: Record<string, string>) {
         return {
             apiVersion: MigrationInitializer.CRD_API_VERSION,
@@ -467,10 +463,11 @@ export class MigrationInitializer {
                 migration.snapshotConfig.label,
                 migration.migrationLabel,
             ];
+            const resourcePath = this.makeCrdName(...approvalNameParts);
             items.push(this.makeApprovalGateResource(
-                [...approvalNameParts, 'evaluateMetadata'], migLabels));
+                ['evaluatemetadata', resourcePath], migLabels));
             items.push(this.makeApprovalGateResource(
-                [...approvalNameParts, 'migrateMetadata'], migLabels));
+                ['migratemetadata', resourcePath], migLabels));
         }
 
         // TrafficReplay resources from trafficReplays

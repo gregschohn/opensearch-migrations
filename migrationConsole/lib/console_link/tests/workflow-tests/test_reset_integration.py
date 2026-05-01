@@ -525,7 +525,7 @@ class TestApproveIntegration:
         _create_crd_instance(reset_ns, "approvalgates", "eval-metadata", phase=VALID_PHASES["approvalgates"])
         _create_crd_instance(reset_ns, "approvalgates", "migrate-metadata", phase=VALID_PHASES["approvalgates"])
 
-        result = _invoke_workflow_cli(runner, ["approve", "eval-*", "--namespace", reset_ns])
+        result = _invoke_workflow_cli(runner, ["approve", "step", "eval-*", "--namespace", reset_ns])
         assert result.exit_code == 0
         assert "Approved eval-metadata" in result.output
         assert _get_phase(reset_ns, "approvalgates", "eval-metadata") == "Approved"
@@ -534,15 +534,14 @@ class TestApproveIntegration:
     def test_approve_cli_no_pending(self, runner, reset_ns):
         _create_crd_instance(reset_ns, "approvalgates", "gate-d", phase="Approved")
 
-        result = _invoke_workflow_cli(runner, ["approve", "gate-d", "--namespace", reset_ns])
-        assert "No pending" in result.output
+        result = _invoke_workflow_cli(runner, ["approve", "step", "gate-d", "--namespace", reset_ns])
+        assert "No steps are currently being waited on" in result.output
 
     def test_approve_cli_no_match(self, runner, reset_ns):
         _create_crd_instance(reset_ns, "approvalgates", "gate-e", phase=VALID_PHASES["approvalgates"])
 
-        result = _invoke_workflow_cli(runner, ["approve", "nonexistent-*", "--namespace", reset_ns])
-        assert "No pending gates match" in result.output
-        assert "gate-e" in result.output
+        result = _invoke_workflow_cli(runner, ["approve", "step", "nonexistent-*", "--namespace", reset_ns])
+        assert "No steps are currently being waited on" in result.output
 
 
 @pytest.mark.slow

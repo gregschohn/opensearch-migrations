@@ -278,8 +278,8 @@
               "value": "{{=sprig.dig(inputs.parameters.sourceLabel, fromJSON(inputs.parameters.targetConfig)['label'], jsonpath(inputs.parameters.snapshotConfig, '$.label'), inputs.parameters.migrationLabel, 'migrateMetadata', false, fromJSON(inputs.parameters.skipApprovalMap))}}"
             },
             {
-              "name": "approvalNamePrefix",
-              "value": "{{=inputs.parameters.sourceLabel+'.'+jsonpath(inputs.parameters.targetConfig, '$.label')+'.'+jsonpath(inputs.parameters.snapshotConfig, '$.label')+'.'+inputs.parameters.migrationLabel+'.'}}"
+              "name": "approvalNameSuffix",
+              "value": "{{='.'+inputs.parameters.sourceLabel+'-'+jsonpath(inputs.parameters.targetConfig, '$.label')+'-'+jsonpath(inputs.parameters.snapshotConfig, '$.label')+'-'+inputs.parameters.migrationLabel}}"
             }
           ]
         },
@@ -350,7 +350,7 @@
                 "parameters": [
                   {
                     "name": "name",
-                    "value": "{{=inputs.parameters.approvalNamePrefix+'evaluatemetadata'}}"
+                    "value": "{{='evaluatemetadata'+inputs.parameters.approvalNameSuffix}}"
                   }
                 ]
               },
@@ -423,7 +423,7 @@
                 "parameters": [
                   {
                     "name": "name",
-                    "value": "{{=inputs.parameters.approvalNamePrefix+'migratemetadata'}}"
+                    "value": "{{='migratemetadata'+inputs.parameters.approvalNameSuffix}}"
                   }
                 ]
               },

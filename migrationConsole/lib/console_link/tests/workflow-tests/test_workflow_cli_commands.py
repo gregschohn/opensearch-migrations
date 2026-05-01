@@ -319,19 +319,19 @@ class TestWorkflowCLICommands:
     def test_approve_step_with_exact_name(self, mock_k8s, mock_gather, mock_approve):
         runner = CliRunner()
         mock_gather.return_value = [
-            self._make_gate('source.target.evaluatemetadata'),
-            self._make_gate('source.target.migratemetadata'),
+            self._make_gate('evaluatemetadata.source-target'),
+            self._make_gate('migratemetadata.source-target'),
         ]
         mock_approve.return_value = True
 
         result = runner.invoke(
             workflow_cli,
-            ['approve', 'step', 'source.target.evaluatemetadata']
+            ['approve', 'step', 'evaluatemetadata.source-target']
         )
 
         assert result.exit_code == 0
         assert 'Approved 1 gate' in result.output
-        mock_approve.assert_called_once_with('ma', 'source.target.evaluatemetadata')
+        mock_approve.assert_called_once_with('ma', 'evaluatemetadata.source-target')
 
     @patch('console_link.workflow.commands.approve.approve_gate')
     @patch('console_link.workflow.commands.approve._gather_gates')
@@ -339,13 +339,13 @@ class TestWorkflowCLICommands:
     def test_approve_step_with_glob(self, mock_k8s, mock_gather, mock_approve):
         runner = CliRunner()
         mock_gather.return_value = [
-            self._make_gate('a.b.metadatamigrate'),
-            self._make_gate('x.y.metadatamigrate'),
-            self._make_gate('a.b.backfill'),
+            self._make_gate('metadatamigrate.a-b'),
+            self._make_gate('metadatamigrate.x-y'),
+            self._make_gate('backfill.a-b'),
         ]
         mock_approve.return_value = True
 
-        result = runner.invoke(workflow_cli, ['approve', 'step', '*.metadatamigrate'])
+        result = runner.invoke(workflow_cli, ['approve', 'step', 'metadatamigrate.*'])
 
         assert result.exit_code == 0
         assert 'Approved 2 gate' in result.output
@@ -393,13 +393,13 @@ class TestWorkflowCLICommands:
     @patch('console_link.workflow.commands.approve.load_k8s_config')
     def test_approve_step_no_matches(self, mock_k8s, mock_gather):
         runner = CliRunner()
-        mock_gather.return_value = [self._make_gate('a.b.c')]
+        mock_gather.return_value = [self._make_gate('a-b-c')]
 
         result = runner.invoke(workflow_cli, ['approve', 'step', 'nonexistent'])
 
         assert result.exit_code != 0
         assert 'No gates match' in result.output
-        assert 'a.b.c' in result.output
+        assert 'a-b-c' in result.output
 
     @patch('console_link.workflow.commands.approve._gather_gates')
     @patch('console_link.workflow.commands.approve.load_k8s_config')

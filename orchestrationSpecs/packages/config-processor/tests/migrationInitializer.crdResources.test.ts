@@ -104,8 +104,8 @@ describe('migration initializer CRD resource generation', () => {
         expect(byKind('SnapshotMigration')).toContain('source-target-snap1-migration-0');
         expect(byKind('TrafficReplay')).toContain('source-proxy-target-target-replay');
         expect(byKind('ApprovalGate')).toEqual(expect.arrayContaining([
-            'source.target.snap1.migration-0.evaluatemetadata',
-            'source.target.snap1.migration-0.migratemetadata',
+            'evaluatemetadata.source-target-snap1-migration-0',
+            'migratemetadata.source-target-snap1-migration-0',
             // Root KafkaCluster CR reconcile gate (only Kafka gate — sub-ops
             // are Strimzi-managed and don't go through the migrations VAP)
             'kafkacluster.default.vapretry',
@@ -122,8 +122,8 @@ describe('migration initializer CRD resource generation', () => {
         expect(getResource('DataSnapshot', 'source-snap1')?.spec.dependsOn).toEqual(['source-proxy']);
         expect(getResource('SnapshotMigration', 'source-target-snap1-migration-0')?.spec.dependsOn).toBeUndefined();
         expect(getResource('TrafficReplay', 'source-proxy-target-target-replay')?.spec.dependsOn).toEqual(['source-proxy']);
-        expect(getResource('ApprovalGate', 'source.target.snap1.migration-0.evaluateMetadata')?.spec.dependsOn).toBeUndefined();
-        expect(getResource('ApprovalGate', 'source.target.snap1.migration-0.migrateMetadata')?.spec.dependsOn).toBeUndefined();
+        expect(getResource('ApprovalGate', 'evaluatemetadata.source-target-snap1-migration-0')?.spec.dependsOn).toBeUndefined();
+        expect(getResource('ApprovalGate', 'migratemetadata.source-target-snap1-migration-0')?.spec.dependsOn).toBeUndefined();
 
         expect(enrichScript).toContain(
             "snapshot_migration_source_target_snap1_migration_0=\"$(kubectl get snapshotmigrations.migrations.opensearch.org/source-target-snap1-migration-0 -o jsonpath='{.metadata.uid}')\""

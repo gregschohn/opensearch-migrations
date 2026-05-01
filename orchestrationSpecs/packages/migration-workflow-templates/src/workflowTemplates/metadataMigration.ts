@@ -238,12 +238,13 @@ export const MetadataMigration = WorkflowBuilder.create({
             makeApprovalCheck(c.inputParameters, c.inputParameters.skipApprovalMap, "evaluateMetadata"))
         .addOptionalInput("skipMigrateApproval", c =>
             makeApprovalCheck(c.inputParameters, c.inputParameters.skipApprovalMap, "migrateMetadata"))
-        .addOptionalInput("approvalNamePrefix", c =>
+        .addOptionalInput("approvalNameSuffix", c =>
             expr.concat(
-                c.inputParameters.sourceLabel, expr.literal("."),
-                expr.jsonPathStrict(c.inputParameters.targetConfig, "label"), expr.literal("."),
-                expr.jsonPathStrict(c.inputParameters.snapshotConfig, "label"), expr.literal("."),
-                c.inputParameters.migrationLabel, expr.literal(".")
+                expr.literal("."),
+                c.inputParameters.sourceLabel, expr.literal("-"),
+                expr.jsonPathStrict(c.inputParameters.targetConfig, "label"), expr.literal("-"),
+                expr.jsonPathStrict(c.inputParameters.snapshotConfig, "label"), expr.literal("-"),
+                c.inputParameters.migrationLabel
             )
         )
 
@@ -260,7 +261,7 @@ export const MetadataMigration = WorkflowBuilder.create({
             )
             .addStep("approveEvaluate", INTERNAL, "approveEvaluate", c =>
                 c.register({
-                    "name": expr.concat(b.inputs.approvalNamePrefix, expr.literal("evaluatemetadata"))
+                    "name": expr.concat(expr.literal("evaluatemetadata"), b.inputs.approvalNameSuffix)
                 }),
                 {when: expr.not(b.inputs.skipEvaluateApproval)}
             )
@@ -276,7 +277,7 @@ export const MetadataMigration = WorkflowBuilder.create({
             )
             .addStep("approveMigrate", INTERNAL, "approveMigrate", c =>
                 c.register({
-                    "name": expr.concat(b.inputs.approvalNamePrefix, expr.literal("migratemetadata"))
+                    "name": expr.concat(expr.literal("migratemetadata"), b.inputs.approvalNameSuffix)
                 }),
                 {when: expr.not(b.inputs.skipMigrateApproval)}
             )

@@ -19,6 +19,7 @@ from kubernetes.client.rest import ApiException
 from ..models.utils import ExitCode, load_k8s_config, get_current_namespace
 from .autocomplete_workflows import DEFAULT_WORKFLOW_NAME, get_workflow_completions
 from .argo_utils import DEFAULT_ARGO_SERVER_URL, get_workflow
+from ..tree_utils import is_approval_node, get_node_input_parameter
 from .crd_utils import (
     CRD_GROUP,
     CRD_VERSION,
@@ -107,12 +108,9 @@ def _waiting_gates_from_workflow(namespace, workflow_name):
     for node in nodes.values():
         if node.get('phase') != 'Running':
             continue
-        if node.get('templateName', '') != 'waitforapproval':
+        if not is_approval_node(node):
             continue
-        gate_name = None
-        for p in node.get('inputs', {}).get('parameters', []):
-            if p.get('name') == 'resourceName':
-                gate_name = p['value']
+        gate_name = get_node_input_parameter(node, 'resourceName') or get_node_input_parameter(node, 'name')
         if not gate_name:
             continue
         # Find sibling tryApply's denial message via shared boundaryID
@@ -170,8 +168,7 @@ def _gate_category_from_name(name):
     """Classifier based on gate name suffix.
 
     Gate names ending in '.vapretry' are runtime (change or retry).
-    Everything else is a step. This only tells runtime-vs-step apart —
-    distinguishing change from retry requires the VAP denial message.
+    Everything else is a step.
     """
     return 'runtime' if name.endswith('.vapretry') else 'step'
 
@@ -179,8 +176,23 @@ def _gate_category_from_name(name):
 _VAPRETRY_SUFFIX = '.vapretry'
 
 
-def _display_name(name):
-    """Strip the '.vapretry' suffix for display and user input."""
+def _display_name(name_or_gate):
+    """Human-friendly display name for a gate.
+
+    Accepts either a plain name string or a GateInfo object.  When a
+    GateInfo with resource-kind and resource-name labels is provided the
+    display form is ``lowerkind.resource-name`` (e.g.
+    ``capturedtraffic.capture-proxy-topic``).  Otherwise the
+    ``.vapretry`` suffix is simply stripped.
+    """
+    if isinstance(name_or_gate, GateInfo):
+        kind = name_or_gate.resource_kind
+        rname = name_or_gate.resource_name
+        if kind and rname and name_or_gate.category in ('change', 'retry'):
+            return f"{kind.lower()}.{rname}"
+        name = name_or_gate.name
+    else:
+        name = name_or_gate
     if name.endswith(_VAPRETRY_SUFFIX):
         return name[:-len(_VAPRETRY_SUFFIX)]
     return name
@@ -239,56 +251,57 @@ def _status_blurb(gate):
 
 
 def _format_gate_rows(gates, show_prereq=False, mark_ready=False):
-    """Format a list of gates with alignment on the first '.' and the '('.
+    """Format a list of gates with status blurb after the name.
+
+    Names containing '.' are aligned on the dot. The status blurb is
+    shown in parentheses after the name.
 
     When mark_ready=True, gates with status 'waiting' get a leading '*'
-    and are colored green (respecting click's auto-detection of TTY
-    vs pipe/redirect).
+    and are colored green.
 
     Returns a list of lines ready to echo.
     """
     if not gates:
         return []
 
-    display_names = [_display_name(g.name) for g in gates]
+    # Sort by display name for consistent ordering (matches shell tab-completion)
+    gates = sorted(gates, key=lambda g: _display_name(g))
+
+    # Compute name column width with dot alignment
+    display_names = [_display_name(g) for g in gates]
     splits = [n.partition('.') for n in display_names]  # (left, '.', right)
     max_left = max(len(left) for left, _, _ in splits)
     max_right = max(len(right) for _, _, right in splits)
-    # The full column width after alignment: <left>.<right>
-    # (use a leading dot when any row has one)
     has_any_dot = any(dot for _, dot, _ in splits)
     total_width = max_left + (1 if has_any_dot else 0) + max_right
 
     marker_width = 2 if mark_ready else 0
     lines = []
     for gate, (left, dot, right) in zip(gates, splits):
+        # Format name with dot alignment
         aligned_left = left.rjust(max_left)
         if dot:
             aligned_right = right.ljust(max_right)
             aligned = f"{aligned_left}.{aligned_right}"
         else:
-            # No dot in the name; pad out to total width on the right.
-            aligned = (aligned_left + ' ' * (total_width - max_left))
-
-        blurb = _status_blurb(gate)
-        suffix = f"  ({blurb})" if blurb else ""
+            aligned = aligned_left + ' ' * (total_width - max_left)
 
         is_ready = mark_ready and gate.status == 'waiting'
         marker = (click.style('* ', fg='green', bold=True)
                   if is_ready else
                   ' ' * marker_width)
         styled = click.style(aligned, fg='green') if is_ready else aligned
+
+        blurb = _status_blurb(gate)
+        suffix = f" ({blurb})" if blurb else ""
         lines.append(f"{marker}{styled}{suffix}")
 
         if show_prereq and gate.category == 'retry':
             prereq = _retry_prerequisite(gate)
             if prereq is not None:
                 _, cmd = prereq
-                # Indent prereq lines so they're clearly associated
-                # with the gate above them.
-                lines.append(
-                    f"{' ' * (marker_width + total_width + 4)}→ run: {cmd}"
-                )
+                indent = marker_width + total_width
+                lines.append(f"{' ' * indent}  → run: {cmd}")
     return lines
 
 
@@ -305,7 +318,7 @@ def _gather_gates(namespace, workflow_name, category, pre_approve):
     - 'retry': lists runtime gates whose denial message contains
       Impossible. No pre_approve.
     """
-    all_gates = _list_all_gates(namespace)
+    all_gates = _list_all_gates(namespace, workflow_name)
     # name -> (phase, labels)
     gate_index = {n: (p, lbls) for n, p, lbls in all_gates}
 
@@ -507,9 +520,9 @@ def _complete_names(category):
             return []
         # Offer display names (without the .vapretry suffix) for tab completion.
         return [
-            CompletionItem(_display_name(g.name))
+            CompletionItem(_display_name(g))
             for g in gates
-            if _display_name(g.name).startswith(incomplete)
+            if _display_name(g).startswith(incomplete)
         ]
 
     return completer
@@ -590,7 +603,7 @@ def _resolve_targets(ctx, gates, names, all_flag):
         return list(gates)
 
     # Map from both forms (display and full) to the GateInfo.
-    display_to_gate = {_display_name(g.name): g for g in gates}
+    display_to_gate = {_display_name(g): g for g in gates}
     full_to_gate = {g.name: g for g in gates}
     available_display_names = list(display_to_gate.keys())
 
@@ -620,7 +633,7 @@ def _resolve_targets(ctx, gates, names, all_flag):
 
 def _apply_approvals(ctx, namespace, targets):
     for gate in targets:
-        display = _display_name(gate.name)
+        display = _display_name(gate)
         if approve_gate(namespace, gate.name):
             click.echo(f"  ✓ Approved {display}")
         else:
@@ -727,7 +740,7 @@ def approve_step(ctx, names, list_flag, all_flag, pre_approve,
     \b
     Examples:
         workflow approve step --list
-        workflow approve step source.target.snap1.migration-0.evaluatemetadata
+        workflow approve step evaluatemetadata.source-target-snap1-migration-0
         workflow approve step --pre-approve --all
     """
     _run_subcommand(ctx, 'step', names, list_flag, all_flag, pre_approve,

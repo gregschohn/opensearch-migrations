@@ -76,8 +76,16 @@ workflow status <workflow-name>  # Specific workflow status
 workflow output <workflow-name>  # View logs (interactive step selection)
 workflow output -f               # Stream logs in real-time
 workflow output --tail-lines 100 # Last N lines
-workflow approve                 # Approve manual gates (interactive)
-workflow approve --acknowledge   # Approve without confirmation
+workflow approve step --list       # List available step gates
+workflow approve step <name>       # Approve a specific step gate
+workflow approve step --all        # Approve all step gates
+workflow approve change --list     # List gated field changes
+workflow approve change <name>     # Approve a specific change gate
+workflow approve change --all      # Approve all change gates
+workflow approve retry --list      # List retry gates
+workflow approve retry <name>      # Approve a specific retry gate
+workflow approve retry --all       # Approve all retry gates
+workflow approve list-all          # List gates across all categories
 workflow stop                    # Stop running workflow
 ```
 
