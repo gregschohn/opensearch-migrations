@@ -2354,7 +2354,7 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                       "podReplicas": {
                         "type": "number",
                         "default": 1,
-                        "description": "Number of RFS (Reindex From Snapshot) pod replicas. Each replica processes shards independently."
+                        "description": "Number of RFS worker pod replicas. Each replica independently acquires and processes snapshot shards in parallel — throughput scales linearly up to the total number of source shards."
                       },
                       "jvmArgs": {
                         "type": "string",
@@ -2580,7 +2580,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
         },
         "required": [
           "fromSource",
-          "toTarget"
+          "toTarget",
+          "perSnapshotConfig"
         ]
       },
       "description": "List of snapshot-based migration configurations. Each entry binds a source cluster to a target cluster and defines which snapshots to migrate with what settings."

@@ -10,6 +10,8 @@ from console_link.workflow.models.config import WorkflowConfig
 class TestWorkflowCLICommands:
     """Test suite for workflow CLI command integration."""
 
+    @patch('console_link.workflow.commands.submit.verify_configured_secrets_exist')
+    @patch('console_link.workflow.commands.submit.get_credentials_secret_store_for_namespace')
     @patch('console_link.workflow.commands.submit.delete_workflow')
     @patch('console_link.workflow.commands.submit.stop_workflow')
     @patch('console_link.workflow.commands.submit.workflow_exists')
@@ -24,6 +26,8 @@ class TestWorkflowCLICommands:
         mock_exists,
         mock_stop,
         mock_delete,
+        _mock_get_secret_store,
+        _mock_verify_secrets,
     ):
         """Test basic submit command execution."""
         # Mock subprocess to avoid actual Kubernetes submission
@@ -51,13 +55,66 @@ class TestWorkflowCLICommands:
 
         assert result.exit_code == 0
         assert 'submitted successfully' in result.output
+        # The stale "NOT checking" warning should no longer appear.
+        assert 'NOT checking' not in result.output
         # Check for workflow name pattern from test scripts (test-workflow-<timestamp>)
         assert 'test-workflow-' in result.output
         assert "--workflow-name" in mock_subprocess.call_args[0][0]
         assert "migration-workflow" in mock_subprocess.call_args[0][0]
         mock_stop.assert_not_called()
         mock_delete.assert_not_called()
+        # The secret-existence check must be invoked before workflow submission.
+        _mock_verify_secrets.assert_called_once()
 
+    @patch('console_link.workflow.commands.submit.verify_configured_secrets_exist')
+    @patch('console_link.workflow.commands.submit.get_credentials_secret_store_for_namespace')
+    @patch('console_link.workflow.commands.submit.load_k8s_config')
+    @patch('console_link.workflow.services.script_runner.subprocess.run')
+    @patch('console_link.workflow.commands.submit.WorkflowConfigStore')
+    def test_submit_command_fails_fast_when_secrets_missing(
+        self,
+        mock_store_class,
+        mock_subprocess,
+        _mock_k8s,
+        _mock_get_secret_store,
+        mock_verify_secrets,
+    ):
+        """Submit must abort before calling the workflow-submit script when a
+        referenced HTTP-Basic secret is missing from the cluster."""
+        import click
+
+        # The secret check raises a click exception describing which secret is missing.
+        mock_verify_secrets.side_effect = click.ClickException(
+            "Found 1 missing secret that must be created to make well-formed HTTP-Basic "
+            "requests to clusters:\n  source-cluster-secret\n\nRun `workflow configure edit` "
+            "to create them."
+        )
+
+        runner = CliRunner()
+
+        mock_store = Mock()
+        mock_store_class.return_value = mock_store
+        mock_config = WorkflowConfig({
+            'parameters': {
+                'message': 'test',
+                'requiresApproval': False,
+                'approver': ''
+            }
+        })
+        mock_store.load_config.return_value = mock_config
+
+        result = runner.invoke(workflow_cli, ['submit'])
+
+        assert result.exit_code != 0
+        assert 'source-cluster-secret' in result.output
+        assert 'workflow configure edit' in result.output
+        assert 'submitted successfully' not in result.output
+        # The script_runner subprocess (which actually submits the workflow) must NOT
+        # have been invoked — the check has to short-circuit before that.
+        mock_subprocess.assert_not_called()
+
+    @patch('console_link.workflow.commands.submit.verify_configured_secrets_exist')
+    @patch('console_link.workflow.commands.submit.get_credentials_secret_store_for_namespace')
     @patch('console_link.workflow.commands.submit.delete_workflow')
     @patch('console_link.workflow.commands.submit.stop_workflow')
     @patch('console_link.workflow.commands.submit.workflow_exists')
@@ -74,6 +131,8 @@ class TestWorkflowCLICommands:
         mock_exists,
         mock_stop,
         mock_delete,
+        _mock_get_secret_store,
+        _mock_verify_secrets,
     ):
         """Test submit command with --wait flag."""
         # Mock subprocess to avoid actual Kubernetes submission
@@ -122,6 +181,8 @@ class TestWorkflowCLICommands:
         mock_stop.assert_not_called()
         mock_delete.assert_not_called()
 
+    @patch('console_link.workflow.commands.submit.verify_configured_secrets_exist')
+    @patch('console_link.workflow.commands.submit.get_credentials_secret_store_for_namespace')
     @patch('console_link.workflow.commands.submit.delete_workflow')
     @patch('console_link.workflow.commands.submit.wait_until_workflow_deleted')
     @patch('console_link.workflow.commands.submit.stop_workflow')
@@ -138,6 +199,8 @@ class TestWorkflowCLICommands:
         mock_stop,
         mock_wait_until_deleted,
         mock_delete,
+        _mock_get_secret_store,
+        _mock_verify_secrets,
     ):
         """Test submit replaces an existing workflow before resubmitting."""
         mock_subprocess.return_value = Mock(
@@ -391,6 +454,8 @@ class TestWorkflowCLICommands:
         assert result.exit_code != 0
         assert "Missing argument 'TASK_NAMES...'" in result.output
 
+    @patch('console_link.workflow.commands.submit.verify_configured_secrets_exist')
+    @patch('console_link.workflow.commands.submit.get_credentials_secret_store_for_namespace')
     @patch('console_link.workflow.commands.submit.delete_workflow')
     @patch('console_link.workflow.commands.submit.stop_workflow')
     @patch('console_link.workflow.commands.submit.workflow_exists')
@@ -405,6 +470,8 @@ class TestWorkflowCLICommands:
         mock_exists,
         mock_stop,
         mock_delete,
+        _mock_get_secret_store,
+        _mock_verify_secrets,
     ):
         """Test submit command with parameter injection from config."""
         # Mock subprocess to avoid actual Kubernetes submission

@@ -48,9 +48,15 @@ def call(Map config = [:]) {
 
         def clusterContextValues = [
                 stage      : "${config.stage}",
-                vpcAZCount : config.vpcAZCount ?: 2,
                 clusters   : clusters
         ]
+
+        if (config.vpcId) {
+            clusterContextValues.vpcId = config.vpcId
+            clusterContextValues.vpcSubnetIds = config.vpcSubnetIds
+        } else {
+            clusterContextValues.vpcAZCount = config.vpcAZCount ?: 2
+        }
 
         def contextJsonStr = JsonOutput.prettyPrint(JsonOutput.toJson(clusterContextValues))
         writeFile(file: config.clusterContextFilePath, text: contextJsonStr)

@@ -81,6 +81,7 @@ functionName(jobName: jobNameOverride ?: null)
 | Cover File | Vars Function | Override Parameter |
 |------------|---------------|-------------------|
 | cleanupDeploymentCover.groovy | cleanupDeployment | JOB_NAME_OVERRIDE |
+| dockerComposeE2ETestCover.groovy | dockerComposeE2ETest | JOB_NAME_OVERRIDE |
 | eksAOSSSearchIntegTestCover.groovy | eksAOSSIntegPipeline | JOB_NAME_OVERRIDE |
 | eksAOSSTimeSeriesIntegTestCover.groovy | eksAOSSIntegPipeline | JOB_NAME_OVERRIDE |
 | eksAOSSVectorIntegTestCover.groovy | eksAOSSIntegPipeline | JOB_NAME_OVERRIDE |
