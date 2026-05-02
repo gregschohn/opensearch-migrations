@@ -532,7 +532,7 @@ class TestWorkflowCLICommands:
 
         # Mock validation so the test focuses on the CLI/k8s save flow
         from unittest.mock import patch
-        with patch('console_link.workflow.commands.configure._validate_and_find_secrets',
+        with patch('console_link.workflow.commands.configure.validate_and_find_secrets',
                    return_value={'valid': True}):
             result = runner.invoke(workflow_cli, ['configure', 'edit', '--stdin'], input=json_input,
                                    obj={'store': k8s_workflow_store, 'namespace': k8s_workflow_store.namespace})
@@ -572,7 +572,7 @@ class TestWorkflowCLICommands:
 
         # Mock validation so the test focuses on the CLI/k8s save flow
         from unittest.mock import patch
-        with patch('console_link.workflow.commands.configure._validate_and_find_secrets',
+        with patch('console_link.workflow.commands.configure.validate_and_find_secrets',
                    return_value={'valid': True}):
             result = runner.invoke(workflow_cli, ['configure', 'edit', '--stdin'], input=yaml_input,
                                    obj={'store': k8s_workflow_store, 'namespace': k8s_workflow_store.namespace})
