@@ -341,7 +341,7 @@ class StatusWorkflowDisplayer(WorkflowDisplayer):
 
         if phase in ('Running', 'Pending'):
             click.echo("")
-            click.echo(f"To view step outputs, run: workflow log all --workflow-name {workflow_name}")
+            click.echo("To view step outputs, run: workflow log all")
 
     def display_workflow_header(self, name: str, phase: str, started_at: str, finished_at: str) -> None:
         """Display workflow header information."""
@@ -460,8 +460,8 @@ class LiveCheckProcessor:
 
 
 @click.command(name="status")
-@click.option('--workflow-name', default=DEFAULT_WORKFLOW_NAME, shell_complete=get_workflow_completions)
-@click.option('--all-workflows', is_flag=True, default=False, help='Show status for all workflows')
+@click.option('--workflow-name', default=DEFAULT_WORKFLOW_NAME, shell_complete=get_workflow_completions, hidden=True)
+@click.option('--all-workflows', is_flag=True, default=False, hidden=True, help='Show status for all workflows')
 @click.option(
     '--argo-server',
     default=DEFAULT_ARGO_SERVER_URL, hidden=True, envvar='ARGO_SERVER',
@@ -486,8 +486,6 @@ def status_command(ctx, workflow_name, all_workflows, argo_server, namespace, in
     \b
     Example:
         workflow status
-        workflow status --workflow-name my-workflow
-        workflow status --all-workflows
         workflow status --all
     """
     if all_workflows and ctx.get_parameter_source('workflow_name') != click.core.ParameterSource.DEFAULT:

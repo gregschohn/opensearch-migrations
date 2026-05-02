@@ -213,8 +213,10 @@ def _run_output(ctx, namespace, selector, follow, timestamps, passthrough_args):
 
 def _output_options(func):
     func = click.option('--workflow-name', default=DEFAULT_WORKFLOW_NAME, shell_complete=get_workflow_completions,
+                        hidden=True,
                         help='Workflow name to show output for (default: WORKFLOW_NAME env var)')(func)
     func = click.option('--all-workflows', is_flag=True, default=False,
+                        hidden=True,
                         help='Show output for all workflows instead of a single workflow')(func)
     func = click.option(
         '--argo-server',

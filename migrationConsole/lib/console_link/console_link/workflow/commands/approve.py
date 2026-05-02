@@ -500,7 +500,7 @@ def _shared_options(func):
     )(func)
     func = click.option(
         '--workflow-name', default=DEFAULT_WORKFLOW_NAME,
-        shell_complete=get_workflow_completions,
+        shell_complete=get_workflow_completions, hidden=True,
         help='Workflow name (default: migration-workflow)'
     )(func)
     return func

@@ -79,7 +79,7 @@ def _initialize_k8s_client(ctx):
 
 # --- Entrypoint ---
 @click.command(name="manage")
-@click.option('--workflow-name', default=DEFAULT_WORKFLOW_NAME, shell_complete=get_workflow_completions)
+@click.option('--workflow-name', default=DEFAULT_WORKFLOW_NAME, shell_complete=get_workflow_completions, hidden=True)
 @click.option(
     '--argo-server',
     default=DEFAULT_ARGO_SERVER_URL, hidden=True, envvar='ARGO_SERVER',

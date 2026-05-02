@@ -17,8 +17,10 @@ from .commands.reset import reset_command
 
 logger = logging.getLogger(__name__)
 
+HELP_CONTEXT = {'help_option_names': ['-h', '--help']}
 
-@click.group(invoke_without_command=True)
+
+@click.group(invoke_without_command=True, context_settings=HELP_CONTEXT)
 @click.option('-v', '--verbose', count=True, help="Verbosity level. Default is warn, -v is info, -vv is debug.")
 @click.pass_context
 def workflow_cli(ctx, verbose):
@@ -51,7 +53,7 @@ def workflow_cli(ctx, verbose):
         ctx.obj['namespace'] = get_current_namespace()  # Detect from pod, fallback to 'ma'
 
 
-@workflow_cli.group(name="util")
+@workflow_cli.group(name="util", context_settings=HELP_CONTEXT)
 @click.pass_context
 def util_group(ctx):
     """Utility commands"""
@@ -86,6 +88,13 @@ def completion(ctx, shell):
         ctx.exit(ExitCode.FAILURE.value)
 
 
+def _enable_short_help(command):
+    command.context_settings.setdefault('help_option_names', ['-h', '--help'])
+    if isinstance(command, click.Group):
+        for subcommand in command.commands.values():
+            _enable_short_help(subcommand)
+
+
 # Add command groups
 workflow_cli.add_command(configure_group)
 workflow_cli.add_command(submit_command)
@@ -95,6 +104,7 @@ workflow_cli.add_command(log_command)
 workflow_cli.add_command(manage_command)
 workflow_cli.add_command(reset_command)
 workflow_cli.add_command(util_group)
+_enable_short_help(workflow_cli)
 
 
 def main():

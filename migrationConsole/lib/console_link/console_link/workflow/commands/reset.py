@@ -566,8 +566,8 @@ def _reset_by_resource_name(ctx, path, namespace, cascade, include_proxies, dele
 
 @click.command(name="reset")
 @click.argument('names', nargs=-1, metavar='NAME', shell_complete=_get_resource_completions)
-@click.option('--all', 'reset_all', is_flag=True, default=False, help='Delete all migration resources')
 @click.option('--list', 'list_resources', is_flag=True, default=False, help='List migration resources and exit')
+@click.option('--all', 'reset_all', is_flag=True, default=False, help='Delete all migration resources')
 @click.option('--cascade', is_flag=True, default=False, help='Also delete dependent resources')
 @click.option('--include-proxies', is_flag=True, default=False,
               help='Also delete capture proxies (they are protected by default)')

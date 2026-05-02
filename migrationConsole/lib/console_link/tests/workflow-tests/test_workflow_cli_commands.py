@@ -11,6 +11,38 @@ from console_link.workflow.models.config import WorkflowConfig
 class TestWorkflowCLICommands:
     """Test suite for workflow CLI command integration."""
 
+    def test_short_help_alias_works_for_workflow_commands(self):
+        runner = CliRunner()
+
+        for args in (
+            ['-h'],
+            ['configure', '-h'],
+            ['configure', 'secret', 'create', '-h'],
+            ['approve', 'step', '-h'],
+            ['log', 'filter', '-h'],
+            ['status', '-h'],
+            ['submit', '-h'],
+            ['reset', '-h'],
+        ):
+            result = runner.invoke(workflow_cli, args)
+            assert result.exit_code == 0
+            assert 'Usage:' in result.output
+
+    def test_workflow_selection_options_are_hidden_from_help(self):
+        runner = CliRunner()
+
+        for args in (
+            ['status', '--help'],
+            ['submit', '--help'],
+            ['manage', '--help'],
+            ['approve', 'step', '--help'],
+            ['log', 'filter', '--help'],
+        ):
+            result = runner.invoke(workflow_cli, args)
+            assert result.exit_code == 0
+            assert '--workflow-name' not in result.output
+            assert '--all-workflows' not in result.output
+
     @patch('console_link.workflow.commands.submit.verify_configured_secrets_exist')
     @patch('console_link.workflow.commands.submit.get_credentials_secret_store_for_namespace')
     @patch('console_link.workflow.commands.submit.delete_workflow')
@@ -294,7 +326,8 @@ class TestWorkflowCLICommands:
         assert 'Running' in result.output
         assert 'step1' in result.output
         assert 'step2' in result.output
-        assert 'workflow log all --workflow-name test-workflow' in result.output
+        assert 'workflow log all' in result.output
+        assert '--workflow-name' not in result.output
 
     @patch('console_link.workflow.commands.status.requests.get')
     @patch('console_link.workflow.commands.status.WorkflowService')

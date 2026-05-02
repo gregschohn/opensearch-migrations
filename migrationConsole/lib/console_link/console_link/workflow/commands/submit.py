@@ -100,12 +100,14 @@ def _remove_existing_workflow(workflow_name, namespace):
 @click.option(
     '--session',
     default='default',
+    hidden=True,
     help='Configuration session name to load parameters from (default: default)'
 )
 @click.option(
     '--workflow-name',
     default=DEFAULT_WORKFLOW_NAME,
     shell_complete=get_workflow_completions,
+    hidden=True,
     help='Name of the workflow to replace if it already exists'
 )
 @click.pass_context
