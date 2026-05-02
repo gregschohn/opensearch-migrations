@@ -548,7 +548,7 @@ def _handle_kafka_storage(namespace, kafka_cluster_names, delete_storage):
         )
 
 
-def _reset_by_path(ctx, path, namespace, cascade, include_proxies, delete_storage):
+def _reset_by_resource_name(ctx, path, namespace, cascade, include_proxies, delete_storage):
     """Handle reset for a specific resource path/pattern."""
     targets = _resolve_targets(namespace, path)
     if not targets:
@@ -565,7 +565,7 @@ def _reset_by_path(ctx, path, namespace, cascade, include_proxies, delete_storag
 
 
 @click.command(name="reset")
-@click.argument('path', required=False, default=None, shell_complete=_get_resource_completions)
+@click.argument('names', nargs=-1, metavar='NAME', shell_complete=_get_resource_completions)
 @click.option('--all', 'reset_all', is_flag=True, default=False, help='Delete all migration resources')
 @click.option('--list', 'list_resources', is_flag=True, default=False, help='List migration resources and exit')
 @click.option('--cascade', is_flag=True, default=False, help='Also delete dependent resources')
@@ -575,11 +575,18 @@ def _reset_by_path(ctx, path, namespace, cascade, include_proxies, delete_storag
               help='Delete Kafka PVCs and orphaned PVs during reset')
 @click.option('--namespace', default=get_current_namespace, hidden=True, envvar='WORKFLOW_NAMESPACE')
 @click.pass_context
-def reset_command(ctx, path, reset_all, list_resources, cascade, include_proxies, delete_storage, namespace):
-    """Reset workflow resources by deleting CRDs.
+def reset_command(ctx, names, reset_all, list_resources, cascade, include_proxies, delete_storage, namespace):
+    """Reset deletes named workflow resources but does not alter resources
+    that are managed outside the migration system, such as the target clusters.
+    To fully reset or reverse a previous step, actions will need to be made on
+    those other resources.  Those changes can be done through commands like
+    `console clusters clear-indices`, etc.
+
+    For example, reset should be coupled with `clear-indices` commands before rerunning
+    a historical backfill again.
 
     With no arguments or --list, lists migration resources and their status.
-    With a NAME or glob pattern, deletes matching resources.
+    With one or more NAMEs or glob patterns, deletes matching resources.
     With --all, deletes all matching migration resources.
     """
     try:
@@ -593,8 +600,9 @@ def reset_command(ctx, path, reset_all, list_resources, cascade, include_proxies
                 _show_resource_list(resources)
             return
 
-        if path is not None:
-            _reset_by_path(ctx, path, namespace, cascade, include_proxies, delete_storage)
+        if names:
+            for n in names:
+                _reset_by_resource_name(ctx, n, namespace, cascade, include_proxies, delete_storage)
             return
 
         resources = list_migration_resources(namespace)
