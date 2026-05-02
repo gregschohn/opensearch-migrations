@@ -205,6 +205,7 @@ export const FullMigration = WorkflowBuilder.create({
                 c.register({
                     resourceName: b.inputs.resourceName,
                     snapshotItemConfig: b.inputs.snapshotItemConfig,
+                    sourceLabel: expr.get(expr.deserializeRecord(b.inputs.sourceConfig), "label"),
                 }),
             )
             .addStep("readSnapshotPhase", ResourceManagement, "readResourcePhase", c =>
@@ -264,8 +265,6 @@ export const FullMigration = WorkflowBuilder.create({
                         label: expr.get(
                             expr.deserializeRecord(b.inputs.snapshotItemConfig), "label")
                     })),
-                    targetLabel: expr.get(
-                        expr.deserializeRecord(b.inputs.snapshotItemConfig), "label"),
                     semaphoreConfigMapName: expr.get(
                         expr.deserializeRecord(b.inputs.snapshotItemConfig), "semaphoreConfigMapName"),
                     semaphoreKey: expr.get(
@@ -529,6 +528,8 @@ export const FullMigration = WorkflowBuilder.create({
                     name: b.inputs.name,
                     dependsOn: b.inputs.dependsOn,
                     replayerOptions: b.inputs.replayerOptions,
+                    sourceLabel: b.inputs.sourceLabel,
+                    targetLabel: expr.dig(expr.deserializeRecord(b.inputs.targetConfig), ["label"], ""),
                     retryGateName: expr.concat(expr.literal("trafficreplay."), b.inputs.name, expr.literal(".vapretry")),
                     retryGroupName_view: expr.concat(expr.literal("TrafficReplay: "), b.inputs.name),
                 }),

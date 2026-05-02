@@ -1251,9 +1251,9 @@ def _test_output_command_for_workflow(runner, workflow_name, namespace, expected
     """
     result = runner.invoke(
         workflow_cli,
-        ['output', '--workflow-name', workflow_name, '--namespace', namespace,
+        ['output', 'filter', '--workflow-name', workflow_name, '--namespace', namespace,
          '--argo-server', 'https://localhost:2746', '--insecure',
-         '--prefix', '', '-l', 'test-workflow=hello-world'],
+         '--prefix', '', '--label', 'test-workflow=hello-world'],
     )
 
     assert result.exit_code == 0, f"Output command failed with exit code {result.exit_code}. Output: {result.output}"

@@ -395,6 +395,10 @@
                   {
                     "name": "snapshotItemConfig",
                     "value": "{{inputs.parameters.snapshotItemConfig}}"
+                  },
+                  {
+                    "name": "sourceLabel",
+                    "value": "{{=fromJSON(inputs.parameters.sourceConfig)['label']}}"
                   }
                 ]
               },
@@ -531,10 +535,6 @@
                   {
                     "name": "snapshotConfig",
                     "value": "{{=toJSON(sprig.dict(\"config\", sprig.dict(\"createSnapshotConfig\", fromJSON(inputs.parameters.snapshotItemConfig)['config']), \"repoConfig\", fromJSON(inputs.parameters.snapshotItemConfig)['repo'], \"label\", fromJSON(inputs.parameters.snapshotItemConfig)['label']))}}"
-                  },
-                  {
-                    "name": "targetLabel",
-                    "value": "{{=fromJSON(inputs.parameters.snapshotItemConfig)['label']}}"
                   },
                   {
                     "name": "semaphoreConfigMapName",
@@ -1278,6 +1278,14 @@
                   {
                     "name": "replayerOptions",
                     "value": "{{inputs.parameters.replayerOptions}}"
+                  },
+                  {
+                    "name": "sourceLabel",
+                    "value": "{{inputs.parameters.sourceLabel}}"
+                  },
+                  {
+                    "name": "targetLabel",
+                    "value": "{{=sprig.dig('label', '', fromJSON(inputs.parameters.targetConfig))}}"
                   },
                   {
                     "name": "retryGateName",

@@ -312,6 +312,11 @@ export class MigrationInitializer {
     static readonly GATE_LABEL_TARGET = 'migrations.opensearch.org/target';
     static readonly GATE_LABEL_SNAPSHOT = 'migrations.opensearch.org/snapshot';
     static readonly GATE_LABEL_MIGRATION = 'migrations.opensearch.org/migration';
+    static readonly OUTPUT_LABEL_MIGRATION = 'migrations.opensearch.org/from-snapshot-migration';
+    static readonly OUTPUT_LABEL_TASK = 'migrations.opensearch.org/task';
+    static readonly OUTPUT_LABEL_KAFKA_CLUSTER = 'migrations.opensearch.org/kafka-cluster';
+    static readonly WORKFLOW_LABEL = 'workflows.argoproj.io/workflow';
+    static readonly STRIMZI_CLUSTER_LABEL = 'strimzi.io/cluster';
     static readonly CRD_GROUP = 'migrations.opensearch.org';
     static readonly CRD_API_VERSION = `${MigrationInitializer.CRD_GROUP}/v1alpha1`;
 
@@ -337,6 +342,9 @@ export class MigrationInitializer {
         const baseGateLabels: Record<string, string> = workflowName
             ? { [MigrationInitializer.APPROVAL_GATE_LABEL_KEY]: workflowName }
             : {};
+        const baseResourceLabels: Record<string, string> = workflowName
+            ? { [MigrationInitializer.WORKFLOW_LABEL]: workflowName }
+            : {};
         // Merge baseGateLabels with the per-gate context labels.
         const gateLabels = (extra: Record<string, string | undefined>) => {
             const merged: Record<string, string> = { ...baseGateLabels };
@@ -352,7 +360,13 @@ export class MigrationInitializer {
             items.push({
                 apiVersion: CRD_API_VERSION,
                 kind: 'KafkaCluster',
-                metadata: { name: kafkaCluster.name },
+                metadata: {
+                    name: kafkaCluster.name,
+                    labels: {
+                        ...baseResourceLabels,
+                        [MigrationInitializer.STRIMZI_CLUSTER_LABEL]: kafkaCluster.name,
+                    },
+                },
                 spec: {},
                 status: { phase: 'Initialized', configChecksum: '' }
             });
@@ -379,7 +393,14 @@ export class MigrationInitializer {
             items.push({
                 apiVersion: CRD_API_VERSION,
                 kind: 'CapturedTraffic',
-                metadata: { name: topicCrName },
+                metadata: {
+                    name: topicCrName,
+                    labels: {
+                        ...baseResourceLabels,
+                        ...(proxySource && { [MigrationInitializer.GATE_LABEL_SOURCE]: proxySource }),
+                        [MigrationInitializer.OUTPUT_LABEL_KAFKA_CLUSTER]: proxy.kafkaConfig.label,
+                    }
+                },
                 spec: { dependsOn: [proxy.kafkaConfig.label] },
                 status: { phase: 'Initialized', configChecksum: '' }
             });
@@ -388,7 +409,14 @@ export class MigrationInitializer {
             items.push({
                 apiVersion: CRD_API_VERSION,
                 kind: 'CaptureProxy',
-                metadata: { name: proxy.name },
+                metadata: {
+                    name: proxy.name,
+                    labels: {
+                        ...baseResourceLabels,
+                        ...(proxySource && { [MigrationInitializer.GATE_LABEL_SOURCE]: proxySource }),
+                        [MigrationInitializer.OUTPUT_LABEL_TASK]: 'captureProxy',
+                    }
+                },
                 spec: { dependsOn: [topicCrName] },
                 status: { phase: 'Initialized', configChecksum: '' }
             });
@@ -418,7 +446,14 @@ export class MigrationInitializer {
                 items.push({
                     apiVersion: CRD_API_VERSION,
                     kind: 'DataSnapshot',
-                    metadata: { name: this.makeCrdName(snapshot.sourceConfig.label, item.label) },
+                    metadata: {
+                        name: this.makeCrdName(snapshot.sourceConfig.label, item.label),
+                        labels: {
+                            ...baseResourceLabels,
+                            [MigrationInitializer.GATE_LABEL_SOURCE]: snapshot.sourceConfig.label,
+                            [MigrationInitializer.GATE_LABEL_SNAPSHOT]: item.label,
+                        }
+                    },
                     spec: { dependsOn: (item.dependsOnProxySetups ?? []).map(dep => dep.name) },
                     status: { phase: 'Initialized', configChecksum: '' }
                 });
@@ -437,7 +472,14 @@ export class MigrationInitializer {
                 apiVersion: CRD_API_VERSION,
                 kind: 'SnapshotMigration',
                 metadata: {
-                    name: snapshotMigrationName
+                    name: snapshotMigrationName,
+                    labels: {
+                        ...baseResourceLabels,
+                        [MigrationInitializer.GATE_LABEL_SOURCE]: migration.sourceLabel,
+                        [MigrationInitializer.GATE_LABEL_TARGET]: migration.targetConfig.label,
+                        [MigrationInitializer.GATE_LABEL_SNAPSHOT]: migration.snapshotConfig.label,
+                        [MigrationInitializer.OUTPUT_LABEL_MIGRATION]: migration.migrationLabel,
+                    }
                 },
                 spec: {
                 },
@@ -475,7 +517,15 @@ export class MigrationInitializer {
             items.push({
                 apiVersion: CRD_API_VERSION,
                 kind: 'TrafficReplay',
-                metadata: { name: replay.name },
+                metadata: {
+                    name: replay.name,
+                    labels: {
+                        ...baseResourceLabels,
+                        [MigrationInitializer.GATE_LABEL_SOURCE]: replay.sourceLabel,
+                        [MigrationInitializer.GATE_LABEL_TARGET]: replay.toTarget.label,
+                        [MigrationInitializer.OUTPUT_LABEL_TASK]: 'trafficReplayer',
+                    }
+                },
                 spec: {
                     dependsOn: [
                         replay.fromProxy,

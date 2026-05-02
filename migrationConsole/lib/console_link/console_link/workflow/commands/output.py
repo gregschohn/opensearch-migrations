@@ -1,20 +1,31 @@
 import heapq
 import sys
 from contextlib import ExitStack
+from collections import Counter
 
 import click
 import logging
 import subprocess
 
 from kubernetes import client
+from kubernetes.client.rest import ApiException
 
-from .autocomplete_k8s_labels import get_label_completions
+from .autocomplete_k8s_labels import complete_label_value
 from .autocomplete_workflows import DEFAULT_WORKFLOW_NAME, get_workflow_completions
 from .argo_utils import DEFAULT_ARGO_SERVER_URL
+from .crd_utils import (
+    CRD_GROUP,
+    CRD_VERSION,
+    RESETTABLE_PLURALS,
+    list_migration_resources,
+    parse_resource_path,
+    resource_display_name,
+)
 from ..models.utils import load_k8s_config, get_current_namespace
 
 
 logger = logging.getLogger(__name__)
+_RESOURCE_OUTPUT_LABELS = {'strimzi.io/cluster'}
 
 # Flags recognized on either side of `--`.  When they appear in the
 # pass-through args they are "promoted" so the command behaves as if
@@ -55,77 +66,138 @@ def _promote_known_flags(extra_args):
     return promoted, remaining
 
 
-@click.command(name="output")
-@click.option('--list', 'list_labels', is_flag=True, default=False,
-              help='List available label selectors and exit')
-@click.option('--workflow-name', default=DEFAULT_WORKFLOW_NAME, shell_complete=get_workflow_completions,
-              help='Workflow name to show output for (default: WORKFLOW_NAME env var)')
-@click.option('--all-workflows', is_flag=True, default=False,
-              help='Show output for all workflows instead of a single workflow')
-@click.option(
-    '--argo-server',
-    default=DEFAULT_ARGO_SERVER_URL, hidden=True, envvar='ARGO_SERVER',
-    help='Argo Server URL (default: ARGO_SERVER env var, or ARGO_SERVER_SERVICE_HOST:ARGO_SERVER_SERVICE_PORT)'
-)
-@click.option('--namespace', default=get_current_namespace, hidden=True, envvar='WORKFLOW_NAMESPACE',
-              help='Kubernetes namespace')
-@click.option('--insecure', is_flag=True, default=True, hidden=True, envvar='WORKFLOW_INSECURE',
-              help='Skip TLS certificate verification (default: True)')
-@click.option('--token', hidden=True, envvar='ARGO_TOKEN', help='Bearer token for authentication')
-@click.option('--prefix', default='migrations.opensearch.org/',
-              help='Label prefix for filters (default: migrations.opensearch.org/)')
-@click.option(
-    '-l', '--selector',
-    help='Label selector (e.g. source=a,target=b)',
-    shell_complete=get_label_completions
-)
-@click.option('-f', '--follow', is_flag=True, default=False,
-              help='Stream live logs via stern instead of showing history')
-@click.option('--timestamps', is_flag=True, default=False,
-              help='Show timestamps in log output')
-@click.argument('extra_args', nargs=-1, type=click.UNPROCESSED)
-@click.pass_context
-def output_command(ctx, list_labels, workflow_name, all_workflows, namespace, prefix, selector,
-                   follow, timestamps, extra_args, **kwargs):
-    """View or tail workflow logs.
+def _selector_parts(selectors, prefix, workflow_name):
+    parts = []
+    for selector in selectors:
+        parts.extend(selector.split(','))
+    return _get_label_selector(",".join(parts), prefix, workflow_name)
 
-    \b
-    Use --list to show available label selectors.
-    Arguments after -- are forwarded to the underlying tool
-    (kubectl logs for history, stern for follow mode).
-    Use -- --help to see what the underlying tool supports.
 
-    \b
-    Examples:
-      workflow output --list
-      workflow output
-      workflow output --timestamps
-      workflow output -f
-      workflow output -l source=mycluster
-      workflow output -- --since=1h --tail=100
-      workflow output -f -- --container=proxy
-      workflow output -- --help
-    """
-    _validate_inputs(ctx, all_workflows, extra_args)
+def _split_passthrough_args(extra_args):
+    """Split Click's variadic args into before/after the original -- marker."""
+    args = list(extra_args)
+    try:
+        before_dashdash = Counter(sys.argv[:sys.argv.index('--')])
+    except ValueError:
+        for idx, arg in enumerate(args):
+            if arg.startswith('-'):
+                return args[:idx], args[idx:]
+        return args, []
 
-    if list_labels:
-        from .autocomplete_k8s_labels import _fetch_workflow_labels
-        effective_name = None if all_workflows else workflow_name
-        argo_server = kwargs.get('argo_server', DEFAULT_ARGO_SERVER_URL)
-        token = kwargs.get('token')
-        insecure = kwargs.get('insecure', True)
-        label_map, _ = _fetch_workflow_labels(
-            effective_name or DEFAULT_WORKFLOW_NAME, namespace,
-            argo_server, token, insecure)
-        if not label_map:
-            click.echo("No matching pods found.")
+    before = []
+    after = []
+    for arg in args:
+        if before_dashdash[arg] > 0:
+            before_dashdash[arg] -= 1
+            before.append(arg)
         else:
-            for key in sorted(label_map):
-                for val in sorted(label_map[key]):
-                    click.echo(f"{key}={val}")
-        return
+            after.append(arg)
+    return before, after
 
-    promoted, passthrough_args = _promote_known_flags(list(extra_args))
+
+def _validate_scope(ctx, all_workflows):
+    is_wf_set = ctx.get_parameter_source('workflow_name') != click.core.ParameterSource.DEFAULT
+    if all_workflows and is_wf_set:
+        click.echo("Error: --workflow-name and --all-workflows are mutually exclusive", err=True)
+        ctx.exit(1)
+
+
+def _validate_selector_arg(ctx, selector):
+    if selector.startswith('-') or '=' not in selector:
+        click.echo(f"Error: unexpected argument '{selector}'. Label selectors must be key=value.\n", err=True)
+        click.echo(ctx.get_help())
+        ctx.exit(1)
+
+
+def _filter_selectors(source, target, snapshot, task, from_snapshot_migration, labels):
+    selectors = []
+    for key, value in (
+        ('source', source),
+        ('target', target),
+        ('snapshot', snapshot),
+        ('task', task),
+        ('from-snapshot-migration', from_snapshot_migration),
+    ):
+        if value:
+            selectors.append(f"{key}={value}")
+    selectors.extend(labels)
+    return selectors
+
+
+def _migration_resource_names(namespace):
+    return [
+        resource_display_name(plural, name)
+        for plural, name, _, _ in list_migration_resources(namespace)
+    ]
+
+
+def _get_resource_completions(ctx, _, incomplete):
+    namespace = ctx.params.get('namespace', 'ma')
+    try:
+        load_k8s_config()
+        names = _migration_resource_names(namespace)
+    except Exception:
+        return []
+    return [name for name in names if name.startswith(incomplete)]
+
+
+def _find_resource_object(namespace, resource_name):
+    """Find a migration CR by typed type.name path, falling back to raw name."""
+    custom = client.CustomObjectsApi()
+    parsed = parse_resource_path(resource_name)
+    search_plurals = [parsed[0]] if parsed else RESETTABLE_PLURALS
+    search_name = parsed[1] if parsed else resource_name
+    for plural in search_plurals:
+        try:
+            return custom.get_namespaced_custom_object(
+                group=CRD_GROUP,
+                version=CRD_VERSION,
+                namespace=namespace,
+                plural=plural,
+                name=search_name,
+            )
+        except ApiException as e:
+            if e.status != 404:
+                raise
+    return None
+
+
+def _resource_label_selectors(ctx, namespace, resource_name, prefix):
+    resource = _find_resource_object(namespace, resource_name)
+    if not resource:
+        click.echo(f"No migration resource matching '{resource_name}'.", err=True)
+        ctx.exit(1)
+    labels = resource.get('metadata', {}).get('labels', {}) or {}
+    selectors = [
+        f"{key}={value}"
+        for key, value in sorted(labels.items())
+        if (key.startswith(prefix) or key in _RESOURCE_OUTPUT_LABELS) and value
+    ]
+    if not selectors:
+        click.echo(f"Migration resource '{resource_name}' has no output labels.", err=True)
+        ctx.exit(1)
+    return selectors
+
+
+def _list_available_labels(workflow_name, all_workflows, namespace, **kwargs):
+    from .autocomplete_k8s_labels import _fetch_workflow_labels
+    effective_name = None if all_workflows else workflow_name
+    argo_server = kwargs.get('argo_server', DEFAULT_ARGO_SERVER_URL)
+    token = kwargs.get('token')
+    insecure = kwargs.get('insecure', True)
+    label_map, _ = _fetch_workflow_labels(
+        effective_name or DEFAULT_WORKFLOW_NAME, namespace,
+        argo_server, token, insecure)
+    if not label_map:
+        click.echo("No matching pods found.")
+    else:
+        for key in sorted(label_map):
+            for val in sorted(label_map[key]):
+                click.echo(f"{key}={val}")
+
+
+def _run_output(ctx, namespace, selector, follow, timestamps, passthrough_args):
+    promoted, passthrough_args = _promote_known_flags(list(passthrough_args))
     follow = follow or 'follow' in promoted
     timestamps = timestamps or 'timestamps' in promoted
 
@@ -133,33 +205,189 @@ def output_command(ctx, list_labels, workflow_name, all_workflows, namespace, pr
         _show_underlying_help(follow)
         return
 
-    effective_name = None if all_workflows else workflow_name
-    full_selector = _get_label_selector(selector, prefix, effective_name)
-
     if follow:
-        _run_tailing_mode(namespace, full_selector, timestamps, passthrough_args)
+        _run_tailing_mode(namespace, selector, timestamps, passthrough_args)
     else:
-        _run_history_mode(ctx, namespace, full_selector, timestamps, passthrough_args)
+        _run_history_mode(ctx, namespace, selector, timestamps, passthrough_args)
 
 
-def _validate_inputs(ctx, all_workflows, extra_args):
-    """Ensure mutually exclusive flags are respected and extra args are intentional."""
-    is_wf_set = ctx.get_parameter_source('workflow_name') != click.core.ParameterSource.DEFAULT
-    if all_workflows and is_wf_set:
-        click.echo("Error: --workflow-name and --all-workflows are mutually exclusive", err=True)
+def _output_options(func):
+    func = click.option('--workflow-name', default=DEFAULT_WORKFLOW_NAME, shell_complete=get_workflow_completions,
+                        help='Workflow name to show output for (default: WORKFLOW_NAME env var)')(func)
+    func = click.option('--all-workflows', is_flag=True, default=False,
+                        help='Show output for all workflows instead of a single workflow')(func)
+    func = click.option(
+        '--argo-server',
+        default=DEFAULT_ARGO_SERVER_URL, hidden=True, envvar='ARGO_SERVER',
+        help='Argo Server URL (default: ARGO_SERVER env var, or ARGO_SERVER_SERVICE_HOST:ARGO_SERVER_SERVICE_PORT)'
+    )(func)
+    func = click.option('--namespace', default=get_current_namespace, hidden=True, envvar='WORKFLOW_NAMESPACE',
+                        help='Kubernetes namespace')(func)
+    func = click.option('--insecure', is_flag=True, default=True, hidden=True, envvar='WORKFLOW_INSECURE',
+                        help='Skip TLS certificate verification (default: True)')(func)
+    func = click.option('--token', hidden=True, envvar='ARGO_TOKEN', help='Bearer token for authentication')(func)
+    func = click.option('--prefix', default='migrations.opensearch.org/',
+                        help='Label prefix for filters (default: migrations.opensearch.org/)')(func)
+    func = click.option('-f', '--follow', is_flag=True, default=False,
+                        help='Stream live logs via stern instead of showing history')(func)
+    func = click.option('--timestamps', is_flag=True, default=False,
+                        help='Show timestamps in log output')(func)
+    return func
+
+
+@click.group(name="output", invoke_without_command=False)
+def output_command():
+    """View or tail workflow logs.
+
+    \b
+    Subcommands:
+      all       Show all logs for the selected workflow.
+      resource  Show logs for one migration resource.
+      filter    Show logs matching one or more label filters.
+
+    \b
+    Arguments after -- are forwarded to the underlying tool
+    (kubectl logs for history, stern for follow mode).
+    Use -- --help to see what the underlying tool supports.
+    """
+
+
+@output_command.command("all")
+@_output_options
+@click.argument('extra_args', nargs=-1, type=click.UNPROCESSED)
+@click.pass_context
+def output_all(ctx, workflow_name, all_workflows, namespace, prefix,
+               follow, timestamps, extra_args, **kwargs):
+    """Show all logs for the selected workflow.
+
+    \b
+    Examples:
+      workflow output all
+      workflow output all -- --since=1h --tail=100
+      workflow output all -f -- --container=proxy
+    """
+    _validate_scope(ctx, all_workflows)
+    before_dashdash, passthrough_args = _split_passthrough_args(extra_args)
+    if before_dashdash:
+        click.echo(f"Error: unexpected argument '{before_dashdash[0]}'.\n", err=True)
+        click.echo(ctx.get_help())
         ctx.exit(1)
-    # Find args that appear before -- in the command line (these are mistakes, not pass-through)
-    if extra_args:
+    effective_name = None if all_workflows else workflow_name
+    full_selector = _selector_parts([], prefix, effective_name)
+    _run_output(ctx, namespace, full_selector, follow, timestamps, passthrough_args)
+
+
+@output_command.command("resource")
+@click.option('--list', 'list_labels', is_flag=True, default=False,
+              help='List available migration resources and exit')
+@_output_options
+@click.argument('resource_name', required=False, shell_complete=_get_resource_completions)
+@click.argument('extra_args', nargs=-1, type=click.UNPROCESSED)
+@click.pass_context
+def output_resource(ctx, list_labels, workflow_name, all_workflows, namespace, prefix,
+                    follow, timestamps, resource_name, extra_args, **kwargs):
+    """Show logs for one migration resource.
+
+    \b
+    Examples:
+      workflow output resource captureproxy.my-proxy
+      workflow output resource snapshotmigration.migration-0 -- --tail=100
+    """
+    _validate_scope(ctx, all_workflows)
+    if list_labels:
         try:
-            dashdash_idx = sys.argv.index('--')
-            before_dashdash = sys.argv[:dashdash_idx]
-        except ValueError:
-            before_dashdash = sys.argv
-        for arg in extra_args:
-            if not arg.startswith('-') and arg in before_dashdash:
-                click.echo(f"Error: unexpected argument '{arg}'.\n", err=True)
-                click.echo(ctx.get_help())
-                ctx.exit(1)
+            load_k8s_config()
+            names = _migration_resource_names(namespace)
+        except Exception as e:
+            click.echo(f"Error listing migration resources: {e}", err=True)
+            ctx.exit(1)
+            return
+        if not names:
+            click.echo("No migration resources found.")
+        else:
+            for name in sorted(names):
+                click.echo(name)
+        return
+
+    if resource_name is None:
+        click.echo("Error: specify a migration resource or --list.\n", err=True)
+        click.echo(ctx.get_help())
+        ctx.exit(1)
+
+    before_dashdash, passthrough_args = _split_passthrough_args(extra_args)
+    if before_dashdash:
+        click.echo("Error: resource accepts exactly one migration resource.\n", err=True)
+        click.echo(ctx.get_help())
+        ctx.exit(1)
+
+    try:
+        load_k8s_config()
+    except Exception as e:
+        click.echo(f"Error: could not load Kubernetes configuration: {e}", err=True)
+        ctx.exit(1)
+        return
+    resource_selectors = _resource_label_selectors(ctx, namespace, resource_name, prefix)
+    uses_external_resource_selector = any(
+        selector.startswith('strimzi.io/cluster=') for selector in resource_selectors
+    )
+    effective_name = None if all_workflows or uses_external_resource_selector else workflow_name
+    full_selector = _selector_parts(resource_selectors, prefix, effective_name)
+    _run_output(ctx, namespace, full_selector, follow, timestamps, passthrough_args)
+
+
+@output_command.command("filter")
+@click.option('--list', 'list_labels', is_flag=True, default=False,
+              help='List available label selectors and exit')
+@click.option('--source', shell_complete=complete_label_value('source'),
+              help='Filter output by source label')
+@click.option('--target', shell_complete=complete_label_value('target'),
+              help='Filter output by target label')
+@click.option('--snapshot', shell_complete=complete_label_value('snapshot'),
+              help='Filter output by snapshot label')
+@click.option('--task', shell_complete=complete_label_value('task'),
+              help='Filter output by task label')
+@click.option('--from-snapshot-migration', shell_complete=complete_label_value('from-snapshot-migration'),
+              help='Filter output by from-snapshot-migration label')
+@click.option('--label', 'labels', multiple=True,
+              help='Additional raw key=value label selector. May be used multiple times.')
+@_output_options
+@click.argument('extra_args', nargs=-1, type=click.UNPROCESSED)
+@click.pass_context
+def output_filter(ctx, list_labels, source, target, snapshot, task, from_snapshot_migration,
+                  labels, workflow_name, all_workflows, namespace, prefix, follow,
+                  timestamps, extra_args, **kwargs):
+    """Show logs matching one or more label filters.
+
+    \b
+    Examples:
+      workflow output filter --source mycluster --target target1
+      workflow output filter --snapshot snap1 --task metadataMigrate
+      workflow output filter --label custom.example/key=value -- --since=1h
+    """
+    _validate_scope(ctx, all_workflows)
+    if list_labels:
+        _list_available_labels(workflow_name, all_workflows, namespace, **kwargs)
+        return
+
+    selectors, passthrough_args = _split_passthrough_args(extra_args)
+    if selectors:
+        click.echo(f"Error: unexpected argument '{selectors[0]}'. Use filter options such as --task or --label.\n",
+                   err=True)
+        click.echo(ctx.get_help())
+        ctx.exit(1)
+
+    selectors = _filter_selectors(source, target, snapshot, task, from_snapshot_migration, labels)
+    if not selectors:
+        click.echo("Error: specify --list or one or more filter options.\n", err=True)
+        click.echo(ctx.get_help())
+        ctx.exit(1)
+
+    for selector in labels:
+        _validate_selector_arg(ctx, selector)
+
+    effective_name = None if all_workflows else workflow_name
+    full_selector = _selector_parts(selectors, prefix, effective_name)
+    _run_output(ctx, namespace, full_selector, follow, timestamps, passthrough_args)
 
 
 def _show_underlying_help(follow):

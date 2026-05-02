@@ -31,6 +31,15 @@ import {K8S_RESOURCE_RETRY_STRATEGY} from "./commonUtils/resourceRetryStrategy";
 const SECONDS_IN_DAYS = 24 * 3600;
 const LONGEST_POSSIBLE_MIGRATION = 365 * SECONDS_IN_DAYS;
 const CRD_API_VERSION = "migrations.opensearch.org/v1alpha1";
+const RUN_UID_LABEL = "workflows.argoproj.io/run-uid";
+const WORKFLOW_LABEL = "workflows.argoproj.io/workflow";
+const SOURCE_LABEL = "migrations.opensearch.org/source";
+const TARGET_LABEL = "migrations.opensearch.org/target";
+const SNAPSHOT_LABEL = "migrations.opensearch.org/snapshot";
+const MIGRATION_LABEL = "migrations.opensearch.org/from-snapshot-migration";
+const TASK_LABEL = "migrations.opensearch.org/task";
+const KAFKA_CLUSTER_LABEL = "migrations.opensearch.org/kafka-cluster";
+const STRIMZI_CLUSTER_LABEL = "strimzi.io/cluster";
 
 type ReservedPatchInputNames = "resourceName" | "phase";
 type StringStatusFields = Readonly<Record<string, AllowLiteralOrExpression<string>>>;
@@ -105,7 +114,9 @@ function makeKafkaClusterManifest(
         metadata: {
             name: makeStringTypeProxy(expr.get(kc, "name")),
             labels: {
-                "workflows.argoproj.io/run-uid": makeStringTypeProxy(expr.getWorkflowValue("uid"))
+                [WORKFLOW_LABEL]: makeStringTypeProxy(expr.getWorkflowValue("name")),
+                [RUN_UID_LABEL]: makeStringTypeProxy(expr.getWorkflowValue("uid")),
+                [STRIMZI_CLUSTER_LABEL]: makeStringTypeProxy(expr.get(kc, "name")),
             }
         },
         spec: {
@@ -142,6 +153,7 @@ function makeCapturedTrafficManifest(
     topicCrName: BaseExpression<string>,
     kafkaClusterName: BaseExpression<string>,
     kafkaTopicName: BaseExpression<string>,
+    sourceLabel: BaseExpression<string>,
     partitions: BaseExpression<Serialized<number>>,
     replicas: BaseExpression<Serialized<number>>,
     topicConfig: BaseExpression<Serialized<Record<string, any>>>,
@@ -152,7 +164,10 @@ function makeCapturedTrafficManifest(
         metadata: {
             name: makeStringTypeProxy(topicCrName),
             labels: {
-                "workflows.argoproj.io/run-uid": makeStringTypeProxy(expr.getWorkflowValue("uid"))
+                [WORKFLOW_LABEL]: makeStringTypeProxy(expr.getWorkflowValue("name")),
+                [RUN_UID_LABEL]: makeStringTypeProxy(expr.getWorkflowValue("uid")),
+                [SOURCE_LABEL]: makeStringTypeProxy(sourceLabel),
+                [KAFKA_CLUSTER_LABEL]: makeStringTypeProxy(kafkaClusterName),
             }
         },
         spec: {
@@ -191,7 +206,10 @@ function makeCaptureProxyManifest(
         metadata: {
             name: makeStringTypeProxy(proxyName),
             labels: {
-                "workflows.argoproj.io/run-uid": makeStringTypeProxy(expr.getWorkflowValue("uid"))
+                [WORKFLOW_LABEL]: makeStringTypeProxy(expr.getWorkflowValue("name")),
+                [RUN_UID_LABEL]: makeStringTypeProxy(expr.getWorkflowValue("uid")),
+                [SOURCE_LABEL]: makeStringTypeProxy(expr.dig(config, ["sourceConfig", "label"], "")),
+                [TASK_LABEL]: "captureProxy",
             }
         },
         spec: makeDirectTypeProxy(expr.mergeDicts(
@@ -212,7 +230,12 @@ function makeSnapshotMigrationManifest(
         metadata: {
             name: makeStringTypeProxy(resourceName),
             labels: {
-                "workflows.argoproj.io/run-uid": makeStringTypeProxy(expr.getWorkflowValue("uid"))
+                [WORKFLOW_LABEL]: makeStringTypeProxy(expr.getWorkflowValue("name")),
+                [RUN_UID_LABEL]: makeStringTypeProxy(expr.getWorkflowValue("uid")),
+                [SOURCE_LABEL]: makeStringTypeProxy(expr.get(config, "sourceLabel")),
+                [TARGET_LABEL]: makeStringTypeProxy(expr.dig(config, ["targetConfig", "label"], expr.literal(""))),
+                [SNAPSHOT_LABEL]: makeStringTypeProxy(expr.dig(config, ["snapshotConfig", "label"], expr.literal(""))),
+                [MIGRATION_LABEL]: makeStringTypeProxy(expr.get(config, "migrationLabel")),
             }
         },
         spec: {
@@ -267,6 +290,8 @@ function makeTrafficReplayManifest(
     name: BaseExpression<string>,
     dependsOn: BaseExpression<Serialized<string[]>>,
     replayerOptions: BaseExpression<Serialized<z.infer<typeof ARGO_REPLAYER_OPTIONS>>>,
+    sourceLabel: BaseExpression<string>,
+    targetLabel: BaseExpression<string>,
 ) {
     const opts = expr.deserializeRecord(replayerOptions);
     const workflowSpecFields = expr.makeDict({
@@ -286,7 +311,11 @@ function makeTrafficReplayManifest(
         metadata: {
             name: makeStringTypeProxy(name),
             labels: {
-                "workflows.argoproj.io/run-uid": makeStringTypeProxy(expr.getWorkflowValue("uid"))
+                [WORKFLOW_LABEL]: makeStringTypeProxy(expr.getWorkflowValue("name")),
+                [RUN_UID_LABEL]: makeStringTypeProxy(expr.getWorkflowValue("uid")),
+                [SOURCE_LABEL]: makeStringTypeProxy(sourceLabel),
+                [TARGET_LABEL]: makeStringTypeProxy(targetLabel),
+                [TASK_LABEL]: "trafficReplayer",
             }
         },
         spec: makeDirectTypeProxy(expr.mergeDicts(
@@ -321,6 +350,7 @@ export const ResourceManagement = WorkflowBuilder.create({
         .addRequiredInput("topicCrName", typeToken<string>())
         .addRequiredInput("kafkaClusterName", typeToken<string>())
         .addRequiredInput("kafkaTopicName", typeToken<string>())
+        .addRequiredInput("sourceLabel", typeToken<string>())
         .addRequiredInput("partitions", typeToken<number>())
         .addRequiredInput("replicas", typeToken<number>())
         .addRequiredInput("topicConfig", typeToken<Serialized<Record<string, any>>>())
@@ -332,6 +362,7 @@ export const ResourceManagement = WorkflowBuilder.create({
                     b.inputs.topicCrName,
                     b.inputs.kafkaClusterName,
                     b.inputs.kafkaTopicName,
+                    b.inputs.sourceLabel,
                     b.inputs.partitions,
                     b.inputs.replicas,
                     b.inputs.topicConfig
@@ -358,6 +389,7 @@ export const ResourceManagement = WorkflowBuilder.create({
     .addTemplate("upsertDataSnapshotResource", t => t
         .addRequiredInput("resourceName", typeToken<string>())
         .addRequiredInput("snapshotItemConfig", typeToken<z.infer<typeof PER_SOURCE_CREATE_SNAPSHOTS_CONFIG>>())
+        .addRequiredInput("sourceLabel", typeToken<string>())
         .addResourceTask(b => {
             const snapshotItemConfig = expr.deserializeRecord(b.inputs.snapshotItemConfig);
             const snapshotOptions = expr.get(snapshotItemConfig, "config");
@@ -371,7 +403,10 @@ export const ResourceManagement = WorkflowBuilder.create({
                     metadata: {
                         name: b.inputs.resourceName,
                         labels: {
-                            "workflows.argoproj.io/run-uid": makeStringTypeProxy(expr.getWorkflowValue("uid"))
+                            [WORKFLOW_LABEL]: makeStringTypeProxy(expr.getWorkflowValue("name")),
+                            [RUN_UID_LABEL]: makeStringTypeProxy(expr.getWorkflowValue("uid")),
+                            [SOURCE_LABEL]: makeStringTypeProxy(b.inputs.sourceLabel),
+                            [SNAPSHOT_LABEL]: makeStringTypeProxy(expr.get(snapshotItemConfig, "label")),
                         }
                     },
                     spec: {
@@ -414,11 +449,19 @@ export const ResourceManagement = WorkflowBuilder.create({
         .addRequiredInput("name", typeToken<string>())
         .addRequiredInput("dependsOn", typeToken<string[]>())
         .addRequiredInput("replayerOptions", typeToken<z.infer<typeof ARGO_REPLAYER_OPTIONS>>())
+        .addRequiredInput("sourceLabel", typeToken<string>())
+        .addRequiredInput("targetLabel", typeToken<string>())
         .addResourceTask(b => b
             .setDefinition({
                 action: "apply",
                 setOwnerReference: false,
-                manifest: makeTrafficReplayManifest(b.inputs.name, b.inputs.dependsOn, b.inputs.replayerOptions)
+                manifest: makeTrafficReplayManifest(
+                    b.inputs.name,
+                    b.inputs.dependsOn,
+                    b.inputs.replayerOptions,
+                    b.inputs.sourceLabel,
+                    b.inputs.targetLabel
+                )
             }))
         .addJsonPathOutput("currentConfigChecksum", "{.status.configChecksum}", typeToken<string>())
         .addRetryParameters(K8S_RESOURCE_RETRY_STRATEGY)
@@ -539,6 +582,7 @@ export const ResourceManagement = WorkflowBuilder.create({
         .addRequiredInput("partitions", typeToken<number>())
         .addRequiredInput("replicas", typeToken<number>())
         .addRequiredInput("topicConfig", typeToken<Serialized<Record<string, any>>>())
+        .addRequiredInput("sourceLabel", typeToken<string>())
         .addRequiredInput("retryGateName", typeToken<string>())
         .addOptionalInput("retryGroupName_view", c => "Apply")
 
@@ -548,6 +592,7 @@ export const ResourceManagement = WorkflowBuilder.create({
                     topicCrName: b.inputs.topicCrName,
                     kafkaClusterName: b.inputs.kafkaClusterName,
                     kafkaTopicName: b.inputs.kafkaTopicName,
+                    sourceLabel: b.inputs.sourceLabel,
                     partitions: b.inputs.partitions,
                     replicas: b.inputs.replicas,
                     topicConfig: b.inputs.topicConfig,
@@ -580,6 +625,7 @@ export const ResourceManagement = WorkflowBuilder.create({
                     topicCrName: b.inputs.topicCrName,
                     kafkaClusterName: b.inputs.kafkaClusterName,
                     kafkaTopicName: b.inputs.kafkaTopicName,
+                    sourceLabel: b.inputs.sourceLabel,
                     partitions: b.inputs.partitions,
                     replicas: b.inputs.replicas,
                     topicConfig: b.inputs.topicConfig,
@@ -656,6 +702,7 @@ export const ResourceManagement = WorkflowBuilder.create({
     .addTemplate("reconcileDataSnapshotResource", t => t
         .addRequiredInput("resourceName", typeToken<string>())
         .addRequiredInput("snapshotItemConfig", typeToken<z.infer<typeof PER_SOURCE_CREATE_SNAPSHOTS_CONFIG>>())
+        .addRequiredInput("sourceLabel", typeToken<string>())
         .addOptionalInput("retryGroupName_view", c => "Apply")
 
         .addSteps(b => b
@@ -663,6 +710,7 @@ export const ResourceManagement = WorkflowBuilder.create({
                 c.register({
                     resourceName: b.inputs.resourceName,
                     snapshotItemConfig: b.inputs.snapshotItemConfig,
+                    sourceLabel: b.inputs.sourceLabel,
                 }),
                 {continueOn: {failed: true}}
             )
@@ -732,6 +780,8 @@ export const ResourceManagement = WorkflowBuilder.create({
         .addRequiredInput("name", typeToken<string>())
         .addRequiredInput("dependsOn", typeToken<string[]>())
         .addRequiredInput("replayerOptions", typeToken<z.infer<typeof ARGO_REPLAYER_OPTIONS>>())
+        .addRequiredInput("sourceLabel", typeToken<string>())
+        .addRequiredInput("targetLabel", typeToken<string>())
         .addRequiredInput("retryGateName", typeToken<string>())
         .addOptionalInput("retryGroupName_view", c => "Apply")
 
@@ -741,6 +791,8 @@ export const ResourceManagement = WorkflowBuilder.create({
                     name: b.inputs.name,
                     dependsOn: b.inputs.dependsOn,
                     replayerOptions: b.inputs.replayerOptions,
+                    sourceLabel: b.inputs.sourceLabel,
+                    targetLabel: b.inputs.targetLabel,
                 }),
                 {continueOn: {failed: true}}
             )
@@ -770,6 +822,8 @@ export const ResourceManagement = WorkflowBuilder.create({
                     name: b.inputs.name,
                     dependsOn: b.inputs.dependsOn,
                     replayerOptions: b.inputs.replayerOptions,
+                    sourceLabel: b.inputs.sourceLabel,
+                    targetLabel: b.inputs.targetLabel,
                     retryGateName: b.inputs.retryGateName,
                     retryGroupName_view: b.inputs.retryGroupName_view,
                 }),

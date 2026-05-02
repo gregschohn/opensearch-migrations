@@ -230,7 +230,7 @@ class TestWorkflowCLICommands:
         assert 'Running' in result.output
         assert 'step1' in result.output
         assert 'step2' in result.output
-        assert 'workflow output test-workflow' in result.output
+        assert 'workflow output all --workflow-name test-workflow' in result.output
 
     @patch('console_link.workflow.commands.status.requests.get')
     @patch('console_link.workflow.commands.status.WorkflowService')
@@ -492,6 +492,146 @@ class TestWorkflowCLICommands:
         args, kwargs = mock_gather.call_args
         # _gather_gates(namespace, workflow_name, category, pre_approve)
         assert args[2] == 'change'
+
+    @patch('console_link.workflow.commands.output._run_history_mode')
+    def test_output_all_uses_workflow_selector(self, mock_history):
+        runner = CliRunner()
+
+        result = runner.invoke(workflow_cli, ['output', 'all'])
+
+        assert result.exit_code == 0
+        args, _ = mock_history.call_args
+        assert args[2] == 'workflows.argoproj.io/workflow=migration-workflow'
+        assert args[4] == []
+
+    @patch('console_link.workflow.commands.output._run_history_mode')
+    def test_output_filter_combines_filter_options(self, mock_history):
+        runner = CliRunner()
+
+        result = runner.invoke(
+            workflow_cli,
+            ['output', 'filter', '--snapshot', 'snap1', '--target', 'target1', '--', '--since=1h']
+        )
+
+        assert result.exit_code == 0
+        args, _ = mock_history.call_args
+        assert args[2] == (
+            'migrations.opensearch.org/target=target1,'
+            'migrations.opensearch.org/snapshot=snap1,'
+            'workflows.argoproj.io/workflow=migration-workflow'
+        )
+        assert args[4] == ['--since=1h']
+
+    @patch('console_link.workflow.commands.output.load_k8s_config')
+    @patch('console_link.workflow.commands.output.client')
+    @patch('console_link.workflow.commands.output._run_history_mode')
+    def test_output_resource_uses_resource_labels(self, mock_history, mock_client, _mock_k8s):
+        runner = CliRunner()
+        mock_custom = Mock()
+        mock_client.CustomObjectsApi.return_value = mock_custom
+        mock_custom.get_namespaced_custom_object.return_value = {
+            'metadata': {
+                'labels': {
+                    'migrations.opensearch.org/source': 'source1',
+                    'migrations.opensearch.org/target': 'target1',
+                    'strimzi.io/cluster': 'default',
+                    'app.kubernetes.io/name': 'ignored',
+                }
+            }
+        }
+
+        result = runner.invoke(workflow_cli, ['output', 'resource', 'captureproxy.my-proxy'])
+
+        assert result.exit_code == 0
+        mock_custom.get_namespaced_custom_object.assert_called_once_with(
+            group='migrations.opensearch.org',
+            version='v1alpha1',
+            namespace='ma',
+            plural='captureproxies',
+            name='my-proxy',
+        )
+        args, _ = mock_history.call_args
+        assert args[2] == (
+            'migrations.opensearch.org/source=source1,'
+            'migrations.opensearch.org/target=target1,'
+            'strimzi.io/cluster=default'
+        )
+
+    @patch('console_link.workflow.commands.output.load_k8s_config')
+    @patch('console_link.workflow.commands.output.client')
+    @patch('console_link.workflow.commands.output._run_history_mode')
+    def test_output_resource_keeps_workflow_selector_for_workflow_pods(
+        self, mock_history, mock_client, _mock_k8s
+    ):
+        runner = CliRunner()
+        mock_custom = Mock()
+        mock_client.CustomObjectsApi.return_value = mock_custom
+        mock_custom.get_namespaced_custom_object.return_value = {
+            'metadata': {
+                'labels': {
+                    'migrations.opensearch.org/source': 'source1',
+                    'migrations.opensearch.org/task': 'captureProxy',
+                }
+            }
+        }
+
+        result = runner.invoke(workflow_cli, ['output', 'resource', 'captureproxy.my-proxy'])
+
+        assert result.exit_code == 0
+        args, _ = mock_history.call_args
+        assert args[2] == (
+            'migrations.opensearch.org/source=source1,'
+            'migrations.opensearch.org/task=captureProxy,'
+            'workflows.argoproj.io/workflow=migration-workflow'
+        )
+
+    @patch('console_link.workflow.commands.output._run_history_mode')
+    def test_output_filter_accepts_raw_label_option(self, mock_history):
+        runner = CliRunner()
+
+        result = runner.invoke(
+            workflow_cli,
+            ['output', 'filter', '--label', 'custom.example/key=value']
+        )
+
+        assert result.exit_code == 0
+        args, _ = mock_history.call_args
+        assert args[2] == (
+            'custom.example/key=value,'
+            'workflows.argoproj.io/workflow=migration-workflow'
+        )
+
+    def test_output_filter_rejects_unexpected_argument(self):
+        runner = CliRunner()
+
+        result = runner.invoke(workflow_cli, ['output', 'filter', 'oops'])
+
+        assert result.exit_code != 0
+        assert 'Use filter options such as --task or --label' in result.output
+
+    def test_output_top_level_requires_subcommand(self):
+        runner = CliRunner()
+
+        result = runner.invoke(workflow_cli, ['output'])
+
+        assert result.exit_code != 0
+        assert 'Missing command' in result.output or 'Usage:' in result.output
+
+    @patch('console_link.workflow.commands.output.load_k8s_config')
+    @patch('console_link.workflow.commands.output.list_migration_resources')
+    def test_output_resource_completion_uses_migration_resource_names(self, mock_list, _mock_k8s):
+        from console_link.workflow.commands.output import _get_resource_completions
+
+        ctx = Mock()
+        ctx.params = {'namespace': 'ma'}
+        mock_list.return_value = [
+            ('captureproxies', 'my-proxy', 'Ready', []),
+            ('snapshotmigrations', 'migration-0', 'Ready', []),
+        ]
+
+        completions = _get_resource_completions(ctx, None, 'capture')
+
+        assert completions == ['captureproxy.my-proxy']
 
     @patch('console_link.workflow.commands.submit.delete_workflow')
     @patch('console_link.workflow.commands.submit.stop_workflow')

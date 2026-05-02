@@ -677,6 +677,10 @@
                     "value": "{{inputs.parameters.kafkaTopicName}}"
                   },
                   {
+                    "name": "sourceLabel",
+                    "value": "{{inputs.parameters.sourceK8sLabel}}"
+                  },
+                  {
                     "name": "partitions",
                     "value": "{{inputs.parameters.topicPartitions}}"
                   },
@@ -751,6 +755,10 @@
                   {
                     "name": "ownerUid",
                     "value": "{{inputs.parameters.kafkaClusterOwnerUid}}"
+                  },
+                  {
+                    "name": "sourceLabel",
+                    "value": "{{inputs.parameters.sourceK8sLabel}}"
                   },
                   {
                     "name": "partitions",
