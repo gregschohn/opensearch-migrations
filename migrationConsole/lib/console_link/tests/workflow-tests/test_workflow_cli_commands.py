@@ -2,6 +2,7 @@
 
 from click.testing import CliRunner
 from unittest.mock import Mock, patch
+from kubernetes.client.rest import ApiException
 
 from console_link.workflow.cli import workflow_cli
 from console_link.workflow.models.config import WorkflowConfig
@@ -766,3 +767,115 @@ class TestConfigureCommands:
         assert 'Sample configuration loaded successfully' in result.output
         # Verify save_config was called
         assert mock_store.save_config.called
+
+    @patch('console_link.workflow.commands.configure.get_credentials_secret_store')
+    def test_configure_secret_list_shows_managed_secrets(self, mock_get_secret_store):
+        runner = CliRunner()
+        mock_secret_store = Mock()
+        mock_get_secret_store.return_value = mock_secret_store
+        mock_secret_store.list_secrets.return_value = ['source-secret', 'target-secret']
+
+        result = runner.invoke(workflow_cli, ['configure', 'secret', 'list'])
+
+        assert result.exit_code == 0
+        assert 'source-secret' in result.output
+        assert 'target-secret' in result.output
+
+    @patch('console_link.workflow.commands.configure.validate_and_find_secrets')
+    @patch('console_link.workflow.commands.configure.get_credentials_secret_store')
+    @patch('console_link.workflow.commands.configure.get_workflow_config_store')
+    def test_configure_secret_create_show_missing(self, mock_get_config_store, mock_get_secret_store, mock_validate):
+        runner = CliRunner()
+        mock_config_store = Mock()
+        mock_get_config_store.return_value = mock_config_store
+        mock_config_store.load_config.return_value = WorkflowConfig(raw_yaml='sourceClusters: {}')
+        mock_validate.return_value = {
+            'valid': True,
+            'validSecrets': ['source-secret', 'target-secret'],
+        }
+        mock_secret_store = Mock()
+        mock_get_secret_store.return_value = mock_secret_store
+        mock_secret_store.secrets_exist.return_value = {
+            'source-secret': False,
+            'target-secret': True,
+        }
+
+        result = runner.invoke(workflow_cli, ['configure', 'secret', 'create', '--show-missing'])
+
+        assert result.exit_code == 0
+        assert 'source-secret' in result.output
+        assert 'target-secret' not in result.output
+
+    @patch('console_link.workflow.commands.configure.validate_and_find_secrets')
+    @patch('console_link.workflow.commands.configure.get_credentials_secret_store')
+    @patch('console_link.workflow.commands.configure.get_workflow_config_store')
+    def test_configure_secret_create_list_alias(self, mock_get_config_store, mock_get_secret_store, mock_validate):
+        runner = CliRunner()
+        mock_config_store = Mock()
+        mock_get_config_store.return_value = mock_config_store
+        mock_config_store.load_config.return_value = WorkflowConfig(raw_yaml='sourceClusters: {}')
+        mock_validate.return_value = {
+            'valid': True,
+            'validSecrets': ['source-secret'],
+        }
+        mock_secret_store = Mock()
+        mock_get_secret_store.return_value = mock_secret_store
+        mock_secret_store.secrets_exist.return_value = {'source-secret': False}
+
+        result = runner.invoke(workflow_cli, ['configure', 'secret', 'create', '--list'])
+
+        assert result.exit_code == 0
+        assert 'source-secret' in result.output
+
+    @patch('console_link.workflow.commands.configure.get_credentials_secret_store')
+    def test_configure_secret_update_list_shows_managed_secrets(self, mock_get_secret_store):
+        runner = CliRunner()
+        mock_secret_store = Mock()
+        mock_get_secret_store.return_value = mock_secret_store
+        mock_secret_store.list_secrets.return_value = ['source-secret']
+
+        result = runner.invoke(workflow_cli, ['configure', 'secret', 'update', '--list'])
+
+        assert result.exit_code == 0
+        assert 'source-secret' in result.output
+
+    @patch('console_link.workflow.commands.configure.get_credentials_secret_store')
+    def test_configure_secret_delete_list_shows_managed_secrets(self, mock_get_secret_store):
+        runner = CliRunner()
+        mock_secret_store = Mock()
+        mock_get_secret_store.return_value = mock_secret_store
+        mock_secret_store.list_secrets.return_value = ['target-secret']
+
+        result = runner.invoke(workflow_cli, ['configure', 'secret', 'delete', '--list'])
+
+        assert result.exit_code == 0
+        assert 'target-secret' in result.output
+
+    @patch('console_link.workflow.commands.configure.validate_and_find_secrets')
+    @patch('console_link.workflow.commands.configure.get_credentials_secret_store')
+    def test_configure_secret_create_prompts_for_credentials(
+        self,
+        mock_get_secret_store,
+        mock_validate,
+    ):
+        runner = CliRunner()
+        mock_secret_store = Mock()
+        mock_get_secret_store.return_value = mock_secret_store
+        mock_secret_store.namespace = 'ma'
+        mock_secret_store.default_labels = {'use-case': 'http-basic-credentials'}
+        mock_secret_store.v1.read_namespaced_secret.side_effect = ApiException(status=404)
+        mock_secret_store.save_secret.return_value = 'Secret created: source-secret'
+
+        result = runner.invoke(
+            workflow_cli,
+            ['configure', 'secret', 'create', 'source-secret'],
+            input='admin\nsecret-pass\nsecret-pass\n',
+        )
+
+        assert result.exit_code == 0
+        mock_secret_store.save_secret.assert_called_once_with(
+            'source-secret',
+            {'username': 'admin', 'password': 'secret-pass'},
+        )
+        mock_validate.assert_not_called()
+        assert 'Secret created: source-secret' in result.output

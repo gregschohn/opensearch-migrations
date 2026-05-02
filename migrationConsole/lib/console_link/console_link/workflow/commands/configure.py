@@ -7,6 +7,8 @@ import tempfile
 from typing import Optional, cast
 
 import click
+from kubernetes.client import V1Secret
+from kubernetes.client.rest import ApiException
 
 from ...models.command_result import CommandResult
 from ..models.config import WorkflowConfig
@@ -179,6 +181,169 @@ def edit_config(ctx, stdin):
         _handle_stdin_edit(wf_config_store, secret_store, session_name)
     else:
         _handle_editor_edit(wf_config_store, secret_store, session_name)
+
+
+def _credentials_secret_store(ctx):
+    return get_credentials_secret_store(ctx)
+
+
+def _load_current_config(ctx) -> WorkflowConfig:
+    store = get_workflow_config_store(ctx)
+    config = store.load_config(session_name)
+    if config is None or not config:
+        raise click.ClickException("No configuration found.")
+    return config
+
+
+def _configured_secret_names(ctx):
+    config = _load_current_config(ctx)
+    result = validate_and_find_secrets(config.raw_yaml)
+    if not result.get('valid', False):
+        raise click.ClickException(
+            f"Current configuration has validation errors:\n{result.get('errors', 'Unknown error')}")
+    invalid = result.get('invalidSecrets')
+    if invalid:
+        raise click.ClickException(f"Invalidly named secrets found: {invalid}")
+    return sorted(set(result.get('validSecrets', []) or []))
+
+
+def _managed_secret_names(ctx):
+    return sorted(_credentials_secret_store(ctx).list_secrets())
+
+
+def _show_secret_names(names, empty_message):
+    if not names:
+        click.echo(empty_message)
+        return
+    for name in names:
+        click.echo(name)
+
+
+def _missing_config_secret_names(ctx):
+    names = _configured_secret_names(ctx)
+    existing = _credentials_secret_store(ctx).secrets_exist(names)
+    return [name for name in names if not existing.get(name)]
+
+
+def _complete_managed_secret(ctx, _param, incomplete):
+    try:
+        return [name for name in _managed_secret_names(ctx) if name.startswith(incomplete)]
+    except Exception:
+        return []
+
+
+def _complete_missing_secret(ctx, _param, incomplete):
+    try:
+        return [name for name in _missing_config_secret_names(ctx) if name.startswith(incomplete)]
+    except Exception:
+        return []
+
+
+def _prompt_basic_auth_credentials():
+    username = click.prompt("Username", type=str)
+    password = click.prompt("Password", hide_input=True, confirmation_prompt=True)
+    return {"username": username, "password": password}
+
+
+def _read_raw_secret(secret_store, name):
+    try:
+        return secret_store.v1.read_namespaced_secret(name=name, namespace=secret_store.namespace)
+    except ApiException as e:
+        if e.status == 404:
+            return None
+        raise
+
+
+def _secret_has_managed_labels(secret_store, secret: V1Secret) -> bool:
+    labels = secret.metadata.labels if secret.metadata and secret.metadata.labels else {}
+    return all(labels.get(key) == value for key, value in secret_store.default_labels.items())
+
+
+def _require_managed_secret(secret_store, name):
+    if not secret_store.secret_exists(name):
+        raise click.ClickException(f"No managed HTTP-Basic auth secret found: {name}")
+
+
+@configure_group.group(name="secret")
+def secret_group():
+    """Manage HTTP-Basic auth secrets referenced by workflow configuration."""
+
+
+@secret_group.command(name="list")
+@click.pass_context
+def list_secrets(ctx):
+    """List managed HTTP-Basic auth secrets."""
+    _show_secret_names(_managed_secret_names(ctx), "No managed HTTP-Basic auth secrets found.")
+
+
+@secret_group.command(name="create")
+@click.option('--show-missing', '--list', is_flag=True, default=False,
+              help='List configured HTTP-Basic auth secrets that have not been created')
+@click.argument('name', required=False, shell_complete=_complete_missing_secret)
+@click.pass_context
+def create_secret(ctx, show_missing, name):
+    """Create one missing HTTP-Basic auth secret from the current config."""
+    if show_missing:
+        _show_secret_names(_missing_config_secret_names(ctx), "No missing HTTP-Basic auth secrets found.")
+        return
+
+    if not name:
+        click.echo("Error: specify a secret name or --show-missing.\n", err=True)
+        click.echo(ctx.get_help())
+        ctx.exit(1)
+
+    secret_store = _credentials_secret_store(ctx)
+    existing = _read_raw_secret(secret_store, name)
+    if existing is not None:
+        if _secret_has_managed_labels(secret_store, existing):
+            raise click.ClickException(f"Managed HTTP-Basic auth secret already exists: {name}")
+        raise click.ClickException(f"Secret {name} already exists but is not managed by workflow configure.")
+
+    message = secret_store.save_secret(name, _prompt_basic_auth_credentials())
+    click.echo(message)
+
+
+@secret_group.command(name="update")
+@click.option('--list', 'list_names', is_flag=True, default=False, help='List managed HTTP-Basic auth secrets')
+@click.argument('name', required=False, shell_complete=_complete_managed_secret)
+@click.pass_context
+def update_secret(ctx, list_names, name):
+    """Update credentials for one managed HTTP-Basic auth secret."""
+    if list_names:
+        _show_secret_names(_managed_secret_names(ctx), "No managed HTTP-Basic auth secrets found.")
+        return
+    if not name:
+        click.echo("Error: specify a secret name or --list.\n", err=True)
+        click.echo(ctx.get_help())
+        ctx.exit(1)
+
+    secret_store = _credentials_secret_store(ctx)
+    _require_managed_secret(secret_store, name)
+    message = secret_store.save_secret(name, _prompt_basic_auth_credentials())
+    click.echo(message)
+
+
+@secret_group.command(name="delete")
+@click.option('--list', 'list_names', is_flag=True, default=False, help='List managed HTTP-Basic auth secrets')
+@click.argument('name', required=False, shell_complete=_complete_managed_secret)
+@click.option('--confirm', is_flag=True, default=False, help='Skip confirmation prompt')
+@click.pass_context
+def delete_secret(ctx, list_names, name, confirm):
+    """Delete one managed HTTP-Basic auth secret."""
+    if list_names:
+        _show_secret_names(_managed_secret_names(ctx), "No managed HTTP-Basic auth secrets found.")
+        return
+    if not name:
+        click.echo("Error: specify a secret name or --list.\n", err=True)
+        click.echo(ctx.get_help())
+        ctx.exit(1)
+
+    secret_store = _credentials_secret_store(ctx)
+    _require_managed_secret(secret_store, name)
+    if not confirm and not click.confirm(f"Delete managed HTTP-Basic auth secret '{name}'?"):
+        click.echo("Cancelled")
+        return
+    click.echo(secret_store.delete_secret(name))
 
 
 @configure_group.command(name="clear")
