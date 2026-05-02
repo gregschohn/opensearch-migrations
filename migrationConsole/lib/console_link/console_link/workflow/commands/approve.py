@@ -320,7 +320,7 @@ def _gather_gates(namespace, workflow_name, category, pre_approve):
     """
     all_gates = _list_all_gates(namespace, workflow_name)
     # name -> (phase, labels)
-    gate_index = {n: (p, lbls) for n, p, lbls in all_gates}
+    gate_index = dict((n, (p, lbls)) for n, p, lbls in all_gates)
 
     # Actively-waiting runtime gates from the workflow
     waiting = _waiting_gates_from_workflow(namespace, workflow_name)

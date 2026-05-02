@@ -353,9 +353,7 @@ def output_resource(ctx, list_labels, workflow_name, all_workflows, namespace, p
 @_output_options
 @click.argument('extra_args', nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
-def output_filter(ctx, list_labels, source, target, snapshot, task, from_snapshot_migration,
-                  labels, workflow_name, all_workflows, namespace, prefix, follow,
-                  timestamps, extra_args, **kwargs):
+def output_filter(ctx, **params):
     """Show logs matching one or more label filters.
 
     \b
@@ -364,19 +362,27 @@ def output_filter(ctx, list_labels, source, target, snapshot, task, from_snapsho
       workflow output filter --snapshot snap1 --task metadataMigrate
       workflow output filter --label custom.example/key=value -- --since=1h
     """
+    workflow_name = params['workflow_name']
+    all_workflows = params['all_workflows']
+    namespace = params['namespace']
+    prefix = params['prefix']
+    labels = params['labels']
+
     _validate_scope(ctx, all_workflows)
-    if list_labels:
-        _list_available_labels(workflow_name, all_workflows, namespace, **kwargs)
+    if params['list_labels']:
+        _list_available_labels(workflow_name, all_workflows, namespace, **params)
         return
 
-    selectors, passthrough_args = _split_passthrough_args(extra_args)
+    selectors, passthrough_args = _split_passthrough_args(params['extra_args'])
     if selectors:
         click.echo(f"Error: unexpected argument '{selectors[0]}'. Use filter options such as --task or --label.\n",
                    err=True)
         click.echo(ctx.get_help())
         ctx.exit(1)
 
-    selectors = _filter_selectors(source, target, snapshot, task, from_snapshot_migration, labels)
+    selectors = _filter_selectors(
+        params['source'], params['target'], params['snapshot'], params['task'],
+        params['from_snapshot_migration'], labels)
     if not selectors:
         click.echo("Error: specify --list or one or more filter options.\n", err=True)
         click.echo(ctx.get_help())
@@ -387,7 +393,7 @@ def output_filter(ctx, list_labels, source, target, snapshot, task, from_snapsho
 
     effective_name = None if all_workflows else workflow_name
     full_selector = _selector_parts(selectors, prefix, effective_name)
-    _run_output(ctx, namespace, full_selector, follow, timestamps, passthrough_args)
+    _run_output(ctx, namespace, full_selector, params['follow'], params['timestamps'], passthrough_args)
 
 
 def _show_underlying_help(follow):

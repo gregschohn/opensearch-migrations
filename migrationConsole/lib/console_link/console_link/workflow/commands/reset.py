@@ -13,7 +13,6 @@ from .crd_utils import (
     CRD_VERSION,
     DISPLAY_NAMES,
     RESETTABLE_PLURALS,
-    cached_crd_completions,
     has_glob,
     list_migration_resources,
     match_names,
