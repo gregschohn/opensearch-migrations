@@ -123,7 +123,7 @@ def _get_cached_label_data(ctx):
 
 
 def complete_label_value(label_key):
-    """Build a Click value completer for a known workflow output label."""
+    """Build a Click value completer for a known workflow log label."""
     def complete(ctx, _, incomplete):
         all_labels, valid_combos = _get_cached_label_data(ctx)
         selected_pairs = _get_selected_filter_pairs(ctx, exclude_key=label_key)

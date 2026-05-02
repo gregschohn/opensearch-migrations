@@ -341,7 +341,7 @@ class StatusWorkflowDisplayer(WorkflowDisplayer):
 
         if phase in ('Running', 'Pending'):
             click.echo("")
-            click.echo(f"To view step outputs, run: workflow output all --workflow-name {workflow_name}")
+            click.echo(f"To view step outputs, run: workflow log all --workflow-name {workflow_name}")
 
     def display_workflow_header(self, name: str, phase: str, started_at: str, finished_at: str) -> None:
         """Display workflow header information."""

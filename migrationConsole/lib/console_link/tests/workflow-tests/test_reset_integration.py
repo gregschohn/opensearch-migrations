@@ -325,10 +325,8 @@ class TestResetListIntegration:
             check=False,
         )
         assert result.returncode == 0
-        assert "Capture Proxy" in result.stdout
-        assert "my-proxy" in result.stdout
-        assert "Snapshot Migration" in result.stdout
-        assert "my-snap" in result.stdout
+        assert "captureproxy.my-proxy" in result.stdout
+        assert "snapshotmigration.my-snap" in result.stdout
         assert "workflow reset --all" in result.stdout
         assert "workflow submit" in result.stdout
 
@@ -344,7 +342,7 @@ class TestResetSingleIntegration:
 
         result = _invoke_workflow_cli(runner, ["reset", "snap-c", "--namespace", reset_ns])
         assert result.exit_code == 0
-        assert "Deleted snap-c" in result.output
+        assert "Deleted snapshotmigration.snap-c" in result.output
         _assert_deleted(reset_ns, "snapshotmigrations", "snap-c")
 
     def test_reset_nonexistent_resource(self, runner, reset_ns):
@@ -477,7 +475,7 @@ class TestResetAllIntegration:
         _assert_deleted(reset_ns, "capturedtraffics", "topic-g")
         _assert_deleted(reset_ns, "kafkaclusters", "kafka-g")
         assert _get_phase(reset_ns, "captureproxies", "proxy-g") == VALID_PHASES["captureproxies"]
-        assert "Keeping protected proxies alive: proxy-g" in result.output
+        assert "Keeping protected proxies alive: captureproxy.proxy-g" in result.output
         assert "Use --include-proxies to delete them." in result.output
 
     def test_reset_all_with_include_proxies_deletes_everything(self, runner, reset_ns):
@@ -525,7 +523,7 @@ class TestApproveIntegration:
         _create_crd_instance(reset_ns, "approvalgates", "eval-metadata", phase=VALID_PHASES["approvalgates"])
         _create_crd_instance(reset_ns, "approvalgates", "migrate-metadata", phase=VALID_PHASES["approvalgates"])
 
-        result = _invoke_workflow_cli(runner, ["approve", "step", "eval-*", "--namespace", reset_ns])
+        result = _invoke_workflow_cli(runner, ["approve", "step", "--pre-approve", "eval-*", "--namespace", reset_ns])
         assert result.exit_code == 0
         assert "Approved eval-metadata" in result.output
         assert _get_phase(reset_ns, "approvalgates", "eval-metadata") == "Approved"
@@ -555,8 +553,8 @@ class TestAutocompleteIntegration:
         _create_crd_instance(reset_ns, "captureproxies", "proxy-ac", phase=VALID_PHASES["captureproxies"])
         _create_crd_instance(reset_ns, "snapshotmigrations", "snap-ac", phase=VALID_PHASES["snapshotmigrations"])
         completions = _get_resource_completions_subprocess(reset_ns, "")
-        assert "proxy-ac" in completions
-        assert "snap-ac" in completions
+        assert "captureproxy.proxy-ac" in completions
+        assert "snapshotmigration.snap-ac" in completions
 
     def test_autocomplete_filters_by_prefix(self, reset_ns):
         cache_file = (
@@ -566,6 +564,6 @@ class TestAutocompleteIntegration:
 
         _create_crd_instance(reset_ns, "captureproxies", "proxy-x", phase=VALID_PHASES["captureproxies"])
         _create_crd_instance(reset_ns, "captureproxies", "other-y", phase=VALID_PHASES["captureproxies"])
-        completions = _get_resource_completions_subprocess(reset_ns, "proxy")
-        assert "proxy-x" in completions
-        assert "other-y" not in completions
+        completions = _get_resource_completions_subprocess(reset_ns, "captureproxy.proxy")
+        assert "captureproxy.proxy-x" in completions
+        assert "captureproxy.other-y" not in completions

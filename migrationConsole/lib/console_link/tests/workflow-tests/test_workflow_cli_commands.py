@@ -293,7 +293,7 @@ class TestWorkflowCLICommands:
         assert 'Running' in result.output
         assert 'step1' in result.output
         assert 'step2' in result.output
-        assert 'workflow output all --workflow-name test-workflow' in result.output
+        assert 'workflow log all --workflow-name test-workflow' in result.output
 
     @patch('console_link.workflow.commands.status.requests.get')
     @patch('console_link.workflow.commands.status.WorkflowService')
@@ -556,24 +556,24 @@ class TestWorkflowCLICommands:
         # _gather_gates(namespace, workflow_name, category, pre_approve)
         assert args[2] == 'change'
 
-    @patch('console_link.workflow.commands.output._run_history_mode')
+    @patch('console_link.workflow.commands.log._run_history_mode')
     def test_output_all_uses_workflow_selector(self, mock_history):
         runner = CliRunner()
 
-        result = runner.invoke(workflow_cli, ['output', 'all'])
+        result = runner.invoke(workflow_cli, ['log', 'all'])
 
         assert result.exit_code == 0
         args, _ = mock_history.call_args
         assert args[2] == 'workflows.argoproj.io/workflow=migration-workflow'
         assert args[4] == []
 
-    @patch('console_link.workflow.commands.output._run_history_mode')
+    @patch('console_link.workflow.commands.log._run_history_mode')
     def test_output_filter_combines_filter_options(self, mock_history):
         runner = CliRunner()
 
         result = runner.invoke(
             workflow_cli,
-            ['output', 'filter', '--snapshot', 'snap1', '--target', 'target1', '--', '--since=1h']
+            ['log', 'filter', '--snapshot', 'snap1', '--target', 'target1', '--', '--since=1h']
         )
 
         assert result.exit_code == 0
@@ -585,9 +585,9 @@ class TestWorkflowCLICommands:
         )
         assert args[4] == ['--since=1h']
 
-    @patch('console_link.workflow.commands.output.load_k8s_config')
-    @patch('console_link.workflow.commands.output.client')
-    @patch('console_link.workflow.commands.output._run_history_mode')
+    @patch('console_link.workflow.commands.log.load_k8s_config')
+    @patch('console_link.workflow.commands.log.client')
+    @patch('console_link.workflow.commands.log._run_history_mode')
     def test_output_resource_uses_resource_labels(self, mock_history, mock_client, _mock_k8s):
         runner = CliRunner()
         mock_custom = Mock()
@@ -603,7 +603,7 @@ class TestWorkflowCLICommands:
             }
         }
 
-        result = runner.invoke(workflow_cli, ['output', 'resource', 'captureproxy.my-proxy'])
+        result = runner.invoke(workflow_cli, ['log', 'resource', 'captureproxy.my-proxy'])
 
         assert result.exit_code == 0
         mock_custom.get_namespaced_custom_object.assert_called_once_with(
@@ -620,9 +620,9 @@ class TestWorkflowCLICommands:
             'strimzi.io/cluster=default'
         )
 
-    @patch('console_link.workflow.commands.output.load_k8s_config')
-    @patch('console_link.workflow.commands.output.client')
-    @patch('console_link.workflow.commands.output._run_history_mode')
+    @patch('console_link.workflow.commands.log.load_k8s_config')
+    @patch('console_link.workflow.commands.log.client')
+    @patch('console_link.workflow.commands.log._run_history_mode')
     def test_output_resource_keeps_workflow_selector_for_workflow_pods(
         self, mock_history, mock_client, _mock_k8s
     ):
@@ -638,7 +638,7 @@ class TestWorkflowCLICommands:
             }
         }
 
-        result = runner.invoke(workflow_cli, ['output', 'resource', 'captureproxy.my-proxy'])
+        result = runner.invoke(workflow_cli, ['log', 'resource', 'captureproxy.my-proxy'])
 
         assert result.exit_code == 0
         args, _ = mock_history.call_args
@@ -648,13 +648,13 @@ class TestWorkflowCLICommands:
             'workflows.argoproj.io/workflow=migration-workflow'
         )
 
-    @patch('console_link.workflow.commands.output._run_history_mode')
+    @patch('console_link.workflow.commands.log._run_history_mode')
     def test_output_filter_accepts_raw_label_option(self, mock_history):
         runner = CliRunner()
 
         result = runner.invoke(
             workflow_cli,
-            ['output', 'filter', '--label', 'custom.example/key=value']
+            ['log', 'filter', '--label', 'custom.example/key=value']
         )
 
         assert result.exit_code == 0
@@ -667,7 +667,7 @@ class TestWorkflowCLICommands:
     def test_output_filter_rejects_unexpected_argument(self):
         runner = CliRunner()
 
-        result = runner.invoke(workflow_cli, ['output', 'filter', 'oops'])
+        result = runner.invoke(workflow_cli, ['log', 'filter', 'oops'])
 
         assert result.exit_code != 0
         assert 'Use filter options such as --task or --label' in result.output
@@ -675,15 +675,15 @@ class TestWorkflowCLICommands:
     def test_output_top_level_requires_subcommand(self):
         runner = CliRunner()
 
-        result = runner.invoke(workflow_cli, ['output'])
+        result = runner.invoke(workflow_cli, ['log'])
 
         assert result.exit_code != 0
         assert 'Missing command' in result.output or 'Usage:' in result.output
 
-    @patch('console_link.workflow.commands.output.load_k8s_config')
-    @patch('console_link.workflow.commands.output.list_migration_resources')
+    @patch('console_link.workflow.commands.log.load_k8s_config')
+    @patch('console_link.workflow.commands.log.list_migration_resources')
     def test_output_resource_completion_uses_migration_resource_names(self, mock_list, _mock_k8s):
-        from console_link.workflow.commands.output import _get_resource_completions
+        from console_link.workflow.commands.log import _get_resource_completions
 
         ctx = Mock()
         ctx.params = {'namespace': 'ma'}

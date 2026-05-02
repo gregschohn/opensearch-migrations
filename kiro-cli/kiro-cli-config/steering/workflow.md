@@ -73,9 +73,9 @@ workflow submit --wait --timeout 300  # With custom timeout (seconds)
 workflow status                  # List running workflows
 workflow status --all            # Include completed workflows
 workflow status <workflow-name>  # Specific workflow status
-workflow output <workflow-name>  # View logs (interactive step selection)
-workflow output -f               # Stream logs in real-time
-workflow output --tail-lines 100 # Last N lines
+workflow log <workflow-name>  # View logs (interactive step selection)
+workflow log -f               # Stream logs in real-time
+workflow log --tail-lines 100 # Last N lines
 workflow approve step --list       # List available step gates
 workflow approve step <name>       # Approve a specific step gate
 workflow approve step --all        # Approve all step gates
@@ -92,7 +92,7 @@ workflow stop                    # Stop running workflow
 ### Before Approving Any Step
 **ALWAYS check the output before approving:**
 ```bash
-workflow output <workflow-name>
+workflow log <workflow-name>
 ```
 Review the step output for errors, warnings, or unexpected results before proceeding.
 

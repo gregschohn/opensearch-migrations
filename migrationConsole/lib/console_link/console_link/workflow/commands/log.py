@@ -235,8 +235,8 @@ def _output_options(func):
     return func
 
 
-@click.group(name="output", invoke_without_command=False)
-def output_command():
+@click.group(name="log", invoke_without_command=False)
+def log_command():
     """View or tail workflow logs.
 
     \b
@@ -252,7 +252,7 @@ def output_command():
     """
 
 
-@output_command.command("all")
+@log_command.command("all")
 @_output_options
 @click.argument('extra_args', nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
@@ -262,9 +262,9 @@ def output_all(ctx, workflow_name, all_workflows, namespace, prefix,
 
     \b
     Examples:
-      workflow output all
-      workflow output all -- --since=1h --tail=100
-      workflow output all -f -- --container=proxy
+      workflow log all
+      workflow log all -- --since=1h --tail=100
+      workflow log all -f -- --container=proxy
     """
     _validate_scope(ctx, all_workflows)
     before_dashdash, passthrough_args = _split_passthrough_args(extra_args)
@@ -277,7 +277,7 @@ def output_all(ctx, workflow_name, all_workflows, namespace, prefix,
     _run_output(ctx, namespace, full_selector, follow, timestamps, passthrough_args)
 
 
-@output_command.command("resource")
+@log_command.command("resource")
 @click.option('--list', 'list_labels', is_flag=True, default=False,
               help='List available migration resources and exit')
 @_output_options
@@ -290,8 +290,8 @@ def output_resource(ctx, list_labels, workflow_name, all_workflows, namespace, p
 
     \b
     Examples:
-      workflow output resource captureproxy.my-proxy
-      workflow output resource snapshotmigration.migration-0 -- --tail=100
+      workflow log resource captureproxy.my-proxy
+      workflow log resource snapshotmigration.migration-0 -- --tail=100
     """
     _validate_scope(ctx, all_workflows)
     if list_labels:
@@ -335,7 +335,7 @@ def output_resource(ctx, list_labels, workflow_name, all_workflows, namespace, p
     _run_output(ctx, namespace, full_selector, follow, timestamps, passthrough_args)
 
 
-@output_command.command("filter")
+@log_command.command("filter")
 @click.option('--list', 'list_labels', is_flag=True, default=False,
               help='List available label selectors and exit')
 @click.option('--source', shell_complete=complete_label_value('source'),
@@ -358,9 +358,9 @@ def output_filter(ctx, **params):
 
     \b
     Examples:
-      workflow output filter --source mycluster --target target1
-      workflow output filter --snapshot snap1 --task metadataMigrate
-      workflow output filter --label custom.example/key=value -- --since=1h
+      workflow log filter --source mycluster --target target1
+      workflow log filter --snapshot snap1 --task metadataMigrate
+      workflow log filter --label custom.example/key=value -- --since=1h
     """
     workflow_name = params['workflow_name']
     all_workflows = params['all_workflows']
