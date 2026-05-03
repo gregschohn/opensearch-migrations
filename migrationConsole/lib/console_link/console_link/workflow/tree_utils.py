@@ -6,9 +6,15 @@ from dataclasses import dataclass
 from typing import Callable, Dict, List, Any, Optional, Union
 from rich.console import Console
 from rich.tree import Tree
+from kubernetes import client
 import json
+from .models.utils import load_k8s_config
 
 logger = logging.getLogger(__name__)
+
+CRD_GROUP = 'migrations.opensearch.org'
+CRD_VERSION = 'v1alpha1'
+APPROVAL_GATE_PLURAL = 'approvalgates'
 
 
 @dataclass
@@ -56,6 +62,70 @@ def get_node_input_parameter(node: Dict[str, Any], param_name: str) -> Optional[
         if param.get('name') == param_name:
             return param.get('value')
     return None
+
+
+def _approval_gate_name(node: Dict[str, Any]) -> Optional[str]:
+    return get_node_input_parameter(node, 'resourceName') or get_node_input_parameter(node, 'name')
+
+
+def _iter_tree_nodes(tree_nodes: List[Dict[str, Any]]):
+    for node in tree_nodes:
+        yield node
+        yield from _iter_tree_nodes(node.get('children', []))
+
+
+def _fetch_approval_gate_phases(namespace: str, gate_names: set) -> Dict[str, str]:
+    if not namespace or not gate_names:
+        return {}
+    try:
+        load_k8s_config()
+        custom = client.CustomObjectsApi()
+    except Exception as e:
+        logger.debug("Could not initialize Kubernetes client for ApprovalGate overlay: %s", e)
+        return {}
+    phases = {}
+    for gate_name in gate_names:
+        try:
+            gate = custom.get_namespaced_custom_object(
+                group=CRD_GROUP,
+                version=CRD_VERSION,
+                namespace=namespace,
+                plural=APPROVAL_GATE_PLURAL,
+                name=gate_name,
+            )
+        except Exception as e:
+            logger.debug("Could not fetch ApprovalGate %s/%s: %s", namespace, gate_name, e)
+            continue
+        phase = gate.get('status', {}).get('phase')
+        if phase:
+            phases[gate_name] = phase
+    return phases
+
+
+def overlay_approval_gate_status(tree_nodes: List[Dict[str, Any]], namespace: str) -> None:
+    """Overlay live ApprovalGate phase onto approval nodes.
+
+    Argo can take a reconciliation cycle to turn waitForApproval nodes from
+    Running to Succeeded after the gate CR status is patched. The gate CR is
+    authoritative for the approval label, so display Approved immediately.
+    """
+    gate_names = {
+        gate_name
+        for node in _iter_tree_nodes(tree_nodes)
+        if is_approval_node(node)
+        for gate_name in [_approval_gate_name(node)]
+        if gate_name
+    }
+    phases = _fetch_approval_gate_phases(namespace, gate_names)
+    for node in _iter_tree_nodes(tree_nodes):
+        if not is_approval_node(node):
+            continue
+        phase = phases.get(_approval_gate_name(node))
+        if not phase:
+            continue
+        node['approval_gate_phase'] = phase
+        if phase.lower() == 'approved':
+            node['phase'] = 'Succeeded'
 
 
 def build_nested_workflow_tree(workflow_data: Dict[str, Any]) -> List[Dict[str, Any]]:

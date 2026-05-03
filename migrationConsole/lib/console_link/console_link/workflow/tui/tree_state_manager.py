@@ -4,14 +4,17 @@ from textual.widgets._tree import TreeNode, Tree
 
 from console_link.workflow.tree_utils import (
     get_step_status_output, get_step_rich_label,
-    build_nested_workflow_tree, filter_tree_nodes
+    build_nested_workflow_tree, filter_tree_nodes,
+    overlay_approval_gate_status
 )
 
 
 class TreeStateManager:
-    def __init__(self, tree_widget: Optional[Tree] = None, on_new_pod: Optional[Callable[[str], None]] = None):
+    def __init__(self, tree_widget: Optional[Tree] = None, namespace: str = "",
+                 on_new_pod: Optional[Callable[[str], None]] = None):
         self.tree: Optional[Tree] = tree_widget
         self._workflow_data: Dict = {}
+        self._namespace = namespace
         self._on_new_pod_handler = on_new_pod
 
     def set_tree_widget(self, tree_widget: Tree) -> None:
@@ -27,6 +30,7 @@ class TreeStateManager:
         self.tree.clear()
         self.tree.root.label = "[bold]Workflow Steps[/]"
         nodes = filter_tree_nodes(build_nested_workflow_tree(workflow_data))
+        overlay_approval_gate_status(nodes, self._namespace)
         self._populate_recursive(self.tree.root, nodes)
         self.tree.root.expand_all()
 
@@ -34,6 +38,7 @@ class TreeStateManager:
         """Incremental update for ongoing workflow."""
         self._workflow_data = workflow_data
         nodes = filter_tree_nodes(build_nested_workflow_tree(workflow_data))
+        overlay_approval_gate_status(nodes, self._namespace)
         self._update_recursive(self.tree.root, nodes)
 
     @staticmethod

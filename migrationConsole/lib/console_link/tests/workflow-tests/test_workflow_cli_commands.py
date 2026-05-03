@@ -410,6 +410,16 @@ class TestWorkflowCLICommands:
         result = runner.invoke(workflow_cli, ['approve'])
         assert result.exit_code != 0
 
+    @patch('console_link.workflow.commands.approve._list_all_categories')
+    @patch('console_link.workflow.commands.approve.load_k8s_config')
+    def test_approve_list_shows_all_categories(self, mock_k8s, mock_list_all):
+        runner = CliRunner()
+
+        result = runner.invoke(workflow_cli, ['approve', '--list'])
+
+        assert result.exit_code == 0
+        mock_list_all.assert_called_once_with('ma', 'migration-workflow')
+
     @patch('console_link.workflow.commands.approve.approve_gate')
     @patch('console_link.workflow.commands.approve._gather_gates')
     @patch('console_link.workflow.commands.approve.load_k8s_config')
@@ -474,6 +484,129 @@ class TestWorkflowCLICommands:
 
         assert result.exit_code == 0
         assert 'gate-one' in result.output
+        args, kwargs = mock_gather.call_args
+        assert args[:3] == ('ma', 'migration-workflow', 'step')
+        assert kwargs == {'pre_approve': True, 'include_completed': True}
+
+    @patch('console_link.workflow.commands.approve._waiting_gates_from_workflow')
+    @patch('console_link.workflow.commands.approve._list_all_gates')
+    def test_gather_gates_excludes_completed_by_default(
+        self, mock_list_gates, mock_waiting_gates
+    ):
+        from console_link.workflow.commands.approve import _gather_gates
+
+        mock_list_gates.return_value = [
+            ('done-step', 'Approved', {}),
+            ('future-step', 'Pending', {}),
+        ]
+        mock_waiting_gates.return_value = []
+
+        gates = _gather_gates('ma', 'migration-workflow', 'step', pre_approve=True)
+
+        assert [(gate.name, gate.status) for gate in gates] == [
+            ('future-step', 'pending')
+        ]
+
+    @patch('console_link.workflow.commands.approve._waiting_gates_from_workflow')
+    @patch('console_link.workflow.commands.approve._list_all_gates')
+    def test_gather_gates_can_include_completed(
+        self, mock_list_gates, mock_waiting_gates
+    ):
+        from console_link.workflow.commands.approve import _gather_gates
+
+        mock_list_gates.return_value = [
+            ('done-step', 'Approved', {}),
+            ('future-step', 'Pending', {}),
+        ]
+        mock_waiting_gates.return_value = []
+
+        gates = _gather_gates(
+            'ma', 'migration-workflow', 'step',
+            pre_approve=True, include_completed=True,
+        )
+
+        assert [(gate.name, gate.status) for gate in gates] == [
+            ('done-step', 'approved'),
+            ('future-step', 'pending'),
+        ]
+
+    @patch('console_link.workflow.commands.approve._waiting_gates_from_workflow')
+    @patch('console_link.workflow.commands.approve._list_all_gates')
+    def test_gather_gates_uses_approved_phase_for_stale_waiting_node(
+        self, mock_list_gates, mock_waiting_gates
+    ):
+        from console_link.workflow.commands.approve import _gather_gates
+
+        mock_list_gates.return_value = [
+            ('done-step', 'Approved', {}),
+        ]
+        mock_waiting_gates.return_value = [('done-step', None)]
+
+        list_gates = _gather_gates(
+            'ma', 'migration-workflow', 'step',
+            pre_approve=True, include_completed=True,
+        )
+        completion_gates = _gather_gates(
+            'ma', 'migration-workflow', 'step',
+            pre_approve=True, include_completed=False,
+        )
+
+        assert [(gate.name, gate.status) for gate in list_gates] == [
+            ('done-step', 'approved')
+        ]
+        assert completion_gates == []
+
+    @patch('console_link.workflow.commands.approve._list_all_gates')
+    def test_find_already_approved_is_workflow_scoped(self, mock_list_gates):
+        from console_link.workflow.commands.approve import _find_already_approved
+
+        mock_list_gates.return_value = [
+            ('done-step', 'Approved', {}),
+        ]
+
+        approved = _find_already_approved(
+            'ma', 'migration-workflow',
+            ['done-step'], 'step',
+        )
+
+        assert approved == ['done-step']
+        mock_list_gates.assert_called_once_with('ma', 'migration-workflow')
+
+    @patch('console_link.workflow.commands.approve._list_all_gates')
+    def test_find_already_approved_accepts_runtime_categories(self, mock_list_gates):
+        from console_link.workflow.commands.approve import _find_already_approved
+
+        mock_list_gates.return_value = [
+            ('captureproxy.capture-proxy.vapretry', 'Approved', {
+                'migrations.opensearch.org/resource-kind': 'CaptureProxy',
+                'migrations.opensearch.org/resource-name': 'capture-proxy',
+            }),
+        ]
+
+        approved = _find_already_approved(
+            'ma', 'migration-workflow',
+            ['captureproxy.capture-proxy'], 'change',
+        )
+
+        assert approved == ['captureproxy.capture-proxy']
+
+    @patch('console_link.workflow.commands.approve._gather_gates')
+    @patch('console_link.workflow.commands.approve.load_k8s_config')
+    def test_approve_completion_keeps_completed_filtered(self, mock_k8s, mock_gather):
+        from console_link.workflow.commands.approve import _complete_names
+
+        ctx = Mock()
+        ctx.params = {
+            'namespace': 'ma',
+            'workflow_name': 'migration-workflow',
+            'pre_approve': True,
+        }
+        mock_gather.return_value = [self._make_gate('future-step')]
+
+        completions = _complete_names('step')(ctx, None, 'future')
+
+        assert [item.value for item in completions] == ['future-step']
+        mock_gather.assert_called_once_with('ma', 'migration-workflow', 'step', True)
 
     @patch('console_link.workflow.commands.approve._gather_gates')
     @patch('console_link.workflow.commands.approve.load_k8s_config')
@@ -585,10 +718,9 @@ class TestWorkflowCLICommands:
         result = runner.invoke(workflow_cli, ['approve', 'change', '--all'])
 
         assert result.exit_code == 0
-        # Verify the mock was called with 'change' category
         args, kwargs = mock_gather.call_args
-        # _gather_gates(namespace, workflow_name, category, pre_approve)
         assert args[2] == 'change'
+        assert kwargs == {'pre_approve': False, 'include_completed': False}
 
     @patch('console_link.workflow.commands.log._run_history_mode')
     def test_output_all_uses_workflow_selector(self, mock_history):

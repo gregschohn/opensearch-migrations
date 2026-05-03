@@ -23,6 +23,7 @@ from ..tree_utils import (
     filter_tree_nodes,
     display_workflow_tree,
     get_node_input_parameter,
+    overlay_approval_gate_status,
     WorkflowDisplayer
 )
 from .autocomplete_workflows import DEFAULT_WORKFLOW_NAME, get_workflow_completions
@@ -135,6 +136,7 @@ class StatusCommandHandler:
         if live_check:
             self.live_check_processor.enrich_tree_with_live_checks(tree_nodes)
         filtered_tree = filter_tree_nodes(tree_nodes)
+        overlay_approval_gate_status(filtered_tree, namespace)
 
         # Create a lazy resolver — artifacts are only fetched when a node is
         # actually rendered and has an artifact output (not eagerly for all nodes).

@@ -237,16 +237,18 @@ def _status_blurb(gate):
     """Short human description of why the gate is in its current state."""
     if gate.status == 'waiting' and gate.category == 'change':
         fields = _extract_fields_from_reason(gate.reason)
-        return f"changed: {fields}" if fields else "changed"
+        return f"CHANGED: {fields}" if fields else "changed"
     if gate.status == 'waiting' and gate.category == 'retry':
         fields = _extract_fields_from_reason(gate.reason)
-        return f"impossible change: {fields}" if fields else "impossible change"
+        return f"Requires reset. Incompatible fields: {fields}" if fields else "impossible change"
     if gate.status == 'waiting' and gate.category == 'step':
-        return "waiting"
+        return "WAITING FOR APPROVAL"
     if gate.status == 'pending' and gate.category == 'change':
-        return "no change triggered"
+        return "No change triggered"
     if gate.status == 'pending' and gate.category == 'step':
-        return "not yet reached"
+        return "Not yet reached"
+    if gate.status == 'approved':
+        return "Approved"
     return gate.status
 
 
@@ -305,7 +307,12 @@ def _format_gate_rows(gates, show_prereq=False, mark_ready=False):
     return lines
 
 
-def _gather_gates(namespace, workflow_name, category, pre_approve):
+def _status_from_phase(phase):
+    return 'approved' if str(phase).lower() == 'approved' else 'pending'
+
+
+def _gather_gates(namespace, workflow_name, category, pre_approve,
+                  include_completed=False):
     """Return a list of GateInfo objects for the given category.
 
     - 'step': always lists the step gates the workflow is currently waiting
@@ -317,6 +324,10 @@ def _gather_gates(namespace, workflow_name, category, pre_approve):
       include them and let the user approve).
     - 'retry': lists runtime gates whose denial message contains
       Impossible. No pre_approve.
+
+    By default completed gates are omitted so autocomplete and approval
+    targets only include actionable gates. List views pass
+    include_completed=True to show an audit view of the gate inventory.
     """
     all_gates = _list_all_gates(namespace, workflow_name)
     # name -> (phase, labels)
@@ -336,8 +347,14 @@ def _gather_gates(namespace, workflow_name, category, pre_approve):
             if _gate_category_from_name(name) != 'step':
                 continue
             phase, labels = gate_index.get(name, ('Unknown', {}))
+            status = _status_from_phase(phase)
+            if status == 'approved':
+                if not include_completed:
+                    continue
+            else:
+                status = 'waiting'
             results.append(GateInfo(
-                name=name, category='step', status='waiting',
+                name=name, category='step', status=status,
                 labels=labels, reason=reason,
             ))
         if pre_approve:
@@ -346,10 +363,10 @@ def _gather_gates(namespace, workflow_name, category, pre_approve):
                     continue
                 if name in waiting_names:
                     continue
-                if phase == 'Approved':
+                if _status_from_phase(phase) == 'approved' and not include_completed:
                     continue
                 results.append(GateInfo(
-                    name=name, category='step', status='pending',
+                    name=name, category='step', status=_status_from_phase(phase),
                     labels=labels, reason=None,
                 ))
 
@@ -360,8 +377,14 @@ def _gather_gates(namespace, workflow_name, category, pre_approve):
             if _classify_runtime_gate(reason) != 'change':
                 continue
             phase, labels = gate_index.get(name, ('Unknown', {}))
+            status = _status_from_phase(phase)
+            if status == 'approved':
+                if not include_completed:
+                    continue
+            else:
+                status = 'waiting'
             results.append(GateInfo(
-                name=name, category='change', status='waiting',
+                name=name, category='change', status=status,
                 labels=labels, reason=reason,
             ))
         if pre_approve:
@@ -370,10 +393,10 @@ def _gather_gates(namespace, workflow_name, category, pre_approve):
                     continue
                 if name in waiting_names:
                     continue
-                if phase == 'Approved':
+                if _status_from_phase(phase) == 'approved' and not include_completed:
                     continue
                 results.append(GateInfo(
-                    name=name, category='change', status='pending',
+                    name=name, category='change', status=_status_from_phase(phase),
                     labels=labels, reason=None,
                 ))
 
@@ -384,8 +407,14 @@ def _gather_gates(namespace, workflow_name, category, pre_approve):
             if _classify_runtime_gate(reason) != 'retry':
                 continue
             phase, labels = gate_index.get(name, ('Unknown', {}))
+            status = _status_from_phase(phase)
+            if status == 'approved':
+                if not include_completed:
+                    continue
+            else:
+                status = 'waiting'
             results.append(GateInfo(
-                name=name, category='retry', status='waiting',
+                name=name, category='retry', status=status,
                 labels=labels, reason=reason,
             ))
 
@@ -565,9 +594,11 @@ def _list_all_categories(namespace, workflow_name):
     """
     printed_any = False
     for category in ('step', 'change', 'retry'):
-        # retry does not support pre-approve
         pre = (category != 'retry')
-        gates = _gather_gates(namespace, workflow_name, category, pre_approve=pre)
+        gates = _gather_gates(
+            namespace, workflow_name, category,
+            pre_approve=pre, include_completed=True,
+        )
         if not gates:
             continue
         # Ready gates first, then pending, preserving order within each group.
@@ -590,7 +621,36 @@ def _list_all_categories(namespace, workflow_name):
         click.echo("No gates available.")
 
 
-def _resolve_targets(ctx, gates, names, all_flag):
+def _matches_approval_category(gate_name, category):
+    gate_category = _gate_category_from_name(gate_name)
+    if category in ('change', 'retry'):
+        return gate_category == 'runtime'
+    return gate_category == category
+
+
+def _find_already_approved(namespace, workflow_name, names, category):
+    """Return display names of gates matching *names* that are already approved."""
+    try:
+        all_gates = _list_all_gates(namespace, workflow_name)
+    except Exception:
+        return []
+    cat = category or 'step'
+    already = []
+    for pattern in names:
+        for gname, phase, labels in all_gates:
+            if not _matches_approval_category(gname, cat):
+                continue
+            if _status_from_phase(phase) != 'approved':
+                continue
+            disp = _display_name(gname)
+            if gname == pattern or disp == pattern or any(match_names([disp], pattern)):
+                if disp not in already:
+                    already.append(disp)
+    return already
+
+
+def _resolve_targets(ctx, gates, names, all_flag, namespace=None,
+                     workflow_name=None, category=None):
     """Resolve the set of gates to approve from --all or a list of names.
 
     User-supplied names can be either the full gate name (with .vapretry
@@ -622,6 +682,14 @@ def _resolve_targets(ctx, gates, names, all_flag):
                 matched.append(gate)
 
     if not matched:
+        # Check if the user's targets are already approved
+        if namespace and names:
+            already = _find_already_approved(namespace, workflow_name, names, category)
+            if already:
+                for disp in already:
+                    click.echo(f"  Already approved: {disp}")
+                return []
+
         click.echo(f"No gates match {list(names)}.")
         if gates:
             click.echo("Available gates:")
@@ -655,13 +723,25 @@ def _run_subcommand(ctx, category, names, list_flag, all_flag, pre_approve,
         ctx.exit(ExitCode.FAILURE.value)
         return
 
-    gates = _gather_gates(namespace, workflow_name, category, pre_approve)
+    gates = _gather_gates(
+        namespace, workflow_name, category,
+        pre_approve=(pre_approve or list_flag),
+        include_completed=list_flag,
+    )
 
     if list_flag:
         _run_list(gates, show_prereq=(category == 'retry'))
         return
 
     if not gates:
+        # Before reporting failure, check if the user's targets are already approved
+        if names and not all_flag:
+            already = _find_already_approved(namespace, workflow_name, names, category)
+            if already:
+                for disp in already:
+                    click.echo(f"  Already approved: {disp}")
+                return
+
         if category == 'step':
             msg = ("No pending steps found."
                    if pre_approve else
@@ -676,7 +756,10 @@ def _run_subcommand(ctx, category, names, list_flag, all_flag, pre_approve,
         ctx.exit(ExitCode.FAILURE.value)
         return
 
-    targets = _resolve_targets(ctx, gates, names, all_flag)
+    targets = _resolve_targets(ctx, gates, names, all_flag, namespace, workflow_name, category)
+
+    if not targets:
+        return
 
     if enforce_retry_prereqs:
         blockers = _retry_blockers(namespace, targets)
@@ -704,11 +787,15 @@ class _OrderedGroup(click.Group):
     """Group that lists its subcommands in registration order."""
 
     def list_commands(self, ctx):
-        return list(self.commands)
+        return [name for name, command in self.commands.items() if not command.hidden]
 
 
-@click.group(name="approve", invoke_without_command=False, cls=_OrderedGroup)
-def approve_group():
+@click.group(name="approve", invoke_without_command=True, cls=_OrderedGroup)
+@click.option('--list', 'list_flag', is_flag=True, default=False,
+              help='List gates across all approval categories')
+@_shared_options
+@click.pass_context
+def approve_group(ctx, list_flag, workflow_name, argo_server, namespace, insecure, token):
     """Approve workflow gates.
 
     \b
@@ -716,10 +803,22 @@ def approve_group():
       step      Approve user-defined migration checkpoints.
       change    Acknowledge gated configuration field changes.
       retry     Confirm recovery is complete after an impossible change.
-      list-all  List gates across all three categories at once.
 
     Run any subcommand with --help for details.
     """
+    if ctx.invoked_subcommand is not None:
+        return
+    if not list_flag:
+        click.echo(ctx.get_help())
+        ctx.exit(ExitCode.FAILURE.value)
+        return
+    try:
+        load_k8s_config()
+    except Exception as e:
+        click.echo(f"Error: could not load Kubernetes configuration: {e}", err=True)
+        ctx.exit(ExitCode.FAILURE.value)
+        return
+    _list_all_categories(namespace, workflow_name)
 
 
 @approve_group.command("step")
@@ -800,22 +899,3 @@ def approve_retry(ctx, names, list_flag, all_flag,
     """
     _run_subcommand(ctx, 'retry', names, list_flag, all_flag, False,
                     workflow_name, namespace, enforce_retry_prereqs=True)
-
-
-@approve_group.command("list-all")
-@_shared_options
-@click.pass_context
-def approve_list_all(ctx, workflow_name, argo_server, namespace, insecure, token):
-    """List gates across all three categories, grouped by category.
-
-    Ready-to-approve gates appear first in each section, marked with
-    a green '*'; pre-approvable gates follow.
-    """
-    try:
-        load_k8s_config()
-    except Exception as e:
-        click.echo(f"Error: could not load Kubernetes configuration: {e}", err=True)
-        ctx.exit(ExitCode.FAILURE.value)
-        return
-
-    _list_all_categories(namespace, workflow_name)
