@@ -31,15 +31,22 @@ def _configure_file_logging():
     log_dir = os.path.join(tempfile.gettempdir(), "workflow_manage")
     os.makedirs(log_dir, exist_ok=True)
     log_file = os.path.join(log_dir, f"manage_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.log")
+    latest_log_file = os.path.join(log_dir, "manage_latest.log")
 
     file_handler = logging.FileHandler(log_file)
     file_handler.setFormatter(
         logging.Formatter('%(asctime)s - %(levelname)s - [%(threadName)s] - %(name)s - %(message)s')
     )
+    latest_file_handler = logging.FileHandler(latest_log_file, mode='w')
+    latest_file_handler.setFormatter(
+        logging.Formatter('%(asctime)s - %(levelname)s - [%(threadName)s] - %(name)s - %(message)s')
+    )
 
     root_logger = logging.getLogger()
     root_logger.addHandler(file_handler)
+    root_logger.addHandler(latest_file_handler)
     root_logger.setLevel(logging.INFO)
+    logger.info(f"Manage logs: {log_file}; latest: {latest_log_file}")
     
     # Disable console handlers by setting their level to CRITICAL+1 (effectively silencing them)
     # This avoids closing streams which breaks Click's CliRunner in tests

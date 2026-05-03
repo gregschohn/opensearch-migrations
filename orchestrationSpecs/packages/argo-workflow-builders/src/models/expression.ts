@@ -10,6 +10,7 @@ import {
 } from "./plainObject";
 import {StripUndefined, TaskType, typeToken, TypeToken} from "./sharedTypes";
 import {ConfigMapKeySelector, InputParamDef, OutputParamDef} from "./parameterSchemas";
+import {assertNoBareTemplateString} from "./templateLiteralGuard";
 
 export type ExpressionType = "govaluate" | "complicatedExpression";
 
@@ -71,8 +72,12 @@ export class UnquotedTypeWrapper<T extends PlainObject> extends BaseExpression<T
 
 export class LiteralExpression<T extends PlainObject>
     extends BaseExpression<T, "govaluate"> {
-    constructor(public readonly value: T) {
+    public readonly value: T;
+
+    constructor(value: T) {
         super("literal");
+        assertNoBareTemplateString(value, "expr.literal");
+        this.value = value;
     }
 }
 

@@ -8,6 +8,7 @@ from kubernetes import client
 from kubernetes.client.rest import ApiException
 
 from ..models.utils import ExitCode, load_k8s_config, get_current_namespace
+from .artifact_store import ArtifactStoreError, artifact_uri, delete_artifact_prefix
 from .crd_utils import (
     CRD_GROUP,
     CRD_VERSION,
@@ -21,6 +22,8 @@ from .crd_utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+ARTIFACT_OUTPUT_ROOT = "migration-outputs"
 
 
 def _resettable_names(namespace):
@@ -286,10 +289,56 @@ def _mark_deleting(namespace, plural, name):
         pass
 
 
-def _delete_and_wait(namespace, plural, name):
+def _resource_metadata(namespace, plural, name):
+    try:
+        item = client.CustomObjectsApi().get_namespaced_custom_object(
+            group=CRD_GROUP,
+            version=CRD_VERSION,
+            namespace=namespace,
+            plural=plural,
+            name=name,
+        )
+        metadata = item.get("metadata", {})
+        return metadata.get("uid"), metadata.get("creationTimestamp")
+    except ApiException:
+        return None, None
+
+
+def _artifact_output_prefix(plural, name, uid=None, created_at=None):
+    base = f"{ARTIFACT_OUTPUT_ROOT}/{DISPLAY_NAMES.get(plural, plural)}/{name}/"
+    if uid and created_at:
+        return f"{base}{created_at}_{uid}/"
+    return f"{base}{uid}/" if uid else base
+
+
+def _cleanup_output_artifacts(plural, name, uid, created_at=None):
+    prefix = _artifact_output_prefix(plural, name, uid, created_at)
+    # Keep this as a prefix cleanup, not a delete of the single status.outputs
+    # S3 key. Argo may create small sidecar objects for an artifact, such as
+    # index or metadata files, and deleting only the primary output file can
+    # leave those behind. The workaround is to keep all durable workflow output
+    # under migration-outputs/<resource-type>/<resource-name>/
+    # <resource-creation-timestamp>_<resource-uid>/ and remove that entire
+    # prefix when the owning migration resource is reset.
+    try:
+        deleted = delete_artifact_prefix(prefix)
+        if deleted:
+            click.echo(f"  Deleted {deleted} output artifact(s) for {resource_display_name(plural, name)}")
+    except ArtifactStoreError as e:
+        click.echo(f"  Warning: {e}", err=True)
+
+
+def _delete_and_wait(namespace, plural, name, delete_output_artifacts=True):
     """Delete a single CRD and poll until it is gone."""
+    uid, created_at = _resource_metadata(namespace, plural, name)
     _mark_deleting(namespace, plural, name)
     _cleanup_owned_resources(namespace, plural, name)
+    if delete_output_artifacts:
+        _cleanup_output_artifacts(plural, name, uid, created_at)
+    else:
+        path = artifact_uri(_artifact_output_prefix(plural, name, uid, created_at))
+        detail = f" (created {created_at}, uid {uid})" if uid and created_at else ""
+        click.echo(f"  Keeping output artifacts for {resource_display_name(plural, name)}{detail}: {path}")
     ok = _delete_crd(namespace, plural, name)
     if ok:
         _wait_until_gone(namespace, plural, [name])
@@ -307,7 +356,7 @@ def _build_child_map(targets):
     return children
 
 
-def _delete_targets(targets, namespace):
+def _delete_targets(targets, namespace, delete_output_artifacts=True):
     """Delete targets in dependency-safe order with concurrency."""
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -322,7 +371,13 @@ def _delete_targets(targets, namespace):
             for name, children in pending_children.items():
                 if name not in in_flight and not children:
                     plural = target_map[name][0]
-                    in_flight[name] = pool.submit(_delete_and_wait, namespace, plural, name)
+                    in_flight[name] = pool.submit(
+                        _delete_and_wait,
+                        namespace,
+                        plural,
+                        name,
+                        delete_output_artifacts,
+                    )
 
         submit_ready()
 
@@ -548,7 +603,8 @@ def _handle_kafka_storage(namespace, kafka_cluster_names, delete_storage):
         )
 
 
-def _reset_by_resource_name(ctx, path, namespace, cascade, include_proxies, delete_storage):
+def _reset_by_resource_name(ctx, path, namespace, cascade, include_proxies, delete_storage,
+                            delete_output_artifacts):
     """Handle reset for a specific resource path/pattern."""
     targets = _resolve_targets(namespace, path)
     if not targets:
@@ -560,7 +616,7 @@ def _reset_by_resource_name(ctx, path, namespace, cascade, include_proxies, dele
         return
     kafka_names = [name for plural, name, _, _ in targets if plural == 'kafkaclusters']
     _handle_kafka_storage(namespace, kafka_names, delete_storage)
-    if not _delete_targets(targets, namespace):
+    if not _delete_targets(targets, namespace, delete_output_artifacts):
         ctx.exit(ExitCode.FAILURE.value)
 
 
@@ -573,9 +629,12 @@ def _reset_by_resource_name(ctx, path, namespace, cascade, include_proxies, dele
               help='Also delete capture proxies (they are protected by default)')
 @click.option('--delete-storage', is_flag=True, default=False,
               help='Delete Kafka PVCs and orphaned PVs during reset')
+@click.option('--keep-output-artifacts', is_flag=True, default=False,
+              help='Keep retained workflow output artifacts and print their S3 prefix')
 @click.option('--namespace', default=get_current_namespace, hidden=True, envvar='WORKFLOW_NAMESPACE')
 @click.pass_context
-def reset_command(ctx, names, reset_all, list_resources, cascade, include_proxies, delete_storage, namespace):
+def reset_command(ctx, names, reset_all, list_resources, cascade, include_proxies, delete_storage,
+                  keep_output_artifacts, namespace):
     """Reset deletes named workflow resources but does not alter resources
     that are managed outside the migration system, such as the target clusters.
     To fully reset or reverse a previous step, actions will need to be made on
@@ -602,7 +661,15 @@ def reset_command(ctx, names, reset_all, list_resources, cascade, include_proxie
 
         if names:
             for n in names:
-                _reset_by_resource_name(ctx, n, namespace, cascade, include_proxies, delete_storage)
+                _reset_by_resource_name(
+                    ctx,
+                    n,
+                    namespace,
+                    cascade,
+                    include_proxies,
+                    delete_storage,
+                    not keep_output_artifacts,
+                )
             return
 
         resources = list_migration_resources(namespace)
@@ -630,7 +697,7 @@ def reset_command(ctx, names, reset_all, list_resources, cascade, include_proxie
         kafka_names = [name for plural, name, _, _ in delete_targets if plural == 'kafkaclusters']
         _handle_kafka_storage(namespace, kafka_names, delete_storage)
 
-        if delete_targets and not _delete_targets(delete_targets, namespace):
+        if delete_targets and not _delete_targets(delete_targets, namespace, not keep_output_artifacts):
             ctx.exit(ExitCode.FAILURE.value)
             return
 

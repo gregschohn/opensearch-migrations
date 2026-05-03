@@ -1,5 +1,8 @@
 package org.opensearch.migrations;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicReference;
@@ -34,6 +37,7 @@ public class MetadataMigration {
     }
 
     private AtomicReference<OutputFormat> outputFormat = new AtomicReference<>();
+    private AtomicReference<Path> outputFile = new AtomicReference<>();
 
     protected void run(String[] args) {
         System.err.println("Starting program with: " + String.join(" ", ArgLogUtils.getRedactedArgs(
@@ -55,6 +59,12 @@ public class MetadataMigration {
         } else {
             outputFormat.set(OutputFormat.HUMAN_READABLE);
         }
+        outputFile.set(selectedCommandArgs(argsParser.getJCommander(), migrateArgs, evaluateArgs)
+            .map(commandArgs -> commandArgs.outputFile)
+            .filter(path -> !path.isBlank())
+            .map(Path::of)
+            .orElse(null));
+        initializeOutputFile();
 
         if (metadataArgs.help || argsParser.getParsedCommand() == null) {
             printTopLevelHelp(argsParser.getJCommander());
@@ -109,6 +119,16 @@ public class MetadataMigration {
         }
     }
 
+    private Optional<MigrateOrEvaluateArgs> selectedCommandArgs(
+        JCommander jCommander,
+        MigrateArgs migrateArgs,
+        EvaluateArgs evaluateArgs
+    ) {
+        var command = Optional.ofNullable(jCommander.getParsedCommand())
+            .map(MetadataCommands::fromString);
+        return command.map(c -> c == MetadataCommands.EVALUATE ? evaluateArgs : migrateArgs);
+    }
+
     protected void exitWithCode(int code) {
         System.exit(code);
     }
@@ -128,12 +148,44 @@ public class MetadataMigration {
     protected void writeOutput(String humanReadableOutput) {
         if (outputFormat.get() == OutputFormat.HUMAN_READABLE) {
             log.atInfo().setMessage("{}").addArgument(humanReadableOutput).log();
+            writeOutputFile(humanReadableOutput);
         }
     }
 
     protected void writeOutput(JsonNode output) {
         if (outputFormat.get() == OutputFormat.JSON) {
-            log.atInfo().setMessage("{}").addArgument(output::toPrettyString).log();
+            var outputString = output.toPrettyString();
+            log.atInfo().setMessage("{}").addArgument(outputString).log();
+            writeOutputFile(outputString);
+        }
+    }
+
+    private void initializeOutputFile() {
+        var path = outputFile.get();
+        if (path == null) {
+            return;
+        }
+        try {
+            var parent = path.getParent();
+            if (parent != null) {
+                Files.createDirectories(parent);
+            }
+            Files.writeString(path, "", StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            throw new RuntimeException("Unable to initialize output file " + path, e);
+        }
+    }
+
+    private void writeOutputFile(String output) {
+        var path = outputFile.get();
+        if (path == null) {
+            return;
+        }
+        try {
+            Files.writeString(path, output + System.lineSeparator(), StandardCharsets.UTF_8,
+                java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+        } catch (IOException e) {
+            throw new RuntimeException("Unable to write output file " + path, e);
         }
     }
 

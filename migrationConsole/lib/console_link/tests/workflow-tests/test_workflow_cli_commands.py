@@ -20,6 +20,7 @@ class TestWorkflowCLICommands:
             ['configure', 'secret', 'create', '-h'],
             ['approve', 'step', '-h'],
             ['log', 'filter', '-h'],
+            ['show', '-h'],
             ['status', '-h'],
             ['submit', '-h'],
             ['reset', '-h'],
@@ -37,6 +38,7 @@ class TestWorkflowCLICommands:
             ['manage', '--help'],
             ['approve', 'step', '--help'],
             ['log', 'filter', '--help'],
+            ['show', '--help'],
         ):
             result = runner.invoke(workflow_cli, args)
             assert result.exit_code == 0
@@ -861,6 +863,433 @@ class TestWorkflowCLICommands:
         completions = _get_resource_completions(ctx, None, 'capture')
 
         assert completions == ['captureproxy.my-proxy']
+
+    @patch('console_link.workflow.commands.show.load_k8s_config')
+    @patch('console_link.workflow.commands.show.client')
+    @patch('console_link.workflow.commands.show.read_artifact_text')
+    def test_workflow_show_task_prints_all_current_outputs(
+        self, mock_read_artifact, mock_client, _mock_k8s
+    ):
+        runner = CliRunner()
+        mock_custom = Mock()
+        mock_client.CustomObjectsApi.return_value = mock_custom
+        mock_custom.list_namespaced_custom_object.return_value = {
+            'items': [
+                {
+                    'metadata': {'name': 'migration-0'},
+                    'status': {
+                        'outputs': {
+                            'metadataEvaluate': {
+                                's3Key': (
+                                    'migration-outputs/snapshotmigration/migration-0/uid-0/'
+                                    'metadataEvaluate/wf-0.log'
+                                ),
+                                'workflowCreationTimestamp': '2026-05-03T13:00:00Z',
+                            },
+                        },
+                    },
+                },
+                {
+                    'metadata': {'name': 'migration-1'},
+                    'status': {
+                        'outputs': {
+                            'metadataEvaluate': {
+                                's3Key': (
+                                    'migration-outputs/snapshotmigration/migration-1/uid-1/'
+                                    'metadataEvaluate/wf-1.log'
+                                ),
+                                'workflowCreationTimestamp': '2026-05-03T14:00:00Z',
+                            },
+                        },
+                    },
+                },
+            ],
+        }
+        mock_read_artifact.side_effect = ["evaluate 0\n", "evaluate 1\n"]
+
+        result = runner.invoke(workflow_cli, ['show', 'evaluatemetadata'])
+
+        assert result.exit_code == 0
+        assert 'snapshotmigration.migration-0 / metadataEvaluate / 2026-05-03T13:00:00Z' in result.output
+        assert 'snapshotmigration.migration-1 / metadataEvaluate / 2026-05-03T14:00:00Z' in result.output
+        assert 'evaluate 0' in result.output
+        assert 'evaluate 1' in result.output
+
+    @patch('console_link.workflow.commands.show.load_k8s_config')
+    @patch('console_link.workflow.commands.show.client')
+    @patch('console_link.workflow.commands.show.read_artifact_text')
+    def test_workflow_show_task_can_filter_by_resource(
+        self, mock_read_artifact, mock_client, _mock_k8s
+    ):
+        runner = CliRunner()
+        mock_custom = Mock()
+        mock_client.CustomObjectsApi.return_value = mock_custom
+        mock_custom.list_namespaced_custom_object.return_value = {
+            'items': [
+                {
+                    'metadata': {'name': 'migration-0'},
+                    'status': {
+                        'outputs': {
+                            'metadataMigrate': {
+                                's3Key': 'migration-outputs/snapshotmigration/migration-0/uid-0/metadataMigrate/wf.log',
+                            },
+                        },
+                    },
+                },
+                {
+                    'metadata': {'name': 'migration-1'},
+                    'status': {
+                        'outputs': {
+                            'metadataMigrate': {
+                                's3Key': 'migration-outputs/snapshotmigration/migration-1/uid-1/metadataMigrate/wf.log',
+                            },
+                        },
+                    },
+                },
+            ],
+        }
+        mock_read_artifact.return_value = "migrate 1\n"
+
+        result = runner.invoke(workflow_cli, ['show', 'migratemetadata', 'migration-1'])
+
+        assert result.exit_code == 0
+        assert 'snapshotmigration.migration-1' in result.output
+        assert 'snapshotmigration.migration-0' not in result.output
+        assert 'migrate 1' in result.output
+        mock_read_artifact.assert_called_once_with(
+            'migration-outputs/snapshotmigration/migration-1/uid-1/metadataMigrate/wf.log'
+        )
+
+    @patch('console_link.workflow.commands.show.load_k8s_config')
+    @patch('console_link.workflow.commands.show.client')
+    def test_workflow_show_task_completion_only_includes_tasks_with_outputs(
+        self, mock_client, _mock_k8s
+    ):
+        from console_link.workflow.commands.show import _get_task_or_resource_completions
+
+        ctx = Mock()
+        ctx.params = {'namespace': 'ma'}
+        mock_custom = Mock()
+        mock_client.CustomObjectsApi.return_value = mock_custom
+
+        def list_resources(**_kwargs):
+            return {
+                'items': [
+                    {
+                        'metadata': {'name': 'migration-0'},
+                        'status': {
+                            'outputs': {
+                                'metadataEvaluate': {
+                                    's3Key': (
+                                        'migration-outputs/snapshotmigration/migration-0/uid/'
+                                        'metadataEvaluate/wf.log'
+                                    ),
+                                },
+                            },
+                        },
+                    },
+                ],
+            }
+
+        mock_custom.list_namespaced_custom_object.side_effect = list_resources
+
+        completions = _get_task_or_resource_completions(ctx, None, '')
+
+        assert completions == ['evaluatemetadata']
+
+    @patch('console_link.workflow.commands.show.load_k8s_config')
+    @patch('console_link.workflow.commands.show.client')
+    def test_workflow_show_resource_completion_matches_task_list(
+        self, mock_client, _mock_k8s
+    ):
+        from console_link.workflow.commands.show import _get_resource_filter_completions
+
+        ctx = Mock()
+        ctx.params = {'namespace': 'ma', 'target': 'migratemetadata'}
+        mock_custom = Mock()
+        mock_client.CustomObjectsApi.return_value = mock_custom
+        mock_custom.list_namespaced_custom_object.return_value = {
+            'items': [
+                {
+                    'metadata': {'name': 'migration-0'},
+                    'status': {
+                        'outputs': {
+                            'metadataMigrate': {
+                                's3Key': 'migration-outputs/snapshotmigration/migration-0/uid/metadataMigrate/wf.log',
+                            },
+                        },
+                    },
+                },
+                {
+                    'metadata': {'name': 'migration-1'},
+                    'status': {'outputs': {}},
+                },
+            ],
+        }
+
+        completions = _get_resource_filter_completions(ctx, None, '')
+
+        assert completions == ['snapshotmigration.migration-0']
+
+    @patch('console_link.workflow.commands.show.load_k8s_config')
+    @patch('console_link.workflow.commands.show.client')
+    @patch('console_link.workflow.commands.show.read_artifact_text')
+    def test_workflow_show_clean_suppresses_task_headers(
+        self, mock_read_artifact, mock_client, _mock_k8s
+    ):
+        runner = CliRunner()
+        mock_custom = Mock()
+        mock_client.CustomObjectsApi.return_value = mock_custom
+        mock_custom.list_namespaced_custom_object.return_value = {
+            'items': [
+                {
+                    'metadata': {'name': 'migration-0'},
+                    'status': {
+                        'outputs': {
+                            'metadataEvaluate': {
+                                's3Key': 'migration-outputs/snapshotmigration/migration-0/uid/metadataEvaluate/wf.log',
+                                'workflowCreationTimestamp': '2026-05-03T13:00:00Z',
+                            },
+                        },
+                    },
+                },
+            ],
+        }
+        mock_read_artifact.return_value = "evaluate clean\n"
+
+        result = runner.invoke(workflow_cli, ['show', 'evaluatemetadata', '--clean'])
+
+        assert result.exit_code == 0
+        assert result.output == "evaluate clean\n"
+
+    @patch('console_link.workflow.commands.show.load_k8s_config')
+    @patch('console_link.workflow.commands.show.client')
+    @patch('console_link.workflow.commands.show.read_artifact_text')
+    def test_workflow_show_prints_stdout_for_resource(
+        self, mock_read_artifact, mock_client, _mock_k8s
+    ):
+        runner = CliRunner()
+        mock_custom = Mock()
+        mock_client.CustomObjectsApi.return_value = mock_custom
+        mock_custom.get_namespaced_custom_object.return_value = {
+            'status': {
+                'outputs': {
+                    'metadataEvaluate': {
+                        'artifactName': 'metadataOutput',
+                        's3Key': 'migration-outputs/snapshotmigration/mig/uid-1/metadataEvaluate/wf-uid.log',
+                        'workflowName': 'migration-workflow',
+                    }
+                }
+            },
+        }
+        mock_read_artifact.return_value = "archived stdout\n"
+
+        result = runner.invoke(
+            workflow_cli,
+            ['show', 'snapshotmigration.mig', 'metadataEvaluate']
+        )
+
+        assert result.exit_code == 0
+        assert "archived stdout" in result.output
+        mock_read_artifact.assert_called_once_with(
+            'migration-outputs/snapshotmigration/mig/uid-1/metadataEvaluate/wf-uid.log'
+        )
+
+    @patch('console_link.workflow.commands.show.load_k8s_config')
+    @patch('console_link.workflow.commands.show.client')
+    @patch('console_link.workflow.commands.show.read_artifact_text')
+    def test_workflow_show_filters_to_named_output(
+        self, mock_read_artifact, mock_client, _mock_k8s
+    ):
+        runner = CliRunner()
+        mock_custom = Mock()
+        mock_client.CustomObjectsApi.return_value = mock_custom
+        mock_custom.get_namespaced_custom_object.return_value = {
+            'status': {
+                'outputs': {
+                    'metadataEvaluate': {
+                        's3Key': 'migration-outputs/snapshotmigration/mig/uid-1/metadataEvaluate/wf-uid.log',
+                    },
+                    'metadataMigrate': {
+                        's3Key': 'migration-outputs/snapshotmigration/mig/uid-1/metadataMigrate/wf-uid.log',
+                    },
+                }
+            },
+        }
+        mock_read_artifact.return_value = "migrate output\n"
+
+        result = runner.invoke(
+            workflow_cli,
+            ['show', 'snapshotmigration.mig', 'metadataMigrate']
+        )
+
+        assert result.exit_code == 0
+        assert "migrate output" in result.output
+        mock_read_artifact.assert_called_once_with(
+            'migration-outputs/snapshotmigration/mig/uid-1/metadataMigrate/wf-uid.log'
+        )
+
+    @patch('console_link.workflow.commands.show.load_k8s_config')
+    @patch('console_link.workflow.commands.show.client')
+    @patch('console_link.workflow.commands.show.read_artifact_text')
+    def test_workflow_show_accepts_metadata_approval_gate_names(
+        self, mock_read_artifact, mock_client, _mock_k8s
+    ):
+        runner = CliRunner()
+        mock_custom = Mock()
+        mock_client.CustomObjectsApi.return_value = mock_custom
+        mock_custom.get_namespaced_custom_object.return_value = {
+            'status': {
+                'outputs': {
+                    'metadataEvaluate': {
+                        's3Key': 'migration-outputs/snapshotmigration/mig/uid-1/metadataEvaluate/wf-uid.log',
+                    },
+                }
+            },
+        }
+        mock_read_artifact.return_value = "evaluate output\n"
+
+        result = runner.invoke(
+            workflow_cli,
+            ['show', 'evaluatemetadata.mig']
+        )
+
+        assert result.exit_code == 0
+        mock_custom.get_namespaced_custom_object.assert_called_once_with(
+            group='migrations.opensearch.org',
+            version='v1alpha1',
+            namespace='ma',
+            plural='snapshotmigrations',
+            name='mig',
+        )
+        assert "evaluate output" in result.output
+
+    @patch('console_link.workflow.commands.show.load_k8s_config')
+    @patch('console_link.workflow.commands.show.client')
+    def test_workflow_show_list_shows_tasks_with_resource_names(self, mock_client, _mock_k8s):
+        runner = CliRunner()
+        mock_custom = Mock()
+        mock_client.CustomObjectsApi.return_value = mock_custom
+
+        def list_resources(**kwargs):
+            return {
+                'items': [
+                    {
+                        'metadata': {'name': 'migration-0'},
+                        'status': {
+                            'outputs': {
+                                'metadataEvaluate': {
+                                    's3Key': (
+                                        'migration-outputs/snapshotmigration/migration-0/uid/'
+                                        'metadataEvaluate/wf.log'
+                                    ),
+                                },
+                                'metadataMigrate': {
+                                    's3Key': (
+                                        'migration-outputs/snapshotmigration/migration-0/uid/'
+                                        'metadataMigrate/wf.log'
+                                    ),
+                                },
+                            },
+                        },
+                    },
+                    {
+                        'metadata': {'name': 'migration-no-output'},
+                        'status': {'outputs': {}},
+                    },
+                ],
+            }
+
+        mock_custom.list_namespaced_custom_object.side_effect = list_resources
+
+        result = runner.invoke(workflow_cli, ['show', '--list'])
+
+        assert result.exit_code == 0
+        assert 'evaluatemetadata:' in result.output
+        assert 'migratemetadata:' in result.output
+        assert 'snapshotmigration.migration-0' in result.output
+        assert 'migration-no-output' not in result.output
+
+    @patch('console_link.workflow.commands.show.load_k8s_config')
+    @patch('console_link.workflow.commands.show.client')
+    def test_workflow_show_task_list_shows_only_that_task_resources(self, mock_client, _mock_k8s):
+        runner = CliRunner()
+        mock_custom = Mock()
+        mock_client.CustomObjectsApi.return_value = mock_custom
+        mock_custom.list_namespaced_custom_object.return_value = {
+            'items': [
+                {
+                    'metadata': {'name': 'migration-0'},
+                    'status': {
+                        'outputs': {
+                            'metadataEvaluate': {
+                                's3Key': 'migration-outputs/snapshotmigration/migration-0/uid/metadataEvaluate/wf.log',
+                            },
+                            'metadataMigrate': {
+                                's3Key': 'migration-outputs/snapshotmigration/migration-0/uid/metadataMigrate/wf.log',
+                            },
+                        },
+                    },
+                },
+                {
+                    'metadata': {'name': 'migration-1'},
+                    'status': {
+                        'outputs': {
+                            'metadataEvaluate': {
+                                's3Key': 'migration-outputs/snapshotmigration/migration-1/uid/metadataEvaluate/wf.log',
+                            },
+                        },
+                    },
+                },
+            ],
+        }
+
+        result = runner.invoke(workflow_cli, ['show', 'migratemetadata', '--list'])
+
+        assert result.exit_code == 0
+        assert 'migratemetadata:' not in result.output
+        assert 'snapshotmigration.migration-0' in result.output
+        assert 'snapshotmigration.migration-1' not in result.output
+
+    @patch('console_link.workflow.commands.show.load_k8s_config')
+    @patch('console_link.workflow.commands.show.client')
+    @patch('console_link.workflow.commands.show.artifact_uri', side_effect=lambda key: f"s3://bucket/{key}")
+    @patch('console_link.workflow.commands.show.list_artifacts')
+    def test_workflow_show_history_lists_current_resource_uid_outputs(
+        self, mock_list_artifacts, _mock_uri, mock_client, _mock_k8s
+    ):
+        runner = CliRunner()
+        mock_custom = Mock()
+        mock_client.CustomObjectsApi.return_value = mock_custom
+        mock_custom.get_namespaced_custom_object.return_value = {
+            'metadata': {'uid': 'uid-1'},
+            'status': {'outputs': {}},
+        }
+        mock_list_artifacts.return_value = [
+            {
+                'key': 'migration-outputs/snapshotmigration/mig/uid-1/metadataMigrate/wf-1.log',
+                'last_modified': 1710000000.0,
+                'size': 12,
+            },
+            {
+                'key': 'migration-outputs/snapshotmigration/mig/uid-1/metadataMigrate/wf-1.log.metadata',
+                'last_modified': 1710000001.0,
+                'size': 2,
+            },
+        ]
+
+        result = runner.invoke(
+            workflow_cli,
+            ['show', 'snapshotmigration.mig', 'metadataMigrate', '--history']
+        )
+
+        assert result.exit_code == 0
+        mock_list_artifacts.assert_called_once_with(
+            'migration-outputs/snapshotmigration/mig/uid-1/metadataMigrate/'
+        )
+        assert 'metadataMigrate' in result.output
+        assert 's3://bucket/migration-outputs/snapshotmigration/mig/uid-1/metadataMigrate/wf-1.log' in result.output
+        assert '.metadata' not in result.output
 
     @patch('console_link.workflow.commands.submit.verify_configured_secrets_exist')
     @patch('console_link.workflow.commands.submit.get_credentials_secret_store_for_namespace')

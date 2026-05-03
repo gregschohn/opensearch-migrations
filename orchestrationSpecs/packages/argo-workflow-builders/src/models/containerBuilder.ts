@@ -27,6 +27,7 @@ import {PlainObject} from "./plainObject";
 import {AllowLiteralOrExpression, BaseExpression, expr, toExpression} from "./expression";
 import {TypeToken} from "./sharedTypes";
 import {SynchronizationConfig} from "./synchronization";
+import {assertNoBareTemplateString} from "./templateLiteralGuard";
 
 export type IMAGE_PULL_POLICY = "Always" | "Never" | "IfNotPresent";
 
@@ -400,11 +401,19 @@ export class ContainerBuilder<
 
     addArtifactOutput<Name extends string>(
         name: UniqueNameConstraintAtDeclaration<Name, ArtifactScope>,
-        path: string
+        path: string,
+        options: { s3Key?: AllowLiteralOrExpression<string> } = {}
     ): ContainerBuilder<ParentWorkflowScope, InputParamsScope, ContainerScope, VolumeScope, EnvScope, OutputParamsScope, PodConfigBrands, ExtendScope<ArtifactScope, { [K in Name]: OutputArtifactDef }>> {
+        assertNoBareTemplateString(options.s3Key, "artifact output s3Key");
+        const artifact: OutputArtifactDef = {
+            name,
+            path,
+            archive: { none: {} },
+            ...(options.s3Key ? { s3: { key: options.s3Key } } : {})
+        };
         const newArtifacts: OutputArtifactsRecord = {
             ...this.outputArtifacts,
-            [name as string]: { name, path, archive: { none: {} } } as OutputArtifactDef
+            [name as string]: artifact
         };
         return new ContainerBuilder(
             this.parentWorkflowScope,
