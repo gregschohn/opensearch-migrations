@@ -18,6 +18,7 @@ from .secret_utils import process_secrets, validate_and_find_secrets
 logger = logging.getLogger(__name__)
 
 session_name = 'default'
+NO_MANAGED_HTTP_BASIC_SECRETS_MESSAGE = "No managed HTTP-Basic auth secrets found."
 
 
 def _get_empty_config_template() -> str:
@@ -273,7 +274,7 @@ def secret_group():
 @click.pass_context
 def list_secrets(ctx):
     """List managed HTTP-Basic auth secrets."""
-    _show_secret_names(_managed_secret_names(ctx), "No managed HTTP-Basic auth secrets found.")
+    _show_secret_names(_managed_secret_names(ctx), NO_MANAGED_HTTP_BASIC_SECRETS_MESSAGE)
 
 
 @secret_group.command(name="create")
@@ -310,7 +311,7 @@ def create_secret(ctx, show_missing, name):
 def update_secret(ctx, list_names, name):
     """Update credentials for one managed HTTP-Basic auth secret."""
     if list_names:
-        _show_secret_names(_managed_secret_names(ctx), "No managed HTTP-Basic auth secrets found.")
+        _show_secret_names(_managed_secret_names(ctx), NO_MANAGED_HTTP_BASIC_SECRETS_MESSAGE)
         return
     if not name:
         click.echo("Error: specify a secret name or --list.\n", err=True)
@@ -331,7 +332,7 @@ def update_secret(ctx, list_names, name):
 def delete_secret(ctx, list_names, name, confirm):
     """Delete one managed HTTP-Basic auth secret."""
     if list_names:
-        _show_secret_names(_managed_secret_names(ctx), "No managed HTTP-Basic auth secrets found.")
+        _show_secret_names(_managed_secret_names(ctx), NO_MANAGED_HTTP_BASIC_SECRETS_MESSAGE)
         return
     if not name:
         click.echo("Error: specify a secret name or --list.\n", err=True)
