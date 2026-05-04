@@ -102,7 +102,7 @@ public class ShardWorkPreparer {
             .setMessage("Setting up the Documents Work Items...")
             .log();
         SnapshotRepo.Provider repoDataProvider = metadataFactory.getRepoDataProvider();
-        var allowedIndexes = FilterScheme.filterByAllowList(indexAllowlist);
+        var allowedIndexes = FilterScheme.filterByAllowList(indexAllowlist, FilterScheme.FilterContext.INDEX);
         var indicesInSnapshot = repoDataProvider.getIndicesInSnapshot(snapshotName);
         if (indicesInSnapshot.isEmpty()) {
             log.atWarn().setMessage("After filtering the snapshot no indices were found.").log();
