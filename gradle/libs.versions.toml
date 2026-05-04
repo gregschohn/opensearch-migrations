@@ -17,7 +17,6 @@ httpclient5 = "5.6.1"
 jackson = "2.21.2"
 jackson-annotations = "2.21"
 jcommander = "2.0"
-jenkins-pipeline-unit = "1.23"
 jmespath-core = "0.6.0"
 jmeter = "5.6.3"
 jmh-core = "1.37"
@@ -88,8 +87,6 @@ jackson-dataformat-smile = { module = "com.fasterxml.jackson.dataformat:jackson-
 jackson-dataformat-yaml = { module = "com.fasterxml.jackson.dataformat:jackson-dataformat-yaml", version.ref = "jackson" }
 
 jcommander = { module = "org.jcommander:jcommander", version.ref = "jcommander" }
-
-jenkins-pipeline-unit = { module = "com.lesfurets:jenkins-pipeline-unit", version.ref = "jenkins-pipeline-unit" }
 
 jmespath-core = { module = "io.burt:jmespath-core", version.ref = "jmespath-core" }
 

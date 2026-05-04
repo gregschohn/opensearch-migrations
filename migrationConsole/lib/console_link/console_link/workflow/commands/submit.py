@@ -14,6 +14,7 @@ from ..services.workflow_service import WorkflowService
 from ..services.script_runner import ScriptRunner
 from .argo_utils import workflow_exists, stop_workflow, delete_workflow, wait_until_workflow_deleted
 from .autocomplete_workflows import DEFAULT_WORKFLOW_NAME, get_workflow_completions
+from .secret_utils import get_credentials_secret_store_for_namespace, verify_configured_secrets_exist
 
 logger = logging.getLogger(__name__)
 
@@ -128,10 +129,16 @@ def submit_command(ctx, namespace, wait, timeout, wait_interval, session, workfl
         click.echo("\nPlease configure the workflow first using 'workflow configure edit'", err=True)
         ctx.exit(ExitCode.FAILURE.value)
 
-    click.echo("NOT checking if all secrets have been created.  Run `workflow configure edit` to confirm")
-
     try:
         load_k8s_config()
+
+        # Verify that every HTTP-Basic secret referenced by the saved config still
+        # exists in the cluster. If the config has changed or a secret has been
+        # deleted since `workflow configure edit`, fail fast with a clear error
+        # rather than letting the workflow fail mid-run.
+        secret_store = get_credentials_secret_store_for_namespace(namespace)
+        verify_configured_secrets_exist(secret_store, config.raw_yaml)
+
         runner = ScriptRunner()
 
         config_yaml = config.raw_yaml
