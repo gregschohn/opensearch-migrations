@@ -590,6 +590,8 @@ Present the formatted estimate and store it in the session under `facts.pricing_
 **Stakeholder guidance:**
 - **Search Relevance Engineer** — note how engine type and shard sizing choices affect cost.
 - **DevOps / Platform Engineer** — compare OnDemand vs. Reserved pricing; discuss instance family options for the target region.
+- **Business Stakeholder** — give a high level overview of pricing with possible savings using reserved vs ondemand and instance types. Do not drill in detail into instance options though.
+
 
 Move to Step 9.
 

@@ -755,13 +755,24 @@ tests:
       value: >-
         Response summarizes indexer, backend search service and UI as systems to adjust when migrating.
         Response provides number of engineering teams affected and rough effort estimate per integration.
-        Asks the user to validate the information, provide more information or whether to proceed to next step.
-  - description: "Business StakeHolder Chat Migration Report"
+        Asks the user whether to proceed to next step.
+  - description: "Business StakeHolder Chat Price Estimate"
     metadata:
       continue: true
     vars:
       query: |
         Go ahead.
+    assert:
+      - type: llm-rubric
+        value: >-
+          Response asks whether user would like a pricing estimate for the OpenSearch deployment
+          for managed clusters or OpenSearch serverless collections.
+  - description: "Business StakeHolder Chat Migration Report"
+    metadata:
+      continue: true
+    vars:
+      query: |
+        Skip the price estimate step and go to the next step, creating the migration report.
     assert:
     - type: llm-rubric
       value: >-
