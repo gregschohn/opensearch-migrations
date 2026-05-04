@@ -151,4 +151,3 @@ def send_bulk(cluster, index_name: str, start: int, count: int):
                             data=body, headers=headers)
     bulk_result = resp.json()
     assert not bulk_result.get("errors"), f"Bulk indexing had errors: {bulk_result}"
-
