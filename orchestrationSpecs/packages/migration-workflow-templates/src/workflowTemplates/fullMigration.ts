@@ -5,6 +5,7 @@ import {
     ARGO_REPLAYER_OPTIONS,
     ARGO_RFS_OPTIONS,
     COMPLETE_SNAPSHOT_CONFIG,
+    DEFAULT_RESOURCES,
     DENORMALIZED_CREATE_SNAPSHOTS_CONFIG,
     DENORMALIZED_PROXY_CONFIG,
     DENORMALIZED_REPLAY_CONFIG,
@@ -96,6 +97,38 @@ export const FullMigration = WorkflowBuilder.create({
 
     .addTemplate("doNothing", t => t
         .addSteps(b => b.addStepGroup(c => c)))
+
+
+    .addTemplate("addApprovalGateOwnerReferences", t => t
+        .addInputsFromRecord(defaultImagesMap(t.inputs.workflowParameters.imageConfigMapName))
+        .addContainer(b => b
+            .addImageInfo(b.inputs.imageMigrationConsoleLocation, b.inputs.imageMigrationConsolePullPolicy)
+            .addResources(DEFAULT_RESOURCES.SHELL_MIGRATION_CONSOLE_CLI)
+            .addCommand(["/bin/bash", "-lc"])
+            .addArgs([`
+selector='migrations.opensearch.org/workflow={{workflow.name}}'
+patch='{"metadata":{"ownerReferences":[{"apiVersion":"argoproj.io/v1alpha1","kind":"Workflow","name":"{{workflow.name}}","uid":"{{workflow.uid}}"}]}}'
+kubectl get approvalgates.migrations.opensearch.org -l "$selector" -o name \\
+  | xargs -r -n 1 kubectl patch --type merge -p "$patch" \\
+  || echo "WARN: failed to patch one or more approvalgate ownerReferences" >&2
+`])
+        )
+    )
+
+
+    .addTemplate("cleanupApprovalGates", t => t
+        .addInputsFromRecord(defaultImagesMap(t.inputs.workflowParameters.imageConfigMapName))
+        .addContainer(b => b
+            .addImageInfo(b.inputs.imageMigrationConsoleLocation, b.inputs.imageMigrationConsolePullPolicy)
+            .addResources(DEFAULT_RESOURCES.SHELL_MIGRATION_CONSOLE_CLI)
+            .addCommand(["/bin/bash", "-lc"])
+            .addArgs([`
+kubectl delete approvalgates.migrations.opensearch.org \\
+  -l "migrations.opensearch.org/workflow={{workflow.name}}" \\
+  --ignore-not-found || true
+`])
+        )
+    )
 
 
     // ── Section 1: Kafka Clusters ────────────────────────────────────────
@@ -640,6 +673,9 @@ export const FullMigration = WorkflowBuilder.create({
         .addInputsFromRecord(defaultImagesMap(t.inputs.workflowParameters.imageConfigMapName))
 
         .addSteps(b => b.addStepGroup(g => g
+            .addStep("addApprovalGateOwnerReferences", INTERNAL, "addApprovalGateOwnerReferences", c =>
+                c.register({})
+            )
             .addStep("createKafka", INTERNAL, "setupSingleKafkaCluster", c =>
                 c.register({
                     kafkaClusterConfig: expr.serialize(expr.makeDict({
@@ -807,4 +843,5 @@ export const FullMigration = WorkflowBuilder.create({
 
 
     .setEntrypoint("main")
+    .setOnExit("cleanupApprovalGates")
     .getFullScope();

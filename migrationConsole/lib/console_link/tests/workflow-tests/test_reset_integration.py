@@ -21,7 +21,7 @@ from kubernetes import client
 from kubernetes.client.rest import ApiException
 
 from console_link.workflow.cli import workflow_cli  # noqa: F401
-from console_link.workflow.commands.approve import approve_gate
+from console_link.workflow.commands.approve import LABEL_WORKFLOW, approve_gate
 from console_link.workflow.commands.crd_utils import CRD_GROUP, CRD_VERSION, list_migration_resources
 from console_link.workflow.commands.reset import _delete_crd, _get_resource_completions  # noqa: F401
 
@@ -143,7 +143,7 @@ def _wait_for_crd_endpoint(custom, namespace, plural, timeout=60):
             time.sleep(0.5)
 
 
-def _create_crd_instance(namespace, plural, name, phase=None, depends_on=None):
+def _create_crd_instance(namespace, plural, name, phase=None, depends_on=None, labels=None):
     custom = client.CustomObjectsApi()
     _wait_for_crd_endpoint(custom, namespace, plural)
     body = {
@@ -157,7 +157,7 @@ def _create_crd_instance(namespace, plural, name, phase=None, depends_on=None):
             "snapshotmigrations": "SnapshotMigration",
             "trafficreplays": "TrafficReplay",
         }[plural],
-        "metadata": {"name": name, "namespace": namespace},
+        "metadata": {"name": name, "namespace": namespace, "labels": labels or {}},
         "spec": {"dependsOn": depends_on or []},
     }
 
@@ -520,8 +520,15 @@ class TestApproveIntegration:
         assert _get_phase(reset_ns, "approvalgates", "gate-c") == "Approved"
 
     def test_approve_cli_with_glob(self, runner, reset_ns):
-        _create_crd_instance(reset_ns, "approvalgates", "eval-metadata", phase=VALID_PHASES["approvalgates"])
-        _create_crd_instance(reset_ns, "approvalgates", "migrate-metadata", phase=VALID_PHASES["approvalgates"])
+        workflow_labels = {LABEL_WORKFLOW: "migration-workflow"}
+        _create_crd_instance(
+            reset_ns, "approvalgates", "eval-metadata",
+            phase=VALID_PHASES["approvalgates"], labels=workflow_labels,
+        )
+        _create_crd_instance(
+            reset_ns, "approvalgates", "migrate-metadata",
+            phase=VALID_PHASES["approvalgates"], labels=workflow_labels,
+        )
 
         result = _invoke_workflow_cli(runner, ["approve", "step", "--pre-approve", "eval-*", "--namespace", reset_ns])
         assert result.exit_code == 0

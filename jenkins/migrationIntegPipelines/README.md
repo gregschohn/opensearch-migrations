@@ -103,7 +103,6 @@ functionName(jobName: jobNameOverride ?: null)
 | rfsDefaultE2ETestCover.groovy | rfsDefaultE2ETest | JOB_NAME_OVERRIDE |
 | solr8xK8sLocalTestCover.groovy | solr8xK8sLocalTest | JOB_NAME_OVERRIDE |
 | solutionsCFNTestCover.groovy | solutionsCFNTest | JOB_NAME_OVERRIDE |
-| trafficReplayDefaultE2ETestCover.groovy | trafficReplayDefaultE2ETest | JOB_NAME_OVERRIDE |
 
 ### GitHub Actions Integration
 

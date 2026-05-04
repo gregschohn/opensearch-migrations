@@ -73,6 +73,8 @@ tasks.register('buildAndStageConfigProcessor', NpmTask) {
 
     // Source files
     inputs.dir(configProcessorP.dir("src"))
+    // Shell scripts copied into the config-processor bundle
+    inputs.dir(configProcessorP.dir("scripts"))
     // Build script
     inputs.file(configProcessorP.file("makeBundle.js"))
     // Package-level config files
