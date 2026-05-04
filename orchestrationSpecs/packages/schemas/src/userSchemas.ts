@@ -236,6 +236,13 @@ const DEFAULT_AUTO_CREATE_KAFKA = {
                 failureThreshold: 8,
             },
             config: {
+                // RF=3 + minISR=2 on a 3-broker cluster: survives one broker
+                // down (rolling restart, single node loss) without losing
+                // writes or quorum. ISR = replicas fully caught up to the
+                // leader; acks=all blocks until every ISR member has written,
+                // and writes fail (NotEnoughReplicasException) if |ISR|<minISR.
+                // auto.create.topics.enable stays false — all migration topics
+                // are declared explicitly via KafkaTopic CRs.
                 "auto.create.topics.enable": false,
                 "offsets.topic.replication.factor": 3,
                 "transaction.state.log.replication.factor": 3,
@@ -246,15 +253,23 @@ const DEFAULT_AUTO_CREATE_KAFKA = {
         }
     },
     nodePoolSpecOverrides: {
+        // 3-broker, combined (controller+broker) KRaft pool. 3 is the minimum
+        // that satisfies RF=3/minISR=2 above.
         replicas: 3,
         roles: ["controller", "broker"],
         storage: {
             type: "persistent-claim",
+            // Smoke-test size (raised 1Gi → 2Gi with the 1→3 broker bump;
+            // internal topics are now RF=3). Real deployments should override.
             size: "2Gi",
             deleteClaim: true,
         },
         template: {
             pod: {
+                // Soft anti-affinity — prefers spreading brokers across nodes
+                // but still schedules on single-node dev clusters. Required
+                // anti-affinity would wedge broker rescheduling during an EKS
+                // node rotation if the new pool temporarily has <3 nodes.
                 affinity: {
                     podAntiAffinity: {
                         preferredDuringSchedulingIgnoredDuringExecution: [
