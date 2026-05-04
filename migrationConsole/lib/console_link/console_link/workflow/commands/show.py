@@ -388,10 +388,7 @@ def _load_k8s_config_or_exit(ctx) -> bool:
         return False
 
 
-def _show_list_or_error(ctx, task: Optional[str]) -> bool:
-    if task is not None:
-        _list_show_targets(namespace, task)
-        return True
+def _show_resource_list_error(ctx) -> bool:
     click.echo("Error: --list accepts an optional output task, not a resource.\n", err=True)
     click.echo(ctx.get_help())
     ctx.exit(1)
@@ -489,7 +486,7 @@ def _show_current_resource_outputs(ctx, resource_name: str, output_name: Optiona
 def _handle_resource_show(ctx, namespace: str, target: str, selector: Optional[str],
                           list_resources: bool, history: bool,
                           run_selector: Optional[str], clean: bool) -> None:
-    if list_resources and not _show_list_or_error(ctx, None):
+    if list_resources and not _show_resource_list_error(ctx):
         return
 
     resource_name, output_name = _resolve_show_target(target, selector)
