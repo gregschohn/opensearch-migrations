@@ -8,10 +8,10 @@ from typing import Optional, cast
 
 import click
 
-from ..models.secret_store import SecretStore
 from ...models.command_result import CommandResult
 from ..models.config import WorkflowConfig
 from ..models.utils import get_workflow_config_store, get_credentials_secret_store
+from .secret_utils import process_secrets, validate_and_find_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -101,88 +101,6 @@ def _parse_config_from_stdin() -> str:
     return stdin_content
 
 
-def _validate_and_find_secrets(raw_yaml: str):
-    """Validate config via TS Zod schema and scrape secrets in one call.
-
-    Returns dict with 'valid' bool, optional 'errors', and optional 'validSecrets'/'invalidSecrets'.
-    """
-    from ..services.script_runner import ScriptRunner
-    runner = ScriptRunner()
-    result = runner.get_basic_creds_secrets_in_config(raw_yaml)
-    logger.info(f"got back script result for validate_and_find_secrets: {result}")
-    return result
-
-
-def _process_secrets(secret_store: SecretStore, result: dict, interactive: bool = False):
-    """Process secrets from a validate+findSecrets result."""
-    invalid_secrets = result.get('invalidSecrets')
-    if invalid_secrets:
-        raise click.ClickException(f"Invalidly named secret{'s' if len(invalid_secrets) > 1 else ''} found:"
-                                   f" {invalid_secrets}")
-
-    valid_secrets = result.get('validSecrets', [])
-    if not valid_secrets:
-        return
-
-    existing = list(filter(secret_store.secret_exists, valid_secrets))
-    missing = list(set(valid_secrets) - set(existing))
-
-    _notify_existing_secrets(existing, interactive)
-    _handle_missing_config_secrets(secret_store, missing, interactive)
-
-
-def _notify_existing_secrets(existing, interactive):
-    if not existing:
-        return
-    msg = (f"Found {len(existing)} existing secret{'s' if len(existing) > 1 else ''} "
-           f"that will be used for HTTP-Basic authentication "
-           f"of requests to clusters:\n  " + "\n  ".join(existing))
-    if interactive:
-        click.echo(msg)
-    else:
-        logger.info(msg)
-
-
-def _handle_missing_config_secrets(secret_store, missing, interactive):
-    if not missing:
-        return
-    if interactive:
-        _handle_add_basic_creds_secrets(secret_store, missing)
-    else:
-        raise click.ClickException(
-            f"Found {len(missing)} missing secret{'s' if len(missing) > 1 else ''} "
-            f"that must be created to make well-formed HTTP-Basic requests to clusters:\n  " +
-            "\n  ".join(missing))
-
-
-def _handle_add_basic_creds_secrets(secret_store, missing_names):
-    num_missing = len(missing_names)
-    click.echo(f"{num_missing} secret{'s' if num_missing > 1 else ''} used in the cluster definitions must be created.")
-
-    i = 0
-    while i < len(missing_names):
-        s = missing_names[i]
-
-        if not click.confirm(f"Would you like to create secret '{s}' now?", default=True):
-            click.echo(f"Skipped creating {s}")
-            i += 1
-            continue
-
-        try:
-            username = click.prompt("Username", type=str)
-            password = click.prompt("Password", hide_input=True, confirmation_prompt=True)
-
-            secret_store.save_secret(s, {"username": username, "password": password})
-            click.echo(f"Secret {s} saved successfully")
-            i += 1  # Only advance on success
-        except click.Abort:
-            click.echo(f"\nCancelled {s}")
-            if click.confirm("Retry this secret?", default=True):
-                continue  # Stay on same secret to give the user another chance (they can skip too)
-            else:
-                i += 1  # Move to next secret
-
-
 def _save_config(store, new_config: WorkflowConfig, session_name: str):
     """Save configuration to store"""
     try:
@@ -199,7 +117,7 @@ def _handle_stdin_edit(wf_config_store, secret_store, session_name: str):
     raw_yaml = _parse_config_from_stdin()
 
     # Validate via TS and get secrets in one call — save regardless of validation result
-    result = _validate_and_find_secrets(raw_yaml)
+    result = validate_and_find_secrets(raw_yaml)
     new_config = WorkflowConfig(raw_yaml=raw_yaml)
     if not result.get('valid', False):
         _save_config(wf_config_store, new_config, session_name)
@@ -207,7 +125,7 @@ def _handle_stdin_edit(wf_config_store, secret_store, session_name: str):
             f"Configuration saved but has validation errors:\n{result.get('errors', 'Unknown error')}")
 
     _save_config(wf_config_store, new_config, session_name)
-    _process_secrets(secret_store, result, interactive=False)
+    process_secrets(secret_store, result, interactive=False)
 
 
 def _handle_editor_edit(store, secret_store, session_name: str):
@@ -225,7 +143,7 @@ def _handle_editor_edit(store, secret_store, session_name: str):
 
         raw_yaml = cast(str, edit_result.value)
 
-        result = _validate_and_find_secrets(raw_yaml)
+        result = validate_and_find_secrets(raw_yaml)
         if result.get('valid', False):
             break
 
@@ -246,7 +164,7 @@ def _handle_editor_edit(store, secret_store, session_name: str):
         current_config = WorkflowConfig(raw_yaml=raw_yaml)
 
     _save_config(store, WorkflowConfig(raw_yaml=raw_yaml), session_name)
-    _process_secrets(secret_store, result, interactive=True)
+    process_secrets(secret_store, result, interactive=True)
 
 
 @configure_group.command(name="edit")

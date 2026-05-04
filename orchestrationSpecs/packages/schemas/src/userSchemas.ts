@@ -687,7 +687,7 @@ export const USER_RFS_PROCESS_OPTIONS = z.object({
     initialLeaseDuration: z.string()
         .regex(/^[-+]?P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?)?$/)
         .default("PT1H").optional()
-        .describe("ISO 8601 duration for the initial work item lease in the coordination store (e.g. 'PT1H' = 1 hour, 'PT10M' = 10 minutes). " +
+        .describe("[Expert] ISO 8601 duration for the initial work item lease in the coordination store (e.g. 'PT1H' = 1 hour, 'PT10M' = 10 minutes). " +
             "If a worker fails to complete a shard within this duration, the lease expires and another worker can pick it up, doubling the lease duration on each retry. " +
             "Increase for very large shards (>200GB) to reduce the number of re-downloads per shard needed to complete the migration.")
         .changeRestriction('gated'),
