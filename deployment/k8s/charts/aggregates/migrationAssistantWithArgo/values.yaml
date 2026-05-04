@@ -335,8 +335,9 @@ charts:
       images:
         pullPolicy: IfNotPresent
       crds:
-        # Full CRDs enable Validating Admission Policy support and kubectl explain on Argo CRDs
-        full: true
+        # Full CRDs require downloading from GitHub at install time, which fails in air-gapped environments.
+        # Minified CRDs are embedded inline in the chart and work without internet access.
+        full: false
       controller:
         pdb:
           enabled: true
@@ -604,6 +605,8 @@ charts:
           requests: { cpu: 25m, memory: 16Mi }
           limits:   { cpu: 100m, memory: 32Mi }
       grafana:
+        image:
+          tag: "11.6.13"
         resources:
           requests: { cpu: 100m, memory: 128Mi }
           limits:   { cpu: 500m, memory: 256Mi }
