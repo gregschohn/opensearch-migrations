@@ -372,6 +372,138 @@ def _list_show_targets(namespace: str, task: Optional[str]) -> None:
         click.echo("No managed workflow outputs found for current resources.")
 
 
+def _exit_with_help(ctx, message: str) -> None:
+    click.echo(f"{message}\n", err=True)
+    click.echo(ctx.get_help())
+    ctx.exit(1)
+
+
+def _load_k8s_config_or_exit(ctx) -> bool:
+    try:
+        load_k8s_config()
+        return True
+    except Exception as e:
+        click.echo(f"Error: could not load Kubernetes configuration: {e}", err=True)
+        ctx.exit(1)
+        return False
+
+
+def _show_list_or_error(ctx, task: Optional[str]) -> bool:
+    if task is not None:
+        _list_show_targets(namespace, task)
+        return True
+    click.echo("Error: --list accepts an optional output task, not a resource.\n", err=True)
+    click.echo(ctx.get_help())
+    ctx.exit(1)
+    return False
+
+
+def _print_history_or_run(ctx, entries: List[Dict[str, Any]], run_selector: Optional[str]) -> None:
+    if not run_selector:
+        _print_history(entries)
+        return
+
+    entry = _select_history_entry(entries, run_selector)
+    if not entry:
+        click.echo(f"No retained output artifact matches '{run_selector}'.", err=True)
+        ctx.exit(1)
+        return
+
+    try:
+        click.echo(read_artifact_text(entry["key"]).rstrip("\n"))
+    except ArtifactStoreError as e:
+        click.echo(f"Error fetching output '{entry['output']}': {e}", err=True)
+        ctx.exit(1)
+
+
+def _show_task_history(ctx, namespace: str, task: str,
+                       resource_filter: Optional[str],
+                       run_selector: Optional[str]) -> None:
+    try:
+        entries = _task_history_entries(namespace, task, resource_filter)
+    except ArtifactStoreError as e:
+        click.echo(f"Error listing output history: {e}", err=True)
+        ctx.exit(1)
+        return
+    _print_history_or_run(ctx, entries, run_selector)
+
+
+def _handle_task_show(ctx, namespace: str, task: str, selector: Optional[str],
+                      list_resources: bool, history: bool,
+                      run_selector: Optional[str], clean: bool) -> None:
+    if list_resources:
+        _list_show_targets(namespace, task)
+        return
+    if history or run_selector:
+        _show_task_history(ctx, namespace, task, selector, run_selector)
+        return
+    _show_task_outputs(ctx, namespace, task, selector, clean=clean)
+
+
+def _fetch_resource_and_refs(
+    ctx,
+    namespace: str,
+    resource_name: str,
+) -> Optional[tuple[Dict[str, Any], Dict[str, Dict[str, str]]]]:
+    try:
+        resource = _fetch_resource(namespace, resource_name)
+        return resource, _output_refs(resource)
+    except click.ClickException as e:
+        e.show()
+        ctx.exit(1)
+        return None
+
+
+def _show_resource_history(ctx, resource_name: str, resource: Dict[str, Any],
+                           output_name: Optional[str],
+                           run_selector: Optional[str]) -> None:
+    output_names = [output_name] if output_name else _managed_output_names_for_resource(resource_name)
+    try:
+        entries = _history_entries(resource_name, resource, output_names)
+    except ArtifactStoreError as e:
+        click.echo(f"Error listing output history: {e}", err=True)
+        ctx.exit(1)
+        return
+    _print_history_or_run(ctx, entries, run_selector)
+
+
+def _show_current_resource_outputs(ctx, resource_name: str, output_name: Optional[str],
+                                   refs: Dict[str, Dict[str, str]], clean: bool) -> None:
+    if output_name:
+        if output_name not in refs:
+            available = ", ".join(sorted(refs)) or "none"
+            click.echo(f"No managed output named '{output_name}' found for '{resource_name}'.")
+            click.echo(f"Available outputs: {available}")
+            return
+        refs = {output_name: refs[output_name]}
+
+    if not refs:
+        expected = ", ".join(_managed_output_names_for_resource(resource_name))
+        suffix = f" Expected outputs: {expected}." if expected else ""
+        click.echo(f"No managed stdout output found for migration resource '{resource_name}'.{suffix}")
+        return
+
+    _print_output_refs(ctx, dict(sorted(refs.items())), clean=clean)
+
+
+def _handle_resource_show(ctx, namespace: str, target: str, selector: Optional[str],
+                          list_resources: bool, history: bool,
+                          run_selector: Optional[str], clean: bool) -> None:
+    if list_resources and not _show_list_or_error(ctx, None):
+        return
+
+    resource_name, output_name = _resolve_show_target(target, selector)
+    resource_and_refs = _fetch_resource_and_refs(ctx, namespace, resource_name)
+    if not resource_and_refs:
+        return
+    resource, refs = resource_and_refs
+
+    if history or run_selector:
+        _show_resource_history(ctx, resource_name, resource, output_name, run_selector)
+        return
+    _show_current_resource_outputs(ctx, resource_name, output_name, refs, clean)
+
+
 @click.command(name="show")
 @click.option('--list', 'list_resources', is_flag=True, default=False,
               help='List available migration resources and exit')
@@ -406,103 +538,20 @@ def show_command(ctx, list_resources, history, run_selector, clean, namespace, t
                 click.echo(f"Error listing workflow outputs: {e}", err=True)
                 ctx.exit(1)
             return
-        click.echo("Error: specify a task, migration resource, or --list.\n", err=True)
-        click.echo(ctx.get_help())
-        ctx.exit(1)
+        _exit_with_help(ctx, "Error: specify a task, migration resource, or --list.")
+        return
 
     before_dashdash, passthrough_args = _split_passthrough_args(extra_args)
     if before_dashdash or passthrough_args:
-        click.echo("Error: show does not accept extra arguments.\n", err=True)
-        click.echo(ctx.get_help())
-        ctx.exit(1)
+        _exit_with_help(ctx, "Error: show does not accept extra arguments.")
+        return
 
-    try:
-        load_k8s_config()
-    except Exception as e:
-        click.echo(f"Error: could not load Kubernetes configuration: {e}", err=True)
-        ctx.exit(1)
+    if not _load_k8s_config_or_exit(ctx):
         return
 
     task = _canonical_task_name(target)
     if task:
-        if list_resources:
-            _list_show_targets(namespace, task)
-            return
-        if history or run_selector:
-            try:
-                entries = _task_history_entries(namespace, task, selector)
-            except ArtifactStoreError as e:
-                click.echo(f"Error listing output history: {e}", err=True)
-                ctx.exit(1)
-                return
-            if run_selector:
-                entry = _select_history_entry(entries, run_selector)
-                if not entry:
-                    click.echo(f"No retained output artifact matches '{run_selector}'.", err=True)
-                    ctx.exit(1)
-                    return
-                try:
-                    click.echo(read_artifact_text(entry["key"]).rstrip("\n"))
-                except ArtifactStoreError as e:
-                    click.echo(f"Error fetching output '{entry['output']}': {e}", err=True)
-                    ctx.exit(1)
-                return
-            _print_history(entries)
-            return
-        _show_task_outputs(ctx, namespace, task, selector, clean=clean)
+        _handle_task_show(ctx, namespace, task, selector, list_resources, history, run_selector, clean)
         return
 
-    if list_resources:
-        click.echo("Error: --list accepts an optional output task, not a resource.\n", err=True)
-        click.echo(ctx.get_help())
-        ctx.exit(1)
-        return
-
-    resource_name, output_name = _resolve_show_target(target, selector)
-
-    try:
-        resource = _fetch_resource(namespace, resource_name)
-        refs = _output_refs(resource)
-    except click.ClickException as e:
-        e.show()
-        ctx.exit(1)
-        return
-
-    if history or run_selector:
-        output_names = [output_name] if output_name else _managed_output_names_for_resource(resource_name)
-        try:
-            entries = _history_entries(resource_name, resource, output_names)
-        except ArtifactStoreError as e:
-            click.echo(f"Error listing output history: {e}", err=True)
-            ctx.exit(1)
-            return
-        if run_selector:
-            entry = _select_history_entry(entries, run_selector)
-            if not entry:
-                click.echo(f"No retained output artifact matches '{run_selector}'.", err=True)
-                ctx.exit(1)
-                return
-            try:
-                click.echo(read_artifact_text(entry["key"]).rstrip("\n"))
-            except ArtifactStoreError as e:
-                click.echo(f"Error fetching output '{entry['output']}': {e}", err=True)
-                ctx.exit(1)
-            return
-        _print_history(entries)
-        return
-
-    if output_name:
-        if output_name not in refs:
-            available = ", ".join(sorted(refs)) or "none"
-            click.echo(f"No managed output named '{output_name}' found for '{resource_name}'.")
-            click.echo(f"Available outputs: {available}")
-            return
-        refs = {output_name: refs[output_name]}
-
-    if not refs:
-        expected = ", ".join(_managed_output_names_for_resource(resource_name))
-        suffix = f" Expected outputs: {expected}." if expected else ""
-        click.echo(f"No managed stdout output found for migration resource '{resource_name}'.{suffix}")
-        return
-
-    _print_output_refs(ctx, dict(sorted(refs.items())), clean=clean)
+    _handle_resource_show(ctx, namespace, target, selector, list_resources, history, run_selector, clean)

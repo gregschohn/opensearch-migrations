@@ -1,6 +1,7 @@
 package org.opensearch.migrations;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -172,7 +173,7 @@ public class MetadataMigration {
             }
             Files.writeString(path, "", StandardCharsets.UTF_8);
         } catch (IOException e) {
-            throw new RuntimeException("Unable to initialize output file " + path, e);
+            throw new UncheckedIOException("Unable to initialize output file " + path, e);
         }
     }
 
@@ -185,7 +186,7 @@ public class MetadataMigration {
             Files.writeString(path, output + System.lineSeparator(), StandardCharsets.UTF_8,
                 java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
         } catch (IOException e) {
-            throw new RuntimeException("Unable to write output file " + path, e);
+            throw new UncheckedIOException("Unable to write output file " + path, e);
         }
     }
 
