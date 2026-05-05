@@ -61,8 +61,18 @@ public class SolrToOpenSearchEndToEndTest {
 
     static Stream<Arguments> solrToOpenSearch() {
         return Stream.of(
+            Arguments.of(SolrClusterContainer.SOLR_6, SearchClusterContainer.OS_V2_19_4),
+            Arguments.of(SolrClusterContainer.SOLR_7, SearchClusterContainer.OS_V2_19_4),
             Arguments.of(SolrClusterContainer.SOLR_8, SearchClusterContainer.OS_V2_19_4),
             Arguments.of(SolrClusterContainer.SOLR_9, SearchClusterContainer.OS_V2_19_4)
+        );
+    }
+
+    /** Solr 6 and 7 only — Trie* numeric/date types are pre-Solr-7-Point-defaults legacy. */
+    static Stream<Arguments> solr6And7ToOpenSearch() {
+        return Stream.of(
+            Arguments.of(SolrClusterContainer.SOLR_6, SearchClusterContainer.OS_V2_19_4),
+            Arguments.of(SolrClusterContainer.SOLR_7, SearchClusterContainer.OS_V2_19_4)
         );
     }
 
@@ -85,7 +95,7 @@ public class SolrToOpenSearchEndToEndTest {
             var schema = fetchSolrSchema(solr, COLLECTION_NAME);
             var backupDir = createAndCopyBackup(solr, COLLECTION_NAME);
 
-            var source = new SolrBackupSource(backupDir, COLLECTION_NAME, schema);
+            var source = new SolrBackupSource(backupDir, COLLECTION_NAME, schema, solrVersion.major());
             var targetClient = createOpenSearchClient(target);
             var sink = new OpenSearchDocumentSink(
                 targetClient, null, false, DocumentExceptionAllowlist.empty(), null
@@ -123,7 +133,7 @@ public class SolrToOpenSearchEndToEndTest {
             var schema = fetchSolrSchema(solr, COLLECTION_NAME);
             var backupDir = createAndCopyBackup(solr, COLLECTION_NAME);
 
-            var source = new SolrBackupSource(backupDir, COLLECTION_NAME, schema);
+            var source = new SolrBackupSource(backupDir, COLLECTION_NAME, schema, solrVersion.major());
             var targetClient = createOpenSearchClient(target);
             var sink = new OpenSearchDocumentSink(
                 targetClient, null, false, DocumentExceptionAllowlist.empty(), null
@@ -193,7 +203,7 @@ public class SolrToOpenSearchEndToEndTest {
      * all shards are discovered and documents from each shard are migrated.
      */
     @ParameterizedTest(name = "multi-shard: {0} → {1}")
-    @MethodSource("solr8ToOpenSearch")
+    @MethodSource("solrToOpenSearch")
     void multiShardBackupMigration(
         SolrClusterContainer.SolrVersion solrVersion,
         SearchClusterContainer.ContainerVersion targetVersion
@@ -226,7 +236,7 @@ public class SolrToOpenSearchEndToEndTest {
             copyDirectory(backup2, shard2Dir);
 
             var schema = fetchSolrSchema(solr, core1);
-            var source = new SolrBackupSource(multiShardDir, COLLECTION_NAME, schema);
+            var source = new SolrBackupSource(multiShardDir, COLLECTION_NAME, schema, solrVersion.major());
 
             // Verify shard discovery
             var partitions = source.listPartitions(COLLECTION_NAME);
@@ -288,7 +298,7 @@ public class SolrToOpenSearchEndToEndTest {
             var schema = fetchSolrSchema(solr, COLLECTION_NAME);
             var backupDir = createAndCopyBackup(solr, COLLECTION_NAME);
 
-            var source = new SolrBackupSource(backupDir, COLLECTION_NAME, schema);
+            var source = new SolrBackupSource(backupDir, COLLECTION_NAME, schema, solrVersion.major());
             var targetClient = createOpenSearchClient(target);
             var sink = new OpenSearchDocumentSink(
                 targetClient, null, false, DocumentExceptionAllowlist.empty(), null
@@ -368,7 +378,7 @@ public class SolrToOpenSearchEndToEndTest {
             var schema = fetchSolrSchema(solr, COLLECTION_NAME);
             var backupDir = createAndCopyBackup(solr, COLLECTION_NAME);
 
-            var source = new SolrBackupSource(backupDir, COLLECTION_NAME, schema);
+            var source = new SolrBackupSource(backupDir, COLLECTION_NAME, schema, solrVersion.major());
             var targetClient = createOpenSearchClient(target);
             var sink = new OpenSearchDocumentSink(
                 targetClient, null, false, DocumentExceptionAllowlist.empty(), null
@@ -441,7 +451,7 @@ public class SolrToOpenSearchEndToEndTest {
             var schema = fetchSolrSchema(solr, COLLECTION_NAME);
             var backupDir = createAndCopyBackup(solr, COLLECTION_NAME);
 
-            var source = new SolrBackupSource(backupDir, COLLECTION_NAME, schema);
+            var source = new SolrBackupSource(backupDir, COLLECTION_NAME, schema, solrVersion.major());
             var targetClient = createOpenSearchClient(target);
             var sink = new OpenSearchDocumentSink(
                 targetClient, null, false, DocumentExceptionAllowlist.empty(), null
@@ -517,7 +527,7 @@ public class SolrToOpenSearchEndToEndTest {
             }
 
             var schema = fetchSolrSchema(solr, COLLECTION_NAME);
-            var source = new SolrBackupSource(localBackupDir, COLLECTION_NAME, schema);
+            var source = new SolrBackupSource(localBackupDir, COLLECTION_NAME, schema, solrVersion.major());
             var targetClient = createOpenSearchClient(target);
             var sink = new OpenSearchDocumentSink(
                 targetClient, null, false, DocumentExceptionAllowlist.empty(), null
@@ -586,7 +596,7 @@ public class SolrToOpenSearchEndToEndTest {
 
             // Verify shard discovery — should find 2 shards
             var schemaNode = schema.path("schema");
-            var source = new SolrBackupSource(localBackupRoot.resolve(collection), collection, schemaNode);
+            var source = new SolrBackupSource(localBackupRoot.resolve(collection), collection, schemaNode, solrVersion.major());
             var partitions = source.listPartitions(collection);
             assertThat("Should discover " + numShards + " shards from SolrCloud backup",
                 partitions.size(), equalTo(numShards));
@@ -679,7 +689,7 @@ public class SolrToOpenSearchEndToEndTest {
             assertThat("active → boolean", properties.path("active").path("type").asText(), equalTo("boolean"));
 
             // Also migrate the doc to verify end-to-end
-            var source = new SolrBackupSource(localBackupRoot.resolve(collection), collection, schemaNode);
+            var source = new SolrBackupSource(localBackupRoot.resolve(collection), collection, schemaNode, solrVersion.major());
             var targetClient = createOpenSearchClient(target);
             var sink = new OpenSearchDocumentSink(
                 targetClient, null, false, DocumentExceptionAllowlist.empty(), null
@@ -688,6 +698,92 @@ public class SolrToOpenSearchEndToEndTest {
                 .migrateAll().collectList().block();
 
             verifyDocCount(target, collection, 1);
+        }
+    }
+
+    /**
+     * E2E (Solr 6 / 7 only): Trie* numeric and date fields are stored, read with the matching
+     * Lucene reader, and mapped to integer/long/float/double/date in OpenSearch (AC1, AC5).
+     * Trie* types were the default numeric types in Solr 6 and most of 7 before Point-based
+     * types replaced them; Solr 9 removes them entirely, so this test is gated to 6/7.
+     */
+    @ParameterizedTest(name = "Trie* fields: {0} → {1}")
+    @MethodSource("solr6And7ToOpenSearch")
+    void trieFieldTypesMigrateCorrectly(
+        SolrClusterContainer.SolrVersion solrVersion,
+        SearchClusterContainer.ContainerVersion targetVersion
+    ) throws Exception {
+        try (
+            var solr = new SolrClusterContainer(solrVersion);
+            var target = new SearchClusterContainer(targetVersion)
+        ) {
+            solr.start();
+            target.start();
+
+            createSolrCollection(solr, COLLECTION_NAME);
+
+            solr.execInContainer("curl", "-s", "-H", "Content-Type: application/json",
+                "http://localhost:8983/solr/" + COLLECTION_NAME + "/schema",
+                "-d", "{\"add-field\":["
+                    + "{\"name\":\"trie_int\",   \"type\":\"tint\",    \"stored\":true,\"docValues\":true},"
+                    + "{\"name\":\"trie_long\",  \"type\":\"tlong\",   \"stored\":true,\"docValues\":true},"
+                    + "{\"name\":\"trie_float\", \"type\":\"tfloat\",  \"stored\":true,\"docValues\":true},"
+                    + "{\"name\":\"trie_double\",\"type\":\"tdouble\", \"stored\":true,\"docValues\":true},"
+                    + "{\"name\":\"trie_date\",  \"type\":\"tdate\",   \"stored\":true,\"docValues\":true}"
+                    + "]}");
+
+            var doc = "[{"
+                + "\"id\":\"trie1\","
+                + "\"trie_int\":42,"
+                + "\"trie_long\":1234567890,"
+                + "\"trie_float\":3.14,"
+                + "\"trie_double\":2.718281828,"
+                + "\"trie_date\":\"2024-01-15T10:30:00Z\""
+                + "}]";
+            solr.execInContainer("curl", "-s", "-H", "Content-Type: application/json",
+                "http://localhost:8983/solr/" + COLLECTION_NAME + "/update?commit=true",
+                "-d", doc);
+
+            var schema = fetchSolrSchema(solr, COLLECTION_NAME);
+            var backupDir = createAndCopyBackup(solr, COLLECTION_NAME);
+
+            var source = new SolrBackupSource(backupDir, COLLECTION_NAME, schema, solrVersion.major());
+            var targetClient = createOpenSearchClient(target);
+            var sink = new OpenSearchDocumentSink(
+                targetClient, null, false, DocumentExceptionAllowlist.empty(), null
+            );
+            new DocumentMigrationPipeline(source, sink, 100, Long.MAX_VALUE)
+                .migrateAll().collectList().block();
+
+            var restClient = createRestClient(target);
+            var ctx = DocumentMigrationTestContext.factory().noOtelTracking();
+            restClient.get("_refresh", ctx.createUnboundRequestContext());
+
+            // AC5: Trie* mapping types resolve to integer/long/float/double/date
+            var mappingResp = restClient.get(
+                COLLECTION_NAME + "/_mapping", ctx.createUnboundRequestContext()
+            );
+            var properties = MAPPER.readTree(mappingResp.body)
+                .path(COLLECTION_NAME).path("mappings").path("properties");
+            assertThat("trie_int → integer", properties.path("trie_int").path("type").asText(), equalTo("integer"));
+            assertThat("trie_long → long", properties.path("trie_long").path("type").asText(), equalTo("long"));
+            assertThat("trie_float → float", properties.path("trie_float").path("type").asText(), equalTo("float"));
+            assertThat("trie_double → double", properties.path("trie_double").path("type").asText(), equalTo("double"));
+            assertThat("trie_date → date", properties.path("trie_date").path("type").asText(), equalTo("date"));
+            // AC5: date format must accept both ISO 8601 and epoch millis from Lucene
+            assertThat("trie_date format",
+                properties.path("trie_date").path("format").asText(),
+                equalTo("strict_date_optional_time||epoch_millis"));
+
+            // AC1: doc values land with correct types in _source
+            var searchResp = restClient.get(
+                COLLECTION_NAME + "/_search?q=id:trie1&size=1", ctx.createUnboundRequestContext()
+            );
+            var hits = MAPPER.readTree(searchResp.body).path("hits").path("hits");
+            assertThat("Should find trie1", hits.size(), equalTo(1));
+            var migrated = hits.get(0).path("_source");
+            assertThat("trie_int value", migrated.path("trie_int").asInt(), equalTo(42));
+            assertThat("trie_long value", migrated.path("trie_long").asLong(), equalTo(1234567890L));
         }
     }
 

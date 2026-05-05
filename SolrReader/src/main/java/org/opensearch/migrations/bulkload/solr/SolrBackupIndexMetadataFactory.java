@@ -22,23 +22,35 @@ import lombok.extern.slf4j.Slf4j;
 public class SolrBackupIndexMetadataFactory implements IndexMetadata.Factory {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final int DEFAULT_SOLR_MAJOR = 9;
     private final Path backupDir;
     private final Map<String, JsonNode> schemas;
     private final Consumer<String> collectionPreparer;
+    private final int solrMajorVersion;
 
     public SolrBackupIndexMetadataFactory(Path backupDir, Map<String, JsonNode> schemas) {
-        this(backupDir, schemas, null);
+        this(backupDir, schemas, null, DEFAULT_SOLR_MAJOR);
+    }
+
+    public SolrBackupIndexMetadataFactory(Path backupDir, Map<String, JsonNode> schemas, Consumer<String> collectionPreparer) {
+        this(backupDir, schemas, collectionPreparer, DEFAULT_SOLR_MAJOR);
     }
 
     /**
      * @param collectionPreparer called once per collection before counting shards.
      *                           For S3 sources this downloads shard_backup_metadata so that
      *                           {@link SolrBackupSource#listPartitions} can discover all shards.
+     * @param solrMajorVersion source Solr major version; selects the Lucene reader to use when
+     *                         counting shards for a backup.
      */
-    public SolrBackupIndexMetadataFactory(Path backupDir, Map<String, JsonNode> schemas, Consumer<String> collectionPreparer) {
+    public SolrBackupIndexMetadataFactory(
+        Path backupDir, Map<String, JsonNode> schemas,
+        Consumer<String> collectionPreparer, int solrMajorVersion
+    ) {
         this.backupDir = backupDir;
         this.schemas = schemas;
         this.collectionPreparer = collectionPreparer;
+        this.solrMajorVersion = solrMajorVersion;
     }
 
     @Override
@@ -55,7 +67,7 @@ public class SolrBackupIndexMetadataFactory implements IndexMetadata.Factory {
 
         // Discover shard count from backup directory
         var collectionDir = SolrBackupLayout.resolveCollectionDataDir(backupDir.resolve(indexName));
-        var source = new SolrBackupSource(collectionDir, indexName, schemaNode);
+        var source = new SolrBackupSource(collectionDir, indexName, schemaNode, solrMajorVersion);
         int shardCount = source.listPartitions(indexName).size();
         log.info("Solr collection {} has {} shard(s)", indexName, shardCount);
 

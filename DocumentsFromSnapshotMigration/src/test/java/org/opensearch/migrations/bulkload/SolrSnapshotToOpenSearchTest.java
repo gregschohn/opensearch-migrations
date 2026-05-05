@@ -68,7 +68,11 @@ public class SolrSnapshotToOpenSearchTest {
     File tempDir;
 
     static Stream<Arguments> solr8ToOpenSearch3() {
+        // Cloud BACKUP API quirks vary across Solr versions; the cloud=true variant stays
+        // pinned to Solr 8 until per-version SolrCloud BACKUP scaffolding is added.
         return Stream.of(
+            Arguments.of(SolrClusterContainer.SOLR_6, SearchClusterContainer.OS_V3_5_0, false),
+            Arguments.of(SolrClusterContainer.SOLR_7, SearchClusterContainer.OS_V3_5_0, false),
             Arguments.of(SolrClusterContainer.SOLR_8, SearchClusterContainer.OS_V3_5_0, false),
             Arguments.of(SolrClusterContainer.SOLR_8, SearchClusterContainer.OS_V3_5_0, true)
         );
@@ -104,7 +108,7 @@ public class SolrSnapshotToOpenSearchTest {
             var backupDir = createBackup(solr, COLLECTION_NAME);
 
             int exitCode = SourceTestBase.runProcessAgainstTarget(new String[]{
-                "--source-version", "SOLR_8.11.4",
+                "--source-version", "SOLR_" + solrVersion.tag(),
                 "--snapshot-local-dir", backupDir.toString(),
                 "--snapshot-name", "solr-migration",
                 "--target-host", target.getUrl(),
@@ -153,7 +157,7 @@ public class SolrSnapshotToOpenSearchTest {
             var schema = fetchSchema(solr, COLLECTION_NAME);
             var backupRoot = createBackup(solr, COLLECTION_NAME);
 
-            var source = new SolrBackupSource(backupRoot.resolve(COLLECTION_NAME), COLLECTION_NAME, schema);
+            var source = new SolrBackupSource(backupRoot.resolve(COLLECTION_NAME), COLLECTION_NAME, schema, solrVersion.major());
             var targetClient = new OpenSearchClientFactory(
                 ConnectionContextTestParams.builder().host(target.getUrl()).build().toConnectionContext()
             ).determineVersionAndCreate();
@@ -198,8 +202,8 @@ public class SolrSnapshotToOpenSearchTest {
             var targetVersion_ = targetClient.getClusterVersion();
 
             var schemas = Map.<String, JsonNode>of(COLLECTION_NAME, MAPPER.createObjectNode().set("schema", schema));
-            var indexMetadataFactory = new SolrBackupIndexMetadataFactory(backupDir, schemas);
-            var documentSource = new SolrMultiCollectionSource(backupDir, schemas);
+            var indexMetadataFactory = new SolrBackupIndexMetadataFactory(backupDir, schemas, null, solrVersion.major());
+            var documentSource = new SolrMultiCollectionSource(backupDir, schemas, null, null, solrVersion.major());
 
             var coordinatorFactory = new WorkCoordinatorFactory(targetVersion_);
             var progressCursor = new AtomicReference<WorkItemCursor>();
@@ -346,8 +350,8 @@ public class SolrSnapshotToOpenSearchTest {
             var targetVersion_ = targetClient.getClusterVersion();
 
             var schemas = Map.<String, JsonNode>of(collection, schema);
-            var indexMetadataFactory = new SolrBackupIndexMetadataFactory(backupRoot, schemas);
-            var documentSource = new SolrMultiCollectionSource(backupRoot, schemas);
+            var indexMetadataFactory = new SolrBackupIndexMetadataFactory(backupRoot, schemas, null, solrVersion.major());
+            var documentSource = new SolrMultiCollectionSource(backupRoot, schemas, null, null, solrVersion.major());
 
             var coordinatorFactory = new WorkCoordinatorFactory(targetVersion_);
             var progressCursor = new AtomicReference<WorkItemCursor>();
@@ -443,8 +447,8 @@ public class SolrSnapshotToOpenSearchTest {
                 "movies", MAPPER.createObjectNode().set("schema", moviesSchema),
                 "books", MAPPER.createObjectNode().set("schema", booksSchema)
             );
-            var indexMetadataFactory = new SolrBackupIndexMetadataFactory(backupRoot, schemas);
-            var documentSource = new SolrMultiCollectionSource(backupRoot, schemas);
+            var indexMetadataFactory = new SolrBackupIndexMetadataFactory(backupRoot, schemas, null, solrVersion.major());
+            var documentSource = new SolrMultiCollectionSource(backupRoot, schemas, null, null, solrVersion.major());
 
             var connectionContext = ConnectionContextTestParams.builder()
                 .host(target.getUrl()).build().toConnectionContext();
