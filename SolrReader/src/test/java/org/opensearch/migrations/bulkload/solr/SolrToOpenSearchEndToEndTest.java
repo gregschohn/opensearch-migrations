@@ -1039,14 +1039,24 @@ public class SolrToOpenSearchEndToEndTest {
 
     private Path createAndCopyBackup(SolrClusterContainer solr, String collection, String backupName)
         throws Exception {
+        var probe = solr.execInContainer("sh", "-c",
+            "for d in /var/solr/data /opt/solr/server/solr; do "
+            + "  if [ -d \"$d\" ] && [ -w \"$d\" ]; then echo \"$d\"; break; fi; "
+            + "done");
+        var solrDataDir = probe.getStdout().trim();
+        if (solrDataDir.isEmpty()) {
+            throw new RuntimeException("No writable Solr data directory found in container");
+        }
+        log.atInfo().setMessage("Solr writable data dir: {}").addArgument(solrDataDir).log();
+
         var trigger = solr.execInContainer(
             "curl", "-s",
             "http://localhost:8983/solr/" + collection
-                + "/replication?command=backup&location=/var/solr/data&name=" + backupName
+                + "/replication?command=backup&location=" + solrDataDir + "&name=" + backupName
         );
         log.atInfo().setMessage("Backup trigger response: {}").addArgument(trigger.getStdout()).log();
 
-        var snapshotDir = "/var/solr/data/snapshot." + backupName;
+        var snapshotDir = solrDataDir + "/snapshot." + backupName;
         // Poll directly on the filesystem signal that backup is complete: a segments_* file
         // landed in the snapshot directory. This works across Solr 6/7/8/9 regardless of
         // the JSON response format of /replication?command=details.
@@ -1061,14 +1071,12 @@ public class SolrToOpenSearchEndToEndTest {
             Thread.sleep(1000);
         }
         if (!ready) {
-            // Diagnostic: dump what's actually in /var/solr/data so a Solr-version-specific
-            // layout difference is obvious from the test output.
             var listing = solr.execInContainer("sh", "-c",
-                "ls -laR /var/solr/data 2>&1 | head -200");
+                "ls -laR " + solrDataDir + " 2>&1 | head -200");
             throw new IllegalStateException(
                 "Backup did not produce a segments_* file under " + snapshotDir + " within 60s.\n"
                 + "Trigger response: " + trigger.getStdout() + "\n"
-                + "Container /var/solr/data listing:\n" + listing.getStdout());
+                + "Container " + solrDataDir + " listing:\n" + listing.getStdout());
         }
 
         var localBackupDir = tempDir.toPath().resolve("solr_backup_" + backupName);
