@@ -31,6 +31,7 @@ import type { RequestContext, ResponseContext } from '../context';
 import { request as deleteDocRequest } from './delete-doc';
 import { request as updateDocRequest } from './update-doc';
 import { response as bulkResponse, isBulkResponse } from './bulk/bulk-response';
+import { request as deleteByQueryRequest, response as deleteByQueryResponse, isDeleteByQueryResponse } from './delete-by-query';
 
 /** Known Solr update command keys. */
 const KNOWN_COMMANDS = ['delete', 'add', 'commit', 'optimize', 'rollback'];
@@ -146,15 +147,21 @@ function handleDelete(ctx: RequestContext, data: any): void {
   if (!data || typeof data.has !== 'function') {
     throw new Error('[update-router] delete: invalid command format — expected JSON object');
   }
-  if (data.has('query')) {
-    throw new Error('[update-router] delete: delete-by-query is not supported yet');
-  }
   // Fail fast on unsupported Solr delete fields
-  const SUPPORTED_DELETE_FIELDS = new Set(['id']);
+  const SUPPORTED_DELETE_FIELDS = new Set(['id', 'query']);
   for (const key of data.keys()) {
     if (!SUPPORTED_DELETE_FIELDS.has(key)) {
-      throw new Error(`[update-router] delete: unsupported field '${key}' — only 'id' is supported`);
+      throw new Error(`[update-router] delete: unsupported field '${key}' — only 'id' and 'query' are supported`);
     }
+  }
+  // Mutually exclusive: id and query cannot both be present
+  if (data.has('id') && data.has('query')) {
+    throw new Error('[update-router] delete: cannot specify both "id" and "query" in the same delete command');
+  }
+  if (data.has('query')) {
+    ctx.body = data;
+    deleteByQueryRequest.apply(ctx);
+    return;
   }
   ctx.body = data;
   deleteDocRequest.apply(ctx);
@@ -227,10 +234,14 @@ function applySingleDocResponse(ctx: ResponseContext): void {
 
 export const response: MicroTransform<ResponseContext> = {
   name: 'update-response',
-  match: (ctx) => isSingleDocResponse(ctx) || isBulkResponse(ctx.responseBody),
+  match: (ctx) => isSingleDocResponse(ctx) || isBulkResponse(ctx.responseBody) || isDeleteByQueryResponse(ctx.responseBody),
   apply: (ctx) => {
     if (isBulkResponse(ctx.responseBody)) {
       bulkResponse.apply(ctx);
+      return;
+    }
+    if (isDeleteByQueryResponse(ctx.responseBody)) {
+      deleteByQueryResponse.apply(ctx);
       return;
     }
     if (isSingleDocResponse(ctx)) {

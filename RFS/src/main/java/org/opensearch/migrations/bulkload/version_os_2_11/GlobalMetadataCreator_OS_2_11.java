@@ -79,20 +79,24 @@ public class GlobalMetadataCreator_OS_2_11 implements GlobalMetadataCreator {
     enum TemplateTypes {
         INDEX_TEMPLATE(
             (targetClient, name, body, context) -> targetClient.createIndexTemplate(name, body, context.createMigrateTemplateContext()),
-            (targetClient, name) -> targetClient.hasIndexTemplate(name)
+            (targetClient, name) -> targetClient.hasIndexTemplate(name),
+            FilterScheme.FilterContext.INDEX_TEMPLATE
         ),
 
         LEGACY_INDEX_TEMPLATE(
             (targetClient, name, body, context) -> targetClient.createLegacyTemplate(name, body, context.createMigrateLegacyTemplateContext()),
-            (targetClient, name) -> targetClient.hasLegacyTemplate(name)
+            (targetClient, name) -> targetClient.hasLegacyTemplate(name),
+            FilterScheme.FilterContext.LEGACY_INDEX_TEMPLATE
         ),
 
         COMPONENT_TEMPLATE(
             (targetClient, name, body, context) -> targetClient.createComponentTemplate(name, body, context.createComponentTemplateContext()),
-            (targetClient, name) -> targetClient.hasComponentTemplate(name)
+            (targetClient, name) -> targetClient.hasComponentTemplate(name),
+            FilterScheme.FilterContext.COMPONENT_TEMPLATE
         );
         final TemplateCreator creator;
         final TemplateExistsCheck alreadyExistsCheck;
+        final FilterScheme.FilterContext filterContext;
     }
 
     @FunctionalInterface
@@ -144,7 +148,7 @@ public class GlobalMetadataCreator_OS_2_11 implements GlobalMetadataCreator {
             MigrationMode mode,
             IClusterMetadataContext context
         ) {
-        var skipCreation = FilterScheme.filterByAllowList(templateAllowList).negate();
+        var skipCreation = FilterScheme.filterByAllowList(templateAllowList, templateType.filterContext).negate();
 
         return templatesToCreate.entrySet().stream().map(kvp -> {
             var templateName = kvp.getKey();

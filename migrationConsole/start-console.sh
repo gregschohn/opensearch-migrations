@@ -23,4 +23,6 @@ if [[ -n "${S3_ARTIFACTS_BUCKET_NAME}" ]]; then
 fi
 
 echo "Console ready."
-exec sleep infinity
+trap 'exit 0' TERM
+sleep infinity &
+wait $!

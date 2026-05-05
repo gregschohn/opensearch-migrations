@@ -549,7 +549,7 @@ spec:
               properties:
                 phase:
                   type: string
-                  enum: [Initialized, Approved, Error]
+                  enum: [Initialized, Pending, Approved, Error]
                 lastAppliedGeneration:
                   type: integer
               x-kubernetes-preserve-unknown-fields: true

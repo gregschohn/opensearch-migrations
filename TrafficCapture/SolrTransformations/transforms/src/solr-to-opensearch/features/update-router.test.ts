@@ -170,9 +170,20 @@ describe('update-router request', () => {
     expect(ctx.msg.get('URI')).toBe(`/mycore/_doc/${longId}`);
   });
 
-  it('throws on delete-by-query', () => {
+  it('dispatches delete-by-query to _delete_by_query handler', () => {
     const ctx = buildCtx('/solr/mycore/update', deleteByQueryBody('title:old'));
-    expect(() => request.apply(ctx)).toThrow('delete-by-query is not supported');
+    request.apply(ctx);
+    expect(ctx.msg.get('URI')).toContain('/mycore/_delete_by_query');
+    expect(ctx.msg.get('URI')).toContain('wait_for_completion=true');
+    expect(ctx.msg.get('method')).toBe('POST');
+  });
+
+  it('throws when both id and query are present in delete', () => {
+    const body = new Map<string, any>([
+      ['delete', new Map<string, any>([['id', '1'], ['query', 'title:old']])],
+    ]);
+    const ctx = buildCtx('/solr/mycore/update', body);
+    expect(() => request.apply(ctx)).toThrow('cannot specify both "id" and "query"');
   });
 
   it('throws on invalid delete format (not a Map)', () => {
@@ -486,5 +497,36 @@ describe('update-router response — match-and-dispatch', () => {
     const ctx = buildResponseCtx(body);
     response.apply(ctx);
     expect(ctx.responseBody.get('responseHeader').get('QTime')).toBe(0);
+  });
+});
+
+// --- _delete_by_query response dispatch ---
+
+describe('update-router response — _delete_by_query dispatch', () => {
+  it('matches _delete_by_query response shape', () => {
+    const body = new Map<string, any>([['took', 5], ['total', 3], ['deleted', 3]]);
+    expect(response.match!(buildResponseCtx(body))).toBe(true);
+  });
+
+  it('dispatches _delete_by_query all-success to status 0', () => {
+    const body = new Map<string, any>([
+      ['took', 15], ['total', 10], ['deleted', 10],
+      ['version_conflicts', 0], ['failures', []],
+    ]);
+    const ctx = buildResponseCtx(body);
+    response.apply(ctx);
+    const header = ctx.responseBody.get('responseHeader');
+    expect(header.get('status')).toBe(0);
+    expect(header.get('QTime')).toBe(15);
+  });
+
+  it('dispatches _delete_by_query partial failure to status 1', () => {
+    const body = new Map<string, any>([
+      ['took', 10], ['total', 5], ['deleted', 3],
+      ['version_conflicts', 2], ['failures', []],
+    ]);
+    const ctx = buildResponseCtx(body);
+    response.apply(ctx);
+    expect(ctx.responseBody.get('responseHeader').get('status')).toBe(1);
   });
 });

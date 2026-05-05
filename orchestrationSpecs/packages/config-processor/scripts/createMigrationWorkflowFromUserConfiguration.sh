@@ -28,14 +28,7 @@ trap "rm -rf $TEMP_DIR" EXIT
 UUID="$(date +%s)"
 echo "Generated unique uniqueRunNonce: $UUID"
 
-# Set the name field based on environment variable
-if [ -n "$USE_GENERATE_NAME" ] && [ "$USE_GENERATE_NAME" != "false" ] && [ "$USE_GENERATE_NAME" != "0" ]; then
-  NAME_FIELD="generateName: m-${UUID}-"
-  WORKFLOW_NAME="m-${UUID}"
-else
-  NAME_FIELD="name: migration-workflow"
-  WORKFLOW_NAME="migration-workflow"
-fi
+WORKFLOW_NAME="migration-workflow"
 
 echo "Running configuration conversion..."
 $INITIALIZE_CMD --user-config $CONFIG_FILENAME --output-dir $TEMP_DIR --workflow-name "$WORKFLOW_NAME" $@
@@ -61,7 +54,7 @@ cat <<EOF | kubectl create -f -
 apiVersion: argoproj.io/v1alpha1
 kind: Workflow
 metadata:
-  $NAME_FIELD
+  name: $WORKFLOW_NAME
 spec:
   workflowTemplateRef:
     name: full-migration

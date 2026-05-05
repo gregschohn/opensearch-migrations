@@ -306,6 +306,17 @@ export class MigrationInitializer {
     }
 
     static readonly APPROVAL_GATE_LABEL_KEY = 'migrations.opensearch.org/workflow';
+    static readonly GATE_LABEL_RESOURCE_KIND = 'migrations.opensearch.org/resource-kind';
+    static readonly GATE_LABEL_RESOURCE_NAME = 'migrations.opensearch.org/resource-name';
+    static readonly GATE_LABEL_SOURCE = 'migrations.opensearch.org/source';
+    static readonly GATE_LABEL_TARGET = 'migrations.opensearch.org/target';
+    static readonly GATE_LABEL_SNAPSHOT = 'migrations.opensearch.org/snapshot';
+    static readonly GATE_LABEL_MIGRATION = 'migrations.opensearch.org/migration';
+    static readonly OUTPUT_LABEL_MIGRATION = 'migrations.opensearch.org/from-snapshot-migration';
+    static readonly OUTPUT_LABEL_TASK = 'migrations.opensearch.org/task';
+    static readonly OUTPUT_LABEL_KAFKA_CLUSTER = 'migrations.opensearch.org/kafka-cluster';
+    static readonly WORKFLOW_LABEL = 'workflows.argoproj.io/workflow';
+    static readonly STRIMZI_CLUSTER_LABEL = 'strimzi.io/cluster';
     static readonly CRD_GROUP = 'migrations.opensearch.org';
     static readonly CRD_API_VERSION = `${MigrationInitializer.CRD_GROUP}/v1alpha1`;
 
@@ -313,17 +324,13 @@ export class MigrationInitializer {
         return labels.join('-');
     }
 
-    private makeApprovalGateName(parts: string[], action: string): string {
-        return [...parts, action].join('.').toLowerCase();
-    }
-
-    private makeApprovalGateResource(nameParts: string[], gateLabel?: Record<string, string>) {
+    private makeApprovalGateResource(nameParts: string[], labels?: Record<string, string>) {
         return {
             apiVersion: MigrationInitializer.CRD_API_VERSION,
             kind: 'ApprovalGate',
             metadata: {
                 name: nameParts.join('.').toLowerCase(),
-                ...(gateLabel && { labels: gateLabel }),
+                ...(labels && Object.keys(labels).length > 0 && { labels }),
             },
             spec: {},
             status: { phase: 'Initialized' }
@@ -332,9 +339,20 @@ export class MigrationInitializer {
 
     private generateCRDResources(workflows: WorkflowConfig, workflowName?: string) {
         const CRD_API_VERSION = MigrationInitializer.CRD_API_VERSION;
-        const gateLabel = workflowName
+        const baseGateLabels: Record<string, string> = workflowName
             ? { [MigrationInitializer.APPROVAL_GATE_LABEL_KEY]: workflowName }
-            : undefined;
+            : {};
+        const baseResourceLabels: Record<string, string> = workflowName
+            ? { [MigrationInitializer.WORKFLOW_LABEL]: workflowName }
+            : {};
+        // Merge baseGateLabels with the per-gate context labels.
+        const gateLabels = (extra: Record<string, string | undefined>) => {
+            const merged: Record<string, string> = { ...baseGateLabels };
+            for (const [k, v] of Object.entries(extra)) {
+                if (v !== undefined && v !== '') merged[k] = v;
+            }
+            return merged;
+        };
         const items: any[] = [];
 
         // KafkaCluster resources from workflow-managed Kafka clusters
@@ -342,34 +360,47 @@ export class MigrationInitializer {
             items.push({
                 apiVersion: CRD_API_VERSION,
                 kind: 'KafkaCluster',
-                metadata: { name: kafkaCluster.name },
+                metadata: {
+                    name: kafkaCluster.name,
+                    labels: {
+                        ...baseResourceLabels,
+                        [MigrationInitializer.STRIMZI_CLUSTER_LABEL]: kafkaCluster.name,
+                    },
+                },
                 spec: {},
                 status: { phase: 'Initialized', configChecksum: '' }
             });
 
-            // VAP retry gates for kafka sub-operations
-            for (const subOp of ['kafkacluster', 'kafkanodepool', 'kafkauser']) {
-                items.push(this.makeApprovalGateResource(
-                    [kafkaCluster.name, subOp, 'vapretry'], gateLabel));
-            }
-            for (const topic of kafkaCluster.topics) {
-                items.push(this.makeApprovalGateResource(
-                    [kafkaCluster.name, 'kafkatopic', topic, 'vapretry'], gateLabel));
-            }
-            // VAP retry gate for the root KafkaCluster CR reconcile
+            const kcLabels = gateLabels({
+                [MigrationInitializer.GATE_LABEL_RESOURCE_KIND]: 'KafkaCluster',
+                [MigrationInitializer.GATE_LABEL_RESOURCE_NAME]: kafkaCluster.name,
+            });
+
+            // VAP retry gate for the root KafkaCluster CR reconcile.
+            // Sub-operations (nodepool, user, topic) are managed by Strimzi
+            // and do not go through the migrations VAP — no gates needed.
+            // Topic-level concerns are covered by the CapturedTraffic gate.
             items.push(this.makeApprovalGateResource(
-                [kafkaCluster.name, 'vapretry'], gateLabel));
+                ['kafkacluster', kafkaCluster.name, 'vapretry'], kcLabels));
         }
 
         // CapturedTraffic (topic/stream) and CaptureProxy resources from proxies
         for (const proxy of (workflows.proxies ?? []) as ProxyConfig[]) {
             const topicCrName = proxy.name + '-topic';
+            const proxySource = proxy.sourceConfig?.label;
 
             // CapturedTraffic: topic/stream contract
             items.push({
                 apiVersion: CRD_API_VERSION,
                 kind: 'CapturedTraffic',
-                metadata: { name: topicCrName },
+                metadata: {
+                    name: topicCrName,
+                    labels: {
+                        ...baseResourceLabels,
+                        ...(proxySource && { [MigrationInitializer.GATE_LABEL_SOURCE]: proxySource }),
+                        [MigrationInitializer.OUTPUT_LABEL_KAFKA_CLUSTER]: proxy.kafkaConfig.label,
+                    }
+                },
                 spec: { dependsOn: [proxy.kafkaConfig.label] },
                 status: { phase: 'Initialized', configChecksum: '' }
             });
@@ -378,16 +409,35 @@ export class MigrationInitializer {
             items.push({
                 apiVersion: CRD_API_VERSION,
                 kind: 'CaptureProxy',
-                metadata: { name: proxy.name },
+                metadata: {
+                    name: proxy.name,
+                    labels: {
+                        ...baseResourceLabels,
+                        ...(proxySource && { [MigrationInitializer.GATE_LABEL_SOURCE]: proxySource }),
+                        [MigrationInitializer.OUTPUT_LABEL_TASK]: 'captureProxy',
+                    }
+                },
                 spec: { dependsOn: [topicCrName] },
                 status: { phase: 'Initialized', configChecksum: '' }
             });
 
             // VAP retry gates
             items.push(this.makeApprovalGateResource(
-                [topicCrName, 'capturedtraffic', 'vapretry'], gateLabel));
+                ['capturedtraffic', topicCrName, 'vapretry'],
+                gateLabels({
+                    [MigrationInitializer.GATE_LABEL_RESOURCE_KIND]: 'CapturedTraffic',
+                    [MigrationInitializer.GATE_LABEL_RESOURCE_NAME]: topicCrName,
+                    [MigrationInitializer.GATE_LABEL_SOURCE]: proxySource,
+                })
+            ));
             items.push(this.makeApprovalGateResource(
-                [proxy.name, 'captureproxy', 'vapretry'], gateLabel));
+                ['captureproxy', proxy.name, 'vapretry'],
+                gateLabels({
+                    [MigrationInitializer.GATE_LABEL_RESOURCE_KIND]: 'CaptureProxy',
+                    [MigrationInitializer.GATE_LABEL_RESOURCE_NAME]: proxy.name,
+                    [MigrationInitializer.GATE_LABEL_SOURCE]: proxySource,
+                })
+            ));
         }
 
         // DataSnapshot resources from snapshots
@@ -396,7 +446,14 @@ export class MigrationInitializer {
                 items.push({
                     apiVersion: CRD_API_VERSION,
                     kind: 'DataSnapshot',
-                    metadata: { name: this.makeCrdName(snapshot.sourceConfig.label, item.label) },
+                    metadata: {
+                        name: this.makeCrdName(snapshot.sourceConfig.label, item.label),
+                        labels: {
+                            ...baseResourceLabels,
+                            [MigrationInitializer.GATE_LABEL_SOURCE]: snapshot.sourceConfig.label,
+                            [MigrationInitializer.GATE_LABEL_SNAPSHOT]: item.label,
+                        }
+                    },
                     spec: { dependsOn: (item.dependsOnProxySetups ?? []).map(dep => dep.name) },
                     status: { phase: 'Initialized', configChecksum: '' }
                 });
@@ -405,25 +462,42 @@ export class MigrationInitializer {
 
         // SnapshotMigration resources from snapshotMigrations
         for (const migration of (workflows.snapshotMigrations ?? []) as SnapshotMigrationConfig[]) {
+            const snapshotMigrationName = this.makeCrdName(
+                migration.sourceLabel,
+                migration.targetConfig.label,
+                migration.label,
+                migration.migrationLabel
+            );
             items.push({
                 apiVersion: CRD_API_VERSION,
                 kind: 'SnapshotMigration',
                 metadata: {
-                    name: this.makeCrdName(
-                        migration.sourceLabel,
-                        migration.targetConfig.label,
-                        migration.label,
-                        migration.migrationLabel
-                    )
+                    name: snapshotMigrationName,
+                    labels: {
+                        ...baseResourceLabels,
+                        [MigrationInitializer.GATE_LABEL_SOURCE]: migration.sourceLabel,
+                        [MigrationInitializer.GATE_LABEL_TARGET]: migration.targetConfig.label,
+                        [MigrationInitializer.GATE_LABEL_SNAPSHOT]: migration.snapshotConfig.label,
+                        [MigrationInitializer.OUTPUT_LABEL_MIGRATION]: migration.migrationLabel,
+                    }
                 },
                 spec: {
                 },
                 status: { phase: 'Initialized', configChecksum: '' }
             });
 
+            const migLabels = gateLabels({
+                [MigrationInitializer.GATE_LABEL_RESOURCE_KIND]: 'SnapshotMigration',
+                [MigrationInitializer.GATE_LABEL_RESOURCE_NAME]: snapshotMigrationName,
+                [MigrationInitializer.GATE_LABEL_SOURCE]: migration.sourceLabel,
+                [MigrationInitializer.GATE_LABEL_TARGET]: migration.targetConfig.label,
+                [MigrationInitializer.GATE_LABEL_SNAPSHOT]: migration.snapshotConfig.label,
+                [MigrationInitializer.GATE_LABEL_MIGRATION]: migration.migrationLabel,
+            });
+
             // VAP retry gate for the root SnapshotMigration CR reconcile
             items.push(this.makeApprovalGateResource(
-                [this.makeCrdName(migration.sourceLabel, migration.targetConfig.label, migration.label, migration.migrationLabel), 'vapretry'], gateLabel));
+                ['snapshotmigration', snapshotMigrationName, 'vapretry'], migLabels));
 
             const approvalNameParts = [
                 migration.sourceLabel,
@@ -431,10 +505,11 @@ export class MigrationInitializer {
                 migration.snapshotConfig.label,
                 migration.migrationLabel,
             ];
+            const resourcePath = this.makeCrdName(...approvalNameParts);
             items.push(this.makeApprovalGateResource(
-                [...approvalNameParts, 'evaluateMetadata'], gateLabel));
+                ['evaluatemetadata', resourcePath], migLabels));
             items.push(this.makeApprovalGateResource(
-                [...approvalNameParts, 'migrateMetadata'], gateLabel));
+                ['migratemetadata', resourcePath], migLabels));
         }
 
         // TrafficReplay resources from trafficReplays
@@ -442,7 +517,15 @@ export class MigrationInitializer {
             items.push({
                 apiVersion: CRD_API_VERSION,
                 kind: 'TrafficReplay',
-                metadata: { name: replay.name },
+                metadata: {
+                    name: replay.name,
+                    labels: {
+                        ...baseResourceLabels,
+                        [MigrationInitializer.GATE_LABEL_SOURCE]: replay.sourceLabel,
+                        [MigrationInitializer.GATE_LABEL_TARGET]: replay.toTarget.label,
+                        [MigrationInitializer.OUTPUT_LABEL_TASK]: 'trafficReplayer',
+                    }
+                },
                 spec: {
                     dependsOn: [
                         replay.fromProxy,
@@ -455,7 +538,13 @@ export class MigrationInitializer {
 
             // VAP retry gate for replay
             items.push(this.makeApprovalGateResource(
-                [replay.name, 'trafficreplay', 'vapretry'], gateLabel));
+                ['trafficreplay', replay.name, 'vapretry'],
+                gateLabels({
+                    [MigrationInitializer.GATE_LABEL_RESOURCE_KIND]: 'TrafficReplay',
+                    [MigrationInitializer.GATE_LABEL_RESOURCE_NAME]: replay.name,
+                    [MigrationInitializer.GATE_LABEL_TARGET]: replay.toTarget.label,
+                })
+            ));
         }
 
         return {
