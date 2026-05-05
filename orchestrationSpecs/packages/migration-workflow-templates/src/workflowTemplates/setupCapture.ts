@@ -112,8 +112,8 @@ function makeProxyParamsDict(
             ),
             expr.mergeDicts(
                 expr.makeDict({
-                    destinationUri: expr.get(config, "sourceEndpoint"),
-                    insecureDestination: expr.get(config, "sourceAllowInsecure"),
+                    destinationUri: expr.dig(config, ["sourceConfig", "endpoint"], ""),
+                    insecureDestination: expr.dig(config, ["sourceConfig", "allowInsecure"], false),
                     kafkaTopic: expr.jsonPathStrict(proxyConfig, "kafkaConfig", "kafkaTopic"),
                     kafkaListenerName: effectiveKafkaListenerName,
                     kafkaAuthType: effectiveKafkaAuthType,
@@ -167,6 +167,9 @@ function makeProxyDeploymentManifest(args: {
     kafkaCaSecretName: BaseExpression<string>,
     tlsSecretName?: BaseExpression<string>,
     ownerUid: BaseExpression<string>,
+    workflowName: BaseExpression<string>,
+    sourceK8sLabel: BaseExpression<string>,
+    taskK8sLabel: BaseExpression<string>,
 }) {
     const isScramAuth = expr.equals(args.kafkaAuthType, expr.literal("scram-sha-512"));
     const container: Record<string, any> = {
@@ -242,6 +245,11 @@ function makeProxyDeploymentManifest(args: {
         metadata: {
             name: args.proxyName,
             ownerReferences: makeOwnerReferences(args.proxyName, args.ownerUid),
+            labels: {
+                "workflows.argoproj.io/workflow": makeStringTypeProxy(args.workflowName),
+                "migrations.opensearch.org/source": makeStringTypeProxy(args.sourceK8sLabel),
+                "migrations.opensearch.org/task": makeStringTypeProxy(args.taskK8sLabel),
+            },
         },
         spec: {
             replicas: makeDirectTypeProxy(args.podReplicas),
@@ -250,7 +258,12 @@ function makeProxyDeploymentManifest(args: {
             },
             selector: {matchLabels: {"migrations/proxy": args.proxyName}},
             template: {
-                metadata: {labels: {"migrations/proxy": args.proxyName}},
+                metadata: {labels: {
+                    "migrations/proxy": args.proxyName,
+                    "workflows.argoproj.io/workflow": makeStringTypeProxy(args.workflowName),
+                    "migrations.opensearch.org/source": makeStringTypeProxy(args.sourceK8sLabel),
+                    "migrations.opensearch.org/task": makeStringTypeProxy(args.taskK8sLabel),
+                }},
                 spec: podSpec
             }
         }
@@ -337,6 +350,8 @@ export const SetupCapture = WorkflowBuilder.create({
         .addRequiredInput("podReplicas", typeToken<number>())
         .addRequiredInput("resources", typeToken<ResourceRequirementsType>())
         .addRequiredInput("ownerUid", typeToken<string>())
+        .addRequiredInput("sourceK8sLabel", typeToken<string>())
+        .addOptionalInput("taskK8sLabel", c => "captureProxy")
         .addOptionalInput("tlsSecretName", c => "")
         .addInputsFromRecord(makeRequiredImageParametersForKeys(["CaptureProxy"]))
         .addResourceTask(b => b
@@ -357,6 +372,9 @@ export const SetupCapture = WorkflowBuilder.create({
                     kafkaSecretName: b.inputs.kafkaSecretName,
                     kafkaCaSecretName: b.inputs.kafkaCaSecretName,
                     ownerUid: b.inputs.ownerUid,
+                    workflowName: expr.getWorkflowValue("name"),
+                    sourceK8sLabel: b.inputs.sourceK8sLabel,
+                    taskK8sLabel: b.inputs.taskK8sLabel,
                 })
             }))
         .addRetryParameters(K8S_RESOURCE_RETRY_STRATEGY)
@@ -375,6 +393,8 @@ export const SetupCapture = WorkflowBuilder.create({
         .addRequiredInput("resources", typeToken<ResourceRequirementsType>())
         .addRequiredInput("tlsSecretName", typeToken<string>())
         .addRequiredInput("ownerUid", typeToken<string>())
+        .addRequiredInput("sourceK8sLabel", typeToken<string>())
+        .addOptionalInput("taskK8sLabel", c => "captureProxy")
         .addInputsFromRecord(makeRequiredImageParametersForKeys(["CaptureProxy"]))
         .addResourceTask(b => b
             .setDefinition({
@@ -395,6 +415,9 @@ export const SetupCapture = WorkflowBuilder.create({
                     kafkaCaSecretName: b.inputs.kafkaCaSecretName,
                     tlsSecretName: b.inputs.tlsSecretName,
                     ownerUid: b.inputs.ownerUid,
+                    workflowName: expr.getWorkflowValue("name"),
+                    sourceK8sLabel: b.inputs.sourceK8sLabel,
+                    taskK8sLabel: b.inputs.taskK8sLabel,
                 })
             }))
         .addRetryParameters(K8S_RESOURCE_RETRY_STRATEGY)
@@ -468,6 +491,7 @@ export const SetupCapture = WorkflowBuilder.create({
         .addRequiredInput("ownerUid", typeToken<string>())
         .addRequiredInput("listenPort", typeToken<number>())
         .addRequiredInput("podReplicas", typeToken<number>())
+        .addRequiredInput("sourceK8sLabel", typeToken<string>())
         .addOptionalInput("resolvedKafkaConnection", c => "")
         .addOptionalInput("resolvedKafkaListenerName", c => "")
         .addOptionalInput("resolvedKafkaAuthType", c => "")
@@ -615,6 +639,7 @@ export const SetupCapture = WorkflowBuilder.create({
         .addRequiredInput("topicReplicas", typeToken<number>())
         .addRequiredInput("topicConfig", typeToken<Serialized<Record<string, any>>>())
         .addRequiredInput("kafkaClusterOwnerUid", typeToken<string>())
+        .addRequiredInput("sourceK8sLabel", typeToken<string>())
         .addInputsFromRecord(makeRequiredImageParametersForKeys(["MigrationConsole", "CaptureProxy"]))
 
         .addSteps(b => {
@@ -631,10 +656,11 @@ export const SetupCapture = WorkflowBuilder.create({
                     topicCrName: b.inputs.topicCrName,
                     kafkaClusterName: b.inputs.kafkaClusterName,
                     kafkaTopicName: b.inputs.kafkaTopicName,
+                    sourceLabel: b.inputs.sourceK8sLabel,
                     partitions: b.inputs.topicPartitions,
                     replicas: b.inputs.topicReplicas,
                     topicConfig: b.inputs.topicConfig,
-                    retryGateName: expr.concat(b.inputs.topicCrName, expr.literal(".capturedtraffic.vapretry")),
+                    retryGateName: expr.concat(expr.literal("capturedtraffic."), b.inputs.topicCrName, expr.literal(".vapretry")),
                     retryGroupName_view: expr.concat(expr.literal("CapturedTraffic: "), b.inputs.topicCrName),
                 })
             )
@@ -654,6 +680,7 @@ export const SetupCapture = WorkflowBuilder.create({
                     topicName: b.inputs.kafkaTopicName,
                     workflowUid: expr.getWorkflowValue("uid"),
                     ownerUid: b.inputs.kafkaClusterOwnerUid,
+                    sourceLabel: b.inputs.sourceK8sLabel,
                     partitions: b.inputs.topicPartitions,
                     replicas: b.inputs.topicReplicas,
                     topicConfig: b.inputs.topicConfig,
@@ -683,7 +710,7 @@ export const SetupCapture = WorkflowBuilder.create({
                     proxyConfig: b.inputs.proxyConfig,
                     proxyName: b.inputs.proxyName,
                     topicCrName: b.inputs.topicCrName,
-                    retryGateName: expr.concat(b.inputs.proxyName, expr.literal(".captureproxy.vapretry")),
+                    retryGateName: expr.concat(expr.literal("captureproxy."), b.inputs.proxyName, expr.literal(".vapretry")),
                     retryGroupName_view: expr.concat(expr.literal("CaptureProxy: "), b.inputs.proxyName),
                 })
             )

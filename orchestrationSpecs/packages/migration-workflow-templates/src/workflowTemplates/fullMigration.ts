@@ -5,6 +5,7 @@ import {
     ARGO_REPLAYER_OPTIONS,
     ARGO_RFS_OPTIONS,
     COMPLETE_SNAPSHOT_CONFIG,
+    DEFAULT_RESOURCES,
     DENORMALIZED_CREATE_SNAPSHOTS_CONFIG,
     DENORMALIZED_PROXY_CONFIG,
     DENORMALIZED_REPLAY_CONFIG,
@@ -98,6 +99,38 @@ export const FullMigration = WorkflowBuilder.create({
         .addSteps(b => b.addStepGroup(c => c)))
 
 
+    .addTemplate("addApprovalGateOwnerReferences", t => t
+        .addInputsFromRecord(defaultImagesMap(t.inputs.workflowParameters.imageConfigMapName))
+        .addContainer(b => b
+            .addImageInfo(b.inputs.imageMigrationConsoleLocation, b.inputs.imageMigrationConsolePullPolicy)
+            .addResources(DEFAULT_RESOURCES.SHELL_MIGRATION_CONSOLE_CLI)
+            .addCommand(["/bin/bash", "-lc"])
+            .addArgs([`
+selector='migrations.opensearch.org/workflow={{workflow.name}}'
+patch='{"metadata":{"ownerReferences":[{"apiVersion":"argoproj.io/v1alpha1","kind":"Workflow","name":"{{workflow.name}}","uid":"{{workflow.uid}}"}]}}'
+kubectl get approvalgates.migrations.opensearch.org -l "$selector" -o name \\
+  | xargs -r -n 1 kubectl patch --type merge -p "$patch" \\
+  || echo "WARN: failed to patch one or more approvalgate ownerReferences" >&2
+`])
+        )
+    )
+
+
+    .addTemplate("cleanupApprovalGates", t => t
+        .addInputsFromRecord(defaultImagesMap(t.inputs.workflowParameters.imageConfigMapName))
+        .addContainer(b => b
+            .addImageInfo(b.inputs.imageMigrationConsoleLocation, b.inputs.imageMigrationConsolePullPolicy)
+            .addResources(DEFAULT_RESOURCES.SHELL_MIGRATION_CONSOLE_CLI)
+            .addCommand(["/bin/bash", "-lc"])
+            .addArgs([`
+kubectl delete approvalgates.migrations.opensearch.org \\
+  -l "migrations.opensearch.org/workflow={{workflow.name}}" \\
+  --ignore-not-found || true
+`])
+        )
+    )
+
+
     // ── Section 1: Kafka Clusters ────────────────────────────────────────
 
     .addTemplate("setupSingleKafkaCluster", t => t
@@ -114,7 +147,7 @@ export const FullMigration = WorkflowBuilder.create({
                 .addStep("reconcileKafkaClusterResource", ResourceManagement, "reconcileKafkaClusterResource", c =>
                     c.register({
                         kafkaClusterConfig: b.inputs.kafkaClusterConfig,
-                        retryGateName: expr.concat(b.inputs.clusterName, expr.literal(".vapretry")),
+                        retryGateName: expr.concat(expr.literal("kafkacluster."), b.inputs.clusterName, expr.literal(".vapretry")),
                         retryGroupName_view: expr.concat(expr.literal("KafkaCluster: "), b.inputs.clusterName),
                     })
                 )
@@ -178,6 +211,7 @@ export const FullMigration = WorkflowBuilder.create({
                     topicPartitions: b.inputs.topicPartitions,
                     topicReplicas: b.inputs.topicReplicas,
                     topicConfig: b.inputs.topicConfig,
+                    sourceK8sLabel: expr.dig(expr.deserializeRecord(b.inputs.proxyConfig), ["sourceConfig", "label"], ""),
                 })
             )
         )
@@ -204,6 +238,7 @@ export const FullMigration = WorkflowBuilder.create({
                 c.register({
                     resourceName: b.inputs.resourceName,
                     snapshotItemConfig: b.inputs.snapshotItemConfig,
+                    sourceLabel: expr.get(expr.deserializeRecord(b.inputs.sourceConfig), "label"),
                 }),
             )
             .addStep("readSnapshotPhase", ResourceManagement, "readResourcePhase", c =>
@@ -263,8 +298,6 @@ export const FullMigration = WorkflowBuilder.create({
                         label: expr.get(
                             expr.deserializeRecord(b.inputs.snapshotItemConfig), "label")
                     })),
-                    targetLabel: expr.get(
-                        expr.deserializeRecord(b.inputs.snapshotItemConfig), "label"),
                     semaphoreConfigMapName: expr.get(
                         expr.deserializeRecord(b.inputs.snapshotItemConfig), "semaphoreConfigMapName"),
                     semaphoreKey: expr.get(
@@ -394,7 +427,7 @@ export const FullMigration = WorkflowBuilder.create({
                     return c.register({
                         snapshotMigrationConfig: b.inputs.snapshotMigrationConfig,
                         resourceName: b.inputs.resourceName,
-                        retryGateName: expr.concat(b.inputs.resourceName, expr.literal(".vapretry")),
+                        retryGateName: expr.concat(expr.literal("snapshotmigration."), b.inputs.resourceName, expr.literal(".vapretry")),
                         retryGroupName_view: expr.concat(expr.literal("SnapshotMigration: "), b.inputs.resourceName),
                     });
                 },
@@ -506,6 +539,7 @@ export const FullMigration = WorkflowBuilder.create({
     .addTemplate("runSingleReplay", t => t
         .addRequiredInput("kafkaConfig", typeToken<z.infer<typeof NAMED_KAFKA_CLIENT_CONFIG>>())
         .addRequiredInput("kafkaClusterName", typeToken<string>())
+        .addRequiredInput("sourceLabel", typeToken<string>())
         .addRequiredInput("fromProxy", typeToken<string>())
         .addRequiredInput("fromProxyConfigChecksum", typeToken<string>())
         .addRequiredInput("targetConfig", typeToken<z.infer<typeof NAMED_TARGET_CLUSTER_CONFIG>>())
@@ -527,7 +561,9 @@ export const FullMigration = WorkflowBuilder.create({
                     name: b.inputs.name,
                     dependsOn: b.inputs.dependsOn,
                     replayerOptions: b.inputs.replayerOptions,
-                    retryGateName: expr.concat(b.inputs.name, expr.literal(".trafficreplay.vapretry")),
+                    sourceLabel: b.inputs.sourceLabel,
+                    targetLabel: expr.dig(expr.deserializeRecord(b.inputs.targetConfig), ["label"], ""),
+                    retryGateName: expr.concat(expr.literal("trafficreplay."), b.inputs.name, expr.literal(".vapretry")),
                     retryGroupName_view: expr.concat(expr.literal("TrafficReplay: "), b.inputs.name),
                 }),
             )
@@ -633,6 +669,9 @@ export const FullMigration = WorkflowBuilder.create({
         .addInputsFromRecord(defaultImagesMap(t.inputs.workflowParameters.imageConfigMapName))
 
         .addSteps(b => b.addStepGroup(g => g
+            .addStep("addApprovalGateOwnerReferences", INTERNAL, "addApprovalGateOwnerReferences", c =>
+                c.register({})
+            )
             .addStep("createKafka", INTERNAL, "setupSingleKafkaCluster", c =>
                 c.register({
                     kafkaClusterConfig: expr.serialize(expr.makeDict({
@@ -665,9 +704,8 @@ export const FullMigration = WorkflowBuilder.create({
                     ...selectInputsForRegister(b, c),
                     proxyConfig: expr.serialize(expr.makeDict({
                         name: expr.get(c.item, "name"),
+                        sourceConfig: expr.deserializeRecord(expr.get(c.item, "sourceConfig")),
                         kafkaConfig: expr.deserializeRecord(expr.get(c.item, "kafkaConfig")),
-                        sourceEndpoint: expr.get(c.item, "sourceEndpoint"),
-                        sourceAllowInsecure: expr.get(c.item, "sourceAllowInsecure"),
                         proxyConfig: expr.deserializeRecord(expr.get(c.item, "proxyConfig")),
                         configChecksum: expr.dig(c.item, ["configChecksum"], ""),
                         topicConfigChecksum: expr.dig(c.item, ["topicConfigChecksum"], ""),
@@ -801,4 +839,5 @@ export const FullMigration = WorkflowBuilder.create({
 
 
     .setEntrypoint("main")
+    .setOnExit("cleanupApprovalGates")
     .getFullScope();

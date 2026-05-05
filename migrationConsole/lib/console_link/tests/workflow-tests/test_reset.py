@@ -109,7 +109,7 @@ class TestResetCommandList:
         assert result.exit_code == 0
         assert 'source-proxy' in result.output
         assert 'src-tgt-replayer' in result.output
-        assert 'Capture Proxy' in result.output
+        assert 'captureproxy' in result.output
         assert 'depends on: source-topic' in result.output
 
     @patch('console_link.workflow.commands.reset.load_k8s_config')
@@ -202,7 +202,7 @@ class TestResetCommandDelete:
 
         assert result.exit_code != 0
         assert 'Cannot delete' in result.output
-        assert 'Snapshot Migration: mig-a' in result.output
+        assert 'snapshotmigration.mig-a' in result.output
         assert '--cascade' in result.output
 
     @patch('console_link.workflow.commands.reset.load_k8s_config')
@@ -255,7 +255,7 @@ class TestResetAll:
             ],
             'ma',
         )
-        assert 'Keeping protected proxies alive: source-proxy' in result.output
+        assert 'Keeping protected proxies alive: captureproxy.source-proxy' in result.output
         assert 'Use --include-proxies to delete them.' in result.output
 
     @patch('console_link.workflow.commands.reset._handle_kafka_storage')

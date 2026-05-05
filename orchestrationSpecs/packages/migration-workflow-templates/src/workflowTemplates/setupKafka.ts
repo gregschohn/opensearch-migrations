@@ -17,6 +17,9 @@ import {K8S_RESOURCE_RETRY_STRATEGY} from "./commonUtils/resourceRetryStrategy";
 import {ResourceManagement} from "./resourceManagement";
 
 type KafkaConfig = z.infer<typeof KAFKA_CLUSTER_CREATION_CONFIG>;
+const KAFKA_CLUSTER_LABEL = "migrations.opensearch.org/kafka-cluster";
+const SOURCE_LABEL = "migrations.opensearch.org/source";
+const WORKFLOW_LABEL = "workflows.argoproj.io/workflow";
 
 function makeOwnerReferences(
     ownerName: BaseExpression<string>,
@@ -86,7 +89,9 @@ function makeManagedKafkaUserManifest(args: {
             ownerReferences: makeOwnerReferences(args.clusterName, args.ownerUid),
             labels: {
                 "strimzi.io/cluster": args.clusterName,
-                "workflows.argoproj.io/run-uid": makeStringTypeProxy(args.workflowUid)
+                [WORKFLOW_LABEL]: makeStringTypeProxy(expr.getWorkflowValue("name")),
+                "workflows.argoproj.io/run-uid": makeStringTypeProxy(args.workflowUid),
+                [KAFKA_CLUSTER_LABEL]: makeStringTypeProxy(args.clusterName),
             }
         },
         spec: makeDirectTypeProxy(expr.deserializeRecord(args.userSpec))
@@ -107,7 +112,9 @@ function makeDeployKafkaNodePool(args: {
             ownerReferences: makeOwnerReferences(args.clusterName, args.ownerUid),
             labels: {
                 "strimzi.io/cluster": args.clusterName,
-                "workflows.argoproj.io/run-uid": makeStringTypeProxy(args.workflowUid)
+                [WORKFLOW_LABEL]: makeStringTypeProxy(expr.getWorkflowValue("name")),
+                "workflows.argoproj.io/run-uid": makeStringTypeProxy(args.workflowUid),
+                [KAFKA_CLUSTER_LABEL]: makeStringTypeProxy(args.clusterName),
             }
         },
         spec: makeDirectTypeProxy(expr.deserializeRecord(args.nodePoolSpec))
@@ -169,7 +176,10 @@ function makeDeployKafkaClusterKraftManifest(args: {
             name: args.clusterName,
             ownerReferences: makeOwnerReferences(args.clusterName, args.ownerUid),
             labels: {
-                "workflows.argoproj.io/run-uid": makeStringTypeProxy(args.workflowUid)
+                "strimzi.io/cluster": makeStringTypeProxy(args.clusterName),
+                [WORKFLOW_LABEL]: makeStringTypeProxy(expr.getWorkflowValue("name")),
+                "workflows.argoproj.io/run-uid": makeStringTypeProxy(args.workflowUid),
+                [KAFKA_CLUSTER_LABEL]: makeStringTypeProxy(args.clusterName),
             },
             annotations: {
                 "strimzi.io/node-pools": "enabled",
@@ -192,6 +202,7 @@ function makeKafkaTopicManifest(args: {
     topicName: BaseExpression<string>,
     workflowUid: BaseExpression<string>,
     ownerUid: BaseExpression<string>,
+    sourceLabel: BaseExpression<string>,
     partitions: BaseExpression<Serialized<number>>,
     replicas: BaseExpression<Serialized<number>>,
     topicConfig: BaseExpression<Serialized<Record<string, any>>>,
@@ -204,7 +215,10 @@ function makeKafkaTopicManifest(args: {
             ownerReferences: makeOwnerReferences(args.clusterName, args.ownerUid),
             labels: {
                 "strimzi.io/cluster": args.clusterName,
-                "workflows.argoproj.io/run-uid": makeStringTypeProxy(args.workflowUid)
+                [WORKFLOW_LABEL]: makeStringTypeProxy(expr.getWorkflowValue("name")),
+                "workflows.argoproj.io/run-uid": makeStringTypeProxy(args.workflowUid),
+                [KAFKA_CLUSTER_LABEL]: makeStringTypeProxy(args.clusterName),
+                [SOURCE_LABEL]: makeStringTypeProxy(args.sourceLabel),
             }
         },
         spec: {
@@ -338,6 +352,7 @@ export const SetupKafka = WorkflowBuilder.create({
         .addRequiredInput("topicName", typeToken<string>())
         .addRequiredInput("workflowUid", typeToken<string>())
         .addRequiredInput("ownerUid", typeToken<string>())
+        .addRequiredInput("sourceLabel", typeToken<string>())
         .addRequiredInput("partitions", typeToken<number>())
         .addRequiredInput("replicas", typeToken<number>())
         .addRequiredInput("topicConfig", typeToken<Serialized<Record<string, any>>>())
@@ -352,6 +367,7 @@ export const SetupKafka = WorkflowBuilder.create({
                     topicName: b.inputs.topicName,
                     workflowUid: b.inputs.workflowUid,
                     ownerUid: b.inputs.ownerUid,
+                    sourceLabel: b.inputs.sourceLabel,
                     partitions: b.inputs.partitions,
                     replicas: b.inputs.replicas,
                     topicConfig: b.inputs.topicConfig,

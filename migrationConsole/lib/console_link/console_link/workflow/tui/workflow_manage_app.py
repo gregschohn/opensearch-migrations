@@ -59,7 +59,7 @@ class WorkflowTreeApp(App):
 
         # State Containers (Managers)
         self._pods = PodNameManager(self, pod_scraper, name, namespace)
-        self._tree_state = TreeStateManager(on_new_pod=self._pods.observe_node)
+        self._tree_state = TreeStateManager(namespace=namespace, on_new_pod=self._pods.observe_node)
         self._logs = LogManager(pod_scraper, namespace)
         self._live = LiveStatusManager(refresh_interval)
 

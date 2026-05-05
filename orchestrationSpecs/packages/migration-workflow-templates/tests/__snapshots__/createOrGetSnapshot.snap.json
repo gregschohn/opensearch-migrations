@@ -79,9 +79,6 @@
               "name": "snapshotPrefix"
             },
             {
-              "name": "targetLabel"
-            },
-            {
               "name": "uniqueRunNonce"
             },
             {
@@ -148,10 +145,6 @@
                   {
                     "name": "createSnapshotConfig",
                     "value": "{{inputs.parameters.createSnapshotConfig}}"
-                  },
-                  {
-                    "name": "targetLabel",
-                    "value": "{{inputs.parameters.targetLabel}}"
                   },
                   {
                     "name": "semaphoreConfigMapName",
