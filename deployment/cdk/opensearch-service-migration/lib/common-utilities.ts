@@ -47,6 +47,45 @@ export function appendArgIfNotInExtraArgs(
     return baseCommand;
 }
 
+/**
+ * Array-form equivalent of appendArgIfNotInExtraArgs. Appends the flag (and optional value)
+ * as separate elements to the provided args array when the flag is not overridden in extraArgsDict.
+ * Use this for Jib-built container images where the ECS task command is passed to the JVM
+ * directly as argv, rather than through a shell.
+ */
+export function appendArgArrayIfNotInExtraArgs(
+    args: string[],
+    extraArgsDict: Record<string, string[]>,
+    arg: string,
+    value: string | null = null,
+): void {
+    if (extraArgsDict[arg] === undefined) {
+        args.push(arg);
+        if (value !== null) {
+            args.push(value);
+        }
+    }
+}
+
+/**
+ * Tokenises a free-form extra-args string (as provided via CDK context) into an array of argv
+ * elements suitable for ECS task commands that bypass a shell. Supports simple single- and
+ * double-quoted values so users can keep passing the same string they used with the previous
+ * shell-based entrypoint.
+ */
+export function parseArgsStringToArray(argString: string | undefined): string[] {
+    if (!argString) {
+        return [];
+    }
+    const tokens: string[] = [];
+    const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
+    let match: RegExpExecArray | null;
+    while ((match = re.exec(argString)) !== null) {
+        tokens.push(match[1] ?? match[2] ?? match[3]);
+    }
+    return tokens;
+}
+
 export function parseArgsToDict(argString: string | undefined): Record<string, string[]> {
     const args: Record<string, string[]> = {};
     if (argString === undefined) {
