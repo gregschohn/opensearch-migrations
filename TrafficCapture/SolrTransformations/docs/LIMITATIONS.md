@@ -21,7 +21,8 @@ the root cause, and provides a workaround where one exists.
 | [FQ-CACHING](#fq-caching)                       | Filter query caching granularity differs between Solr and OpenSearch |
 | [JSON-QUERIES](#json-queries)                   | JSON Request API `queries` key not supported |
 | [JSON-PARAM-PREFIX](#json-param-prefix)         | JSON Request API `json.<param>` prefix passthrough not supported |
-| [UPDATE-COMMANDS](#update-commands)             | Only `add` and `delete-by-id` commands supported; JSON only |
+| [UPDATE-COMMANDS](#update-commands)             | Only `add`, `delete-by-id`, and `delete-by-query` commands supported; JSON only |
+| [DELETE-BY-QUERY](#delete-by-query)             | Delete-by-query always synchronous; version conflicts treated as partial failure |
 | [BULK-PARTIAL-FAILURE](#bulk-partial-failure)   | `_bulk` partial failures surface as `errors[]`; Solr's default strict mode has no OpenSearch equivalent |
 | [NDJSON-INGEST-PARITY](#ndjson-ingest-parity)   | Shim does not parse NDJSON request bodies on ingress (not exercised by Solr clients, but diverges from replayer) |
 | [MM-AUTORELAX](#mm-autorelax)                   | eDisMax `mm.autoRelax` parameter not supported |
@@ -493,7 +494,7 @@ Both JSON and XML content types are supported.
 | `add` with `boost` | ❌ Not supported — fails fast (OpenSearch has no document-level boost) |
 | `add` with `overwrite: false` | ❌ Not supported — fails fast (OpenSearch always overwrites) |
 | `delete` by id | ✅ Supported — `{"delete":{"id":"..."}}` |
-| `delete` by query | ❌ Not supported — fails fast |
+| `delete` by query | ✅ Supported — `{"delete":{"query":"..."}}` → `_delete_by_query` (see [DELETE-BY-QUERY](#delete-by-query)) |
 | `commit` | ❌ Not supported — fails fast |
 | `optimize` / `rollback` | ❌ Not supported — fails fast |
 | Mixed commands | ❌ Not supported — fails fast |
@@ -504,6 +505,37 @@ Both JSON and XML content types are supported.
 Only `application/json` request bodies are supported. XML bodies
 (`text/xml`, `application/xml`) cannot be parsed by the shim and will
 fail with an error. Clients using XML format must switch to JSON.
+
+---
+
+## DELETE-BY-QUERY
+
+**Feature:** `{"delete":{"query":"<solr-query>"}}` → `POST /_delete_by_query`
+
+**Solr behaviour:**
+Delete-by-query is synchronous — the response is returned after all matching
+documents are deleted. The response is simply `{responseHeader:{status:0,QTime:N}}`
+with no metadata about how many documents were deleted.
+
+**OpenSearch behaviour:**
+`_delete_by_query` is asynchronous by default. With `wait_for_completion=true`,
+it behaves synchronously. Version conflicts during deletion are reported in the
+response as `version_conflicts` count rather than aborting the operation.
+
+**Current behaviour (applied automatically by the transformer):**
+
+* `wait_for_completion=true` is always set for synchronous response.
+* `commit=true` / `commitWithin` → `?refresh=true` (immediate visibility).
+* Query translated via `translateQ` in **fail-fast mode** — no passthrough.
+* Version conflicts or `deleted < total` → `responseHeader.status = 1`.
+
+**Residual impact:**
+
+* **No passthrough mode** — queries that the read path would pass through
+  as `query_string` will fail on delete-by-query (intentional for safety).
+* **Version conflicts** — concurrent updates can cause `version_conflicts`.
+  OpenSearch continues deleting remaining documents (no abort). Reported as
+  `status: 1`.
 
 ---
 
