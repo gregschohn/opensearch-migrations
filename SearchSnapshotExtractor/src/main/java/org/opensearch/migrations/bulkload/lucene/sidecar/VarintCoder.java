@@ -48,12 +48,20 @@ public final class VarintCoder {
         buf.put((byte) value);
     }
 
-    /** Reads an unsigned varint from {@code buf} at its current position, advancing it. */
-    public static int readUVInt(ByteBuffer buf) {
+    /**
+     * Byte-at-a-time source abstraction so varint decode works over either a
+     * {@link ByteBuffer} or a {@link ChunkedByteBuffer.Cursor} that crosses mmap regions.
+     */
+    public interface ByteSource {
+        byte readByte();
+    }
+
+    /** Reads an unsigned varint from {@code src}, consuming one byte per iteration. */
+    public static int readUVInt(ByteSource src) {
         int value = 0;
         int shift = 0;
         while (true) {
-            byte b = buf.get();
+            byte b = src.readByte();
             value |= (b & 0x7F) << shift;
             if ((b & 0x80) == 0) return value;
             shift += 7;
@@ -62,6 +70,11 @@ public final class VarintCoder {
                 throw new IllegalStateException("Malformed varint: sequence exceeds 5 bytes");
             }
         }
+    }
+
+    /** Reads an unsigned varint from {@code buf} at its current position, advancing it. */
+    public static int readUVInt(ByteBuffer buf) {
+        return readUVInt((ByteSource) buf::get);
     }
 
     /** Writes a signed int using zig-zag + varint encoding. */

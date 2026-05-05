@@ -1,7 +1,6 @@
 package org.opensearch.migrations.bulkload.lucene.sidecar;
 
 import java.io.IOException;
-import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
@@ -27,6 +26,11 @@ import lombok.extern.slf4j.Slf4j;
  *                        or SidecarBuilder.DOC_INDEX_NO_TOKENS for docs with no tokens
  * </pre>
  *
+ * <p>The four mmap views are wrapped in {@link ChunkedByteBuffer} so that files larger
+ * than {@link Integer#MAX_VALUE} bytes (which {@code FileChannel.map} rejects in one call)
+ * are transparently mapped as a series of chunks. Files ≤1 GiB still take a single-mmap
+ * fast path.
+ *
  * <p>Heap footprint per open reader:
  *   <ul>
  *     <li>A mmap'd view over each of the four files. The OS pages in what the access
@@ -38,8 +42,10 @@ import lombok.extern.slf4j.Slf4j;
  *         the only transient heap.
  *   </ul>
  *
- * <p>Thread-safety: {@link #get(int)} duplicates the mmap'd ByteBuffer on each call so
- * concurrent readers each get their own cursor. Opening and closing are not concurrent-safe.
+ * <p>Thread-safety: {@link #get(int)} allocates a fresh {@link ChunkedByteBuffer.Cursor}
+ * on each call so concurrent readers each get their own position state. Positional
+ * {@code getInt}/{@code getLong} on the shared {@link ChunkedByteBuffer} do not mutate
+ * any shared state. Opening and closing are not concurrent-safe.
  */
 @Slf4j
 public final class SidecarReader implements AutoCloseable {
@@ -53,10 +59,10 @@ public final class SidecarReader implements AutoCloseable {
     private final FileChannel sidecarChannel;
     private final FileChannel docIndexChannel;
 
-    private final ByteBuffer termsBuf;
-    private final ByteBuffer termOffsetsBuf;  // little-endian int[numTerms]
-    private final ByteBuffer sidecarBuf;
-    private final ByteBuffer docIndexBuf;     // little-endian long[maxDoc]
+    private final ChunkedByteBuffer termsBuf;
+    private final ChunkedByteBuffer termOffsetsBuf;  // little-endian int[numTerms]
+    private final ChunkedByteBuffer sidecarBuf;
+    private final ChunkedByteBuffer docIndexBuf;     // little-endian long[maxDoc]
 
     private volatile boolean closed;
 
@@ -67,10 +73,10 @@ public final class SidecarReader implements AutoCloseable {
                           FileChannel termOffsetsChannel,
                           FileChannel sidecarChannel,
                           FileChannel docIndexChannel,
-                          ByteBuffer termsBuf,
-                          ByteBuffer termOffsetsBuf,
-                          ByteBuffer sidecarBuf,
-                          ByteBuffer docIndexBuf) {
+                          ChunkedByteBuffer termsBuf,
+                          ChunkedByteBuffer termOffsetsBuf,
+                          ChunkedByteBuffer sidecarBuf,
+                          ChunkedByteBuffer docIndexBuf) {
         this.spillDir = spillDir;
         this.maxDoc = maxDoc;
         this.numTerms = numTerms;
@@ -86,9 +92,18 @@ public final class SidecarReader implements AutoCloseable {
 
     /**
      * Opens a sidecar previously produced by {@link SidecarBuilder#buildAndOpenReader()}
-     * in {@code spillDir}. mmaps all four files and caches their little-endian views.
+     * in {@code spillDir}. mmaps all four files (chunked if any exceeds the 2 GiB single-mmap
+     * limit) and caches their endian-configured views.
      */
     static SidecarReader open(Path spillDir, int maxDoc, int numTerms) throws IOException {
+        return open(spillDir, maxDoc, numTerms, ChunkedByteBuffer.DEFAULT_CHUNK_SIZE);
+    }
+
+    /**
+     * Package-private variant that accepts a custom chunk size. Exposed so chunk-boundary
+     * tests can force small chunks without fabricating multi-GiB fixtures.
+     */
+    static SidecarReader open(Path spillDir, int maxDoc, int numTerms, long chunkSize) throws IOException {
         Path termsFile        = spillDir.resolve(SidecarBuilder.TERMS_FILE);
         Path termOffsetsFile  = spillDir.resolve(SidecarBuilder.TERM_OFFSETS_FILE);
         Path sidecarFile      = spillDir.resolve(SidecarBuilder.SIDECAR_FILE);
@@ -99,25 +114,17 @@ public final class SidecarReader implements AutoCloseable {
         FileChannel sidecarCh = FileChannel.open(sidecarFile, StandardOpenOption.READ);
         FileChannel docIndexCh = FileChannel.open(docIndexFile, StandardOpenOption.READ);
 
-        ByteBuffer termsBuf = termsCh.size() == 0
-                ? ByteBuffer.allocate(0)
-                : termsCh.map(FileChannel.MapMode.READ_ONLY, 0, termsCh.size());
         // terms.dat is length-prefixed with big-endian int32 (DataOutputStream.writeInt).
+        ChunkedByteBuffer termsBuf = ChunkedByteBuffer.open(termsCh, chunkSize);
         termsBuf.order(ByteOrder.BIG_ENDIAN);
 
-        ByteBuffer termOffsetsBuf = termOffsetsCh.size() == 0
-                ? ByteBuffer.allocate(0)
-                : termOffsetsCh.map(FileChannel.MapMode.READ_ONLY, 0, termOffsetsCh.size());
+        ChunkedByteBuffer termOffsetsBuf = ChunkedByteBuffer.open(termOffsetsCh, chunkSize);
         termOffsetsBuf.order(ByteOrder.LITTLE_ENDIAN);
 
-        ByteBuffer sidecarBuf = sidecarCh.size() == 0
-                ? ByteBuffer.allocate(0)
-                : sidecarCh.map(FileChannel.MapMode.READ_ONLY, 0, sidecarCh.size());
+        ChunkedByteBuffer sidecarBuf = ChunkedByteBuffer.open(sidecarCh, chunkSize);
         sidecarBuf.order(ByteOrder.LITTLE_ENDIAN);
 
-        ByteBuffer docIndexBuf = docIndexCh.size() == 0
-                ? ByteBuffer.allocate(0)
-                : docIndexCh.map(FileChannel.MapMode.READ_ONLY, 0, docIndexCh.size());
+        ChunkedByteBuffer docIndexBuf = ChunkedByteBuffer.open(docIndexCh, chunkSize);
         docIndexBuf.order(ByteOrder.LITTLE_ENDIAN);
 
         return new SidecarReader(spillDir, maxDoc, numTerms,
@@ -134,13 +141,11 @@ public final class SidecarReader implements AutoCloseable {
         if (docId < 0 || docId >= maxDoc) return Collections.emptyList();
         long offset = readDocOffset(docId);
         if (offset == SidecarBuilder.DOC_INDEX_NO_TOKENS) return Collections.emptyList();
-        if (offset < 0 || offset > Integer.MAX_VALUE) {
+        if (offset < 0) {
             throw new IOException("Sidecar offset out of range: " + offset);
         }
-        // Duplicate to get a private cursor so concurrent readers don't clobber each other.
-        ByteBuffer cur = sidecarBuf.duplicate();
-        cur.order(ByteOrder.LITTLE_ENDIAN);
-        cur.position((int) offset);
+        // Fresh cursor per call gives concurrent readers their own position state.
+        ChunkedByteBuffer.Cursor cur = sidecarBuf.cursor(offset);
         int numEntries = VarintCoder.readUVInt(cur);
         List<String> result = new ArrayList<>(numEntries);
         for (int i = 0; i < numEntries; i++) {
@@ -156,20 +161,18 @@ public final class SidecarReader implements AutoCloseable {
 
     private long readDocOffset(int docId) {
         // doc-index.dat is long[maxDoc] little-endian.
-        return docIndexBuf.getLong(docId * 8);
+        return docIndexBuf.getLong((long) docId * 8);
     }
 
     private String readTerm(int termId) throws IOException {
         if (termId < 0 || termId >= numTerms) {
             throw new IOException("termId out of range: " + termId + " (numTerms=" + numTerms + ")");
         }
-        int termOffset = termOffsetsBuf.getInt(termId * 4);
-        ByteBuffer cur = termsBuf.duplicate();
-        cur.order(ByteOrder.BIG_ENDIAN);
-        cur.position(termOffset);
-        int len = cur.getInt();
+        int termOffset = termOffsetsBuf.getInt((long) termId * 4);
+        ChunkedByteBuffer.Cursor cur = termsBuf.cursor(termOffset);
+        int len = cur.readInt();
         byte[] bytes = new byte[len];
-        cur.get(bytes);
+        cur.readBytes(bytes);
         return new String(bytes, StandardCharsets.UTF_8);
     }
 
