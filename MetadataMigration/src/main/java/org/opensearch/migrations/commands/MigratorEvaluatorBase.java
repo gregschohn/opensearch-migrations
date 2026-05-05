@@ -169,7 +169,7 @@ public abstract class MigratorEvaluatorBase {
     protected void validateSourcelessIndices(Clusters clusters) {
         var metadataFactory = clusters.getSource().getIndexMetadata();
         var repoDataProvider = metadataFactory.getRepoDataProvider();
-        var skipFilter = FilterScheme.filterByAllowList(arguments.dataFilterArgs.indexAllowlist).negate();
+        var skipFilter = FilterScheme.filterByAllowList(arguments.dataFilterArgs.indexAllowlist, FilterScheme.FilterContext.INDEX).negate();
         var sourcelessIndices = new ArrayList<String>();
 
         for (var index : repoDataProvider.getIndicesInSnapshot(arguments.snapshotName)) {
