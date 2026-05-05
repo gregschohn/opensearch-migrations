@@ -61,7 +61,15 @@ def call(Map config = [:]) {
             stage('Build Docker Images') {
                 steps {
                     timeout(time: 15, unit: 'MINUTES') {
-                        sh './deployment/cdk/opensearch-service-migration/buildDockerImages.sh'
+                        script {
+                            // ECR_PULL_THROUGH_ENDPOINT is exported by /etc/profile.d/ecr-pull-through.sh
+                            // on Jenkins hosts, which only login shells source. Read it via `bash -l`
+                            // so the non-login Jenkins sh step can forward it to buildDockerImages.sh.
+                            def ptcEndpoint = sh(script: 'bash -l -c \'echo -n $ECR_PULL_THROUGH_ENDPOINT\'', returnStdout: true).trim()
+                            withEnv(ptcEndpoint ? ["ECR_PULL_THROUGH_ENDPOINT=${ptcEndpoint}"] : []) {
+                                sh './deployment/cdk/opensearch-service-migration/buildDockerImages.sh'
+                            }
+                        }
                     }
                 }
             }
