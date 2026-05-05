@@ -5,7 +5,7 @@ plugins {
 //    Observing higher memory usage with task-tree plugin. Disabling except if needed
 //    id "com.dorongold.task-tree" version "4.0.1"
     id "com.diffplug.spotless" version '8.4.0'
-    id 'io.freefair.lombok' version '9.4.0' apply false
+    id 'io.freefair.lombok' version '9.5.0' apply false
     id 'me.champeau.jmh' version '0.7.3' apply false
     id 'com.gradleup.shadow' version '8.3.8' apply false
     id 'com.avast.gradle.docker-compose' version "0.17.12" apply false
@@ -54,10 +54,6 @@ allprojects {
     }
 }
 
-tasks.register('buildDockerImages') {
-    dependsOn(':TrafficCapture:dockerSolution:buildDockerImages')
-    dependsOn(':DocumentsFromSnapshotMigration:buildDockerImages')
-}
 
 def commonExclusions = ['**/build/**',
                         '**/node_modules/**',
@@ -121,14 +117,6 @@ subprojects {
     plugins.withId('com.google.cloud.tools.jib') {
         tasks.withType(JibTask).configureEach {
             notCompatibleWithConfigurationCache("because https://github.com/GoogleContainerTools/jib/issues/3132")
-        }
-    }
-
-    plugins.withId('com.bmuschko.docker-remote-api') {
-        tasks.withType(com.bmuschko.gradle.docker.tasks.image.DockerBuildImage).configureEach {
-            // Declare the imageIdFile as an output so dependent tasks can track it as an input
-            // This enables proper UP_TO_DATE checking when using CommonUtils.dependOnDockerImage()
-            outputs.file(imageIdFile)
         }
     }
 

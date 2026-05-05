@@ -15,7 +15,8 @@ async def call_api(prompt: str, options: dict, context: dict) -> dict:
         permission_mode="acceptEdits",  # Auto-approve file edits
         setting_sources=["project"],  # for paths: https://platform.claude.com/docs/en/agent-sdk/skills
         effort="medium",
-        cwd=cwd
+        cwd=cwd,
+        model="claude-sonnet-4-6"
     )
     async for message in query(
             prompt=prompt,
