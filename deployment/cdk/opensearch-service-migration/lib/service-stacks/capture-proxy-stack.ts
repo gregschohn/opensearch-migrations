@@ -7,9 +7,12 @@ import {ELBTargetGroup, MigrationServiceCore} from "./migration-service-core";
 import {StreamingSourceType} from "../streaming-source-type";
 import {
     MigrationSSMParameter,
+    appendArgArrayIfNotInExtraArgs,
     createMSKProducerIAMPolicies,
     getCustomStringParameterValue,
-    getMigrationStringParameterValue, parseArgsToDict, appendArgIfNotInExtraArgs,
+    getMigrationStringParameterValue,
+    parseArgsStringToArray,
+    parseArgsToDict,
 } from "../common-utilities";
 import {OtelCollectorSidecar} from "./migration-otel-collector-sidecar";
 
@@ -114,35 +117,35 @@ export class CaptureProxyStack extends MigrationServiceCore {
 
         const destinationEndpoint = getDestinationEndpoint(this, props.destinationConfig, props);
 
-        let command = "/runJavaWithClasspath.sh org.opensearch.migrations.trafficcapture.proxyserver.CaptureProxy"
+        const commandArgs: string[] = [];
 
         const extraArgsDict = parseArgsToDict(props.extraArgs)
-        command = appendArgIfNotInExtraArgs(command, extraArgsDict, "--destinationUri", destinationEndpoint)
+        appendArgArrayIfNotInExtraArgs(commandArgs, extraArgsDict, "--destinationUri", destinationEndpoint)
         if (props.skipClusterCertCheck != false) { // when true or unspecified, add the flag
-            command = appendArgIfNotInExtraArgs(command, extraArgsDict, "--insecureDestination")
+            appendArgArrayIfNotInExtraArgs(commandArgs, extraArgsDict, "--insecureDestination")
         }
-        command = appendArgIfNotInExtraArgs(command, extraArgsDict, "--listenPort", "9200")
-        command = appendArgIfNotInExtraArgs(command, extraArgsDict, "--sslCertChainFile", "/usr/share/captureProxy/config/pub.pem")
-        command = appendArgIfNotInExtraArgs(command, extraArgsDict, "--sslKeyFile", "/usr/share/captureProxy/config/key.pem")
+        appendArgArrayIfNotInExtraArgs(commandArgs, extraArgsDict, "--listenPort", "9200")
+        appendArgArrayIfNotInExtraArgs(commandArgs, extraArgsDict, "--sslCertChainFile", "/usr/share/captureProxy/config/pub.pem")
+        appendArgArrayIfNotInExtraArgs(commandArgs, extraArgsDict, "--sslKeyFile", "/usr/share/captureProxy/config/key.pem")
         if (props.streamingSourceType !== StreamingSourceType.DISABLED) {
             const brokerEndpoints = getMigrationStringParameterValue(this, {
                 ...props,
                 parameter: MigrationSSMParameter.KAFKA_BROKERS,
             });
-            command = appendArgIfNotInExtraArgs(command, extraArgsDict, "--kafkaConnection", brokerEndpoints)
+            appendArgArrayIfNotInExtraArgs(commandArgs, extraArgsDict, "--kafkaConnection", brokerEndpoints)
         }
         if (props.streamingSourceType === StreamingSourceType.AWS_MSK) {
-            command = appendArgIfNotInExtraArgs(command, extraArgsDict, "--enableMSKAuth")
+            appendArgArrayIfNotInExtraArgs(commandArgs, extraArgsDict, "--enableMSKAuth")
         }
         if (props.otelCollectorEnabled) {
-            command = appendArgIfNotInExtraArgs(command, extraArgsDict, "--otelCollectorEndpoint", OtelCollectorSidecar.getOtelLocalhostEndpoint())
+            appendArgArrayIfNotInExtraArgs(commandArgs, extraArgsDict, "--otelCollectorEndpoint", OtelCollectorSidecar.getOtelLocalhostEndpoint())
         }
-        command = props.extraArgs?.trim() ? command.concat(` ${props.extraArgs?.trim()}`) : command
+        commandArgs.push(...parseArgsStringToArray(props.extraArgs))
 
         this.createService({
             serviceName: serviceName,
             dockerImageName: "migrations/capture_proxy:latest",
-            dockerImageCommand: ['/bin/sh', '-c', command],
+            dockerImageCommand: commandArgs,
             securityGroups: securityGroups,
             taskRolePolicies: servicePolicies,
             portMappings: [servicePort],
