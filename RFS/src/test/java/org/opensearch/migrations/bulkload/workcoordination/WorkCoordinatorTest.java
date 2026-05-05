@@ -336,7 +336,7 @@ public class WorkCoordinatorTest {
         try (var workCoordinator = factory.get(httpClientSupplier.get(), 3600, "docCreatorWorker")) {
             Assertions.assertFalse(workCoordinator.workItemsNotYetComplete(testContext::createItemsPendingContext));
             for (var i = 0; i < NUM_DOCS; ++i) {
-                final var docId = "R__0__" + i;
+                final var docId = workId("R", 0, i);
                 workCoordinator.createUnassignedWorkItem(docId, testContext::createUnassignedWorkContext);
             }
             Assertions.assertTrue(workCoordinator.workItemsNotYetComplete(testContext::createItemsPendingContext));
@@ -499,9 +499,13 @@ public class WorkCoordinatorTest {
                 false
         );
         ArrayList<String> successorWorkItems = new ArrayList<>();
+        var parent = IWorkCoordinator.WorkItemAndDuration.WorkItem.valueFromWorkItemString(workItemId);
         for (int j = 0; j < numSuccessorItems; j++) {
-            // Replace "__" with "_" in workerId to create a unique name
-            successorWorkItems.add(workItemId.replace("__", "_") + "__0__" + j);
+            // Build a unique successor id that incorporates the parent's full identity so
+            // concurrent parents don't collide; route through the production encoder rather
+            // than hand-concatenating the serialized format.
+            var successorIndex = parent.getIndexName() + "-p" + parent.getStartingDocId() + "-s" + j;
+            successorWorkItems.add(workId(successorIndex, 0, j));
         }
         try (var workCoordinator = factory.get(httpClientSupplier.get(), 3600, workerName)) {
             workCoordinator.createSuccessorWorkItemsAndMarkComplete(
@@ -539,7 +543,7 @@ public class WorkCoordinatorTest {
                 3600, workerName
             )
         ) {
-            var doneId = DUMMY_FINISHED_DOC_ID + "__" + nonce.incrementAndGet() + "__0";
+            var doneId = workId(DUMMY_FINISHED_DOC_ID + "-" + nonce.incrementAndGet(), 0, 0);
             if (placeFinishedDoc) {
                 workCoordinator.createOrUpdateLeaseForDocument(doneId, 1);
                 workCoordinator.completeWorkItem(doneId, testContext::createCompleteWorkContext);
