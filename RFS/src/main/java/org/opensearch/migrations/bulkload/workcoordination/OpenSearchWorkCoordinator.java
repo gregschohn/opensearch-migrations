@@ -69,6 +69,11 @@ public abstract class OpenSearchWorkCoordinator implements IWorkCoordinator {
 
 
     public static final String SCRIPT_VERSION_TEMPLATE = "{SCRIPT_VERSION}";
+    // Bumped to 3.0 alongside the switch to base64url-encoded indexName segments in work-item
+    // ids (opensearch-project/opensearch-migrations#2880).  Work-coordination documents written
+    // by a previous version will fail the scriptVersion check, which is intentional — the
+    // working-state index must be cleared before upgrading across this boundary.
+    public static final String SCRIPT_VERSION = "3.0";
     public static final String WORKER_ID_TEMPLATE = "{WORKER_ID}";
     public static final String CLIENT_TIMESTAMP_TEMPLATE = "{CLIENT_TIMESTAMP}";
     public static final String EXPIRATION_WINDOW_TEMPLATE = "{EXPIRATION_WINDOW}";
@@ -82,6 +87,7 @@ public abstract class OpenSearchWorkCoordinator implements IWorkCoordinator {
     public static final String LEASE_HOLDER_ID_FIELD_NAME = "leaseHolderId";
     public static final String VERSION_CONFLICTS_FIELD_NAME = "version_conflicts";
     public static final String COMPLETED_AT_FIELD_NAME = "completedAt";
+    public static final String INDEX_NAME_FIELD_NAME = "indexName";
     public static final String SOURCE_FIELD_NAME = "_source";
     public static final String SUCCESSOR_ITEMS_FIELD_NAME = "successor_items";
     public static final String SUCCESSOR_ITEM_DELIMITER = ",";
@@ -346,12 +352,28 @@ public abstract class OpenSearchWorkCoordinator implements IWorkCoordinator {
         String workItemId,
         long expirationWindowSeconds
     ) throws IOException {
+        // Store the plaintext index name alongside the lease metadata so operators can audit
+        // the work-coordination index without having to reverse the id encoding.  The id itself
+        // encodes the index name as base64url so indices whose names contain the SEPARATOR
+        // ('__') serialize cleanly (see opensearch-project/opensearch-migrations#2880).
+        String indexNameField = "";
+        try {
+            var parsed = IWorkCoordinator.WorkItemAndDuration.WorkItem.valueFromWorkItemString(workItemId);
+            if (parsed.getShardNumber() != null) {
+                indexNameField = "    \"" + INDEX_NAME_FIELD_NAME + "\": "
+                    + objectMapper.writeValueAsString(parsed.getIndexName()) + ",\n";
+            }
+        } catch (IllegalArgumentException e) {
+            // Not a decodable work-item id (e.g. the shard_setup sentinel or a legacy/test id);
+            // fall through without recording a plaintext indexName.
+        }
         // the notion of 'now' isn't supported with painless scripts
         // https://www.elastic.co/guide/en/elasticsearch/painless/current/painless-datetime.html#_datetime_now
         final var upsertLeaseBodyTemplate = "{\n"
             + "  \"scripted_upsert\": true,\n"
             + "  \"upsert\": {\n"
             + "    \"scriptVersion\": \"" + SCRIPT_VERSION_TEMPLATE + "\",\n"
+            + indexNameField
             + "    \"" + EXPIRATION_FIELD_NAME + "\": 0,\n"
             + "    \"creatorId\": \"" + WORKER_ID_TEMPLATE + "\",\n"
             + "    \"nextAcquisitionLeaseExponent\": 0\n"
@@ -394,7 +416,7 @@ public abstract class OpenSearchWorkCoordinator implements IWorkCoordinator {
             + // close script
             "}"; // close top-level
 
-        var body = upsertLeaseBodyTemplate.replace(SCRIPT_VERSION_TEMPLATE, "2.0")
+        var body = upsertLeaseBodyTemplate.replace(SCRIPT_VERSION_TEMPLATE, SCRIPT_VERSION)
             .replace(WORKER_ID_TEMPLATE, workerId)
             .replace(CLIENT_TIMESTAMP_TEMPLATE, Long.toString(clock.instant().toEpochMilli() / 1000))
             .replace(EXPIRATION_WINDOW_TEMPLATE, Long.toString(expirationWindowSeconds))
@@ -539,7 +561,7 @@ public abstract class OpenSearchWorkCoordinator implements IWorkCoordinator {
                 + "  }\n"
                 + "}";
 
-            var body = markWorkAsCompleteBodyTemplate.replace(SCRIPT_VERSION_TEMPLATE, "2.0")
+            var body = markWorkAsCompleteBodyTemplate.replace(SCRIPT_VERSION_TEMPLATE, SCRIPT_VERSION)
                 .replace(WORKER_ID_TEMPLATE, workerId)
                 .replace(CLIENT_TIMESTAMP_TEMPLATE, Long.toString(clock.instant().toEpochMilli() / 1000));
 
@@ -674,7 +696,7 @@ public abstract class OpenSearchWorkCoordinator implements IWorkCoordinator {
             "}";
 
         final var timestampEpochSeconds = clock.instant().toEpochMilli() / 1000;
-        final var body = queryUpdateTemplate.replace(SCRIPT_VERSION_TEMPLATE, "2.0")
+        final var body = queryUpdateTemplate.replace(SCRIPT_VERSION_TEMPLATE, SCRIPT_VERSION)
             .replace(WORKER_ID_TEMPLATE, workerId)
             .replace(CLIENT_TIMESTAMP_TEMPLATE, Long.toString(timestampEpochSeconds))
             .replace(OLD_EXPIRATION_THRESHOLD_TEMPLATE, Long.toString(timestampEpochSeconds))
@@ -836,7 +858,7 @@ public abstract class OpenSearchWorkCoordinator implements IWorkCoordinator {
                 + "  }\n"
                 + "}";
 
-        var body = updateSuccessorWorkItemsTemplate.replace(SCRIPT_VERSION_TEMPLATE, "2.0")
+        var body = updateSuccessorWorkItemsTemplate.replace(SCRIPT_VERSION_TEMPLATE, SCRIPT_VERSION)
                 .replace(WORKER_ID_TEMPLATE, workerId)
                 .replace(CLIENT_TIMESTAMP_TEMPLATE, Long.toString(clock.instant().toEpochMilli() / 1000))
                 .replace(SUCCESSOR_WORK_ITEM_IDS_TEMPLATE, String.join(SUCCESSOR_ITEM_DELIMITER, successorWorkItemIds));
@@ -883,7 +905,7 @@ public abstract class OpenSearchWorkCoordinator implements IWorkCoordinator {
     private void createUnassignedWorkItemsIfNonexistent(List<String> workItemIds, int nextAcquisitionLeaseExponent) throws IOException, IllegalStateException {
         String workItemBodyTemplate = "{\"nextAcquisitionLeaseExponent\":" + nextAcquisitionLeaseExponent + ", \"scriptVersion\":\"" + SCRIPT_VERSION_TEMPLATE + "\", " +
             "\"creatorId\":\"" + WORKER_ID_TEMPLATE + "\", \"" + EXPIRATION_FIELD_NAME + "\":0 }";
-        String workItemBody = workItemBodyTemplate.replace(SCRIPT_VERSION_TEMPLATE, "2.0").replace(WORKER_ID_TEMPLATE, workerId);
+        String workItemBody = workItemBodyTemplate.replace(SCRIPT_VERSION_TEMPLATE, SCRIPT_VERSION).replace(WORKER_ID_TEMPLATE, workerId);
 
         StringBuilder body = new StringBuilder();
         for (var workItemId : workItemIds) {
