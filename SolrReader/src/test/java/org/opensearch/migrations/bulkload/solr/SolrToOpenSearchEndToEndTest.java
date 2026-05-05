@@ -806,11 +806,11 @@ public class SolrToOpenSearchEndToEndTest {
             solr.execInContainer("curl", "-s", "-H", "Content-Type: application/json",
                 "http://localhost:8983/solr/" + COLLECTION_NAME + "/schema",
                 "-d", "{\"add-field\":["
-                    + "{\"name\":\"trie_int\",   \"type\":\"tint\",    \"stored\":true,\"docValues\":true},"
-                    + "{\"name\":\"trie_long\",  \"type\":\"tlong\",   \"stored\":true,\"docValues\":true},"
-                    + "{\"name\":\"trie_float\", \"type\":\"tfloat\",  \"stored\":true,\"docValues\":true},"
-                    + "{\"name\":\"trie_double\",\"type\":\"tdouble\", \"stored\":true,\"docValues\":true},"
-                    + "{\"name\":\"trie_date\",  \"type\":\"tdate\",   \"stored\":true,\"docValues\":true},"
+                    + "{\"name\":\"trie_int\",   \"type\":\"tint\",    \"stored\":true},"
+                    + "{\"name\":\"trie_long\",  \"type\":\"tlong\",   \"stored\":true},"
+                    + "{\"name\":\"trie_float\", \"type\":\"tfloat\",  \"stored\":true},"
+                    + "{\"name\":\"trie_double\",\"type\":\"tdouble\", \"stored\":true},"
+                    + "{\"name\":\"trie_date\",  \"type\":\"tdate\",   \"stored\":true},"
                     // AC11: multi-valued strings field — must round-trip as JSON array in _source
                     + "{\"name\":\"tags\",       \"type\":\"strings\", \"stored\":true,\"docValues\":true,\"multiValued\":true}"
                     + "]}");
