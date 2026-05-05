@@ -35,10 +35,42 @@ ElasticsearchV5_X = ClusterVersion("ES_5.x")
 ElasticsearchV6_X = ClusterVersion("ES_6.x")
 ElasticsearchV7_X = ClusterVersion("ES_7.x")
 ElasticsearchV8_X = ClusterVersion("ES_8.x")
+ElasticsearchV9_X = ClusterVersion("ES_9.x")
 OpensearchV1_X = ClusterVersion("OS_1.x")
 OpensearchV2_X = ClusterVersion("OS_2.x")
 OpensearchV3_X = ClusterVersion("OS_3.x")
 SolrV8_X = ClusterVersion("SOLR_8.x")
+
+
+def build_combinations(sources, targets):
+    """Return the Cartesian product of the given sources and targets as a list of tuples."""
+    return [(s, t) for s in sources for t in targets]
+
+
+# Full supported migration matrix: every path Migration Assistant claims to support
+# (see top-level README.md). Tests that work across the full matrix should use this.
+RFS_MIGRATION_COMBINATIONS = (
+    build_combinations(
+        [ElasticsearchV1_X, ElasticsearchV2_X, ElasticsearchV5_X,
+         ElasticsearchV6_X, ElasticsearchV7_X],
+        [OpensearchV1_X, OpensearchV2_X, OpensearchV3_X]) +
+    build_combinations([ElasticsearchV8_X], [OpensearchV2_X, OpensearchV3_X]) +
+    build_combinations([ElasticsearchV9_X], [OpensearchV3_X]) +
+    build_combinations([OpensearchV1_X], [OpensearchV2_X, OpensearchV3_X]) +
+    build_combinations([OpensearchV2_X], [OpensearchV3_X])
+)
+
+# CDC migration matrix: Capture and Replay is supported from ES 5.x onwards
+# (not ES 1.x/2.x).
+CDC_MIGRATION_COMBINATIONS = (
+    build_combinations(
+        [ElasticsearchV5_X, ElasticsearchV6_X, ElasticsearchV7_X],
+        [OpensearchV1_X, OpensearchV2_X, OpensearchV3_X]) +
+    build_combinations([ElasticsearchV8_X], [OpensearchV2_X, OpensearchV3_X]) +
+    build_combinations([ElasticsearchV9_X], [OpensearchV3_X]) +
+    build_combinations([OpensearchV1_X], [OpensearchV2_X, OpensearchV3_X]) +
+    build_combinations([OpensearchV2_X], [OpensearchV3_X])
+)
 
 
 def is_incoming_version_supported(limiting_version: ClusterVersion, incoming_version: ClusterVersion):
