@@ -9,7 +9,13 @@
 
 set -euo pipefail
 
-MIGRATIONS_REPO_ROOT_DIR="${MIGRATIONS_REPO_ROOT_DIR:-$(git rev-parse --show-toplevel)}"
+# Resolve the repo root from this script's own location so the script works
+# regardless of caller cwd (e.g. test/awsE2ESolutionSetup.sh cd's into
+# test/opensearch-cluster-cdk/ before invoking this script, which would make
+# `git rev-parse --show-toplevel` return the nested sub-repo).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MIGRATIONS_REPO_ROOT_DIR="${MIGRATIONS_REPO_ROOT_DIR:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
+export MIGRATIONS_REPO_ROOT_DIR
 cd "$MIGRATIONS_REPO_ROOT_DIR"
 
 export KUBE_CONTEXT="${KUBE_CONTEXT:-local-image-build}"
