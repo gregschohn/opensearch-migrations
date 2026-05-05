@@ -25,7 +25,7 @@ import lombok.extern.slf4j.Slf4j;
  * <p>Algorithm:
  * <ol>
  *   <li>{@link #registerTerm} streams term bytes to {@code terms.dat} and writes the
- *       LE int offset to {@code term-offsets.dat}.</li>
+ *       LE long offset to {@code term-offsets.dat}.</li>
  *   <li>{@link #accept} appends each {@code (docId, pos, termId)} triple as a fixed
  *       12-byte big-endian record into an in-memory sort buffer. Big-endian non-negative
  *       ints sort correctly under signed-int comparison, giving us {@code (docId ASC,
@@ -103,7 +103,7 @@ public final class SidecarBuilder implements PostingsSink, AutoCloseable {
     private final byte[] recordScratch = new byte[RECORD_BYTES];
 
     private int nextTermId = 0;
-    private int currentTermOffset = 0;
+    private long currentTermOffset = 0;
     private boolean built = false;
     private boolean closed = false;
 
@@ -137,10 +137,10 @@ public final class SidecarBuilder implements PostingsSink, AutoCloseable {
     @Override
     public int registerTerm(BytesRefLike term) throws IOException {
         int id = nextTermId++;
-        termOffsetsOut.writeInt(Integer.reverseBytes(currentTermOffset));
+        termOffsetsOut.writeLong(Long.reverseBytes(currentTermOffset));
         termsOut.writeInt(term.length());
         termsOut.write(term.bytes(), term.offset(), term.length());
-        currentTermOffset += 4 + term.length();
+        currentTermOffset += 4L + term.length();
         return id;
     }
 

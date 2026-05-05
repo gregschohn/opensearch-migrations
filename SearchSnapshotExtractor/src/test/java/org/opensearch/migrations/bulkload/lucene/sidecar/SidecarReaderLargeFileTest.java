@@ -71,12 +71,12 @@ class SidecarReaderLargeFileTest {
             while (buf.hasRemaining()) ch.write(buf);
         }
 
-        // term-offsets.dat: one LE int32 = 0.
+        // term-offsets.dat: one LE int64 = 0.
         Path termOffsetsFile = spillDir.resolve(SidecarBuilder.TERM_OFFSETS_FILE);
         try (FileChannel ch = FileChannel.open(termOffsetsFile,
                 StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE)) {
-            ByteBuffer buf = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN);
-            buf.putInt(0);
+            ByteBuffer buf = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN);
+            buf.putLong(0L);
             buf.flip();
             while (buf.hasRemaining()) ch.write(buf);
         }

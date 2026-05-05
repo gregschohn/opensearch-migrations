@@ -39,7 +39,7 @@ class SidecarReaderChunkBoundaryTest {
 
         // 5 terms, each 6-byte UTF-8: terms.dat ends up at 5*(4+6) = 50 bytes (>> 17).
         // 5 docs with multiple positions each: sidecar.dat spans multiple chunks too.
-        // doc-index.dat = 5*8 = 40 bytes, term-offsets.dat = 5*4 = 20 bytes — both cross 17.
+        // doc-index.dat = 5*8 = 40 bytes, term-offsets.dat = 5*8 = 40 bytes — both cross 17.
         List<Emission> stream = Arrays.asList(
             e("term00", 0, 0),
             e("term00", 0, 5),

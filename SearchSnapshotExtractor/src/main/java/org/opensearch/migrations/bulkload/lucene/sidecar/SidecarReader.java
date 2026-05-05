@@ -19,7 +19,7 @@ import lombok.extern.slf4j.Slf4j;
  * <p>File layout (all files live in a per-(segment, field) spill directory):
  * <pre>
  *   terms.dat          - sequence of int32 length | bytes[length] records, one per termId
- *   term-offsets.dat   - little-endian int[numTerms] of byte offsets into terms.dat
+ *   term-offsets.dat   - little-endian long[numTerms] of byte offsets into terms.dat
  *   sidecar.dat        - for each doc that has tokens, a uvint(numEntries) header followed by
  *                        numEntries pairs of (uvint positionDelta, uvint termId)
  *   doc-index.dat      - little-endian long[maxDoc] of absolute offsets into sidecar.dat,
@@ -168,7 +168,7 @@ public final class SidecarReader implements AutoCloseable {
         if (termId < 0 || termId >= numTerms) {
             throw new IOException("termId out of range: " + termId + " (numTerms=" + numTerms + ")");
         }
-        int termOffset = termOffsetsBuf.getInt((long) termId * 4);
+        long termOffset = termOffsetsBuf.getLong((long) termId * 8);
         ChunkedByteBuffer.Cursor cur = termsBuf.cursor(termOffset);
         int len = cur.readInt();
         byte[] bytes = new byte[len];
