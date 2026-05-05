@@ -226,6 +226,12 @@
               "valueFrom": {
                 "jsonPath": "{.status.configChecksum}"
               }
+            },
+            {
+              "name": "resourceCreationTimestamp",
+              "valueFrom": {
+                "jsonPath": "{.metadata.creationTimestamp}"
+              }
             }
           ]
         }
@@ -1020,6 +1026,12 @@
               "valueFrom": {
                 "expression": "((steps.tryApply.status == 'Succeeded') ? (steps.tryApply.outputs.parameters.currentConfigChecksum) : (''))"
               }
+            },
+            {
+              "name": "resourceCreationTimestamp",
+              "valueFrom": {
+                "expression": "((steps.tryApply.status == 'Succeeded') ? (steps.tryApply.outputs.parameters.resourceCreationTimestamp) : (''))"
+              }
             }
           ]
         }
@@ -1516,6 +1528,92 @@
         },
         "resource": {
           "manifest": "apiVersion: migrations.opensearch.org/v1alpha1\nkind: SnapshotMigration\nmetadata:\n  name: \"{{inputs.parameters.resourceName}}\"\nstatus:\n  phase: \"{{inputs.parameters.phase}}\"\n  configChecksum: \"{{inputs.parameters.configChecksum}}\"\n  checksumForReplayer: \"{{inputs.parameters.checksumForReplayer}}\"\n",
+          "action": "patch",
+          "flags": [
+            "--type",
+            "merge",
+            "--subresource=status"
+          ]
+        },
+        "retryStrategy": {
+          "limit": "6",
+          "retryPolicy": "OnError",
+          "backoff": {
+            "duration": "10",
+            "factor": "2",
+            "cap": "60"
+          }
+        },
+        "outputs": {
+          "parameters": []
+        }
+      },
+      {
+        "name": "patchsnapshotmigrationoutputevaluate",
+        "inputs": {
+          "parameters": [
+            {
+              "name": "resourceName"
+            },
+            {
+              "name": "artifactName"
+            },
+            {
+              "name": "s3Key"
+            },
+            {
+              "name": "resourceUid"
+            },
+            {
+              "name": "configChecksum"
+            }
+          ]
+        },
+        "resource": {
+          "manifest": "apiVersion: migrations.opensearch.org/v1alpha1\nkind: SnapshotMigration\nmetadata:\n  name: \"{{inputs.parameters.resourceName}}\"\nstatus:\n  outputs:\n    metadataEvaluate:\n      artifactName: \"{{inputs.parameters.artifactName}}\"\n      s3Key: \"{{inputs.parameters.s3Key}}\"\n      resourceUid: \"{{inputs.parameters.resourceUid}}\"\n      workflowName: \"{{workflow.name}}\"\n      workflowUid: \"{{workflow.uid}}\"\n      workflowCreationTimestamp: \"{{workflow.creationTimestamp}}\"\n      configChecksum: \"{{inputs.parameters.configChecksum}}\"\n",
+          "action": "patch",
+          "flags": [
+            "--type",
+            "merge",
+            "--subresource=status"
+          ]
+        },
+        "retryStrategy": {
+          "limit": "6",
+          "retryPolicy": "OnError",
+          "backoff": {
+            "duration": "10",
+            "factor": "2",
+            "cap": "60"
+          }
+        },
+        "outputs": {
+          "parameters": []
+        }
+      },
+      {
+        "name": "patchsnapshotmigrationoutputmigrate",
+        "inputs": {
+          "parameters": [
+            {
+              "name": "resourceName"
+            },
+            {
+              "name": "artifactName"
+            },
+            {
+              "name": "s3Key"
+            },
+            {
+              "name": "resourceUid"
+            },
+            {
+              "name": "configChecksum"
+            }
+          ]
+        },
+        "resource": {
+          "manifest": "apiVersion: migrations.opensearch.org/v1alpha1\nkind: SnapshotMigration\nmetadata:\n  name: \"{{inputs.parameters.resourceName}}\"\nstatus:\n  outputs:\n    metadataMigrate:\n      artifactName: \"{{inputs.parameters.artifactName}}\"\n      s3Key: \"{{inputs.parameters.s3Key}}\"\n      resourceUid: \"{{inputs.parameters.resourceUid}}\"\n      workflowName: \"{{workflow.name}}\"\n      workflowUid: \"{{workflow.uid}}\"\n      workflowCreationTimestamp: \"{{workflow.creationTimestamp}}\"\n      configChecksum: \"{{inputs.parameters.configChecksum}}\"\n",
           "action": "patch",
           "flags": [
             "--type",

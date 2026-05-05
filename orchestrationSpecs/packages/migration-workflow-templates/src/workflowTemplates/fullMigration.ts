@@ -375,6 +375,8 @@ kubectl delete approvalgates.migrations.opensearch.org \\
         .addRequiredInput("migrationLabel", typeToken<string>())
         .addRequiredInput("crdName", typeToken<string>())
         .addRequiredInput("resourceUid", typeToken<string>())
+        .addRequiredInput("resourceCreationTimestamp", typeToken<string>())
+        .addRequiredInput("configChecksum", typeToken<string>())
         .addRequiredInput("groupName_view", typeToken<string>())
         .addOptionalInput("sourceEndpoint", c => expr.literal(""))
         .addOptionalInput("metadataMigrationConfig", c =>
@@ -392,6 +394,7 @@ kubectl delete approvalgates.migrations.opensearch.org \\
                         ...selectInputsForRegister(b, c),
                         crdName: b.inputs.crdName,
                         crdUid: b.inputs.resourceUid,
+                        resourceCreationTimestamp: b.inputs.resourceCreationTimestamp,
                     });
                 },
                 {when: {templateExp: expr.not(expr.isEmpty(b.inputs.metadataMigrationConfig))}}
@@ -511,6 +514,7 @@ kubectl delete approvalgates.migrations.opensearch.org \\
                         )),
                         crdName: b.inputs.resourceName,
                         resourceUid: b.inputs.resourceUid,
+                        resourceCreationTimestamp: c.steps.reconcileSnapshotMigrationResource.outputs.resourceCreationTimestamp,
                         groupName_view: expr.get(snapshotMigrationConfig, "migrationLabel"),
                         sourceEndpoint: expr.dig(snapshotMigrationConfig, ["sourceEndpoint"], "")
                     });

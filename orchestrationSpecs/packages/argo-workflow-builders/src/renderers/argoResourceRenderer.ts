@@ -322,7 +322,8 @@ function formatOutputArtifacts(artifacts: OutputArtifactsRecord | undefined) {
     return Object.values(artifacts).map(a => ({
         name: a.name,
         path: a.path,
-        archive: a.archive ?? { none: {} }
+        archive: a.archive ?? { none: {} },
+        ...(a.s3 ? { s3: transformExpressionsDeep(a.s3) } : {})
     }));
 }
 

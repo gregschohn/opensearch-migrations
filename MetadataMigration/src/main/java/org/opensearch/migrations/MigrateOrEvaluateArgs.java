@@ -21,6 +21,9 @@ public class MigrateOrEvaluateArgs {
             converter = OutputFormat.OutputFormatConverter.class)
     public OutputFormat outputFormat = OutputFormat.HUMAN_READABLE;
 
+    @Parameter(names = { "--outputFile" }, description = "Optional file path to write the command output to.")
+    public String outputFile;
+
     @Parameter(names = { "--snapshot-name" }, description = "The name of the snapshot to migrate")
     public String snapshotName;
 

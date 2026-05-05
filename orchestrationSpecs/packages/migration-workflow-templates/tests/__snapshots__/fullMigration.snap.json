@@ -972,6 +972,12 @@
               "name": "resourceUid"
             },
             {
+              "name": "resourceCreationTimestamp"
+            },
+            {
+              "name": "configChecksum"
+            },
+            {
               "name": "groupName_view"
             },
             {
@@ -1073,6 +1079,14 @@
                   {
                     "name": "crdName",
                     "value": "{{inputs.parameters.crdName}}"
+                  },
+                  {
+                    "name": "resourceCreationTimestamp",
+                    "value": "{{inputs.parameters.resourceCreationTimestamp}}"
+                  },
+                  {
+                    "name": "configChecksum",
+                    "value": "{{inputs.parameters.configChecksum}}"
                   },
                   {
                     "name": "imageMigrationConsoleLocation",
@@ -1328,6 +1342,10 @@
                     "value": "{{inputs.parameters.resourceUid}}"
                   },
                   {
+                    "name": "configChecksum",
+                    "value": "{{inputs.parameters.configChecksum}}"
+                  },
+                  {
                     "name": "groupName_view",
                     "value": "{{=fromJSON(inputs.parameters.snapshotMigrationConfig)['migrationLabel']}}"
                   },
@@ -1406,6 +1424,10 @@
                   {
                     "name": "crdName",
                     "value": "{{inputs.parameters.resourceName}}"
+                  },
+                  {
+                    "name": "resourceCreationTimestamp",
+                    "value": "{{steps.reconcileSnapshotMigrationResource.outputs.parameters.resourceCreationTimestamp}}"
                   },
                   {
                     "name": "sourceEndpoint",
