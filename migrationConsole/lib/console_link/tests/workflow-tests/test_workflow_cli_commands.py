@@ -17,7 +17,7 @@ class TestWorkflowCLICommands:
         for args in (
             ['-h'],
             ['configure', '-h'],
-            ['configure', 'secret', 'create', '-h'],
+            ['configure', 'credentials', 'create', '-h'],
             ['approve', 'step', '-h'],
             ['log', 'filter', '-h'],
             ['show', '-h'],
@@ -1363,13 +1363,13 @@ class TestConfigureCommands:
         assert mock_store.save_config.called
 
     @patch('console_link.workflow.commands.configure.get_credentials_secret_store')
-    def test_configure_secret_list_shows_managed_secrets(self, mock_get_secret_store):
+    def test_configure_credentials_list_shows_managed_credentials(self, mock_get_secret_store):
         runner = CliRunner()
         mock_secret_store = Mock()
         mock_get_secret_store.return_value = mock_secret_store
         mock_secret_store.list_secrets.return_value = ['source-secret', 'target-secret']
 
-        result = runner.invoke(workflow_cli, ['configure', 'secret', 'list'])
+        result = runner.invoke(workflow_cli, ['configure', 'credentials', 'list'])
 
         assert result.exit_code == 0
         assert 'source-secret' in result.output
@@ -1378,7 +1378,12 @@ class TestConfigureCommands:
     @patch('console_link.workflow.commands.configure.validate_and_find_secrets')
     @patch('console_link.workflow.commands.configure.get_credentials_secret_store')
     @patch('console_link.workflow.commands.configure.get_workflow_config_store')
-    def test_configure_secret_create_show_missing(self, mock_get_config_store, mock_get_secret_store, mock_validate):
+    def test_configure_credentials_create_show_missing(
+        self,
+        mock_get_config_store,
+        mock_get_secret_store,
+        mock_validate,
+    ):
         runner = CliRunner()
         mock_config_store = Mock()
         mock_get_config_store.return_value = mock_config_store
@@ -1394,7 +1399,7 @@ class TestConfigureCommands:
             'target-secret': True,
         }
 
-        result = runner.invoke(workflow_cli, ['configure', 'secret', 'create', '--show-missing'])
+        result = runner.invoke(workflow_cli, ['configure', 'credentials', 'create', '--show-missing'])
 
         assert result.exit_code == 0
         assert 'source-secret' in result.output
@@ -1403,7 +1408,7 @@ class TestConfigureCommands:
     @patch('console_link.workflow.commands.configure.validate_and_find_secrets')
     @patch('console_link.workflow.commands.configure.get_credentials_secret_store')
     @patch('console_link.workflow.commands.configure.get_workflow_config_store')
-    def test_configure_secret_create_list_alias(self, mock_get_config_store, mock_get_secret_store, mock_validate):
+    def test_configure_credentials_create_list_alias(self, mock_get_config_store, mock_get_secret_store, mock_validate):
         runner = CliRunner()
         mock_config_store = Mock()
         mock_get_config_store.return_value = mock_config_store
@@ -1416,38 +1421,83 @@ class TestConfigureCommands:
         mock_get_secret_store.return_value = mock_secret_store
         mock_secret_store.secrets_exist.return_value = {'source-secret': False}
 
-        result = runner.invoke(workflow_cli, ['configure', 'secret', 'create', '--list'])
+        result = runner.invoke(workflow_cli, ['configure', 'credentials', 'create', '--list'])
 
         assert result.exit_code == 0
         assert 'source-secret' in result.output
 
     @patch('console_link.workflow.commands.configure.get_credentials_secret_store')
-    def test_configure_secret_update_list_shows_managed_secrets(self, mock_get_secret_store):
+    def test_configure_credentials_update_list_shows_managed_credentials(self, mock_get_secret_store):
         runner = CliRunner()
         mock_secret_store = Mock()
         mock_get_secret_store.return_value = mock_secret_store
         mock_secret_store.list_secrets.return_value = ['source-secret']
 
-        result = runner.invoke(workflow_cli, ['configure', 'secret', 'update', '--list'])
+        result = runner.invoke(workflow_cli, ['configure', 'credentials', 'update', '--list'])
 
         assert result.exit_code == 0
         assert 'source-secret' in result.output
 
     @patch('console_link.workflow.commands.configure.get_credentials_secret_store')
-    def test_configure_secret_delete_list_shows_managed_secrets(self, mock_get_secret_store):
+    def test_configure_credentials_delete_list_shows_managed_credentials(self, mock_get_secret_store):
         runner = CliRunner()
         mock_secret_store = Mock()
         mock_get_secret_store.return_value = mock_secret_store
         mock_secret_store.list_secrets.return_value = ['target-secret']
 
-        result = runner.invoke(workflow_cli, ['configure', 'secret', 'delete', '--list'])
+        result = runner.invoke(workflow_cli, ['configure', 'credentials', 'delete', '--list'])
 
         assert result.exit_code == 0
         assert 'target-secret' in result.output
 
+    @patch('console_link.workflow.commands.configure.get_credentials_secret_store')
+    def test_configure_credentials_delete_prompts_for_confirmation(self, mock_get_secret_store):
+        runner = CliRunner()
+        mock_secret_store = Mock()
+        mock_get_secret_store.return_value = mock_secret_store
+        mock_secret_store.secret_exists.return_value = True
+
+        result = runner.invoke(
+            workflow_cli,
+            ['configure', 'credentials', 'delete', 'target-secret'],
+            input='n\n',
+        )
+
+        assert result.exit_code == 0
+        assert "Delete managed HTTP Basic credentials 'target-secret'?" in result.output
+        assert 'Cancelled' in result.output
+        mock_secret_store.delete_secret.assert_not_called()
+
+    @patch('console_link.workflow.commands.configure.get_credentials_secret_store')
+    def test_configure_credentials_delete_yes_skips_confirmation(self, mock_get_secret_store):
+        runner = CliRunner()
+        mock_secret_store = Mock()
+        mock_get_secret_store.return_value = mock_secret_store
+        mock_secret_store.secret_exists.return_value = True
+        mock_secret_store.delete_secret.return_value = 'Secret deleted: target-secret'
+
+        result = runner.invoke(workflow_cli, ['configure', 'credentials', 'delete', '--yes', 'target-secret'])
+
+        assert result.exit_code == 0
+        assert 'Delete managed HTTP Basic credentials' not in result.output
+        assert 'Credentials deleted: target-secret' in result.output
+        mock_secret_store.delete_secret.assert_called_once_with('target-secret')
+
+    def test_configure_credentials_delete_help_documents_interactive_confirmation(self):
+        runner = CliRunner()
+
+        result = runner.invoke(workflow_cli, ['configure', 'credentials', 'delete', '--help'])
+
+        assert result.exit_code == 0
+        assert 'Interactively prompts for confirmation' in result.output
+        assert 'by default' in result.output
+        assert '-y, --yes' in result.output
+        assert '--confirm' not in result.output
+        assert 'Do not prompt for confirmation' in result.output
+
     @patch('console_link.workflow.commands.configure.validate_and_find_secrets')
     @patch('console_link.workflow.commands.configure.get_credentials_secret_store')
-    def test_configure_secret_create_prompts_for_credentials(
+    def test_configure_credentials_create_prompts_for_credentials(
         self,
         mock_get_secret_store,
         mock_validate,
@@ -1458,11 +1508,11 @@ class TestConfigureCommands:
         mock_secret_store.namespace = 'ma'
         mock_secret_store.default_labels = {'use-case': 'http-basic-credentials'}
         mock_secret_store.v1.read_namespaced_secret.side_effect = ApiException(status=404)
-        mock_secret_store.save_secret.return_value = 'Secret created: source-secret'
+        mock_secret_store.save_secret.return_value = 'Credentials created: source-secret'
 
         result = runner.invoke(
             workflow_cli,
-            ['configure', 'secret', 'create', 'source-secret'],
+            ['configure', 'credentials', 'create', 'source-secret'],
             input='admin\nsecret-pass\nsecret-pass\n',
         )
 
@@ -1472,4 +1522,187 @@ class TestConfigureCommands:
             {'username': 'admin', 'password': 'secret-pass'},
         )
         mock_validate.assert_not_called()
-        assert 'Secret created: source-secret' in result.output
+        assert 'Credentials created: source-secret' in result.output
+
+    @patch('console_link.workflow.commands.configure.get_credentials_secret_store')
+    def test_configure_credentials_create_stdin_parses_credentials_quietly(self, mock_get_secret_store):
+        runner = CliRunner()
+        mock_secret_store = Mock()
+        mock_get_secret_store.return_value = mock_secret_store
+        mock_secret_store.namespace = 'ma'
+        mock_secret_store.default_labels = {'use-case': 'http-basic-credentials'}
+        mock_secret_store.v1.read_namespaced_secret.side_effect = ApiException(status=404)
+        mock_secret_store.save_secret.return_value = 'Credentials created: source-secret'
+
+        result = runner.invoke(
+            workflow_cli,
+            ['configure', 'credentials', 'create', '--stdin', 'source-secret'],
+            input='admin:secret:with:colons\n\n',
+        )
+
+        assert result.exit_code == 0
+        assert result.output == ''
+        mock_secret_store.save_secret.assert_called_once_with(
+            'source-secret',
+            {'username': 'admin', 'password': 'secret:with:colons'},
+        )
+
+    @patch('console_link.workflow.commands.configure.get_credentials_secret_store')
+    def test_configure_credentials_update_stdin_parses_credentials_quietly(self, mock_get_secret_store):
+        runner = CliRunner()
+        mock_secret_store = Mock()
+        mock_get_secret_store.return_value = mock_secret_store
+        mock_secret_store.secret_exists.return_value = True
+        mock_secret_store.save_secret.return_value = 'Credentials updated: source-secret'
+
+        result = runner.invoke(
+            workflow_cli,
+            ['configure', 'credentials', 'update', '--stdin', 'source-secret'],
+            input='admin:secret-pass\r\n',
+        )
+
+        assert result.exit_code == 0
+        assert result.output == ''
+        mock_secret_store.save_secret.assert_called_once_with(
+            'source-secret',
+            {'username': 'admin', 'password': 'secret-pass'},
+        )
+
+    @patch('console_link.workflow.commands.configure.get_credentials_secret_store')
+    def test_configure_credentials_create_silent_requires_stdin(self, mock_get_secret_store):
+        runner = CliRunner()
+        mock_secret_store = Mock()
+        mock_get_secret_store.return_value = mock_secret_store
+        mock_secret_store.namespace = 'ma'
+        mock_secret_store.default_labels = {'use-case': 'http-basic-credentials'}
+        mock_secret_store.v1.read_namespaced_secret.side_effect = ApiException(status=404)
+
+        result = runner.invoke(
+            workflow_cli,
+            ['configure', 'credentials', 'create', '--silent', 'source-secret'],
+        )
+
+        assert result.exit_code != 0
+        assert '--silent can only be used with --stdin' in result.output
+        mock_secret_store.save_secret.assert_not_called()
+
+    def test_configure_credentials_stdin_silent_disables_terminal_echo(self):
+        from console_link.workflow.commands import configure as configure_module
+
+        stdin_stream = Mock()
+        stdin_stream.isatty.return_value = True
+        stdin_stream.fileno.return_value = 11
+        stdin_stream.read.return_value = 'admin:secret-pass\n'
+        original_attrs = [0, 0, 0, configure_module.termios.ECHO]
+
+        with patch.object(configure_module.click, 'get_text_stream', return_value=stdin_stream), \
+                patch.object(configure_module.termios, 'tcgetattr', return_value=original_attrs), \
+                patch.object(configure_module.termios, 'tcsetattr') as mock_setattr:
+            credentials = configure_module._parse_basic_auth_credentials_from_stdin(silent=True)
+
+        assert credentials == {'username': 'admin', 'password': 'secret-pass'}
+        assert mock_setattr.call_count == 2
+        silent_attrs = mock_setattr.call_args_list[0].args[2]
+        restored_attrs = mock_setattr.call_args_list[1].args[2]
+        assert silent_attrs[3] & configure_module.termios.ECHO == 0
+        assert restored_attrs == original_attrs
+
+    @patch('console_link.workflow.commands.configure.get_credentials_secret_store')
+    def test_configure_credentials_create_stdin_rejects_malformed_credentials(self, mock_get_secret_store):
+        runner = CliRunner()
+        mock_secret_store = Mock()
+        mock_get_secret_store.return_value = mock_secret_store
+        mock_secret_store.namespace = 'ma'
+        mock_secret_store.default_labels = {'use-case': 'http-basic-credentials'}
+        mock_secret_store.v1.read_namespaced_secret.side_effect = ApiException(status=404)
+
+        result = runner.invoke(
+            workflow_cli,
+            ['configure', 'credentials', 'create', '--stdin', 'source-secret'],
+            input='not-well-formed\n',
+        )
+
+        assert result.exit_code != 0
+        assert 'not well-formed' in result.output
+        assert 'USERNAME:PASSWORD' in result.output
+        mock_secret_store.save_secret.assert_not_called()
+
+    def test_configure_credentials_create_help_documents_interactive_and_stdin_format(self):
+        runner = CliRunner()
+
+        result = runner.invoke(workflow_cli, ['configure', 'credentials', 'create', '--help'])
+
+        assert result.exit_code == 0
+        assert 'Interactively prompts for username and password' in result.output
+        assert 'by default' in result.output
+        assert 'USERNAME:PASSWORD' in result.output
+
+    @patch('console_link.workflow.commands.configure.validate_and_find_secrets')
+    @patch('console_link.workflow.commands.configure.get_credentials_secret_store')
+    @patch('console_link.workflow.commands.configure.get_workflow_config_store')
+    def test_configure_credentials_create_completion_shows_missing_credentials(
+        self,
+        mock_get_config_store,
+        mock_get_secret_store,
+        mock_validate,
+    ):
+        runner = CliRunner()
+        mock_config_store = Mock()
+        mock_get_config_store.return_value = mock_config_store
+        mock_config_store.load_config.return_value = WorkflowConfig(raw_yaml='sourceClusters: {}')
+        mock_validate.return_value = {
+            'valid': True,
+            'validSecrets': ['cluster-creds', 'existing-creds'],
+        }
+        mock_secret_store = Mock()
+        mock_get_secret_store.return_value = mock_secret_store
+        mock_secret_store.secrets_exist.return_value = {
+            'cluster-creds': False,
+            'existing-creds': True,
+        }
+
+        result = runner.invoke(
+            workflow_cli,
+            [],
+            prog_name='workflow',
+            env={
+                '_WORKFLOW_COMPLETE': 'zsh_complete',
+                'COMP_WORDS': 'workflow configure credentials create ',
+                'COMP_CWORD': '4',
+            },
+        )
+
+        assert result.exit_code == 0
+        assert 'cluster-creds' in result.output
+        assert 'existing-creds' not in result.output
+
+    @patch('console_link.workflow.commands.configure.get_current_namespace', return_value='ma')
+    @patch('console_link.workflow.commands.configure.get_credentials_secret_store')
+    def test_configure_credentials_update_completion_initializes_context(
+        self,
+        mock_get_secret_store,
+        _mock_get_namespace,
+    ):
+        runner = CliRunner()
+        mock_secret_store = Mock()
+        mock_secret_store.list_secrets.return_value = ['cluster-creds']
+
+        def get_secret_store(ctx):
+            assert ctx.obj['namespace'] == 'ma'
+            return mock_secret_store
+
+        mock_get_secret_store.side_effect = get_secret_store
+
+        result = runner.invoke(
+            workflow_cli,
+            [],
+            prog_name='workflow',
+            env={
+                '_WORKFLOW_COMPLETE': 'bash_complete',
+                'COMP_WORDS': 'workflow configure credentials update ',
+                'COMP_CWORD': '4',
+            },
+        )
+
+        assert result.exit_code == 0
+        assert 'cluster-creds' in result.output
