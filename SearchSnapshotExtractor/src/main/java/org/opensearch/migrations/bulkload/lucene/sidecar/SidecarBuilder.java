@@ -50,14 +50,16 @@ public final class SidecarBuilder implements PostingsSink, AutoCloseable {
     private boolean built = false;
     private boolean closed = false;
 
-    public SidecarBuilder(Path spillDir, int sortBufferBytes, int maxDoc) throws IOException {
+    public SidecarBuilder(Path spillDir, long sortBufferBytes, int maxDoc) throws IOException {
         this.spillDir = spillDir;
         this.maxDoc = Math.max(1, maxDoc);
         Files.createDirectories(spillDir);
         this.dir = new NIOFSDirectory(spillDir);
 
-        int mb = sortBufferBytes > 0 ? (sortBufferBytes >>> 20) : DEFAULT_SORT_BUFFER_MB;
-        this.sortBufferSize = BufferSize.megabytes((int) Math.max((long) OfflineSorter.MIN_BUFFER_SIZE_MB, (long) mb));
+        // BufferSize.megabytes takes int MiB. Clamp to [MIN_BUFFER_SIZE_MB, Integer.MAX_VALUE].
+        long mb = sortBufferBytes > 0 ? (sortBufferBytes >>> 20) : DEFAULT_SORT_BUFFER_MB;
+        mb = Math.max((long) OfflineSorter.MIN_BUFFER_SIZE_MB, Math.min((long) Integer.MAX_VALUE, mb));
+        this.sortBufferSize = BufferSize.megabytes((int) mb);
 
         this.termsOut        = dir.createOutput(TERMS_FILE, IOContext.DEFAULT);
         this.termOffsetsOut  = dir.createOutput(TERM_OFFSETS_FILE, IOContext.DEFAULT);

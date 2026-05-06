@@ -138,7 +138,7 @@ public class SegmentTermIndex implements AutoCloseable {
         // streamFieldPostings or buildAndOpenReader throws. On the happy path
         // buildAndOpenReader flips the builder's closed flag, so the subsequent
         // close() is a no-op and does not touch the files SidecarReader now owns.
-        try (SidecarBuilder builder = new SidecarBuilder(fieldSpillDir, (int) sortBufferBytes, maxDoc)) {
+        try (SidecarBuilder builder = new SidecarBuilder(fieldSpillDir, sortBufferBytes, maxDoc)) {
             reader.streamFieldPostings(fieldName, builder);
             return builder.buildAndOpenReader();
         }
