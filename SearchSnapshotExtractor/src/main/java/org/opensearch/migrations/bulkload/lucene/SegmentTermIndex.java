@@ -13,6 +13,7 @@ import java.util.stream.Stream;
 
 import org.opensearch.migrations.bulkload.lucene.sidecar.SidecarBuilder;
 import org.opensearch.migrations.bulkload.lucene.sidecar.SidecarReader;
+import org.opensearch.migrations.bulkload.lucene.sidecar.TermEntry;
 
 import lombok.extern.slf4j.Slf4j;
 
@@ -92,18 +93,18 @@ public class SegmentTermIndex implements AutoCloseable {
      */
     public synchronized List<String> getTermsForDocument(LuceneLeafReader reader, int docId, String fieldName)
             throws IOException {
-        List<SidecarReader.TermEntry> entries = getTermEntriesForDocument(reader, docId, fieldName);
+        List<TermEntry> entries = getTermEntriesForDocument(reader, docId, fieldName);
         List<String> strings = new ArrayList<>(entries.size());
-        for (SidecarReader.TermEntry e : entries) strings.add(e.term());
+        for (TermEntry e : entries) strings.add(e.term());
         return strings;
     }
 
     /**
-     * Returns the {@link SidecarReader.TermEntry} list for {@code docId} in {@code fieldName},
+     * Returns the {@link TermEntry} list for {@code docId} in {@code fieldName},
      * including character start/end offsets when the field was indexed with
      * {@code index_options: offsets}. Building the per-field sidecar on first access.
      */
-    public synchronized List<SidecarReader.TermEntry> getTermEntriesForDocument(
+    public synchronized List<TermEntry> getTermEntriesForDocument(
             LuceneLeafReader reader, int docId, String fieldName) throws IOException {
         if (closed) {
             throw new IOException("SegmentTermIndex has been closed");
