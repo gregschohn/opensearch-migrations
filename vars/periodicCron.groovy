@@ -19,6 +19,7 @@ def call(String jobName) {
         case 'main-deploy-eks-cfn-import-vpc':        return 'H H/12 * * *'
         case 'main-eks-integ-test':                   return 'H */2 * * *'
         case 'main-elasticsearch-5x-k8s-local-test':  return '@hourly'
+        case 'main-elasticsearch-8x-k8s-local-test':  return '@hourly'
         case 'main-full-es68source-e2e-test':         return '@hourly'
         case 'main-k8s-matrix-test':                  return 'H 22 * * *'
         case 'main-rfs-default-e2e-test':             return '@hourly'
