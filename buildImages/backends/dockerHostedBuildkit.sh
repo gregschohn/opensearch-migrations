@@ -14,9 +14,39 @@ set_docker_hosted_defaults() {
   : "${BUILD_CONTAINER_REGISTRY_ENDPOINT:=${EXTERNAL_REGISTRY_NAME}:5000}"
 }
 
+# Rewrite an image reference through the ECR pull-through cache when
+# ECR_PULL_THROUGH_ENDPOINT is set (e.g. on Jenkins hosts via
+# /etc/profile.d/ecr-pull-through.sh). Mirrors PullThroughCacheHelper.groovy
+# and the ptc_rewrite in deployment/k8s/.../mirrorToEcr.sh. Falls back to the
+# original reference when the endpoint is unset or the registry isn't mapped.
+ptc_rewrite_image() {
+  local image="$1"
+  local ptc="${ECR_PULL_THROUGH_ENDPOINT:-}"
+  [[ -z "$ptc" ]] && { echo "$image"; return; }
+  local prefix path
+  case "$image" in
+    docker.io/*)            prefix="docker-hub";               path="${image#docker.io/}" ;;
+    registry-1.docker.io/*) prefix="docker-hub";               path="${image#registry-1.docker.io/}" ;;
+    public.ecr.aws/*)       prefix="ecr-public";               path="${image#public.ecr.aws/}" ;;
+    ghcr.io/*)              prefix="github-container-registry"; path="${image#ghcr.io/}" ;;
+    registry.k8s.io/*)      prefix="k8s";                      path="${image#registry.k8s.io/}" ;;
+    quay.io/*)              prefix="quay";                     path="${image#quay.io/}" ;;
+    *)
+      # Bare reference (e.g. "registry:2") — implicit Docker Hub library/
+      if [[ "$image" != */* ]]; then
+        prefix="docker-hub"; path="library/${image}"
+      else
+        echo "$image"; return
+      fi
+      ;;
+  esac
+  echo "${ptc}/${prefix}/${path}"
+}
+
 get_docker_network_dns_servers() {
-  local resolv_conf dns_line
-  resolv_conf="$(docker run --rm --network "${EXTERNAL_DOCKER_NETWORK}" registry:2 cat /etc/resolv.conf 2>/dev/null || true)"
+  local resolv_conf dns_line registry_image
+  registry_image="$(ptc_rewrite_image registry:2)"
+  resolv_conf="$(docker run --rm --network "${EXTERNAL_DOCKER_NETWORK}" "${registry_image}" cat /etc/resolv.conf 2>/dev/null || true)"
   dns_line="$(printf '%s\n' "${resolv_conf}" | sed -n 's/^# ExtServers: \[\(.*\)\]$/\1/p' | head -n1)"
 
   if [[ -z "${dns_line}" ]]; then
@@ -67,13 +97,15 @@ ensure_docker_network() {
 
 ensure_registry_container() {
   if ! docker inspect "${EXTERNAL_REGISTRY_NAME}" >/dev/null 2>&1; then
+    local registry_image
+    registry_image="$(ptc_rewrite_image registry:2)"
     docker run -d \
       --name "${EXTERNAL_REGISTRY_NAME}" \
       --network "${EXTERNAL_DOCKER_NETWORK}" \
       -p "127.0.0.1:${EXTERNAL_REGISTRY_PORT}:5000" \
       -v "${EXTERNAL_REGISTRY_VOLUME}:/var/lib/registry" \
       --restart=always \
-      registry:2 >/dev/null
+      "${registry_image}" >/dev/null
   else
     if [[ "$(docker inspect -f '{{.State.Running}}' "${EXTERNAL_REGISTRY_NAME}")" != "true" ]]; then
       docker start "${EXTERNAL_REGISTRY_NAME}" >/dev/null

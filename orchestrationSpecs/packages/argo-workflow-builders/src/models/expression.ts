@@ -10,6 +10,7 @@ import {
 } from "./plainObject";
 import {StripUndefined, TaskType, typeToken, TypeToken} from "./sharedTypes";
 import {ConfigMapKeySelector, InputParamDef, OutputParamDef} from "./parameterSchemas";
+import {assertNoBareTemplateString, NoBareTemplateString} from "./templateLiteralGuard";
 
 export type ExpressionType = "govaluate" | "complicatedExpression";
 
@@ -71,8 +72,12 @@ export class UnquotedTypeWrapper<T extends PlainObject> extends BaseExpression<T
 
 export class LiteralExpression<T extends PlainObject>
     extends BaseExpression<T, "govaluate"> {
-    constructor(public readonly value: T) {
+    public readonly value: T;
+
+    constructor(value: T) {
         super("literal");
+        assertNoBareTemplateString(value, "expr.literal");
+        this.value = value;
     }
 }
 
@@ -509,8 +514,8 @@ function _segmentsToPath(segs: readonly unknown[]): string {
 
 class ExprBuilder {
     // Core functions
-    literal<T extends NonRecordLiteral>(v: T): SimpleExpression<DeepWiden<T>> {
-        return new LiteralExpression<DeepWiden<T>>(v as DeepWiden<T>);
+    literal<T extends NonRecordLiteral>(v: T & NoBareTemplateString<T>): SimpleExpression<DeepWiden<T>> {
+        return new LiteralExpression<DeepWiden<T>>(v as unknown as DeepWiden<T>);
     }
 
     asString<E extends BaseExpression<any, any>>(e: E): BaseExpression<string, ExprC<E>> {
@@ -709,7 +714,7 @@ class ExprBuilder {
     ): BaseExpression<boolean, "complicatedExpression"> {
         return new InfixExpression<boolean, ExprC<typeof obj>, "govaluate">(
             "in",
-            this.literal(key),
+            new LiteralExpression(key),
             obj,
             typeToken<boolean>()
         ) as any;

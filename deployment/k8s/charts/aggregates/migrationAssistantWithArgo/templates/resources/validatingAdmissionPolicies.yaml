@@ -57,24 +57,19 @@ spec:
            object.metadata.labels['workflows.argoproj.io/run-uid'])
       messageExpression: |
         "Gated changes detected on KafkaCluster fields: [" +
-        (
-          (has(object.spec.version) && has(oldObject.spec.version) &&
-           object.spec.version != oldObject.spec.version ? "version" : "") +
-          (has(object.spec.nodePool) && has(oldObject.spec.nodePool) &&
-           has(object.spec.nodePool.replicas) && has(oldObject.spec.nodePool.replicas) &&
-           object.spec.nodePool.replicas != oldObject.spec.nodePool.replicas ?
-             ((has(object.spec.version) && has(oldObject.spec.version) &&
-               object.spec.version != oldObject.spec.version) ? ", nodePool.replicas" : "nodePool.replicas") : "") +
-          (has(object.spec.nodePool) && has(oldObject.spec.nodePool) &&
-           has(object.spec.nodePool.storage) && has(oldObject.spec.nodePool.storage) &&
-           has(object.spec.nodePool.storage.size) && has(oldObject.spec.nodePool.storage.size) &&
-           object.spec.nodePool.storage.size != oldObject.spec.nodePool.storage.size ?
-             ((has(object.spec.version) && has(oldObject.spec.version) &&
-               object.spec.version != oldObject.spec.version) ||
-              (has(object.spec.nodePool) && has(oldObject.spec.nodePool) &&
-               has(object.spec.nodePool.replicas) && has(oldObject.spec.nodePool.replicas) &&
-               object.spec.nodePool.replicas != oldObject.spec.nodePool.replicas) ? ", nodePool.storage.size" : "nodePool.storage.size") : "")
-        ) + "]. Approve the corresponding ApprovalGate to proceed."
+        ["version", "nodePool.replicas", "nodePool.storage.size"].filter(f,
+          (f == "version" && (has(object.spec.version) != has(oldObject.spec.version) ||
+            (has(object.spec.version) && object.spec.version != oldObject.spec.version))) ||
+          (f == "nodePool.replicas" &&
+            has(object.spec.nodePool) && has(oldObject.spec.nodePool) &&
+            (has(object.spec.nodePool.replicas) != has(oldObject.spec.nodePool.replicas) ||
+              (has(object.spec.nodePool.replicas) && object.spec.nodePool.replicas != oldObject.spec.nodePool.replicas))) ||
+          (f == "nodePool.storage.size" &&
+            has(object.spec.nodePool) && has(oldObject.spec.nodePool) &&
+            has(object.spec.nodePool.storage) && has(oldObject.spec.nodePool.storage) &&
+            (has(object.spec.nodePool.storage.size) != has(oldObject.spec.nodePool.storage.size) ||
+              (has(object.spec.nodePool.storage.size) && object.spec.nodePool.storage.size != oldObject.spec.nodePool.storage.size)))
+        ).join(", ") + "]. Approve the corresponding ApprovalGate to proceed."
     # Impossible: nodePool storage type
     - expression: |
         !has(oldObject.spec.nodePool) || !has(object.spec.nodePool) ||
@@ -154,20 +149,14 @@ spec:
            object.metadata.labels['workflows.argoproj.io/run-uid'])
       messageExpression: |
         "Gated changes detected on CapturedTraffic fields: [" +
-        (
-          (has(object.spec.partitions) && has(oldObject.spec.partitions) &&
-           object.spec.partitions != oldObject.spec.partitions ? "partitions" : "") +
-          (has(object.spec.replicas) && has(oldObject.spec.replicas) &&
-           object.spec.replicas != oldObject.spec.replicas ?
-             ((has(object.spec.partitions) && has(oldObject.spec.partitions) &&
-               object.spec.partitions != oldObject.spec.partitions) ? ", replicas" : "replicas") : "") +
-          (has(object.spec.topicConfig) && has(oldObject.spec.topicConfig) &&
-           object.spec.topicConfig != oldObject.spec.topicConfig ?
-             ((has(object.spec.partitions) && has(oldObject.spec.partitions) &&
-               object.spec.partitions != oldObject.spec.partitions) ||
-              (has(object.spec.replicas) && has(oldObject.spec.replicas) &&
-               object.spec.replicas != oldObject.spec.replicas) ? ", topicConfig" : "topicConfig") : "")
-        ) + "]. Approve the corresponding ApprovalGate to proceed."
+        ["partitions", "replicas", "topicConfig"].filter(f,
+          (f == "partitions" && (has(object.spec.partitions) != has(oldObject.spec.partitions) ||
+            (has(object.spec.partitions) && object.spec.partitions != oldObject.spec.partitions))) ||
+          (f == "replicas" && (has(object.spec.replicas) != has(oldObject.spec.replicas) ||
+            (has(object.spec.replicas) && object.spec.replicas != oldObject.spec.replicas))) ||
+          (f == "topicConfig" && (has(object.spec.topicConfig) != has(oldObject.spec.topicConfig) ||
+            (has(object.spec.topicConfig) && object.spec.topicConfig != oldObject.spec.topicConfig)))
+        ).join(", ") + "]. Approve the corresponding ApprovalGate to proceed."
 
 ---
 apiVersion: admissionregistration.k8s.io/v1
@@ -237,64 +226,25 @@ spec:
            object.metadata.labels['workflows.argoproj.io/run-uid'])
       messageExpression: |
         "Gated changes detected on CaptureProxy fields [" +
-        (
-          (has(object.spec.noCapture) && has(oldObject.spec.noCapture) &&
-           object.spec.noCapture != oldObject.spec.noCapture ? "noCapture" : "") +
-          (has(object.spec.enableMSKAuth) && has(oldObject.spec.enableMSKAuth) &&
-           object.spec.enableMSKAuth != oldObject.spec.enableMSKAuth ?
-             ((has(object.spec.noCapture) && has(oldObject.spec.noCapture) &&
-               object.spec.noCapture != oldObject.spec.noCapture) ? ", enableMSKAuth" : "enableMSKAuth") : "") +
-          (has(object.spec.tls) && has(oldObject.spec.tls) &&
-           object.spec.tls != oldObject.spec.tls ?
-             (((has(object.spec.noCapture) && has(oldObject.spec.noCapture) &&
-                object.spec.noCapture != oldObject.spec.noCapture) ||
-               (has(object.spec.enableMSKAuth) && has(oldObject.spec.enableMSKAuth) &&
-                object.spec.enableMSKAuth != oldObject.spec.enableMSKAuth)) ? ", tls" : "tls") : "") +
-          (has(object.spec.suppressCaptureForHeaderMatch) && has(oldObject.spec.suppressCaptureForHeaderMatch) &&
-           object.spec.suppressCaptureForHeaderMatch != oldObject.spec.suppressCaptureForHeaderMatch ?
-             (((has(object.spec.noCapture) && has(oldObject.spec.noCapture) &&
-                object.spec.noCapture != oldObject.spec.noCapture) ||
-               (has(object.spec.enableMSKAuth) && has(oldObject.spec.enableMSKAuth) &&
-                object.spec.enableMSKAuth != oldObject.spec.enableMSKAuth) ||
-               (has(object.spec.tls) && has(oldObject.spec.tls) &&
-                object.spec.tls != oldObject.spec.tls)) ? ", suppressCaptureForHeaderMatch" : "suppressCaptureForHeaderMatch") : "") +
-          (has(object.spec.suppressCaptureForMethod) && has(oldObject.spec.suppressCaptureForMethod) &&
-           object.spec.suppressCaptureForMethod != oldObject.spec.suppressCaptureForMethod ?
-             (((has(object.spec.noCapture) && has(oldObject.spec.noCapture) &&
-                object.spec.noCapture != oldObject.spec.noCapture) ||
-               (has(object.spec.enableMSKAuth) && has(oldObject.spec.enableMSKAuth) &&
-                object.spec.enableMSKAuth != oldObject.spec.enableMSKAuth) ||
-               (has(object.spec.tls) && has(oldObject.spec.tls) &&
-                object.spec.tls != oldObject.spec.tls) ||
-               (has(object.spec.suppressCaptureForHeaderMatch) && has(oldObject.spec.suppressCaptureForHeaderMatch) &&
-                object.spec.suppressCaptureForHeaderMatch != oldObject.spec.suppressCaptureForHeaderMatch)) ? ", suppressCaptureForMethod" : "suppressCaptureForMethod") : "") +
-          (has(object.spec.suppressCaptureForUriPath) && has(oldObject.spec.suppressCaptureForUriPath) &&
-           object.spec.suppressCaptureForUriPath != oldObject.spec.suppressCaptureForUriPath ?
-             (((has(object.spec.noCapture) && has(oldObject.spec.noCapture) &&
-                object.spec.noCapture != oldObject.spec.noCapture) ||
-               (has(object.spec.enableMSKAuth) && has(oldObject.spec.enableMSKAuth) &&
-                object.spec.enableMSKAuth != oldObject.spec.enableMSKAuth) ||
-               (has(object.spec.tls) && has(oldObject.spec.tls) &&
-                object.spec.tls != oldObject.spec.tls) ||
-               (has(object.spec.suppressCaptureForHeaderMatch) && has(oldObject.spec.suppressCaptureForHeaderMatch) &&
-                object.spec.suppressCaptureForHeaderMatch != oldObject.spec.suppressCaptureForHeaderMatch) ||
-               (has(object.spec.suppressCaptureForMethod) && has(oldObject.spec.suppressCaptureForMethod) &&
-                object.spec.suppressCaptureForMethod != oldObject.spec.suppressCaptureForMethod)) ? ", suppressCaptureForUriPath" : "suppressCaptureForUriPath") : "") +
-          (has(object.spec.suppressMethodAndPath) && has(oldObject.spec.suppressMethodAndPath) &&
-           object.spec.suppressMethodAndPath != oldObject.spec.suppressMethodAndPath ?
-             (((has(object.spec.noCapture) && has(oldObject.spec.noCapture) &&
-                object.spec.noCapture != oldObject.spec.noCapture) ||
-               (has(object.spec.enableMSKAuth) && has(oldObject.spec.enableMSKAuth) &&
-                object.spec.enableMSKAuth != oldObject.spec.enableMSKAuth) ||
-               (has(object.spec.tls) && has(oldObject.spec.tls) &&
-                object.spec.tls != oldObject.spec.tls) ||
-               (has(object.spec.suppressCaptureForHeaderMatch) && has(oldObject.spec.suppressCaptureForHeaderMatch) &&
-                object.spec.suppressCaptureForHeaderMatch != oldObject.spec.suppressCaptureForHeaderMatch) ||
-               (has(object.spec.suppressCaptureForMethod) && has(oldObject.spec.suppressCaptureForMethod) &&
-                object.spec.suppressCaptureForMethod != oldObject.spec.suppressCaptureForMethod) ||
-               (has(object.spec.suppressCaptureForUriPath) && has(oldObject.spec.suppressCaptureForUriPath) &&
-                object.spec.suppressCaptureForUriPath != oldObject.spec.suppressCaptureForUriPath)) ? ", suppressMethodAndPath" : "suppressMethodAndPath") : "")
-        ) +
+        ["noCapture", "enableMSKAuth", "tls",
+         "suppressCaptureForHeaderMatch", "suppressCaptureForMethod",
+         "suppressCaptureForUriPath", "suppressMethodAndPath"
+        ].filter(f,
+          (f == "noCapture" && (has(object.spec.noCapture) != has(oldObject.spec.noCapture) ||
+            (has(object.spec.noCapture) && object.spec.noCapture != oldObject.spec.noCapture))) ||
+          (f == "enableMSKAuth" && (has(object.spec.enableMSKAuth) != has(oldObject.spec.enableMSKAuth) ||
+            (has(object.spec.enableMSKAuth) && object.spec.enableMSKAuth != oldObject.spec.enableMSKAuth))) ||
+          (f == "tls" && (has(object.spec.tls) != has(oldObject.spec.tls) ||
+            (has(object.spec.tls) && object.spec.tls != oldObject.spec.tls))) ||
+          (f == "suppressCaptureForHeaderMatch" && (has(object.spec.suppressCaptureForHeaderMatch) != has(oldObject.spec.suppressCaptureForHeaderMatch) ||
+            (has(object.spec.suppressCaptureForHeaderMatch) && object.spec.suppressCaptureForHeaderMatch != oldObject.spec.suppressCaptureForHeaderMatch))) ||
+          (f == "suppressCaptureForMethod" && (has(object.spec.suppressCaptureForMethod) != has(oldObject.spec.suppressCaptureForMethod) ||
+            (has(object.spec.suppressCaptureForMethod) && object.spec.suppressCaptureForMethod != oldObject.spec.suppressCaptureForMethod))) ||
+          (f == "suppressCaptureForUriPath" && (has(object.spec.suppressCaptureForUriPath) != has(oldObject.spec.suppressCaptureForUriPath) ||
+            (has(object.spec.suppressCaptureForUriPath) && object.spec.suppressCaptureForUriPath != oldObject.spec.suppressCaptureForUriPath))) ||
+          (f == "suppressMethodAndPath" && (has(object.spec.suppressMethodAndPath) != has(oldObject.spec.suppressMethodAndPath) ||
+            (has(object.spec.suppressMethodAndPath) && object.spec.suppressMethodAndPath != oldObject.spec.suppressMethodAndPath)))
+        ).join(", ") +
         "]. Approve the corresponding ApprovalGate to proceed."
 
 ---
@@ -366,64 +316,25 @@ spec:
            object.metadata.labels['workflows.argoproj.io/run-uid'])
       messageExpression: |
         "Gated changes detected on TrafficReplay fields [" +
-        (
-          (has(object.spec.removeAuthHeader) && has(oldObject.spec.removeAuthHeader) &&
-           object.spec.removeAuthHeader != oldObject.spec.removeAuthHeader ? "removeAuthHeader" : "") +
-          (has(object.spec.transformerConfig) && has(oldObject.spec.transformerConfig) &&
-           object.spec.transformerConfig != oldObject.spec.transformerConfig ?
-             ((has(object.spec.removeAuthHeader) && has(oldObject.spec.removeAuthHeader) &&
-               object.spec.removeAuthHeader != oldObject.spec.removeAuthHeader) ? ", transformerConfig" : "transformerConfig") : "") +
-          (has(object.spec.transformerConfigEncoded) && has(oldObject.spec.transformerConfigEncoded) &&
-           object.spec.transformerConfigEncoded != oldObject.spec.transformerConfigEncoded ?
-             (((has(object.spec.removeAuthHeader) && has(oldObject.spec.removeAuthHeader) &&
-                object.spec.removeAuthHeader != oldObject.spec.removeAuthHeader) ||
-               (has(object.spec.transformerConfig) && has(oldObject.spec.transformerConfig) &&
-                object.spec.transformerConfig != oldObject.spec.transformerConfig)) ? ", transformerConfigEncoded" : "transformerConfigEncoded") : "") +
-          (has(object.spec.transformerConfigFile) && has(oldObject.spec.transformerConfigFile) &&
-           object.spec.transformerConfigFile != oldObject.spec.transformerConfigFile ?
-             (((has(object.spec.removeAuthHeader) && has(oldObject.spec.removeAuthHeader) &&
-                object.spec.removeAuthHeader != oldObject.spec.removeAuthHeader) ||
-               (has(object.spec.transformerConfig) && has(oldObject.spec.transformerConfig) &&
-                object.spec.transformerConfig != oldObject.spec.transformerConfig) ||
-               (has(object.spec.transformerConfigEncoded) && has(oldObject.spec.transformerConfigEncoded) &&
-                object.spec.transformerConfigEncoded != oldObject.spec.transformerConfigEncoded)) ? ", transformerConfigFile" : "transformerConfigFile") : "") +
-          (has(object.spec.tupleTransformerConfig) && has(oldObject.spec.tupleTransformerConfig) &&
-           object.spec.tupleTransformerConfig != oldObject.spec.tupleTransformerConfig ?
-             (((has(object.spec.removeAuthHeader) && has(oldObject.spec.removeAuthHeader) &&
-                object.spec.removeAuthHeader != oldObject.spec.removeAuthHeader) ||
-               (has(object.spec.transformerConfig) && has(oldObject.spec.transformerConfig) &&
-                object.spec.transformerConfig != oldObject.spec.transformerConfig) ||
-               (has(object.spec.transformerConfigEncoded) && has(oldObject.spec.transformerConfigEncoded) &&
-                object.spec.transformerConfigEncoded != oldObject.spec.transformerConfigEncoded) ||
-               (has(object.spec.transformerConfigFile) && has(oldObject.spec.transformerConfigFile) &&
-                object.spec.transformerConfigFile != oldObject.spec.transformerConfigFile)) ? ", tupleTransformerConfig" : "tupleTransformerConfig") : "") +
-          (has(object.spec.tupleTransformerConfigBase64) && has(oldObject.spec.tupleTransformerConfigBase64) &&
-           object.spec.tupleTransformerConfigBase64 != oldObject.spec.tupleTransformerConfigBase64 ?
-             (((has(object.spec.removeAuthHeader) && has(oldObject.spec.removeAuthHeader) &&
-                object.spec.removeAuthHeader != oldObject.spec.removeAuthHeader) ||
-               (has(object.spec.transformerConfig) && has(oldObject.spec.transformerConfig) &&
-                object.spec.transformerConfig != oldObject.spec.transformerConfig) ||
-               (has(object.spec.transformerConfigEncoded) && has(oldObject.spec.transformerConfigEncoded) &&
-                object.spec.transformerConfigEncoded != oldObject.spec.transformerConfigEncoded) ||
-               (has(object.spec.transformerConfigFile) && has(oldObject.spec.transformerConfigFile) &&
-                object.spec.transformerConfigFile != oldObject.spec.transformerConfigFile) ||
-               (has(object.spec.tupleTransformerConfig) && has(oldObject.spec.tupleTransformerConfig) &&
-                object.spec.tupleTransformerConfig != oldObject.spec.tupleTransformerConfig)) ? ", tupleTransformerConfigBase64" : "tupleTransformerConfigBase64") : "") +
-          (has(object.spec.tupleTransformerConfigFile) && has(oldObject.spec.tupleTransformerConfigFile) &&
-           object.spec.tupleTransformerConfigFile != oldObject.spec.tupleTransformerConfigFile ?
-             (((has(object.spec.removeAuthHeader) && has(oldObject.spec.removeAuthHeader) &&
-                object.spec.removeAuthHeader != oldObject.spec.removeAuthHeader) ||
-               (has(object.spec.transformerConfig) && has(oldObject.spec.transformerConfig) &&
-                object.spec.transformerConfig != oldObject.spec.transformerConfig) ||
-               (has(object.spec.transformerConfigEncoded) && has(oldObject.spec.transformerConfigEncoded) &&
-                object.spec.transformerConfigEncoded != oldObject.spec.transformerConfigEncoded) ||
-               (has(object.spec.transformerConfigFile) && has(oldObject.spec.transformerConfigFile) &&
-                object.spec.transformerConfigFile != oldObject.spec.transformerConfigFile) ||
-               (has(object.spec.tupleTransformerConfig) && has(oldObject.spec.tupleTransformerConfig) &&
-                object.spec.tupleTransformerConfig != oldObject.spec.tupleTransformerConfig) ||
-               (has(object.spec.tupleTransformerConfigBase64) && has(oldObject.spec.tupleTransformerConfigBase64) &&
-                object.spec.tupleTransformerConfigBase64 != oldObject.spec.tupleTransformerConfigBase64)) ? ", tupleTransformerConfigFile" : "tupleTransformerConfigFile") : "")
-        ) +
+        ["removeAuthHeader", "transformerConfig", "transformerConfigEncoded",
+         "transformerConfigFile", "tupleTransformerConfig",
+         "tupleTransformerConfigBase64", "tupleTransformerConfigFile"
+        ].filter(f,
+          (f == "removeAuthHeader" && (has(object.spec.removeAuthHeader) != has(oldObject.spec.removeAuthHeader) ||
+            (has(object.spec.removeAuthHeader) && object.spec.removeAuthHeader != oldObject.spec.removeAuthHeader))) ||
+          (f == "transformerConfig" && (has(object.spec.transformerConfig) != has(oldObject.spec.transformerConfig) ||
+            (has(object.spec.transformerConfig) && object.spec.transformerConfig != oldObject.spec.transformerConfig))) ||
+          (f == "transformerConfigEncoded" && (has(object.spec.transformerConfigEncoded) != has(oldObject.spec.transformerConfigEncoded) ||
+            (has(object.spec.transformerConfigEncoded) && object.spec.transformerConfigEncoded != oldObject.spec.transformerConfigEncoded))) ||
+          (f == "transformerConfigFile" && (has(object.spec.transformerConfigFile) != has(oldObject.spec.transformerConfigFile) ||
+            (has(object.spec.transformerConfigFile) && object.spec.transformerConfigFile != oldObject.spec.transformerConfigFile))) ||
+          (f == "tupleTransformerConfig" && (has(object.spec.tupleTransformerConfig) != has(oldObject.spec.tupleTransformerConfig) ||
+            (has(object.spec.tupleTransformerConfig) && object.spec.tupleTransformerConfig != oldObject.spec.tupleTransformerConfig))) ||
+          (f == "tupleTransformerConfigBase64" && (has(object.spec.tupleTransformerConfigBase64) != has(oldObject.spec.tupleTransformerConfigBase64) ||
+            (has(object.spec.tupleTransformerConfigBase64) && object.spec.tupleTransformerConfigBase64 != oldObject.spec.tupleTransformerConfigBase64))) ||
+          (f == "tupleTransformerConfigFile" && (has(object.spec.tupleTransformerConfigFile) != has(oldObject.spec.tupleTransformerConfigFile) ||
+            (has(object.spec.tupleTransformerConfigFile) && object.spec.tupleTransformerConfigFile != oldObject.spec.tupleTransformerConfigFile)))
+        ).join(", ") +
         "]. Approve the corresponding ApprovalGate to proceed."
 
 ---
@@ -512,20 +423,16 @@ spec:
            object.metadata.labels['workflows.argoproj.io/run-uid'])
       messageExpression: |
         "Gated changes detected on SnapshotMigration document backfill fields [" +
-        (
-          (has(object.spec.documentBackfillInitialLeaseDuration) && has(oldObject.spec.documentBackfillInitialLeaseDuration) &&
-           object.spec.documentBackfillInitialLeaseDuration != oldObject.spec.documentBackfillInitialLeaseDuration ? "documentBackfillInitialLeaseDuration" : "") +
-          (has(object.spec.documentBackfillMaxConnections) && has(oldObject.spec.documentBackfillMaxConnections) &&
-           object.spec.documentBackfillMaxConnections != oldObject.spec.documentBackfillMaxConnections ?
-             ((has(object.spec.documentBackfillInitialLeaseDuration) && has(oldObject.spec.documentBackfillInitialLeaseDuration) &&
-               object.spec.documentBackfillInitialLeaseDuration != oldObject.spec.documentBackfillInitialLeaseDuration) ? ", documentBackfillMaxConnections" : "documentBackfillMaxConnections") : "") +
-          (has(object.spec.documentBackfillMaxShardSizeBytes) && has(oldObject.spec.documentBackfillMaxShardSizeBytes) &&
-           object.spec.documentBackfillMaxShardSizeBytes != oldObject.spec.documentBackfillMaxShardSizeBytes ?
-             (((has(object.spec.documentBackfillInitialLeaseDuration) && has(oldObject.spec.documentBackfillInitialLeaseDuration) &&
-                object.spec.documentBackfillInitialLeaseDuration != oldObject.spec.documentBackfillInitialLeaseDuration) ||
-               (has(object.spec.documentBackfillMaxConnections) && has(oldObject.spec.documentBackfillMaxConnections) &&
-                object.spec.documentBackfillMaxConnections != oldObject.spec.documentBackfillMaxConnections)) ? ", documentBackfillMaxShardSizeBytes" : "documentBackfillMaxShardSizeBytes") : "")
-        ) +
+        ["documentBackfillInitialLeaseDuration", "documentBackfillMaxConnections",
+         "documentBackfillMaxShardSizeBytes"
+        ].filter(f,
+          (f == "documentBackfillInitialLeaseDuration" && (has(object.spec.documentBackfillInitialLeaseDuration) != has(oldObject.spec.documentBackfillInitialLeaseDuration) ||
+            (has(object.spec.documentBackfillInitialLeaseDuration) && object.spec.documentBackfillInitialLeaseDuration != oldObject.spec.documentBackfillInitialLeaseDuration))) ||
+          (f == "documentBackfillMaxConnections" && (has(object.spec.documentBackfillMaxConnections) != has(oldObject.spec.documentBackfillMaxConnections) ||
+            (has(object.spec.documentBackfillMaxConnections) && object.spec.documentBackfillMaxConnections != oldObject.spec.documentBackfillMaxConnections))) ||
+          (f == "documentBackfillMaxShardSizeBytes" && (has(object.spec.documentBackfillMaxShardSizeBytes) != has(oldObject.spec.documentBackfillMaxShardSizeBytes) ||
+            (has(object.spec.documentBackfillMaxShardSizeBytes) && object.spec.documentBackfillMaxShardSizeBytes != oldObject.spec.documentBackfillMaxShardSizeBytes)))
+        ).join(", ") +
         "]. Approve the corresponding ApprovalGate to proceed."
 
 ---

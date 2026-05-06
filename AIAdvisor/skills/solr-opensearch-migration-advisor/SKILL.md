@@ -72,6 +72,7 @@ No AWS account or authentication is required to use the AWS Knowledge MCP Server
 ## Migration Workflow
 
 Walk the user through each step in order. Do not skip ahead — complete each step before moving to the next.
+Also do not present questions covering multiple of the steps in one message, proceed stepwise through steps.
 Yet make sure a given block matches the set target audience. If no target audience is set below for a given step,
 assume it is valid for all roles. To identify this audience, you will
 see a line with "Audience: " followed by audience ids that match below roles as follows:
@@ -81,6 +82,12 @@ see a line with "Audience: " followed by audience ids that match below roles as 
 
 While walking through the steps, make sure you record all relevant information you collect in the session state json files
 as described in the persistence section below.
+Do not assume in the chat that user actively reads the session state file, but present relevant details as needed.
+Since the answer format for the BSH roles is more free, the user might have already answered some details of later steps
+in previous ones. In this case do not just skip steps without consulting with the user. You can enrich the questions
+for the respective step with suggestions you derived from the chat history where suitable, 
+but on each step, ask the question given for the step. After the user answered, 
+state derived assumptions where applicable, yet in any case confirm with user to proceed to next step.
 
 ### Step 0 — Stakeholder Identification
 
@@ -149,7 +156,8 @@ Finally, ask the user if they know the version of Apache Solr they are migrating
 answer this, we can leave this for more details when the technical work starts.*
 
 If the user provides a version, accept any valid Apache Solr version number (major, major.minor, or major.minor.patch), 
-otherwise clarify with user. It is fine if the user cannot provide a version.
+otherwise clarify with user. It is fine if the user cannot provide a version. If user does not add solr version
+in reply, assume user does not know.
 
 
 Once confirmed:
@@ -273,6 +281,8 @@ Present all findings as a prioritized list: Breaking first, then Behavioral, the
 - **DevOps / Platform Engineer** — prioritise Breaking issues that could cause index creation or reindex failures; note any that require cluster-level configuration changes.
 - **Business Stakeholder** — translate every finding into business impact ("this field won't sort correctly", "this feature has no equivalent and requires redesign"). Summarise total blocker count by severity and provide a rough effort estimate (days/weeks) for resolution. Skip technical root causes.
 
+Move to Step 4.
+
 ### Step 4 — Query Translation
 
 Audience: SRE, DOP, BSH
@@ -320,6 +330,8 @@ Known query incompatibilities to check for:
 - **DevOps / Platform Engineer** — flag queries that imply resource-intensive patterns (deep pagination, large facet pivots, graph traversal) and note their infrastructure implications.
 - **Business Stakeholder** — skip Query DSL syntax entirely. Describe each query in terms of the search feature it powers ("the autocomplete query", "the category filter") and flag any that require significant engineering effort to replicate, with a time estimate.
 
+Move to Step 5.
+
 ### Step 5 — Solr Customizations
 
 Audience: SRE, DOP, BSH
@@ -362,10 +374,19 @@ Store all identified customizations and their OpenSearch mappings in the session
 
 
 For the business audience BSH, do:
-Based on the solr version, record the version-specific notes above. If no solr version available, collect all but clearly distinguish them conditional on the solr version.
-Record them for the final report, and provide a high level description of the points to the user without going too much into technical detail.
+Ask the user for a description of customizations made to the solr setup, such as regarding:
+- custom plugins that change aspects such as text processing, search logic, ranking logic
+- specific authentication methods
+- indexing logic customizations
+- security adjustments
+- multi-tenancy 
+- isolating queries and index updates
+Based on the solr version, also record the version-specific notes above. If no solr version available, collect all but clearly 
+distinguish them conditional on the solr version. Record them for the final report, and provide a high level description 
+of the points to the user without going too much into technical detail.
 While you keep that record of scenarios for information we need to infer at the moment rather than know (if not provided by user),
-only record customizations and the corresponding Opensearch mappings under `facts.customizations` if they were mentioned or confirmed by user.
+only record customizations and the corresponding Opensearch mappings under `facts.customizations` if they were mentioned 
+or confirmed by user.
 Nevertheless include the inferred possibilities as scenarios conditioned on solr version in the migration report.
 
 
@@ -375,6 +396,8 @@ From here, proceed for all audiences SRE, DOP, BSH:
 - **Search Relevance Engineer** — go deep on plugin internals; show the OpenSearch plugin SDK or analysis chain equivalent for each custom component.
 - **DevOps / Platform Engineer** — prioritise authentication, authorization, and operational constraints (air-gapped, FIPS, multi-tenancy); these drive infrastructure and deployment decisions. This is a high-priority step for this role.
 - **Business Stakeholder** — summarise customizations as capabilities ("custom ranking logic", "data enrichment on ingest") and flag any that require significant engineering effort to replicate, with a rough effort estimate. Highlight any that involve third-party vendor work or procurement.
+
+Move to Step 6.
 
 ### Step 6 — Cluster & Infrastructure Assessment
 
@@ -410,6 +433,8 @@ Use the sizing steering document to provide OpenSearch cluster sizing recommenda
 - **Search Relevance Engineer** — include shard sizing rationale, JVM heap recommendations, and index lifecycle management strategy.
 - **DevOps / Platform Engineer** — this is the highest-priority step for this role. Go deep: instance types, storage (EBS vs. instance store), node roles (data, coordinating, cluster manager), auto-scaling, monitoring, and deployment automation. Ask about their target environment (self-managed vs. Amazon OpenSearch Service).
 - **Business Stakeholder** — this is a high-priority step. Present sizing as cost and SLA terms: estimated monthly infrastructure cost (instance types × count × hours), expected query latency, and uptime characteristics. Provide a cost comparison between self-managed and Amazon OpenSearch Service if relevant. Skip node-level technical detail.
+
+Move to Step 7.
 
 ### Step 7 — Client & Front-end Integration
 
@@ -463,6 +488,8 @@ Identify any authentication changes required (e.g. moving from Solr Basic Auth t
 - **Search Relevance Engineer** — note any query or response shape differences between the Solr and OpenSearch client APIs that require logic changes beyond a library swap.
 - **DevOps / Platform Engineer** — focus on authentication changes and any integrations that make direct admin API calls; flag anything that requires network or firewall rule changes.
 - **Business Stakeholder** — summarise integrations as a list of systems that need updating ("the product catalog service", "the search UI") and flag any that require third-party vendor involvement. Estimate the number of engineering teams affected and the approximate effort per integration.
+
+Move to Step 8.
 
 ### Step 8 — Pricing Estimate
 
@@ -563,6 +590,10 @@ Present the formatted estimate and store it in the session under `facts.pricing_
 **Stakeholder guidance:**
 - **Search Relevance Engineer** — note how engine type and shard sizing choices affect cost.
 - **DevOps / Platform Engineer** — compare OnDemand vs. Reserved pricing; discuss instance family options for the target region.
+- **Business Stakeholder** — give a high level overview of pricing with possible savings using reserved vs ondemand and instance types. Do not drill in detail into instance options though.
+
+
+Move to Step 9.
 
 ### Step 9 — Migration Report
 

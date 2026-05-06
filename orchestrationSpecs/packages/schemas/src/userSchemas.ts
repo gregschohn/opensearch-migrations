@@ -209,7 +209,7 @@ export const KAFKA_AUTO_CREATE_AUTH_CONFIG = z.discriminatedUnion("type", [
 
 export const DEFAULT_KAFKA_TOPIC_SPEC_OVERRIDES = {
     partitions: 1,
-    replicas: 1,
+    replicas: 3,
     config: {
         "retention.ms": 604800000,
         "segment.bytes": 1073741824,
@@ -236,23 +236,62 @@ const DEFAULT_AUTO_CREATE_KAFKA = {
                 failureThreshold: 8,
             },
             config: {
+                // RF=3 + minISR=2 on a 3-broker cluster: survives one broker
+                // down (rolling restart, single node loss) without losing
+                // writes or quorum. ISR = replicas fully caught up to the
+                // leader; acks=all blocks until every ISR member has written,
+                // and writes fail (NotEnoughReplicasException) if |ISR|<minISR.
+                // auto.create.topics.enable stays false — all migration topics
+                // are declared explicitly via KafkaTopic CRs.
                 "auto.create.topics.enable": false,
-                "offsets.topic.replication.factor": 1,
-                "transaction.state.log.replication.factor": 1,
-                "transaction.state.log.min.isr": 1,
-                "default.replication.factor": 1,
-                "min.insync.replicas": 1,
+                "offsets.topic.replication.factor": 3,
+                "transaction.state.log.replication.factor": 3,
+                "transaction.state.log.min.isr": 2,
+                "default.replication.factor": 3,
+                "min.insync.replicas": 2,
             }
         }
     },
     nodePoolSpecOverrides: {
-        replicas: 1,
+        // 3-broker, combined (controller+broker) KRaft pool. 3 is the minimum
+        // that satisfies RF=3/minISR=2 above.
+        replicas: 3,
         roles: ["controller", "broker"],
         storage: {
             type: "persistent-claim",
-            size: "1Gi",
+            // Smoke-test size (raised 1Gi → 2Gi with the 1→3 broker bump;
+            // internal topics are now RF=3). Real deployments should override.
+            size: "2Gi",
             deleteClaim: true,
-        }
+        },
+        template: {
+            pod: {
+                // Soft anti-affinity — prefers spreading brokers across nodes
+                // but still schedules on single-node dev clusters. Required
+                // anti-affinity would wedge broker rescheduling during an EKS
+                // node rotation if the new pool temporarily has <3 nodes.
+                affinity: {
+                    podAntiAffinity: {
+                        preferredDuringSchedulingIgnoredDuringExecution: [
+                            {
+                                weight: 100,
+                                podAffinityTerm: {
+                                    labelSelector: {
+                                        matchExpressions: [
+                                            {
+                                                key: "strimzi.io/name",
+                                                operator: "Exists",
+                                            },
+                                        ],
+                                    },
+                                    topologyKey: "kubernetes.io/hostname",
+                                },
+                            },
+                        ],
+                    },
+                },
+            },
+        },
     },
     topicSpecOverrides: {
         ...DEFAULT_KAFKA_TOPIC_SPEC_OVERRIDES
@@ -663,7 +702,7 @@ export const USER_RFS_PROCESS_OPTIONS = z.object({
     initialLeaseDuration: z.string()
         .regex(/^[-+]?P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?)?$/)
         .default("PT1H").optional()
-        .describe("ISO 8601 duration for the initial work item lease in the coordination store (e.g. 'PT1H' = 1 hour, 'PT10M' = 10 minutes). " +
+        .describe("[Expert] ISO 8601 duration for the initial work item lease in the coordination store (e.g. 'PT1H' = 1 hour, 'PT10M' = 10 minutes). " +
             "If a worker fails to complete a shard within this duration, the lease expires and another worker can pick it up, doubling the lease duration on each retry. " +
             "Increase for very large shards (>200GB) to reduce the number of re-downloads per shard needed to complete the migration.")
         .changeRestriction('gated'),

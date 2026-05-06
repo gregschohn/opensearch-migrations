@@ -38,6 +38,7 @@ export function renderWorkflowTemplate<WF extends ReturnType<WorkflowBuilder<any
         spec: {
             serviceAccountName: wf.metadata.serviceAccountName,
             entrypoint: wf.metadata.entrypoint,
+            ...(wf.metadata.onExit ? {onExit: convertTemplateName(wf.metadata.onExit)} : {}),
             parallelism: 100,
             ...(wf.workflowParameters != null && {arguments: formatParameters(wf.workflowParameters)}),
             ...(wf.metadata.synchronization && {synchronization: formatSynchronization(wf.metadata.synchronization)}),
@@ -321,7 +322,8 @@ function formatOutputArtifacts(artifacts: OutputArtifactsRecord | undefined) {
     return Object.values(artifacts).map(a => ({
         name: a.name,
         path: a.path,
-        archive: a.archive ?? { none: {} }
+        archive: a.archive ?? { none: {} },
+        ...(a.s3 ? { s3: transformExpressionsDeep(a.s3) } : {})
     }));
 }
 

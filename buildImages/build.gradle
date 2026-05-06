@@ -50,7 +50,7 @@ def jibProjects = [
                 imageName     : "transformation_shim",
                 imageTag      : "latest",
                 requiredDependencies: [
-                    ":TrafficCapture:transformationShim": ["syncVersionFile_transformation_shim"]
+                    ":TrafficCapture:transformationShim": ["syncVersionFile_transformation_shim", "stageTransformsForImage"]
                 ]
         ],
         "TrafficCapture:trafficCaptureProxyServer": correttoBase + [
@@ -80,8 +80,6 @@ def buildKitProjects = [
                 ]
         ],
         [
-
-
                 serviceName: "reindexFromSnapshot",
                 contextDir: "DocumentsFromSnapshotMigration/docker",
                 imageName:  "reindex_from_snapshot",
@@ -93,12 +91,6 @@ def buildKitProjects = [
                         ":DocumentsFromSnapshotMigration:copyDockerRuntimeJars",
                         ":DocumentsFromSnapshotMigration:syncVersionFile_reindexFromSnapshot"
                 ]
-        ],
-        [
-                serviceName: "elasticsearchTestConsole",
-                contextDir: "TrafficCapture/dockerSolution/src/main/docker/elasticsearchTestConsole",
-                imageName:  "elasticsearch_test_console",
-                imageTag:   "latest"
         ],
         [
                 serviceName: "migrationConsoleBase",

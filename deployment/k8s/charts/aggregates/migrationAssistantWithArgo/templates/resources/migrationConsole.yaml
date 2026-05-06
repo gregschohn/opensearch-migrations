@@ -134,6 +134,7 @@ spec:
         env: v1
     spec:
       serviceAccountName: migration-console-access-role
+      terminationGracePeriodSeconds: 65
       initContainers:
         - name: workflow-schema-generator
           image: {{ .Values.images.installer.repository }}:{{ .Values.images.installer.tag }}
@@ -251,6 +252,20 @@ spec:
             - "-c"
             - |
               /root/start-console.sh
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - "/bin/sh"
+                  - "-c" # For the time described, notice not just the sleep value but also the terminationGracePeriodSeconds on the pod
+                  - |
+                    if pgrep -x "bash|sh|zsh" | grep -v "^1$" > /dev/null; then
+                      msg=$'\n*** SYSTEM: Pod shutting down in 60s! Please exit your shell. ***\n'
+                      for tty in /dev/pts/*; do
+                        [ -w "$tty" ] && echo "$msg" > "$tty" 2>/dev/null || true
+                      done
+                      sleep 60
+                    fi
           volumeMounts:
             - name: workflow-schema
               mountPath: /root/schema

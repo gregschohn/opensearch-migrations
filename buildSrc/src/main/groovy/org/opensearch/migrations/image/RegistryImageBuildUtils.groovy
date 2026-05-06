@@ -365,10 +365,12 @@ class RegistryImageBuildUtils {
                                 if (dockerDir.exists()) {
                                     path { from = dockerDir; into = '/' }
                                 }
+                                // Always include build/docker so that tasks which stage files
+                                // there (e.g. stageTransformsForImage) are picked up even on
+                                // clean builds where the directory doesn't exist at config time.
                                 def buildDockerDir = project.file("build/docker")
-                                if (buildDockerDir.exists()) {
-                                    path { from = buildDockerDir; into = '/' }
-                                }
+                                buildDockerDir.mkdirs()
+                                path { from = buildDockerDir; into = '/' }
                                 path { from = project.file("build/versionDir"); into = '/' }
                             }
                             def extraPerms = (Map<String, String>) config.get("extraPermissions", [:])
