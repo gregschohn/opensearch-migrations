@@ -1171,7 +1171,7 @@ spec:
               --from-literal=password=admin \
               -n "{{inputs.parameters.namespace}}" \
               --dry-run=client -o yaml | \
-              kubectl label --local -f - migration-test=true cluster-name={{inputs.parameters.cluster-name}} -o yaml | \
+              kubectl label --local -f - migration-test=true cluster-name={{inputs.parameters.cluster-name}} use-case=http-basic-credentials -o yaml | \
               kubectl apply -f -
             
             # Generate cluster configuration output
@@ -1262,7 +1262,7 @@ spec:
               --from-literal=password="myStrongPassword123!" \
               -n "{{inputs.parameters.namespace}}" \
               --dry-run=client -o yaml | \
-              kubectl label --local -f - migration-test=true cluster-name={{inputs.parameters.cluster-name}} -o yaml | \
+              kubectl label --local -f - migration-test=true cluster-name={{inputs.parameters.cluster-name}} use-case=http-basic-credentials -o yaml | \
               kubectl apply -f -
             
             # Generate cluster configuration output
@@ -1356,6 +1356,7 @@ spec:
             labels:
               migration-test: "true"
               cluster-name: "{{inputs.parameters.cluster-name}}"
+              use-case: http-basic-credentials
           type: Opaque
           stringData:
             username: admin
