@@ -22,7 +22,7 @@ import lombok.extern.slf4j.Slf4j;
 public class SolrBackupIndexMetadataFactory implements IndexMetadata.Factory {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
-    private static final int DEFAULT_SOLR_MAJOR = 9;
+    private static final int DEFAULT_SOLR_MAJOR = 8;
     private final Path backupDir;
     private final Map<String, JsonNode> schemas;
     private final Consumer<String> collectionPreparer;

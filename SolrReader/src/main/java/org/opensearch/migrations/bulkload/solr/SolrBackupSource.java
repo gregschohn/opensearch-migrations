@@ -53,7 +53,7 @@ public class SolrBackupSource implements DocumentSource {
     private static final String INDEX_DIR_NAME = "index";
     private static final String SEGMENTS_FILE_PREFIX = "segments_";
     private static final ObjectMapper MAPPER = new ObjectMapper();
-    private static final int DEFAULT_SOLR_MAJOR = 9;
+    private static final int DEFAULT_SOLR_MAJOR = 8;
 
     private final Path backupDir;
     private final String collectionName;

@@ -33,7 +33,7 @@ import reactor.core.publisher.Flux;
 @Slf4j
 public class SolrMultiCollectionSource implements DocumentSource {
 
-    private static final int DEFAULT_SOLR_MAJOR = 9;
+    private static final int DEFAULT_SOLR_MAJOR = 8;
 
     private final Path backupDir;
     private final Map<String, JsonNode> schemas;
