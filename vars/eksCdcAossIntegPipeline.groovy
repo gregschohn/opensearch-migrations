@@ -9,7 +9,7 @@
  */
 
 def call(Map config = [:]) {
-    def defaultStageId = config.defaultStageId ?: "cdc-aoss"
+    def defaultStageId = config.defaultStageId ?: "aosscdc"
     def gitBranchDefault = config.gitBranchDefault ?: 'main'
     def jobName = config.jobName ?: "eks-cdc-aoss-integ-test"
     def defaultTestIds = config.defaultTestIds ?: "0034"
@@ -94,7 +94,7 @@ def call(Map config = [:]) {
                 }
             }
 
-            stage('Deploy Source & Bootstrap MA') {
+            stage('Deploy & Bootstrap MA') {
                 steps {
                     timeout(time: 150, unit: 'MINUTES') {
                         script {
@@ -123,7 +123,7 @@ def call(Map config = [:]) {
                 }
             }
 
-            stage('Deploy Source + AOSS Target') {
+            stage('Deploy Source & AOSS Target') {
                 steps {
                     timeout(time: 60, unit: 'MINUTES') {
                         dir('test') {
@@ -217,7 +217,7 @@ def call(Map config = [:]) {
                         dir('libraries/testAutomation') {
                             script {
                                 sh "pipenv install --deploy"
-                                withMigrationsTestAccount(region: params.REGION) { accountId ->
+                                withMigrationsTestAccount(region: params.REGION, duration: 14400) { accountId ->
                                     sh "pipenv run app --source-version=${env.sourceVer} --target-type=AOSS --test-ids='${params.TEST_IDS}' --reuse-clusters --skip-delete --skip-install --kube-context=${env.eksKubeContext}"
                                 }
                             }
