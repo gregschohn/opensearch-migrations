@@ -15,6 +15,7 @@ import lombok.extern.slf4j.Slf4j;
 import shadow.lucene9.org.apache.lucene.index.BinaryDocValues;
 import shadow.lucene9.org.apache.lucene.index.FieldInfo;
 import shadow.lucene9.org.apache.lucene.index.FilterCodecReader;
+import shadow.lucene9.org.apache.lucene.index.IndexOptions;
 import shadow.lucene9.org.apache.lucene.index.LeafReader;
 import shadow.lucene9.org.apache.lucene.index.NumericDocValues;
 import shadow.lucene9.org.apache.lucene.index.PointValues;
@@ -266,29 +267,45 @@ public class LeafReader9 implements LuceneLeafReader {
         if (terms == null) return;
         TermsEnum termsEnum = terms.iterator();
         BytesRef term;
-        int[] positions = new int[16];
+        int[] positions    = new int[16];
+        int[] startOffsets = new int[16];
+        int[] endOffsets   = new int[16];
+        // Only request OFFSETS when the field was actually indexed with them.
+        // Requesting OFFSETS on a POSITIONS-only field in Lucene 9.12 routes to
+        // EverythingEnum which reads the .pay file — but if no field in the segment
+        // has offsets/payloads, that file is never written and payIn == null, causing NPE.
+        FieldInfo fi = wrapped.getFieldInfos().fieldInfo(fieldName);
+        boolean fieldHasOffsets = fi != null
+            && fi.getIndexOptions().compareTo(IndexOptions.DOCS_AND_FREQS_AND_POSITIONS_AND_OFFSETS) >= 0;
+        int postingsFlags = fieldHasOffsets ? PostingsEnum.OFFSETS : PostingsEnum.POSITIONS;
         while ((term = termsEnum.next()) != null) {
             int termId = sink.registerTerm(
                 new org.opensearch.migrations.bulkload.lucene.sidecar.BytesRefLike(
                     term.bytes, term.offset, term.length));
-            PostingsEnum postings = termsEnum.postings(null, PostingsEnum.POSITIONS);
+            PostingsEnum postings = termsEnum.postings(null, postingsFlags);
             int doc;
             while ((doc = postings.nextDoc()) != PostingsEnum.NO_MORE_DOCS) {
                 int freq = postings.freq();
                 if (freq > positions.length) {
-                    positions = new int[Math.max(freq, positions.length * 2)];
+                    int newLen = Math.max(freq, positions.length * 2);
+                    positions    = new int[newLen];
+                    startOffsets = new int[newLen];
+                    endOffsets   = new int[newLen];
                 }
                 int n = 0;
                 for (int i = 0; i < freq; i++) {
                     int pos = postings.nextPosition();
-                    // Lucene returns negative positions (e.g. -1) when the field was
-                    // indexed without positions. Such tuples are not position-meaningful;
-                    // skip them so the sidecar stays well-defined and downstream
-                    // falls back to the single-term / keyword path.
                     if (pos < 0) continue;
-                    positions[n++] = pos;
+                    positions[n]    = pos;
+                    startOffsets[n] = fieldHasOffsets
+                        ? postings.startOffset()
+                        : org.opensearch.migrations.bulkload.lucene.sidecar.PostingsSink.NO_OFFSET;
+                    endOffsets[n]   = fieldHasOffsets
+                        ? postings.endOffset()
+                        : org.opensearch.migrations.bulkload.lucene.sidecar.PostingsSink.NO_OFFSET;
+                    n++;
                 }
-                if (n > 0) sink.accept(termId, doc, positions, n);
+                if (n > 0) sink.accept(termId, doc, positions, startOffsets, endOffsets, n);
             }
         }
     }
