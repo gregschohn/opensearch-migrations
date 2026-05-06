@@ -81,6 +81,12 @@ class SolrMetadataMigrationTest {
                 "-d", "[{\"id\":\"1\",\"title\":\"test\",\"count\":42,\"created\":\"2024-01-01T00:00:00Z\",\"description\":\"hello world\",\"active\":true}]"
             );
 
+            // Solr 6/7 SnapShooter.validateCreateSnapshot requires the snapshot directory to pre-exist;
+            // Solr 8+ creates it automatically.
+            if (major <= 7) {
+                solr.execInContainer("mkdir", "-p", "/var/solr/data/snapshot.meta_bak");
+            }
+
             // Create replication backup
             solr.execInContainer("curl", "-s",
                 "http://localhost:8983/solr/" + COLLECTION + "/replication?command=backup&location=/var/solr/data&name=meta_bak"
