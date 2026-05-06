@@ -542,17 +542,28 @@ def _complete_names(category):
         namespace = ctx.params.get('namespace', 'ma')
         workflow_name = ctx.params.get('workflow_name') or DEFAULT_WORKFLOW_NAME
         pre_approve = ctx.params.get('pre_approve', False)
+        selected_names = set(ctx.params.get('names') or ())
         try:
             load_k8s_config()
             gates = _gather_gates(namespace, workflow_name, category, pre_approve)
         except Exception:
             return []
+
+        completions = []
+        offered_names = set()
         # Offer display names (without the .vapretry suffix) for tab completion.
-        return [
-            CompletionItem(_display_name(g))
-            for g in gates
-            if _display_name(g).startswith(incomplete)
-        ]
+        for gate in gates:
+            display_name = _display_name(gate)
+            if (
+                not display_name.startswith(incomplete)
+                or display_name in selected_names
+                or gate.name in selected_names
+                or display_name in offered_names
+            ):
+                continue
+            completions.append(CompletionItem(display_name))
+            offered_names.add(display_name)
+        return completions
 
     return completer
 
