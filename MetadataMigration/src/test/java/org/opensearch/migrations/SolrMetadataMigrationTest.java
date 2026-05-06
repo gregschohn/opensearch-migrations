@@ -82,9 +82,10 @@ class SolrMetadataMigrationTest {
             );
 
             // Solr 6/7 SnapShooter.validateCreateSnapshot requires the snapshot directory to pre-exist;
-            // Solr 8+ creates it automatically.
+            // Solr 8+ creates it automatically.  Use sh -c so PATH is resolved by the shell
+            // rather than relying on Docker exec's minimal environment.
             if (major <= 7) {
-                solr.execInContainer("mkdir", "-p", "/var/solr/data/snapshot.meta_bak");
+                solr.execInContainer("sh", "-c", "mkdir -p /var/solr/data/snapshot.meta_bak");
             }
 
             // Create replication backup
