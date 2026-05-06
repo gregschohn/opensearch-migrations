@@ -50,6 +50,12 @@ class SolrMetadataMigrationTest {
     private static String numericIntType(int major) { return major <= 6 ? "tint" : "pint"; }
     private static String dateType(int major)       { return major <= 6 ? "tdate" : "pdate"; }
 
+    /** Solr 6/7 Docker images use /opt/solr/server/solr as SOLR_HOME; 8+ switched to /var/solr/data. */
+    private static String solrDataDir(int major)    { return major <= 7 ? "/opt/solr/server/solr" : "/var/solr/data"; }
+
+    /** Solr 9+ renamed managed-schema (no extension) to managed-schema.xml. */
+    private static String schemaFileName(int major) { return major >= 9 ? "managed-schema.xml" : "managed-schema"; }
+
     @ParameterizedTest(name = "Solr {0} → OS")
     @MethodSource("solrVersions")
     @Timeout(value = 5, unit = TimeUnit.MINUTES)
@@ -81,16 +87,13 @@ class SolrMetadataMigrationTest {
                 "-d", "[{\"id\":\"1\",\"title\":\"test\",\"count\":42,\"created\":\"2024-01-01T00:00:00Z\",\"description\":\"hello world\",\"active\":true}]"
             );
 
-            // Solr 6/7 SnapShooter.validateCreateSnapshot requires the snapshot directory to pre-exist;
-            // Solr 8+ creates it automatically.  Use sh -c so PATH is resolved by the shell
-            // rather than relying on Docker exec's minimal environment.
-            if (major <= 7) {
-                solr.execInContainer("sh", "-c", "mkdir -p /var/solr/data/snapshot.meta_bak");
-            }
+            // Solr 6: SOLR_HOME=/opt/solr/server/solr (parent already exists, snapshot dir must not pre-exist).
+            // Solr 8+: SOLR_HOME=/var/solr/data (Solr creates the snapshot dir automatically).
+            var dataDir = solrDataDir(major);
 
             // Create replication backup
             solr.execInContainer("curl", "-s",
-                "http://localhost:8983/solr/" + COLLECTION + "/replication?command=backup&location=/var/solr/data&name=meta_bak"
+                "http://localhost:8983/solr/" + COLLECTION + "/replication?command=backup&location=" + dataDir + "&name=meta_bak"
             );
             waitForBackup(solr, COLLECTION, 30);
 
@@ -102,7 +105,7 @@ class SolrMetadataMigrationTest {
             Files.createDirectories(collectionDir);
 
             // Copy snapshot files so discoverCollections finds the collection
-            var snapshotDir = "/var/solr/data/snapshot.meta_bak";
+            var snapshotDir = dataDir + "/snapshot.meta_bak";
             var listResult = solr.execInContainer("ls", snapshotDir);
             for (var fileName : listResult.getStdout().trim().split("\n")) {
                 if (fileName.isEmpty()) continue;
@@ -116,7 +119,7 @@ class SolrMetadataMigrationTest {
             var configDir = collectionDir.resolve("zk_backup_0").resolve("configs").resolve("_default");
             Files.createDirectories(configDir);
             solr.copyFileFromContainer(
-                "/var/solr/data/" + COLLECTION + "/conf/managed-schema",
+                dataDir + "/" + COLLECTION + "/conf/" + schemaFileName(major),
                 configDir.resolve("managed-schema.xml").toString()
             );
 
