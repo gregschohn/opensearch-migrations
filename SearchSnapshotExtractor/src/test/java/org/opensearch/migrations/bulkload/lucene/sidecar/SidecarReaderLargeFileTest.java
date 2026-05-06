@@ -59,13 +59,14 @@ class SidecarReaderLargeFileTest {
         Path docIndexFile = spillDir.resolve(SidecarBuilder.DOC_INDEX_FILE);
         writeLongsLE(docIndexFile, 0L, OFFSET_BEYOND_INT);
 
-        // terms.dat: one term "alpha" as BE int32 length + UTF-8 bytes.
+        // terms.dat: one term "alpha" as VInt length + UTF-8 bytes (matches SidecarBuilder format).
         Path termsFile = spillDir.resolve(SidecarBuilder.TERMS_FILE);
         byte[] termBytes = "alpha".getBytes(StandardCharsets.UTF_8);
         try (FileChannel ch = FileChannel.open(termsFile,
                 StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE)) {
-            ByteBuffer buf = ByteBuffer.allocate(4 + termBytes.length).order(ByteOrder.BIG_ENDIAN);
-            buf.putInt(termBytes.length);
+            // termBytes.length = 5 fits in a single VInt byte.
+            ByteBuffer buf = ByteBuffer.allocate(1 + termBytes.length).order(ByteOrder.LITTLE_ENDIAN);
+            buf.put((byte) termBytes.length);
             buf.put(termBytes);
             buf.flip();
             while (buf.hasRemaining()) ch.write(buf);

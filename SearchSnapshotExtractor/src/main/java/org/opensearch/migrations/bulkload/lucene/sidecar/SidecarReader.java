@@ -1,51 +1,44 @@
 package org.opensearch.migrations.bulkload.lucene.sidecar;
 
 import java.io.IOException;
-import java.nio.ByteOrder;
-import java.nio.channels.FileChannel;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
 import lombok.extern.slf4j.Slf4j;
+import shadow.lucene10.org.apache.lucene.store.IOContext;
+import shadow.lucene10.org.apache.lucene.store.IndexInput;
+import shadow.lucene10.org.apache.lucene.store.MMapDirectory;
+import shadow.lucene10.org.apache.lucene.store.RandomAccessInput;
 
 /**
  * Reads a sidecar built by {@link SidecarBuilder}. Answers {@code get(docId) -> List<String>}
- * using mmap'd lookups with zero heap allocation beyond the returned {@code ArrayList}.
+ * using {@link MMapDirectory}-backed {@link IndexInput}s with zero heap allocation beyond
+ * the returned {@link ArrayList}.
  *
  * <p>File layout (all files live in a per-(segment, field) spill directory):
  * <pre>
- *   terms.dat          - sequence of int32 length | bytes[length] records, one per termId
+ *   terms.dat          - sequence of VInt(length) | bytes[length] records, one per termId
  *   term-offsets.dat   - little-endian long[numTerms] of byte offsets into terms.dat
- *   sidecar.dat        - for each doc that has tokens, a uvint(numEntries) header followed by
- *                        numEntries pairs of (uvint positionDelta, uvint termId)
+ *   sidecar.dat        - for each doc that has tokens, a VInt(numEntries) header followed by
+ *                        numEntries pairs of (VInt positionDelta, VInt termId)
  *   doc-index.dat      - little-endian long[maxDoc] of absolute offsets into sidecar.dat,
- *                        or SidecarBuilder.DOC_INDEX_NO_TOKENS for docs with no tokens
+ *                        or {@link SidecarBuilder#DOC_INDEX_NO_TOKENS} for docs with no tokens
  * </pre>
  *
- * <p>The four mmap views are wrapped in {@link ChunkedByteBuffer} so that files larger
- * than {@link Integer#MAX_VALUE} bytes (which {@code FileChannel.map} rejects in one call)
- * are transparently mapped as a series of chunks. Files ≤1 GiB still take a single-mmap
- * fast path.
+ * <p>The four backing files are opened via {@link MMapDirectory}, which natively handles
+ * files exceeding the 2 GiB single-mmap limit (chunked mmap under the hood). The two long[]
+ * lookup tables ({@code term-offsets.dat}, {@code doc-index.dat}) are accessed through
+ * {@link RandomAccessInput#readLong(long)} for positional reads without a sequential seek.
  *
- * <p>Heap footprint per open reader:
- *   <ul>
- *     <li>A mmap'd view over each of the four files. The OS pages in what the access
- *         pattern touches; heap is a handful of direct-buffer wrappers.
- *     <li>No long[] docOffsets in heap - doc offsets live in doc-index.dat. For a 600 GB
- *         shard with 20M docs that's 160 MB of OS page cache, not 160 MB heap.
- *     <li>No int[] termOffsets in heap - term offsets live in term-offsets.dat.
- *     <li>Term bytes read on demand; one small reusable byte[] per {@link #get} call is
- *         the only transient heap.
- *   </ul>
+ * <p>Heap footprint per open reader: one {@link MMapDirectory}, four {@link IndexInput}
+ * handles, and two {@link RandomAccessInput} views. The OS pages in what {@link #get}
+ * touches; no heap-resident offset tables.
  *
- * <p>Thread-safety: {@link #get(int)} allocates a fresh {@link ChunkedByteBuffer.Cursor}
- * on each call so concurrent readers each get their own position state. Positional
- * {@code getInt}/{@code getLong} on the shared {@link ChunkedByteBuffer} do not mutate
- * any shared state. Opening and closing are not concurrent-safe.
+ * <p>Thread-safety: {@link #get(int)} clones the per-doc {@link IndexInput}s so concurrent
+ * readers each get their own position state. {@link RandomAccessInput} positional reads do
+ * not mutate shared state. Opening and closing are not concurrent-safe.
  */
 @Slf4j
 public final class SidecarReader implements AutoCloseable {
@@ -54,82 +47,68 @@ public final class SidecarReader implements AutoCloseable {
     private final int maxDoc;
     private final int numTerms;
 
-    private final FileChannel termsChannel;
-    private final FileChannel termOffsetsChannel;
-    private final FileChannel sidecarChannel;
-    private final FileChannel docIndexChannel;
-
-    private final ChunkedByteBuffer termsBuf;
-    private final ChunkedByteBuffer termOffsetsBuf;  // little-endian int[numTerms]
-    private final ChunkedByteBuffer sidecarBuf;
-    private final ChunkedByteBuffer docIndexBuf;     // little-endian long[maxDoc]
+    private final MMapDirectory dir;
+    private final IndexInput termsInput;
+    private final IndexInput termOffsetsInput;
+    private final IndexInput sidecarInput;
+    private final IndexInput docIndexInput;
+    private final RandomAccessInput termOffsetsRA;
+    private final RandomAccessInput docIndexRA;
 
     private volatile boolean closed;
 
     private SidecarReader(Path spillDir,
                           int maxDoc,
                           int numTerms,
-                          FileChannel termsChannel,
-                          FileChannel termOffsetsChannel,
-                          FileChannel sidecarChannel,
-                          FileChannel docIndexChannel,
-                          ChunkedByteBuffer termsBuf,
-                          ChunkedByteBuffer termOffsetsBuf,
-                          ChunkedByteBuffer sidecarBuf,
-                          ChunkedByteBuffer docIndexBuf) {
+                          MMapDirectory dir,
+                          IndexInput termsInput,
+                          IndexInput termOffsetsInput,
+                          IndexInput sidecarInput,
+                          IndexInput docIndexInput,
+                          RandomAccessInput termOffsetsRA,
+                          RandomAccessInput docIndexRA) {
         this.spillDir = spillDir;
         this.maxDoc = maxDoc;
         this.numTerms = numTerms;
-        this.termsChannel = termsChannel;
-        this.termOffsetsChannel = termOffsetsChannel;
-        this.sidecarChannel = sidecarChannel;
-        this.docIndexChannel = docIndexChannel;
-        this.termsBuf = termsBuf;
-        this.termOffsetsBuf = termOffsetsBuf;
-        this.sidecarBuf = sidecarBuf;
-        this.docIndexBuf = docIndexBuf;
+        this.dir = dir;
+        this.termsInput = termsInput;
+        this.termOffsetsInput = termOffsetsInput;
+        this.sidecarInput = sidecarInput;
+        this.docIndexInput = docIndexInput;
+        this.termOffsetsRA = termOffsetsRA;
+        this.docIndexRA = docIndexRA;
     }
 
     /**
      * Opens a sidecar previously produced by {@link SidecarBuilder#buildAndOpenReader()}
-     * in {@code spillDir}. mmaps all four files (chunked if any exceeds the 2 GiB single-mmap
-     * limit) and caches their endian-configured views.
+     * in {@code spillDir}. Uses {@link MMapDirectory} for transparent >2GiB file support.
      */
     static SidecarReader open(Path spillDir, int maxDoc, int numTerms) throws IOException {
-        return open(spillDir, maxDoc, numTerms, ChunkedByteBuffer.DEFAULT_CHUNK_SIZE);
-    }
+        MMapDirectory dir = new MMapDirectory(spillDir);
+        IndexInput termsInput = null;
+        IndexInput termOffsetsInput = null;
+        IndexInput sidecarInput = null;
+        IndexInput docIndexInput = null;
+        try {
+            termsInput       = dir.openInput(SidecarBuilder.TERMS_FILE,        IOContext.DEFAULT);
+            termOffsetsInput = dir.openInput(SidecarBuilder.TERM_OFFSETS_FILE, IOContext.DEFAULT);
+            sidecarInput     = dir.openInput(SidecarBuilder.SIDECAR_FILE,      IOContext.DEFAULT);
+            docIndexInput    = dir.openInput(SidecarBuilder.DOC_INDEX_FILE,    IOContext.DEFAULT);
 
-    /**
-     * Package-private variant that accepts a custom chunk size. Exposed so chunk-boundary
-     * tests can force small chunks without fabricating multi-GiB fixtures.
-     */
-    static SidecarReader open(Path spillDir, int maxDoc, int numTerms, long chunkSize) throws IOException {
-        Path termsFile        = spillDir.resolve(SidecarBuilder.TERMS_FILE);
-        Path termOffsetsFile  = spillDir.resolve(SidecarBuilder.TERM_OFFSETS_FILE);
-        Path sidecarFile      = spillDir.resolve(SidecarBuilder.SIDECAR_FILE);
-        Path docIndexFile     = spillDir.resolve(SidecarBuilder.DOC_INDEX_FILE);
+            RandomAccessInput termOffsetsRA = termOffsetsInput.randomAccessSlice(0L, termOffsetsInput.length());
+            RandomAccessInput docIndexRA    = docIndexInput.randomAccessSlice(0L, docIndexInput.length());
 
-        FileChannel termsCh = FileChannel.open(termsFile, StandardOpenOption.READ);
-        FileChannel termOffsetsCh = FileChannel.open(termOffsetsFile, StandardOpenOption.READ);
-        FileChannel sidecarCh = FileChannel.open(sidecarFile, StandardOpenOption.READ);
-        FileChannel docIndexCh = FileChannel.open(docIndexFile, StandardOpenOption.READ);
-
-        // terms.dat is length-prefixed with big-endian int32 (DataOutputStream.writeInt).
-        ChunkedByteBuffer termsBuf = ChunkedByteBuffer.open(termsCh, chunkSize);
-        termsBuf.order(ByteOrder.BIG_ENDIAN);
-
-        ChunkedByteBuffer termOffsetsBuf = ChunkedByteBuffer.open(termOffsetsCh, chunkSize);
-        termOffsetsBuf.order(ByteOrder.LITTLE_ENDIAN);
-
-        ChunkedByteBuffer sidecarBuf = ChunkedByteBuffer.open(sidecarCh, chunkSize);
-        sidecarBuf.order(ByteOrder.LITTLE_ENDIAN);
-
-        ChunkedByteBuffer docIndexBuf = ChunkedByteBuffer.open(docIndexCh, chunkSize);
-        docIndexBuf.order(ByteOrder.LITTLE_ENDIAN);
-
-        return new SidecarReader(spillDir, maxDoc, numTerms,
-                termsCh, termOffsetsCh, sidecarCh, docIndexCh,
-                termsBuf, termOffsetsBuf, sidecarBuf, docIndexBuf);
+            return new SidecarReader(spillDir, maxDoc, numTerms, dir,
+                    termsInput, termOffsetsInput, sidecarInput, docIndexInput,
+                    termOffsetsRA, docIndexRA);
+        } catch (Throwable t) {
+            closeQuietly(termsInput);
+            closeQuietly(termOffsetsInput);
+            closeQuietly(sidecarInput);
+            closeQuietly(docIndexInput);
+            closeQuietly(dir);
+            throw t;
+        }
     }
 
     /**
@@ -139,60 +118,56 @@ public final class SidecarReader implements AutoCloseable {
     public List<String> get(int docId) throws IOException {
         if (closed) throw new IOException("SidecarReader has been closed");
         if (docId < 0 || docId >= maxDoc) return Collections.emptyList();
-        long offset = readDocOffset(docId);
+        long offset = docIndexRA.readLong((long) docId * 8L);
         if (offset == SidecarBuilder.DOC_INDEX_NO_TOKENS) return Collections.emptyList();
         if (offset < 0) {
             throw new IOException("Sidecar offset out of range: " + offset);
         }
-        // Fresh cursor per call gives concurrent readers their own position state.
-        ChunkedByteBuffer.Cursor cur = sidecarBuf.cursor(offset);
-        int numEntries = VarintCoder.readUVInt(cur);
+        // Fresh clone per call gives concurrent readers their own position state.
+        IndexInput in = sidecarInput.clone();
+        in.seek(offset);
+        int numEntries = in.readVInt();
         List<String> result = new ArrayList<>(numEntries);
         for (int i = 0; i < numEntries; i++) {
-            // Positions are delta-encoded in the on-disk format, but this reader returns
-            // only the term strings for each token — callers use the list's iteration
-            // order to reconstruct positional order. Skip the position delta.
-            VarintCoder.readUVInt(cur);
-            int termId = VarintCoder.readUVInt(cur);
+            // Positions are delta-encoded in the on-disk format; readers only return
+            // term strings, relying on list iteration order to reconstruct positional order.
+            in.readVInt();
+            int termId = in.readVInt();
             result.add(readTerm(termId));
         }
         return result;
-    }
-
-    private long readDocOffset(int docId) {
-        // doc-index.dat is long[maxDoc] little-endian.
-        return docIndexBuf.getLong((long) docId * 8);
     }
 
     private String readTerm(int termId) throws IOException {
         if (termId < 0 || termId >= numTerms) {
             throw new IOException("termId out of range: " + termId + " (numTerms=" + numTerms + ")");
         }
-        long termOffset = termOffsetsBuf.getLong((long) termId * 8);
-        ChunkedByteBuffer.Cursor cur = termsBuf.cursor(termOffset);
-        int len = cur.readInt();
+        long termOffset = termOffsetsRA.readLong((long) termId * 8L);
+        IndexInput in = termsInput.clone();
+        in.seek(termOffset);
+        int len = in.readVInt();
         byte[] bytes = new byte[len];
-        cur.readBytes(bytes);
-        return new String(bytes, StandardCharsets.UTF_8);
+        in.readBytes(bytes, 0, len);
+        return new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
     }
 
     @Override
     public void close() {
         if (closed) return;
         closed = true;
-        closeQuietly(termsChannel);
-        closeQuietly(termOffsetsChannel);
-        closeQuietly(sidecarChannel);
-        closeQuietly(docIndexChannel);
+        // RandomAccessInput views don't own channels; the backing IndexInputs do.
+        closeQuietly(termsInput);
+        closeQuietly(termOffsetsInput);
+        closeQuietly(sidecarInput);
+        closeQuietly(docIndexInput);
+        closeQuietly(dir);
     }
 
-    private static void closeQuietly(java.io.Closeable c) {
+    private static void closeQuietly(AutoCloseable c) {
         if (c == null) return;
         try {
             c.close();
-        } catch (IOException e) {
-            // Best-effort close on a mmap channel — the backing file is owned by this
-            // reader and is about to be unmapped regardless.
+        } catch (Exception e) {
             log.debug("Ignored close error in SidecarReader: {}", e.toString());
         }
     }
