@@ -593,22 +593,56 @@ public class SolrSnapshotToOpenSearchTest {
     private Path createStandaloneBackup(
         SolrClusterContainer solr, String collection, String backupName, Path backupRoot
     ) throws Exception {
-        solr.execInContainer("curl", "-s",
-            "http://localhost:8983/solr/" + collection
-                + "/replication?command=backup&location=/var/solr/data&name=" + backupName);
-        waitForStandaloneBackup(solr, collection, 30);
+        // Probe for the actual writable Solr data directory.
+        // Solr 6/7 docker uses /opt/solr/server/solr; Solr 8/9 uses /var/solr/data.
+        var probe = solr.execInContainer("sh", "-c",
+            "for d in /var/solr/data /opt/solr/server/solr; do "
+            + "  if [ -d \"$d\" ] && [ -w \"$d\" ]; then echo \"$d\"; break; fi; "
+            + "done");
+        var solrDataDir = probe.getStdout().trim();
+        if (solrDataDir.isEmpty()) {
+            throw new RuntimeException("No writable Solr data directory found in container");
+        }
 
-        var snapshotDir = "/var/solr/data/snapshot." + backupName;
+        var trigger = solr.execInContainer("curl", "-s",
+            "http://localhost:8983/solr/" + collection
+                + "/replication?command=backup&location=" + solrDataDir + "&name=" + backupName);
+        log.atInfo().setMessage("Backup trigger response: {}").addArgument(trigger.getStdout()).log();
+
+        var snapshotDir = solrDataDir + "/snapshot." + backupName;
+        // Poll on the filesystem signal (segments_* present in snapshot dir), which works
+        // identically across Solr 6/7/8/9 regardless of the JSON details response shape.
+        boolean ready = false;
+        for (int i = 0; i < 60; i++) {
+            var find = solr.execInContainer("sh", "-c",
+                "find " + snapshotDir + " -name 'segments_*' -type f 2>/dev/null | head -1");
+            if (!find.getStdout().trim().isEmpty()) {
+                ready = true;
+                break;
+            }
+            Thread.sleep(1000);
+        }
+        if (!ready) {
+            var listing = solr.execInContainer("sh", "-c",
+                "ls -laR " + solrDataDir + " 2>&1 | head -200");
+            throw new RuntimeException(
+                "Backup did not produce a segments_* file under " + snapshotDir + " within 60s.\n"
+                + "Trigger response: " + trigger.getStdout() + "\n"
+                + "Container " + solrDataDir + " listing:\n" + listing.getStdout());
+        }
+
         var collectionDir = backupRoot.resolve(collection);
         Files.createDirectories(collectionDir);
 
-        var listResult = solr.execInContainer("ls", snapshotDir);
-        for (var fileName : listResult.getStdout().trim().split("\n")) {
-            if (fileName.isEmpty()) continue;
-            solr.copyFileFromContainer(
-                snapshotDir + "/" + fileName,
-                collectionDir.resolve(fileName).toString()
-            );
+        // Recursive copy — robust to any nested layout differences across Solr versions.
+        var findResult = solr.execInContainer("find", snapshotDir, "-type", "f");
+        for (var line : findResult.getStdout().trim().split("\n")) {
+            if (line.isEmpty()) continue;
+            var rel = line.substring(snapshotDir.length()).replaceFirst("^/", "");
+            var localFile = collectionDir.resolve(rel);
+            var parent = localFile.getParent();
+            if (parent != null) Files.createDirectories(parent);
+            solr.copyFileFromContainer(line, localFile.toString());
         }
         return backupRoot;
     }
@@ -616,7 +650,18 @@ public class SolrSnapshotToOpenSearchTest {
     private Path createCloudBackup(
         SolrClusterContainer solr, String collection, String backupName, Path backupRoot
     ) throws Exception {
-        var backupLocation = "/var/solr/data/backups";
+        // Probe for the actual writable Solr data directory (Solr 6/7 docker uses
+        // /opt/solr/server/solr; Solr 8/9 uses /var/solr/data). Solr 9's solr.allowPaths
+        // also restricts BACKUP locations to SOLR_HOME, so we must stay within it.
+        var probe = solr.execInContainer("sh", "-c",
+            "for d in /var/solr/data /opt/solr/server/solr; do "
+            + "  if [ -d \"$d\" ] && [ -w \"$d\" ]; then echo \"$d\"; break; fi; "
+            + "done");
+        var solrDataDir = probe.getStdout().trim();
+        if (solrDataDir.isEmpty()) {
+            throw new RuntimeException("No writable Solr data directory found in container");
+        }
+        var backupLocation = solrDataDir + "/backups";
         solr.execInContainer("mkdir", "-p", backupLocation);
 
         solr.execInContainer("curl", "-s",
@@ -624,10 +669,45 @@ public class SolrSnapshotToOpenSearchTest {
                 + "&name=" + backupName + "&collection=" + collection
                 + "&location=" + backupLocation + "&wt=json");
 
-        // Collections API BACKUP is synchronous (no async ID used here), but wait for files
-        Thread.sleep(2000);
+        // Poll on filesystem completion signals. Layout differs by version:
+        //   - Solr 6/7 non-incremental: writes <backupName>/snapshot.shardN/segments_* + zk_backup/
+        //   - Solr 8.x non-incremental (default): writes <backupName>/<collection>/<shardN>/segments_*
+        //   - Solr 8.9+/9 incremental: writes <backupName>/<collection>/index/<UUID files> +
+        //     shard_backup_metadata/md_shardN_0.json + backup_0.properties (NO segments_* file)
+        // Accept any of: segments_* file (non-incremental), or md_*.json + backup_*.properties
+        // pair (incremental). The pair is required so we don't trigger on a partial write.
+        boolean ready = false;
+        for (int i = 0; i < 60; i++) {
+            var check = solr.execInContainer("sh", "-c",
+                "BACKUP=" + backupLocation + "/" + backupName + "; "
+                + "if find \"$BACKUP\" -name 'segments_*' -type f 2>/dev/null | grep -q .; then echo OK; "
+                + "elif find \"$BACKUP\" -name 'backup_*.properties' -type f 2>/dev/null | grep -q . "
+                + "  && find \"$BACKUP\" -name 'md_*.json' -type f 2>/dev/null | grep -q .; then echo OK; "
+                + "fi");
+            if (check.getStdout().trim().equals("OK")) {
+                ready = true;
+                break;
+            }
+            Thread.sleep(1000);
+        }
+        if (!ready) {
+            var listing = solr.execInContainer("sh", "-c",
+                "ls -laR " + backupLocation + " 2>&1 | head -200");
+            throw new RuntimeException(
+                "SolrCloud BACKUP did not complete under " + backupLocation
+                + "/" + backupName + " within 60s.\nContainer listing:\n" + listing.getStdout());
+        }
 
-        var containerBackupDir = backupLocation + "/" + backupName + "/" + collection;
+        // Detect which layout Solr produced. Existing tests expect
+        // backupRoot.resolve(<collection>) to be the data dir, so we copy from the right
+        // source on each side:
+        //   - Incremental (Solr 8.9+/9): <backupLocation>/<backupName>/<collection>/...
+        //   - Non-incremental (Solr 6/7 only option, Solr 8.x default): <backupLocation>/<backupName>/...
+        var checkColl = solr.execInContainer("sh", "-c",
+            "test -d " + backupLocation + "/" + backupName + "/" + collection + " && echo yes || echo no");
+        String containerBackupDir = checkColl.getStdout().trim().equals("yes")
+            ? backupLocation + "/" + backupName + "/" + collection
+            : backupLocation + "/" + backupName;
         var collectionDir = backupRoot.resolve(collection);
         copyDirectoryFromContainer(solr, containerBackupDir, collectionDir);
         return backupRoot;
@@ -646,17 +726,6 @@ public class SolrSnapshotToOpenSearchTest {
             Files.createDirectories(localFile.getParent());
             solr.copyFileFromContainer(line, localFile.toString());
         }
-    }
-
-    private void waitForStandaloneBackup(SolrClusterContainer solr, String collection, int maxSeconds)
-        throws Exception {
-        for (int i = 0; i < maxSeconds; i++) {
-            var result = solr.execInContainer("curl", "-s",
-                "http://localhost:8983/solr/" + collection + "/replication?command=details&wt=json");
-            if (result.getStdout().contains("success")) return;
-            Thread.sleep(1000);
-        }
-        throw new RuntimeException("Backup did not complete within " + maxSeconds + "s");
     }
 
     private static void verifyDocCount(SearchClusterContainer cluster, String indexName, int expected) {
