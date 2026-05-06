@@ -8,6 +8,8 @@ import java.time.format.DateTimeFormatter;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.opensearch.migrations.bulkload.common.ObjectMapperFactory;
 
@@ -24,6 +26,11 @@ public class SourceReconstructor {
     private static final BigInteger UNSIGNED_LONG_MASK = BigInteger.ONE.shiftLeft(64).subtract(BigInteger.ONE);
 
     private SourceReconstructor() {}
+
+    // Dedup set for the "cannot nest under scalar" warning — the intent is "warn once per
+    // (fieldName, collidingParent, scalarType) tuple" so operators see the class of problem
+    // without the log being flooded once per document reconstructed.
+    private static final Set<String> WARNED_NEST_COLLISIONS = ConcurrentHashMap.newKeySet();
 
     /**
      * Skip internal fields (e.g., _id) and multi-field sub-fields (e.g., title.keyword).
@@ -117,14 +124,19 @@ public class SourceReconstructor {
                 String leafForList = parts[parts.length - 1];
                 return distributeSubfieldAcrossList((java.util.List<Object>) list, leafForList, value, fieldName);
             } else {
-                // Non-map already sits at this path — cannot nest under a scalar. Warn once so
-                // operators notice the dropped subfield instead of it disappearing silently.
-                log.atWarn()
-                    .setMessage("Cannot write nested field '{}' under scalar at '{}' (type {}); dropping recovered value")
-                    .addArgument(fieldName)
-                    .addArgument(parts[i])
-                    .addArgument(next.getClass().getSimpleName())
-                    .log();
+                // Non-map already sits at this path — cannot nest under a scalar. Warn once
+                // per (field, collidingParent, scalarType) tuple so operators notice the
+                // dropped subfield without the log being flooded per document.
+                String scalarType = next.getClass().getSimpleName();
+                String warnKey = fieldName + '\0' + parts[i] + '\0' + scalarType;
+                if (WARNED_NEST_COLLISIONS.add(warnKey)) {
+                    log.atWarn()
+                        .setMessage("Cannot write nested field '{}' under scalar at '{}' (type {}); dropping recovered value (further occurrences silenced)")
+                        .addArgument(fieldName)
+                        .addArgument(parts[i])
+                        .addArgument(scalarType)
+                        .log();
+                }
                 return false;
             }
         }
