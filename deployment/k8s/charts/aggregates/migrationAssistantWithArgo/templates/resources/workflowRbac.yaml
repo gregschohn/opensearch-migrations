@@ -44,8 +44,13 @@ rules:
 
   # OpenSearch migration custom resources
   - apiGroups: ["migrations.opensearch.org"]
-    resources: ["approvalgates", "capturedtraffics", "captureproxies", "datasnapshots", "kafkaclusters", "snapshotmigrations", "trafficreplays",
-                "approvalgates/status", "capturedtraffics/status", "captureproxies/status", "datasnapshots/status", "kafkaclusters/status", "snapshotmigrations/status", "trafficreplays/status"]
+    resources: ["approvalgates",      "approvalgates/status",
+                "capturedtraffics",   "capturedtraffics/status",
+                "captureproxies",     "captureproxies/status",
+                "datasnapshots",      "datasnapshots/status",
+                "kafkaclusters",      "kafkaclusters/status",
+                "snapshotmigrations", "snapshotmigrations/status",
+                "trafficreplays",     "trafficreplays/status"]
     verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
 
   # Kafka resources permissions

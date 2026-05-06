@@ -22,6 +22,23 @@ describe("expression type contracts", () => {
         expr.literal([{foo: 2}]);
     });
 
+    it("expr.literal() rejects bare Argo template delimiters", () => {
+        const assertCompileTimeRejections = () => {
+            const acceptsStringExpression = (_value: BaseExpression<string>) => {};
+
+            // @ts-expect-error - raw Argo template delimiters must use expression helpers
+            acceptsStringExpression(expr.literal("{{"));
+
+            // @ts-expect-error - raw Argo template delimiters must use expression helpers
+            acceptsStringExpression(expr.literal("}}"));
+
+            // @ts-expect-error - raw Argo template delimiters must use expression helpers
+            acceptsStringExpression(expr.literal("{{workflow.name}}"));
+        };
+
+        expectTypeOf(expr.literal("plain")).toEqualTypeOf<BaseExpression<string, "govaluate">>();
+    });
+
     it("expr.equals() enforces same-scalar comparisons and returns boolean", () => {
         const a = expr.literal("a");// as SimpleExpression<string>;
         const b = expr.literal("b");

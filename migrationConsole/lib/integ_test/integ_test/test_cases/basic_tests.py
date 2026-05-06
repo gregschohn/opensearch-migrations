@@ -14,7 +14,11 @@ class Test0001SingleDocumentBackfill(MATestBase):
                          description=description,
                          migrations_required=migrations_required,
                          allow_source_target_combinations=RFS_MIGRATION_COMBINATIONS)
-        self.index_name = f"test_0001_{self.unique_id}"
+        # Use an index name containing the work-coordinator separator ('__') to pin the fix
+        # for opensearch-project/opensearch-migrations#2880 — prior to that fix, any index
+        # whose name contained '__' was silently unmigratable because the work-item id
+        # parser split on the first two occurrences of the separator.
+        self.index_name = f"test__0001__{self.unique_id}"
         self.doc_id = "test_0001_doc"
         self.doc_type = "sample_type"
         self.source_cluster = None
