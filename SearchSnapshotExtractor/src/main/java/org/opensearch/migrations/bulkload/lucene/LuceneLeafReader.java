@@ -7,7 +7,6 @@ import java.util.Map;
 import java.util.Optional;
 
 import org.opensearch.migrations.bulkload.lucene.sidecar.PostingsSink;
-import org.opensearch.migrations.bulkload.lucene.sidecar.SidecarReader;
 import org.opensearch.migrations.bulkload.lucene.sidecar.SingleTermSink;
 import org.opensearch.migrations.bulkload.lucene.sidecar.TermEntry;
 
