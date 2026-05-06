@@ -15,14 +15,14 @@ There are certain requirements for imported and created VPCs used in this soluti
 Docker is used by CDK to build container images. If not installed, follow the steps [here](https://docs.docker.com/engine/install/) to set up. Later versions are recommended.
 ###### Git
 Git is used by the opensearch-migrations repo to fetch associated repositories. Steps to set up can be found [here](https://github.com/git-guides/install-git).
-###### Java 11
-Java is used by the opensearch-migrations repo and Gradle, its associated build tool. The current required version is Java 11.
+###### Java 21
+Java is used by the opensearch-migrations repo and Gradle, its associated build tool. The current required version is Java 21.
 
 ### Project required setup
 
 1- It is necessary to run `npm install` within this current directory to install required packages that this app and CDK need for operation.
 
-2- Creating Docker Images: This project needs to build the required Docker images that the CDK will use in its services. These images can be built by running the below script which is located in the same directory as this README
+2- Creating Docker Images: This project needs to build the required Docker images that the CDK will use in its services. These images can be built by running the below script which is located in the same directory as this README:
 ```shell
 ./buildDockerImages.sh
 ```

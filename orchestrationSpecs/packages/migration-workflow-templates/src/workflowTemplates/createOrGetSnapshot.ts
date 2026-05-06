@@ -57,7 +57,6 @@ export const CreateOrGetSnapshot = WorkflowBuilder.create({
         .addRequiredInput("sourceConfig", typeToken<z.infer<typeof NAMED_SOURCE_CLUSTER_CONFIG_WITHOUT_SNAPSHOT_INFO>>())
         .addRequiredInput("snapshotConfig", typeToken<z.infer<typeof DYNAMIC_SNAPSHOT_CONFIG>>())
         .addRequiredInput("snapshotPrefix", typeToken<string>())
-        .addRequiredInput("targetLabel", typeToken<string>())
         .addRequiredInput("uniqueRunNonce", typeToken<string>())
         .addRequiredInput("semaphoreConfigMapName", typeToken<string>())
         .addRequiredInput("semaphoreKey", typeToken<string>())
