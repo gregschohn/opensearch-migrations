@@ -43,6 +43,7 @@ import {ImageParameters, LogicalOciImages, makeRequiredImageParametersForKeys} f
 import {SetupKafka} from "./setupKafka";
 import {SetupCapture} from "./setupCapture";
 import {Replayer} from "./replayer";
+import {CONTAINER_TEMPLATE_RETRY_STRATEGY} from "./commonUtils/resourceRetryStrategy";
 
 const SECONDS_IN_DAYS = 24 * 3600;
 const LONGEST_POSSIBLE_MIGRATION = 365 * SECONDS_IN_DAYS;
@@ -106,13 +107,16 @@ export const FullMigration = WorkflowBuilder.create({
             .addResources(DEFAULT_RESOURCES.SHELL_MIGRATION_CONSOLE_CLI)
             .addCommand(["/bin/bash", "-lc"])
             .addArgs([`
+set -euo pipefail
+
 selector='migrations.opensearch.org/workflow={{workflow.name}}'
 patch='{"metadata":{"ownerReferences":[{"apiVersion":"argoproj.io/v1alpha1","kind":"Workflow","name":"{{workflow.name}}","uid":"{{workflow.uid}}"}]}}'
+
 kubectl get approvalgates.migrations.opensearch.org -l "$selector" -o name \\
-  | xargs -r -n 1 kubectl patch --type merge -p "$patch" \\
-  || echo "WARN: failed to patch one or more approvalgate ownerReferences" >&2
+  | xargs -r -n 1 kubectl patch --type merge -p "$patch"
 `])
         )
+        .addRetryParameters(CONTAINER_TEMPLATE_RETRY_STRATEGY)
     )
 
 
@@ -123,11 +127,14 @@ kubectl get approvalgates.migrations.opensearch.org -l "$selector" -o name \\
             .addResources(DEFAULT_RESOURCES.SHELL_MIGRATION_CONSOLE_CLI)
             .addCommand(["/bin/bash", "-lc"])
             .addArgs([`
+set -euo pipefail
+
 kubectl delete approvalgates.migrations.opensearch.org \\
   -l "migrations.opensearch.org/workflow={{workflow.name}}" \\
-  --ignore-not-found || true
+  --ignore-not-found
 `])
         )
+        .addRetryParameters(CONTAINER_TEMPLATE_RETRY_STRATEGY)
     )
 
 
