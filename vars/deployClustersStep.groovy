@@ -2,7 +2,7 @@
 import groovy.json.JsonOutput
 
 def call(Map config = [:]) {
-    withMigrationsTestAccount(region: config.region ?: "us-east-1") { accountId ->
+    withMigrationsTestAccount(region: config.region ?: "us-east-1", duration: 7200) { accountId ->
         def clusters = []
         def usePublicAccess = config.publicAccess ?: false
 
