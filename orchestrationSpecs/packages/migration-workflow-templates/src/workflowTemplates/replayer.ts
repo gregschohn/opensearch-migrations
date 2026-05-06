@@ -173,6 +173,15 @@ function getReplayerDeploymentManifest
             makeStringTypeProxy(args.jsonConfig)
         ],
         resources: makeDirectTypeProxy(args.resources),
+        readinessProbe: {
+            exec: {
+                command: ["test", "-f", "/tmp/replayer-ready"]
+            },
+            initialDelaySeconds: 10,
+            periodSeconds: 10,
+            timeoutSeconds: 5,
+            failureThreshold: 3
+        },
         env: [
             {
                 name: "TRAFFIC_REPLAYER_KAFKA_TRAFFIC_PASSWORD",
@@ -239,6 +248,7 @@ function getReplayerDeploymentManifest
         },
         spec: {
             replicas: makeDirectTypeProxy(args.podReplicas),
+            minReadySeconds: 2,
             strategy: {
                 type: "Recreate"
             },

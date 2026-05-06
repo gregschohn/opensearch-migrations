@@ -65,6 +65,7 @@ public class TrafficReplayer {
 
     public static final String LOOKAHEAD_TIME_WINDOW_PARAMETER_NAME = "--lookahead-time-window";
     private static final long ACTIVE_WORK_MONITOR_CADENCE_MS = 30 * 1000L;
+    static final String READINESS_MARKER_FILE_PATH = "/tmp/replayer-ready";
 
     public static class DualException extends Exception {
         public final Throwable originalCause;
@@ -699,6 +700,7 @@ public class TrafficReplayer {
             }, ACTIVE_WORK_MONITOR_CADENCE_MS, ACTIVE_WORK_MONITOR_CADENCE_MS, TimeUnit.MILLISECONDS);
 
             setupShutdownHookForReplayer(tr);
+            writeReadinessMarker();
             var tupleWriter = createS3TupleWriterIfConfigured(params);
             if (tupleWriter != null) {
                 tr.setupRunAndWaitForReplayWithShutdownChecks(
@@ -788,6 +790,16 @@ public class TrafficReplayer {
                     System.err.println(afterMsg);
                 });
         }));
+    }
+
+    /** Signals readiness to the Kubernetes readinessProbe. Called once after all init succeeds. */
+    private static void writeReadinessMarker() {
+        try {
+            java.nio.file.Files.writeString(java.nio.file.Path.of(READINESS_MARKER_FILE_PATH), "ready");
+            log.info("Readiness marker written to {}", READINESS_MARKER_FILE_PATH);
+        } catch (java.io.IOException e) {
+            log.warn("Failed to write readiness marker to {}: {}", READINESS_MARKER_FILE_PATH, e.getMessage());
+        }
     }
 
     /**
