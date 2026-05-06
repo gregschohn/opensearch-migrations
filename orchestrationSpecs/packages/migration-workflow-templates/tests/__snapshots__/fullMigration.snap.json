@@ -7,6 +7,7 @@
   "spec": {
     "serviceAccountName": "argo-workflow-executor",
     "entrypoint": "main",
+    "onExit": "cleanupapprovalgates",
     "parallelism": 100,
     "arguments": {
       "parameters": [
@@ -33,6 +34,260 @@
         "steps": [
           []
         ],
+        "outputs": {
+          "parameters": []
+        }
+      },
+      {
+        "name": "addapprovalgateownerreferences",
+        "inputs": {
+          "parameters": [
+            {
+              "name": "imageCaptureProxyLocation",
+              "valueFrom": {
+                "configMapKeyRef": {
+                  "name": "{{workflow.parameters.imageConfigMapName}}",
+                  "key": "captureProxyImage"
+                }
+              }
+            },
+            {
+              "name": "imageCaptureProxyPullPolicy",
+              "valueFrom": {
+                "configMapKeyRef": {
+                  "name": "{{workflow.parameters.imageConfigMapName}}",
+                  "key": "captureProxyPullPolicy"
+                }
+              }
+            },
+            {
+              "name": "imageTrafficReplayerLocation",
+              "valueFrom": {
+                "configMapKeyRef": {
+                  "name": "{{workflow.parameters.imageConfigMapName}}",
+                  "key": "trafficReplayerImage"
+                }
+              }
+            },
+            {
+              "name": "imageTrafficReplayerPullPolicy",
+              "valueFrom": {
+                "configMapKeyRef": {
+                  "name": "{{workflow.parameters.imageConfigMapName}}",
+                  "key": "trafficReplayerPullPolicy"
+                }
+              }
+            },
+            {
+              "name": "imageReindexFromSnapshotLocation",
+              "valueFrom": {
+                "configMapKeyRef": {
+                  "name": "{{workflow.parameters.imageConfigMapName}}",
+                  "key": "reindexFromSnapshotImage"
+                }
+              }
+            },
+            {
+              "name": "imageReindexFromSnapshotPullPolicy",
+              "valueFrom": {
+                "configMapKeyRef": {
+                  "name": "{{workflow.parameters.imageConfigMapName}}",
+                  "key": "reindexFromSnapshotPullPolicy"
+                }
+              }
+            },
+            {
+              "name": "imageMigrationConsoleLocation",
+              "valueFrom": {
+                "configMapKeyRef": {
+                  "name": "{{workflow.parameters.imageConfigMapName}}",
+                  "key": "migrationConsoleImage"
+                }
+              }
+            },
+            {
+              "name": "imageMigrationConsolePullPolicy",
+              "valueFrom": {
+                "configMapKeyRef": {
+                  "name": "{{workflow.parameters.imageConfigMapName}}",
+                  "key": "migrationConsolePullPolicy"
+                }
+              }
+            },
+            {
+              "name": "imageCoordinatorClusterLocation",
+              "valueFrom": {
+                "configMapKeyRef": {
+                  "name": "{{workflow.parameters.imageConfigMapName}}",
+                  "key": "coordinatorClusterImage"
+                }
+              }
+            },
+            {
+              "name": "imageCoordinatorClusterPullPolicy",
+              "valueFrom": {
+                "configMapKeyRef": {
+                  "name": "{{workflow.parameters.imageConfigMapName}}",
+                  "key": "coordinatorClusterPullPolicy"
+                }
+              }
+            }
+          ]
+        },
+        "container": {
+          "env": [],
+          "image": "{{inputs.parameters.imageMigrationConsoleLocation}}",
+          "imagePullPolicy": "{{inputs.parameters.imageMigrationConsolePullPolicy}}",
+          "resources": {
+            "limits": {
+              "cpu": "500m",
+              "memory": "500Mi"
+            },
+            "requests": {
+              "cpu": "500m",
+              "memory": "500Mi"
+            }
+          },
+          "command": [
+            "/bin/bash",
+            "-lc"
+          ],
+          "args": [
+            "\nselector='migrations.opensearch.org/workflow={{workflow.name}}'\npatch='{\"metadata\":{\"ownerReferences\":[{\"apiVersion\":\"argoproj.io/v1alpha1\",\"kind\":\"Workflow\",\"name\":\"{{workflow.name}}\",\"uid\":\"{{workflow.uid}}\"}]}}'\nkubectl get approvalgates.migrations.opensearch.org -l \"$selector\" -o name \\\n  | xargs -r -n 1 kubectl patch --type merge -p \"$patch\" \\\n  || echo \"WARN: failed to patch one or more approvalgate ownerReferences\" >&2\n"
+          ]
+        },
+        "metadata": {
+          "annotations": {
+            "karpenter.sh/do-not-disrupt": "true"
+          }
+        },
+        "outputs": {
+          "parameters": []
+        }
+      },
+      {
+        "name": "cleanupapprovalgates",
+        "inputs": {
+          "parameters": [
+            {
+              "name": "imageCaptureProxyLocation",
+              "valueFrom": {
+                "configMapKeyRef": {
+                  "name": "{{workflow.parameters.imageConfigMapName}}",
+                  "key": "captureProxyImage"
+                }
+              }
+            },
+            {
+              "name": "imageCaptureProxyPullPolicy",
+              "valueFrom": {
+                "configMapKeyRef": {
+                  "name": "{{workflow.parameters.imageConfigMapName}}",
+                  "key": "captureProxyPullPolicy"
+                }
+              }
+            },
+            {
+              "name": "imageTrafficReplayerLocation",
+              "valueFrom": {
+                "configMapKeyRef": {
+                  "name": "{{workflow.parameters.imageConfigMapName}}",
+                  "key": "trafficReplayerImage"
+                }
+              }
+            },
+            {
+              "name": "imageTrafficReplayerPullPolicy",
+              "valueFrom": {
+                "configMapKeyRef": {
+                  "name": "{{workflow.parameters.imageConfigMapName}}",
+                  "key": "trafficReplayerPullPolicy"
+                }
+              }
+            },
+            {
+              "name": "imageReindexFromSnapshotLocation",
+              "valueFrom": {
+                "configMapKeyRef": {
+                  "name": "{{workflow.parameters.imageConfigMapName}}",
+                  "key": "reindexFromSnapshotImage"
+                }
+              }
+            },
+            {
+              "name": "imageReindexFromSnapshotPullPolicy",
+              "valueFrom": {
+                "configMapKeyRef": {
+                  "name": "{{workflow.parameters.imageConfigMapName}}",
+                  "key": "reindexFromSnapshotPullPolicy"
+                }
+              }
+            },
+            {
+              "name": "imageMigrationConsoleLocation",
+              "valueFrom": {
+                "configMapKeyRef": {
+                  "name": "{{workflow.parameters.imageConfigMapName}}",
+                  "key": "migrationConsoleImage"
+                }
+              }
+            },
+            {
+              "name": "imageMigrationConsolePullPolicy",
+              "valueFrom": {
+                "configMapKeyRef": {
+                  "name": "{{workflow.parameters.imageConfigMapName}}",
+                  "key": "migrationConsolePullPolicy"
+                }
+              }
+            },
+            {
+              "name": "imageCoordinatorClusterLocation",
+              "valueFrom": {
+                "configMapKeyRef": {
+                  "name": "{{workflow.parameters.imageConfigMapName}}",
+                  "key": "coordinatorClusterImage"
+                }
+              }
+            },
+            {
+              "name": "imageCoordinatorClusterPullPolicy",
+              "valueFrom": {
+                "configMapKeyRef": {
+                  "name": "{{workflow.parameters.imageConfigMapName}}",
+                  "key": "coordinatorClusterPullPolicy"
+                }
+              }
+            }
+          ]
+        },
+        "container": {
+          "env": [],
+          "image": "{{inputs.parameters.imageMigrationConsoleLocation}}",
+          "imagePullPolicy": "{{inputs.parameters.imageMigrationConsolePullPolicy}}",
+          "resources": {
+            "limits": {
+              "cpu": "500m",
+              "memory": "500Mi"
+            },
+            "requests": {
+              "cpu": "500m",
+              "memory": "500Mi"
+            }
+          },
+          "command": [
+            "/bin/bash",
+            "-lc"
+          ],
+          "args": [
+            "\nkubectl delete approvalgates.migrations.opensearch.org \\\n  -l \"migrations.opensearch.org/workflow={{workflow.name}}\" \\\n  --ignore-not-found || true\n"
+          ]
+        },
+        "metadata": {
+          "annotations": {
+            "karpenter.sh/do-not-disrupt": "true"
+          }
+        },
         "outputs": {
           "parameters": []
         }
@@ -81,7 +336,7 @@
                   },
                   {
                     "name": "retryGateName",
-                    "value": "{{=inputs.parameters.clusterName+'.vapretry'}}"
+                    "value": "{{='kafkacluster.'+inputs.parameters.clusterName+'.vapretry'}}"
                   },
                   {
                     "name": "retryGroupName_view",
@@ -303,6 +558,10 @@
                   {
                     "name": "checksumForReplayer",
                     "value": "{{=sprig.dig('checksumForReplayer', '', fromJSON(inputs.parameters.proxyConfig))}}"
+                  },
+                  {
+                    "name": "sourceK8sLabel",
+                    "value": "{{=sprig.dig('sourceConfig', 'label', '', fromJSON(inputs.parameters.proxyConfig))}}"
                   }
                 ]
               },
@@ -391,6 +650,10 @@
                   {
                     "name": "snapshotItemConfig",
                     "value": "{{inputs.parameters.snapshotItemConfig}}"
+                  },
+                  {
+                    "name": "sourceLabel",
+                    "value": "{{=fromJSON(inputs.parameters.sourceConfig)['label']}}"
                   }
                 ]
               },
@@ -527,10 +790,6 @@
                   {
                     "name": "snapshotConfig",
                     "value": "{{=toJSON(sprig.dict(\"config\", sprig.dict(\"createSnapshotConfig\", fromJSON(inputs.parameters.snapshotItemConfig)['config']), \"repoConfig\", fromJSON(inputs.parameters.snapshotItemConfig)['repo'], \"label\", fromJSON(inputs.parameters.snapshotItemConfig)['label']))}}"
-                  },
-                  {
-                    "name": "targetLabel",
-                    "value": "{{=fromJSON(inputs.parameters.snapshotItemConfig)['label']}}"
                   },
                   {
                     "name": "semaphoreConfigMapName",
@@ -713,6 +972,12 @@
               "name": "resourceUid"
             },
             {
+              "name": "resourceCreationTimestamp"
+            },
+            {
+              "name": "configChecksum"
+            },
+            {
               "name": "groupName_view"
             },
             {
@@ -814,6 +1079,14 @@
                   {
                     "name": "crdName",
                     "value": "{{inputs.parameters.crdName}}"
+                  },
+                  {
+                    "name": "resourceCreationTimestamp",
+                    "value": "{{inputs.parameters.resourceCreationTimestamp}}"
+                  },
+                  {
+                    "name": "configChecksum",
+                    "value": "{{inputs.parameters.configChecksum}}"
                   },
                   {
                     "name": "imageMigrationConsoleLocation",
@@ -995,7 +1268,7 @@
                   },
                   {
                     "name": "retryGateName",
-                    "value": "{{=inputs.parameters.resourceName+'.vapretry'}}"
+                    "value": "{{='snapshotmigration.'+inputs.parameters.resourceName+'.vapretry'}}"
                   },
                   {
                     "name": "retryGroupName_view",
@@ -1067,6 +1340,10 @@
                   {
                     "name": "resourceUid",
                     "value": "{{inputs.parameters.resourceUid}}"
+                  },
+                  {
+                    "name": "configChecksum",
+                    "value": "{{inputs.parameters.configChecksum}}"
                   },
                   {
                     "name": "groupName_view",
@@ -1149,6 +1426,10 @@
                     "value": "{{inputs.parameters.resourceName}}"
                   },
                   {
+                    "name": "resourceCreationTimestamp",
+                    "value": "{{steps.reconcileSnapshotMigrationResource.outputs.parameters.resourceCreationTimestamp}}"
+                  },
+                  {
                     "name": "sourceEndpoint",
                     "value": "{{=sprig.dig('sourceEndpoint', '', fromJSON(inputs.parameters.snapshotMigrationConfig))}}"
                   }
@@ -1201,6 +1482,9 @@
             },
             {
               "name": "kafkaClusterName"
+            },
+            {
+              "name": "sourceLabel"
             },
             {
               "name": "fromProxy"
@@ -1273,8 +1557,16 @@
                     "value": "{{inputs.parameters.replayerOptions}}"
                   },
                   {
+                    "name": "sourceLabel",
+                    "value": "{{inputs.parameters.sourceLabel}}"
+                  },
+                  {
+                    "name": "targetLabel",
+                    "value": "{{=sprig.dig('label', '', fromJSON(inputs.parameters.targetConfig))}}"
+                  },
+                  {
                     "name": "retryGateName",
-                    "value": "{{=inputs.parameters.name+'.trafficreplay.vapretry'}}"
+                    "value": "{{='trafficreplay.'+inputs.parameters.name+'.vapretry'}}"
                   },
                   {
                     "name": "retryGroupName_view",
@@ -1414,6 +1706,10 @@
                   {
                     "name": "name",
                     "value": "{{inputs.parameters.name}}"
+                  },
+                  {
+                    "name": "sourceLabel",
+                    "value": "{{inputs.parameters.sourceLabel}}"
                   },
                   {
                     "name": "targetConfig",
@@ -1593,6 +1889,13 @@
         "steps": [
           [
             {
+              "template": "addapprovalgateownerreferences",
+              "arguments": {
+                "parameters": []
+              },
+              "name": "addApprovalGateOwnerReferences"
+            },
+            {
               "template": "setupsinglekafkacluster",
               "withParam": "{{=(('kafkaClusters' in fromJSON(inputs.parameters.config)) ? (fromJSON(inputs.parameters.config)['kafkaClusters']) : ([]))}}",
               "when": "{{='kafkaClusters' in fromJSON(inputs.parameters.config)}}",
@@ -1653,7 +1956,7 @@
                   },
                   {
                     "name": "proxyConfig",
-                    "value": "{{=toJSON(sprig.dict(\"name\", item['name'], \"kafkaConfig\", fromJSON(item['kafkaConfig']), \"sourceEndpoint\", item['sourceEndpoint'], \"sourceAllowInsecure\", item['sourceAllowInsecure'], \"proxyConfig\", fromJSON(item['proxyConfig']), \"configChecksum\", sprig.dig('configChecksum', '', item), \"topicConfigChecksum\", sprig.dig('topicConfigChecksum', '', item), \"checksumForSnapshot\", sprig.dig('checksumForSnapshot', '', item), \"checksumForReplayer\", sprig.dig('checksumForReplayer', '', item), \"resourceUid\", item['resourceUid']))}}"
+                    "value": "{{=toJSON(sprig.dict(\"name\", item['name'], \"sourceConfig\", fromJSON(item['sourceConfig']), \"kafkaConfig\", fromJSON(item['kafkaConfig']), \"proxyConfig\", fromJSON(item['proxyConfig']), \"configChecksum\", sprig.dig('configChecksum', '', item), \"topicConfigChecksum\", sprig.dig('topicConfigChecksum', '', item), \"checksumForSnapshot\", sprig.dig('checksumForSnapshot', '', item), \"checksumForReplayer\", sprig.dig('checksumForReplayer', '', item), \"resourceUid\", item['resourceUid']))}}"
                   },
                   {
                     "name": "kafkaClusterName",
@@ -1877,6 +2180,10 @@
                   {
                     "name": "name",
                     "value": "{{=jsonpath(toJSON(item), '$.name')}}"
+                  },
+                  {
+                    "name": "sourceLabel",
+                    "value": "{{=jsonpath(toJSON(item), '$.sourceLabel')}}"
                   },
                   {
                     "name": "dependsOn",

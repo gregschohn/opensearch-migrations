@@ -4,8 +4,8 @@ import groovy.json.JsonOutput
 plugins {
 //    Observing higher memory usage with task-tree plugin. Disabling except if needed
 //    id "com.dorongold.task-tree" version "4.0.1"
-    id "com.diffplug.spotless" version '7.2.1'
-    id 'io.freefair.lombok' version '8.14.3' apply false
+    id "com.diffplug.spotless" version '8.4.0'
+    id 'io.freefair.lombok' version '9.5.0' apply false
     id 'me.champeau.jmh' version '0.7.3' apply false
     id 'com.gradleup.shadow' version '8.3.8' apply false
     id 'com.avast.gradle.docker-compose' version "0.17.12" apply false
@@ -22,32 +22,6 @@ allprojects {
         mavenCentral()
     }
 }
-
-
-// Ensure Capture Proxy and Dependencies are built with JDK 11 for On Node Install
-
-// Cache dependencies during the configuration phase
-ext.captureProxyDependencies = []
-gradle.projectsEvaluated {
-    def captureProxyProject = rootProject.project(":TrafficCapture:trafficCaptureProxyServer")
-    captureProxyDependencies = captureProxyProject.configurations.collectMany { configuration ->
-        configuration.dependencies.findAll { it instanceof ProjectDependency }.collect { it.path }
-    }
-    // Add the TrafficCaptureProxyServer project itself
-    captureProxyDependencies << captureProxyProject.path
-}
-
-// Modify sourceCompatibility during the execution phase
-gradle.taskGraph.whenReady {
-    allprojects {
-        tasks.withType(JavaCompile).configureEach {
-            def jvmVersion = (project.path in rootProject.captureProxyDependencies) ? JavaVersion.VERSION_11 : JavaVersion.VERSION_17
-            sourceCompatibility = jvmVersion
-            targetCompatibility = jvmVersion
-        }
-    }
-}
-
 
 
 // Define version properties
@@ -80,10 +54,6 @@ allprojects {
     }
 }
 
-tasks.register('buildDockerImages') {
-    dependsOn(':TrafficCapture:dockerSolution:buildDockerImages')
-    dependsOn(':DocumentsFromSnapshotMigration:buildDockerImages')
-}
 
 def commonExclusions = ['**/build/**',
                         '**/node_modules/**',
@@ -97,7 +67,7 @@ spotless {
             exclude commonExclusions
         }
         trimTrailingWhitespace()
-        leadingTabsToSpaces()
+        indentWithSpaces()
         endWithNewline()
 
     }
@@ -107,7 +77,7 @@ spotless {
             exclude commonExclusions
         }
         trimTrailingWhitespace()
-        leadingTabsToSpaces()
+        indentWithSpaces()
         endWithNewline()
     }
     json {
@@ -138,7 +108,7 @@ subprojects {
                         'org.opensearch',
                         '',
                         '\\#')
-                leadingTabsToSpaces()
+                indentWithSpaces()
                 endWithNewline()
                 removeUnusedImports()
             }
@@ -150,14 +120,6 @@ subprojects {
         }
     }
 
-    plugins.withId('com.bmuschko.docker-remote-api') {
-        tasks.withType(com.bmuschko.gradle.docker.tasks.image.DockerBuildImage).configureEach {
-            // Declare the imageIdFile as an output so dependent tasks can track it as an input
-            // This enables proper UP_TO_DATE checking when using CommonUtils.dependOnDockerImage()
-            outputs.file(imageIdFile)
-        }
-    }
-
     tasks.withType(Javadoc).configureEach {
         options.addStringOption('Xdoclint:none', '-quiet')
     }
@@ -166,7 +128,7 @@ subprojects {
 
         java {
             toolchain {
-                languageVersion.set(JavaLanguageVersion.of(17))
+                languageVersion.set(JavaLanguageVersion.of(21))
                 vendor.set(JvmVendorSpec.AMAZON)
             }
         }

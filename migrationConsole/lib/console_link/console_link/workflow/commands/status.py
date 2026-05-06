@@ -16,12 +16,14 @@ import requests
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from ..models.utils import ExitCode
+from ..models.utils import get_current_namespace
 from ..services.workflow_service import WorkflowService
 from ..tree_utils import (
     build_nested_workflow_tree,
     filter_tree_nodes,
     display_workflow_tree,
     get_node_input_parameter,
+    overlay_approval_gate_status,
     WorkflowDisplayer
 )
 from .autocomplete_workflows import DEFAULT_WORKFLOW_NAME, get_workflow_completions
@@ -67,7 +69,11 @@ class StatusCommandHandler:
             workflow_name, argo_server, namespace, insecure)
 
         if not workflow_data:
-            click.echo(f"Error: Could not find workflow {workflow_name}", err=True)
+            click.echo(
+                f"No workflow named '{workflow_name}' found in namespace "
+                f"{namespace}. Run `workflow --help` for more help.",
+                err=True,
+            )
             raise click.Abort()
 
         self._display_workflow_with_tree(workflow_data, live_check, argo_server, namespace, insecure)
@@ -130,6 +136,7 @@ class StatusCommandHandler:
         if live_check:
             self.live_check_processor.enrich_tree_with_live_checks(tree_nodes)
         filtered_tree = filter_tree_nodes(tree_nodes)
+        overlay_approval_gate_status(filtered_tree, namespace)
 
         # Create a lazy resolver — artifacts are only fetched when a node is
         # actually rendered and has an artifact output (not eagerly for all nodes).
@@ -166,13 +173,13 @@ class WorkflowDataFetcher:
         headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
         url = f"{argo_server}/api/v1/workflows/{namespace}/{workflow_name}"
 
-        logger.warning(
+        logger.info(
             "Fetching workflow data from Argo API: workflow=%s namespace=%s url=%s insecure=%s",
             workflow_name, namespace, url, insecure
         )
         response = requests.get(url, headers=headers, verify=not insecure)
         if response.status_code != 200:
-            logger.warning(
+            logger.info(
                 "Argo API workflow fetch failed: status=%s content_type=%s body=%s",
                 response.status_code,
                 response.headers.get("content-type"),
@@ -180,7 +187,7 @@ class WorkflowDataFetcher:
             )
             return {}
 
-        logger.warning(
+        logger.info(
             "Argo API workflow fetch succeeded: status=%s content_type=%s",
             response.status_code,
             response.headers.get("content-type"),
@@ -336,7 +343,7 @@ class StatusWorkflowDisplayer(WorkflowDisplayer):
 
         if phase in ('Running', 'Pending'):
             click.echo("")
-            click.echo(f"To view step outputs, run: workflow output {workflow_name}")
+            click.echo("To view step outputs, run: workflow log all")
 
     def display_workflow_header(self, name: str, phase: str, started_at: str, finished_at: str) -> None:
         """Display workflow header information."""
@@ -455,16 +462,18 @@ class LiveCheckProcessor:
 
 
 @click.command(name="status")
-@click.option('--workflow-name', default=DEFAULT_WORKFLOW_NAME, shell_complete=get_workflow_completions)
-@click.option('--all-workflows', is_flag=True, default=False, help='Show status for all workflows')
+@click.option('--workflow-name', default=DEFAULT_WORKFLOW_NAME, shell_complete=get_workflow_completions, hidden=True)
+@click.option('--all-workflows', is_flag=True, default=False, hidden=True, help='Show status for all workflows')
 @click.option(
     '--argo-server',
-    default=DEFAULT_ARGO_SERVER_URL,
+    default=DEFAULT_ARGO_SERVER_URL, hidden=True, envvar='ARGO_SERVER',
     help='Argo Server URL (default: ARGO_SERVER env var, or ARGO_SERVER_SERVICE_HOST:ARGO_SERVER_SERVICE_PORT)'
 )
-@click.option('--namespace', default='ma', help='Kubernetes namespace for the workflow (default: ma)')
-@click.option('--insecure', is_flag=True, default=True, help='Skip TLS certificate verification (default: True)')
-@click.option('--token', help='Bearer token for authentication')
+@click.option('--namespace', default=get_current_namespace, hidden=True, envvar='WORKFLOW_NAMESPACE',
+              help='Kubernetes namespace for the workflow')
+@click.option('--insecure', is_flag=True, default=True, hidden=True, envvar='WORKFLOW_INSECURE',
+              help='Skip TLS certificate verification (default: True)')
+@click.option('--token', hidden=True, envvar='ARGO_TOKEN', help='Bearer token for authentication')
 @click.option('--all', 'show_all', is_flag=True, default=False,
               help='Show all workflows including completed ones (default: only running)')
 @click.option('--live-status', is_flag=True, default=False,
@@ -479,8 +488,6 @@ def status_command(ctx, workflow_name, all_workflows, argo_server, namespace, in
     \b
     Example:
         workflow status
-        workflow status --workflow-name my-workflow
-        workflow status --all-workflows
         workflow status --all
     """
     if all_workflows and ctx.get_parameter_source('workflow_name') != click.core.ParameterSource.DEFAULT:
