@@ -1,5 +1,5 @@
 def call(Map config = [:]) {
-    def defaultStageId = config.defaultStageId ?: "cdc-only"
+    def defaultStageId = config.defaultStageId ?: "esoscdc"
     def gitBranchDefault = config.gitBranchDefault ?: 'main'
     def jobName = config.jobName ?: "eks-cdc-integ-test"
     def defaultTestIds = config.defaultTestIds ?: "0031"
@@ -144,7 +144,7 @@ def call(Map config = [:]) {
                                     }
                                 },
                                 'Bootstrap MA': {
-                                    withMigrationsTestAccount(region: params.REGION) { accountId ->
+                                    withMigrationsTestAccount(region: params.REGION, duration: 14400) { accountId ->
                                         bootstrapMA(
                                             stackName: env.MA_STACK_NAME,
                                             stage: maStageName,
@@ -219,7 +219,7 @@ def call(Map config = [:]) {
                         dir('libraries/testAutomation') {
                             script {
                                 sh "pipenv install --deploy"
-                                withMigrationsTestAccount(region: params.REGION) { accountId ->
+                                withMigrationsTestAccount(region: params.REGION, duration: 14400) { accountId ->
                                     sh "pipenv run app --source-version=$sourceVer --target-version=$targetVer --test-ids='${params.TEST_IDS}' --speedup-factor=${params.SPEEDUP_FACTOR} --reuse-clusters --skip-delete --skip-install --kube-context=${env.eksKubeContext}"
                                 }
                             }
