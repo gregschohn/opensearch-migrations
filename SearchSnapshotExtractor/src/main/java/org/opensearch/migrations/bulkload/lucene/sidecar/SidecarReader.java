@@ -51,7 +51,10 @@ public final class SidecarReader implements AutoCloseable {
 
     static SidecarReader open(Path spillDir, int maxDoc, int numTerms) throws IOException {
         MMapDirectory dir = new MMapDirectory(spillDir);
-        IndexInput terms = null, termOffsets = null, sidecar = null, docIndex = null;
+        IndexInput terms = null;
+        IndexInput termOffsets = null;
+        IndexInput sidecar = null;
+        IndexInput docIndex = null;
         try {
             terms       = dir.openInput(SidecarBuilder.TERMS_FILE,        IOContext.DEFAULT);
             termOffsets = dir.openInput(SidecarBuilder.TERM_OFFSETS_FILE, IOContext.DEFAULT);
@@ -69,7 +72,7 @@ public final class SidecarReader implements AutoCloseable {
     public List<String> get(int docId) throws IOException {
         if (closed) throw new IOException("SidecarReader closed");
         if (docId < 0 || docId >= maxDoc) return Collections.emptyList();
-        long offset = docIndexRA.readLong((long) docId * 8L);
+        long offset = docIndexRA.readLong(docId * 8L);
         if (offset == SidecarBuilder.DOC_INDEX_NO_TOKENS) return Collections.emptyList();
         if (offset < 0) throw new IOException("Sidecar offset out of range: " + offset);
 
@@ -89,7 +92,7 @@ public final class SidecarReader implements AutoCloseable {
             throw new IOException("termId out of range: " + termId + " (numTerms=" + numTerms + ")");
         }
         IndexInput in = termsInput.clone();
-        in.seek(termOffsetsRA.readLong((long) termId * 8L));
+        in.seek(termOffsetsRA.readLong(termId * 8L));
         byte[] bytes = new byte[in.readVInt()];
         in.readBytes(bytes, 0, bytes.length);
         return new String(bytes, StandardCharsets.UTF_8);

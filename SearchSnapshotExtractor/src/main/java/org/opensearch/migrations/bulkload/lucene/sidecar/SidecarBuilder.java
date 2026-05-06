@@ -58,7 +58,7 @@ public final class SidecarBuilder implements PostingsSink, AutoCloseable {
 
         // BufferSize.megabytes takes int MiB. Clamp to [MIN_BUFFER_SIZE_MB, Integer.MAX_VALUE].
         long mb = sortBufferBytes > 0 ? (sortBufferBytes >>> 20) : DEFAULT_SORT_BUFFER_MB;
-        mb = Math.max((long) OfflineSorter.MIN_BUFFER_SIZE_MB, Math.min((long) Integer.MAX_VALUE, mb));
+        mb = Math.max(OfflineSorter.MIN_BUFFER_SIZE_MB, Math.min(Integer.MAX_VALUE, mb));
         this.sortBufferSize = BufferSize.megabytes((int) mb);
 
         this.termsOut        = dir.createOutput(TERMS_FILE, IOContext.DEFAULT);
