@@ -12,6 +12,7 @@ from .commands.submit import submit_command
 from .commands.approve import approve_group
 from .commands.status import status_command
 from .commands.log import log_command
+from .commands.show import show_command
 from .commands.manage import manage_command
 from .commands.reset import reset_command
 
@@ -101,6 +102,7 @@ workflow_cli.add_command(submit_command)
 workflow_cli.add_command(approve_group)
 workflow_cli.add_command(status_command)
 workflow_cli.add_command(log_command)
+workflow_cli.add_command(show_command)
 workflow_cli.add_command(manage_command)
 workflow_cli.add_command(reset_command)
 workflow_cli.add_command(util_group)

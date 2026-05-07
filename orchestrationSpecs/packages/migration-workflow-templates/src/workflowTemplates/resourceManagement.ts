@@ -103,6 +103,45 @@ function buildPatchStatusTemplate<
         .addRetryParameters(K8S_RESOURCE_RETRY_STRATEGY);
 }
 
+function buildPatchOutputTemplate<ParentWorkflowScope extends WorkflowAndTemplatesScope>(
+    t: TemplateBuilder<ParentWorkflowScope, {}, {}, {}>,
+    resourceKind: string,
+    outputName: string
+) {
+    return t
+        .addInputsFromRecord({
+            resourceName: {} as InputParamDef<string, true>,
+            artifactName: {} as InputParamDef<string, true>,
+            s3Key: {} as InputParamDef<string, true>,
+            resourceUid: {} as InputParamDef<string, true>,
+            configChecksum: {} as InputParamDef<string, true>,
+        })
+        .addResourceTask(b => b
+            .setDefinition({
+                action: "patch",
+                flags: ["--type", "merge", "--subresource=status"],
+                manifest: {
+                    apiVersion: CRD_API_VERSION,
+                    kind: resourceKind,
+                    metadata: {name: "{{inputs.parameters.resourceName}}"},
+                    status: {
+                        outputs: {
+                            [outputName]: {
+                                artifactName: "{{inputs.parameters.artifactName}}",
+                                s3Key: "{{inputs.parameters.s3Key}}",
+                                resourceUid: "{{inputs.parameters.resourceUid}}",
+                                workflowName: "{{workflow.name}}",
+                                workflowUid: "{{workflow.uid}}",
+                                workflowCreationTimestamp: "{{workflow.creationTimestamp}}",
+                                configChecksum: "{{inputs.parameters.configChecksum}}"
+                            }
+                        }
+                    }
+                }
+            }))
+        .addRetryParameters(K8S_RESOURCE_RETRY_STRATEGY);
+}
+
 function makeKafkaClusterManifest(
     kafkaClusterConfig: BaseExpression<Serialized<z.infer<typeof NAMED_KAFKA_CLUSTER_CONFIG>>>,
 ) {
@@ -442,6 +481,7 @@ export const ResourceManagement = WorkflowBuilder.create({
                 )
             }))
         .addJsonPathOutput("currentConfigChecksum", "{.status.configChecksum}", typeToken<string>())
+        .addJsonPathOutput("resourceCreationTimestamp", "{.metadata.creationTimestamp}", typeToken<string>())
         .addRetryParameters(K8S_RESOURCE_RETRY_STRATEGY)
     )
 
@@ -774,6 +814,12 @@ export const ResourceManagement = WorkflowBuilder.create({
                 c.steps.tryApply.outputs.currentConfigChecksum,
                 expr.literal("")
             ))
+        .addExpressionOutput("resourceCreationTimestamp", c =>
+            expr.ternary(
+                expr.equals(c.steps.tryApply.status, "Succeeded"),
+                c.steps.tryApply.outputs.resourceCreationTimestamp,
+                expr.literal("")
+            ))
     )
 
     .addTemplate("reconcileTrafficReplayResource", t => t
@@ -866,6 +912,10 @@ export const ResourceManagement = WorkflowBuilder.create({
         configChecksum: "",
         checksumForReplayer: ""
     }))
+    .addTemplate("patchSnapshotMigrationOutputEvaluate", t =>
+        buildPatchOutputTemplate(t, "SnapshotMigration", "metadataEvaluate"))
+    .addTemplate("patchSnapshotMigrationOutputMigrate", t =>
+        buildPatchOutputTemplate(t, "SnapshotMigration", "metadataMigrate"))
     .addTemplate("patchTrafficReplayReady", t => buildPatchStatusTemplate(t, "TrafficReplay", {
         configChecksum: ""
     }))

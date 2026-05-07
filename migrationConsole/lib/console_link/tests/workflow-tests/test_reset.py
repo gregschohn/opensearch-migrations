@@ -6,6 +6,7 @@ from click.testing import CliRunner
 
 from console_link.workflow.cli import workflow_cli
 from console_link.workflow.commands.reset import (
+    _artifact_output_prefix,
     _build_child_map,
     _delete_crd,
     _find_ancestors,
@@ -45,6 +46,23 @@ class TestResetHelpers:
             'proxy': {'replay'},
             'replay': set(),
         }
+
+    def test_artifact_output_prefix_uses_resource_display_type(self):
+        assert (
+            _artifact_output_prefix('snapshotmigrations', 'mig-a', 'uid-1') ==
+            'migration-outputs/snapshotmigration/mig-a/uid-1/'
+        )
+
+    def test_artifact_output_prefix_includes_resource_creation_timestamp(self):
+        assert (
+            _artifact_output_prefix(
+                'snapshotmigrations',
+                'mig-a',
+                'uid-1',
+                '2026-05-03T22:43:35Z',
+            ) ==
+            'migration-outputs/snapshotmigration/mig-a/2026-05-03T22:43:35Z_uid-1/'
+        )
 
     def test_prune_ancestors_of_protected_proxies_removes_only_capture_proxies(self):
         resources = [
@@ -143,6 +161,7 @@ class TestResetCommandDelete:
         mock_delete_targets.assert_called_once_with(
             [resource],
             'ma',
+            True,
         )
 
     @patch('console_link.workflow.commands.reset.load_k8s_config')
@@ -183,7 +202,7 @@ class TestResetCommandDelete:
         result = runner.invoke(workflow_cli, ['reset', 'kafka'])
 
         assert result.exit_code == 0
-        mock_delete_targets.assert_called_once_with([('kafkaclusters', 'kafka', 'Ready', [])], 'ma')
+        mock_delete_targets.assert_called_once_with([('kafkaclusters', 'kafka', 'Ready', [])], 'ma', True)
 
     @patch('console_link.workflow.commands.reset.load_k8s_config')
     @patch('console_link.workflow.commands.reset.list_migration_resources')
@@ -224,7 +243,7 @@ class TestResetCommandDelete:
         result = runner.invoke(workflow_cli, ['reset', 'snap-a', '--cascade'])
 
         assert result.exit_code == 0
-        mock_delete_targets.assert_called_once_with(resources, 'ma')
+        mock_delete_targets.assert_called_once_with(resources, 'ma', True)
 
 
 class TestResetAll:
@@ -254,6 +273,7 @@ class TestResetAll:
                 ('trafficreplays', 'replay', 'Ready', ['source-proxy']),
             ],
             'ma',
+            True,
         )
         assert 'Keeping protected proxies alive: captureproxy.source-proxy' in result.output
         assert 'Use --include-proxies to delete them.' in result.output
@@ -277,4 +297,23 @@ class TestResetAll:
         result = runner.invoke(workflow_cli, ['reset', '--all', '--include-proxies'])
 
         assert result.exit_code == 0
-        mock_delete_targets.assert_called_once_with(resources, 'ma')
+        mock_delete_targets.assert_called_once_with(resources, 'ma', True)
+
+    @patch('console_link.workflow.commands.reset._handle_kafka_storage')
+    @patch('console_link.workflow.commands.reset.load_k8s_config')
+    @patch('console_link.workflow.commands.reset._delete_targets')
+    @patch('console_link.workflow.commands.reset.list_migration_resources')
+    @patch('console_link.workflow.commands.reset._find_resource_by_name')
+    def test_keep_output_artifacts_passes_delete_false(
+        self, mock_find, mock_list, mock_delete_targets, _mock_k8s, _mock_storage
+    ):
+        resource = ('datasnapshots', 'snap-a', 'Ready', [])
+        mock_find.return_value = resource
+        mock_list.return_value = [resource]
+        mock_delete_targets.return_value = True
+
+        runner = CliRunner()
+        result = runner.invoke(workflow_cli, ['reset', 'snap-a', '--keep-output-artifacts'])
+
+        assert result.exit_code == 0
+        mock_delete_targets.assert_called_once_with([resource], 'ma', False)

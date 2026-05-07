@@ -27,6 +27,14 @@ from ..models.utils import load_k8s_config, get_current_namespace
 logger = logging.getLogger(__name__)
 _RESOURCE_OUTPUT_LABELS = {'strimzi.io/cluster'}
 
+# `workflow log` is intentionally for pod logs only. Durable command output is
+# handled by the workflow templates instead: the few output-producing steps
+# write explicit small artifacts under migration-outputs/<resource>/<name>/,
+# patch the owning CR status with the current S3 key, and `workflow show`
+# reads through that CR pointer. `workflow reset` deletes the resource prefix
+# so retained output files and any Argo-created sidecar metadata are removed
+# together. This lets us keep global Argo archiveLogs disabled.
+
 # Flags recognized on either side of `--`.  When they appear in the
 # pass-through args they are "promoted" so the command behaves as if
 # the user had placed them before `--`.
