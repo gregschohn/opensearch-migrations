@@ -129,9 +129,11 @@ cp -f "$PROVIDED_CONTEXT_FILE_PATH" "$CLUSTER_CDK_CONTEXT_FILE_PATH"
 # Wait for any leftover OpenSearch domains from a previous run to finish deleting.
 # The CDK VPC-validation Lambda will reject deployment if a domain with the same name
 # still exists in a different VPC (e.g. from a prior run whose cleanup is still in progress).
-cluster_ids=$(jq -r '.clusters[].clusterId' "$PROVIDED_CONTEXT_FILE_PATH")
-for cid in $cluster_ids; do
-  domain_name="cluster-${STAGE}-${cid}"
+# Read clusterName from the context if set (sample-cdk honors it verbatim); otherwise
+# fall back to the sample-cdk default pattern "cluster-<stage>-<clusterId>".
+while read -r entry; do
+  cid=$(echo "$entry" | jq -r '.clusterId')
+  domain_name=$(echo "$entry" | jq -r --arg stage "$STAGE" --arg cid "$cid" '.clusterName // "cluster-\($stage)-\($cid)"')
   if aws opensearch describe-domain --domain-name "$domain_name" >/dev/null 2>&1; then
     if aws opensearch describe-domain --domain-name "$domain_name" \
          --query 'DomainStatus.Deleted' --output text 2>/dev/null | grep -qi true; then
@@ -152,7 +154,7 @@ for cid in $cluster_ids; do
       echo "WARNING: Domain '$domain_name' exists and is NOT being deleted. CDK deploy may fail if VPC differs."
     fi
   fi
-done
+done < <(jq -c '.clusters[]' "$PROVIDED_CONTEXT_FILE_PATH")
 
 # Delete any ROLLBACK_COMPLETE stacks from a prior failed deploy — CDK cannot update these.
 rollback_stacks=$(aws cloudformation list-stacks \
