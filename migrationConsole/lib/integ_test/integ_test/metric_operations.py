@@ -71,10 +71,13 @@ def assert_metrics_present(*wrapper_args, **wrapper_kwargs):
             finally:
                 if test_passed:
                     metrics_source: MetricsSource = pytest.console_env.metrics_source
-                    deployment_type = "docker"
-                    if isinstance(metrics_source, CloudwatchMetricsSource):
-                        deployment_type = "cloud"
-                    # Only look for metrics if the test passed
-                    assert_metrics(test_case=self, deployment_type=deployment_type, *wrapper_args, **wrapper_kwargs)
+                    if metrics_source is None:
+                        logger.warning("No metrics_source configured; skipping metric assertions.")
+                    else:
+                        deployment_type = "docker"
+                        if isinstance(metrics_source, CloudwatchMetricsSource):
+                            deployment_type = "cloud"
+                        # Only look for metrics if the test passed
+                        assert_metrics(test_case=self, deployment_type=deployment_type, *wrapper_args, **wrapper_kwargs)
         return wrapper
     return decorator

@@ -2,7 +2,7 @@
 import groovy.json.JsonOutput
 
 def call(Map config = [:]) {
-    withMigrationsTestAccount(region: config.region ?: "us-east-1") { accountId ->
+    withMigrationsTestAccount(region: config.region ?: "us-east-1", duration: 7200) { accountId ->
         def clusters = []
         def usePublicAccess = config.publicAccess ?: false
 
@@ -48,9 +48,15 @@ def call(Map config = [:]) {
 
         def clusterContextValues = [
                 stage      : "${config.stage}",
-                vpcAZCount : config.vpcAZCount ?: 2,
                 clusters   : clusters
         ]
+
+        if (config.vpcId) {
+            clusterContextValues.vpcId = config.vpcId
+            clusterContextValues.vpcSubnetIds = config.vpcSubnetIds
+        } else {
+            clusterContextValues.vpcAZCount = config.vpcAZCount ?: 2
+        }
 
         def contextJsonStr = JsonOutput.prettyPrint(JsonOutput.toJson(clusterContextValues))
         writeFile(file: config.clusterContextFilePath, text: contextJsonStr)

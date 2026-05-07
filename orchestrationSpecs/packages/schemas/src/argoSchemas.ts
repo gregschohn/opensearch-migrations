@@ -235,9 +235,8 @@ export const NAMED_KAFKA_CLIENT_CONFIG =
 
 export const DENORMALIZED_PROXY_CONFIG = z.object({
     name: z.string(),
+    sourceConfig: NAMED_SOURCE_CLUSTER_CONFIG,
     kafkaConfig: NAMED_KAFKA_CLIENT_CONFIG,
-    sourceEndpoint: z.string(),
-    sourceAllowInsecure: z.boolean().default(false),
     proxyConfig: ARGO_PROXY_OPTIONS,
     configChecksum: z.string(),
     topicConfigChecksum: z.string(),
@@ -272,6 +271,7 @@ export const DENORMALIZED_CREATE_SNAPSHOTS_CONFIG = z.object({
 
 export const DENORMALIZED_REPLAY_CONFIG = z.object({
     name: z.string(),
+    sourceLabel: z.string(),
     dependsOn: z.array(z.string()),
     dependsOnSnapshotMigrations: z.array(ENRICHED_SNAPSHOT_MIGRATION_FILTER),
     fromProxy: z.string(),

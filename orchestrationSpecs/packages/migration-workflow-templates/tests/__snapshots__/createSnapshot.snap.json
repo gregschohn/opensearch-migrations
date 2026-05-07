@@ -41,9 +41,6 @@
               "name": "sourceK8sLabel"
             },
             {
-              "name": "targetK8sLabel"
-            },
-            {
               "name": "snapshotK8sLabel"
             },
             {
@@ -119,7 +116,6 @@
         "metadata": {
           "labels": {
             "migrations.opensearch.org/source": "{{inputs.parameters.sourceK8sLabel}}",
-            "migrations.opensearch.org/target": "{{inputs.parameters.targetK8sLabel}}",
             "migrations.opensearch.org/snapshot": "{{inputs.parameters.snapshotK8sLabel}}",
             "migrations.opensearch.org/task": "{{inputs.parameters.taskK8sLabel}}"
           },
@@ -149,9 +145,6 @@
             },
             {
               "name": "sourceK8sLabel"
-            },
-            {
-              "name": "targetK8sLabel"
             },
             {
               "name": "snapshotK8sLabel"
@@ -184,10 +177,6 @@
                   {
                     "name": "sourceK8sLabel",
                     "value": "{{inputs.parameters.sourceK8sLabel}}"
-                  },
-                  {
-                    "name": "targetK8sLabel",
-                    "value": "{{inputs.parameters.targetK8sLabel}}"
                   },
                   {
                     "name": "snapshotK8sLabel",
@@ -239,9 +228,6 @@
               "name": "sourceK8sLabel"
             },
             {
-              "name": "targetK8sLabel"
-            },
-            {
               "name": "snapshotK8sLabel"
             },
             {
@@ -269,10 +255,6 @@
                   {
                     "name": "sourceK8sLabel",
                     "value": "{{inputs.parameters.sourceK8sLabel}}"
-                  },
-                  {
-                    "name": "targetK8sLabel",
-                    "value": "{{inputs.parameters.targetK8sLabel}}"
                   },
                   {
                     "name": "snapshotK8sLabel",
@@ -308,9 +290,6 @@
             },
             {
               "name": "createSnapshotConfig"
-            },
-            {
-              "name": "targetLabel"
             },
             {
               "name": "semaphoreConfigMapName"
@@ -358,10 +337,6 @@
                   {
                     "name": "sourceK8sLabel",
                     "value": "{{=jsonpath(inputs.parameters.sourceConfig, '$.label')}}"
-                  },
-                  {
-                    "name": "targetK8sLabel",
-                    "value": "{{inputs.parameters.targetLabel}}"
                   },
                   {
                     "name": "snapshotK8sLabel",
@@ -413,10 +388,6 @@
                   {
                     "name": "sourceK8sLabel",
                     "value": "{{=jsonpath(inputs.parameters.sourceConfig, '$.label')}}"
-                  },
-                  {
-                    "name": "targetK8sLabel",
-                    "value": "{{inputs.parameters.targetLabel}}"
                   },
                   {
                     "name": "snapshotK8sLabel",

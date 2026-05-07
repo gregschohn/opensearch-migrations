@@ -1,6 +1,6 @@
 """CDC test base: shared constants, K8s helpers, and proxy utilities.
 
-Test IDs 0030-0039 are reserved for CDC variants.
+Test IDs 0031-0039 are reserved for CDC variants.
 """
 import logging
 import subprocess
@@ -10,26 +10,17 @@ from kubernetes import client, config as k8s_config, watch
 
 from console_link.models.cluster import Cluster
 
-from ..cluster_version import (
-    ElasticsearchV7_X,
-    OpensearchV1_X, OpensearchV2_X, OpensearchV3_X,
-)
+from ..cluster_version import CDC_MIGRATION_COMBINATIONS
 from .ma_argo_test_base import MATestBase, MigrationType, MATestUserArguments  # noqa: F401 (re-exported)
 
 logger = logging.getLogger(__name__)
 
 # --- Constants shared across all CDC tests ---
 PROXY_DEPLOYMENT_NAME = "capture-proxy"
-KAFKA_CLUSTER_NAME = "default"
-TARGET_LABEL = "target1"
 REPLAYER_LABEL_SELECTOR = "app=replayer"
 PROXY_LABEL_SELECTOR = "migrations/proxy=capture-proxy"
 PROXY_ENDPOINT = "https://capture-proxy:9201"
-CDC_SOURCE_TARGET_COMBINATIONS = [
-    (ElasticsearchV7_X, OpensearchV1_X),
-    (ElasticsearchV7_X, OpensearchV2_X),
-    (ElasticsearchV7_X, OpensearchV3_X),
-]
+CDC_SOURCE_TARGET_COMBINATIONS = CDC_MIGRATION_COMBINATIONS
 
 
 # --- Shared helpers ---
@@ -153,73 +144,3 @@ def send_bulk(cluster, index_name: str, start: int, count: int):
                             data=body, headers=headers)
     bulk_result = resp.json()
     assert not bulk_result.get("errors"), f"Bulk indexing had errors: {bulk_result}"
-
-
-def _kubectl_delete(resource: str, name: str, namespace: str, timeout: int = 30):
-    """Delete a K8s resource with a hard timeout. Ignores not-found. Never blocks."""
-    try:
-        subprocess.run(
-            ["kubectl", "delete", resource, name, "-n", namespace,
-             "--ignore-not-found", f"--timeout={timeout}s", "--wait=false"],
-            capture_output=True, text=True, timeout=timeout + 5
-        )
-    except subprocess.TimeoutExpired:
-        logger.warning("kubectl delete %s/%s timed out after %ds, continuing", resource, name, timeout)
-    except Exception as e:
-        logger.warning("Failed to delete %s/%s: %s", resource, name, e)
-
-
-def cleanup_cdc_resources(namespace: str):
-    """Delete all CDC-specific K8s resources to allow sequential test runs.
-
-    Uses kubectl with hard timeouts on every command so that nothing can block.
-    Strimzi CRs are deleted first (while operator is running) so finalizers
-    cascade-delete the Kafka pods, services, secrets, and configmaps.
-    """
-    logger.info("Cleaning up CDC resources in namespace %s...", namespace)
-
-    # 1. Strimzi CRs — delete in order, operator handles cascade cleanup
-    #    (secrets, configmaps, services, entity-operator, broker pods)
-    for resource, name in [
-        ("kafkatopic.kafka.strimzi.io", "capture-proxy"),
-        ("kafkauser.kafka.strimzi.io", "default-migration-app"),
-        ("kafka.kafka.strimzi.io", KAFKA_CLUSTER_NAME),
-        ("kafkanodepool.kafka.strimzi.io", "dual-role"),
-    ]:
-        _kubectl_delete(resource, name, namespace, timeout=60)
-
-    # 2. Wait briefly for Strimzi operator to process finalizers
-    try:
-        subprocess.run(
-            ["kubectl", "wait", "--for=delete", f"kafka.kafka.strimzi.io/{KAFKA_CLUSTER_NAME}",
-             "-n", namespace, "--timeout=90s"],
-            capture_output=True, text=True, timeout=95
-        )
-        logger.info("Kafka CR deleted (Strimzi cascade complete)")
-    except (subprocess.TimeoutExpired, Exception):
-        logger.warning("Kafka CR deletion wait timed out, forcing")
-        # Force-remove finalizers if stuck
-        subprocess.run(
-            ["kubectl", "patch", f"kafka.kafka.strimzi.io/{KAFKA_CLUSTER_NAME}",
-             "-n", namespace, "--type=merge", "-p", '{"metadata":{"finalizers":[]}}'],
-            capture_output=True, text=True, timeout=10
-        )
-
-    # 3. Proxy + replayer deployments and service
-    _kubectl_delete("deployment", "capture-proxy", namespace)
-    _kubectl_delete("deployment", f"capture-proxy-{TARGET_LABEL}-replayer", namespace)
-    _kubectl_delete("service", "capture-proxy", namespace)
-
-    # 4. Kafka PVC
-    _kubectl_delete("pvc", "data-default-dual-role-0", namespace)
-
-    # 5. Workflow-created configmaps not owned by Strimzi
-    for cm in ["approval-config", "concurrency-config",
-               "capture-proxy-kafka-auth",
-               f"capture-proxy-{TARGET_LABEL}-replayer-kafka-auth"]:
-        _kubectl_delete("configmap", cm, namespace)
-
-    # 6. Inner migration workflow (the outer CDC workflow is handled by the fixture)
-    _kubectl_delete("workflow", "migration-workflow", namespace)
-
-    logger.info("CDC resource cleanup complete")

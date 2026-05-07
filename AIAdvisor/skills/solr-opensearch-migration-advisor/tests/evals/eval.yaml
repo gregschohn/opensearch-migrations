@@ -166,14 +166,14 @@ tests:
       continue: true
     vars:
       query: |
-        On top of that, the operational setup consists of 3 nodes with 8gb ram (4gb heap) and 4 cores each, 2 shards, 
-        50M docs, 10GB index. 
+        On top of that, the operational setup consists of 3 nodes with 8gb ram (4gb heap) and 4 cores each, 2 shards,
+        50M docs, 10GB index.
         Provide me with the final migration plan, given all so far provided information.
     assert:
       - type: llm-rubric
         value: >-
-          Response contains a full solr to opensearch migration plan for the role of Search Engineer, 
-          covering the main steps and for migrating Solr 6.6.  
+          Response contains a full solr to opensearch migration plan for the role of Search Engineer,
+          covering the main steps and for migrating Solr 6.6.
           It should be suitable for the following Solr 6 Schema:
           <?xml version="1.0" encoding="UTF-8" ?>
           <schema name="example-solr6" version="1.6">
@@ -212,12 +212,12 @@ tests:
                  caseLevel="false"/>
             </types>
           </schema>
-          
-          It should also incorporate ops considerations based on an initial solr hardware setup of 3 nodes with 8gb ram 
+
+          It should also incorporate ops considerations based on an initial solr hardware setup of 3 nodes with 8gb ram
           (4gb heap) and 4 cores each, 2 shards, 50M docs, 10GB index.
           It also contains dedicated sections on incompatibilities, milestones, blockers and costs. Under the following
           bullet points you find some facts that should be mentioned under the respective sections:
-          
+
           # Incompatibilities:
           - Trie field types (Solr) need mapping to Point types (OpenSearch)
           - Relevance scores will differ between Solr (TF-IDF) and OpenSearch (BM25) without additional changes
@@ -227,19 +227,19 @@ tests:
           - Fields marked `stored="true"` but `indexed="false"` in Solr may behave differently under `_source` filtering
             in OpenSearch
           - eDismax `pf` phrase boost field with no direct equivalent; approximate with `multi_match` type `phrase` in a `should` clause
-          
+
           # Milestones
-          - Section provides plausible milestones where steps build logically on top of each other and later steps 
+          - Section provides plausible milestones where steps build logically on top of each other and later steps
             do not come before other steps that are logically reqiured before.
-          - Since the role asking for the report is a Search Engineer, check if the report leads with full 
+          - Since the role asking for the report is a Search Engineer, check if the report leads with full
             incompatibility list and query translation details and contains the previously passed query translations
             as examples for translated queries:
             Query #1: title:opensearch AND price:[10 TO 100]
             Query #2: defType=edismax&q=the dark knight&qf=title^10 tagline^2 overview^1 cast^0.5&pf=title^20 overview^5&mm=2<-25%
-          
+
           # Blockers
           - Section describing expectable difficulties or stoppers when migrating Solr 6.6 to OpenSearch.
-          
+
           # Cost
           - Reasonable cost estimates for infrastructure, effort, and required tooling changes where applicable.
         metric: generate-full-report
@@ -252,17 +252,17 @@ tests:
     assert:
       - type: llm-rubric
         value: >-
-          Response contains a full solr to opensearch migration plan for the role of DevOps Engineer, 
-          covering the main steps and for migrating Solr 6.6.  
+          Response contains a full solr to opensearch migration plan for the role of DevOps Engineer,
+          covering the main steps and for migrating Solr 6.6.
           The plan should emphasize the following points:
           - Breaking issues that could cause index creation or reindex failures
           - required cluster level changes
           - emphasizes the ops side of things over the search relevancy topics
           - emphasizes resource intensive queries and infrastructure implications
           - emphasizes authentication, authorization, and operational constraints
-          - gives details regarding the following aspects: instance types, storage (EBS vs. instance store), 
+          - gives details regarding the following aspects: instance types, storage (EBS vs. instance store),
             node roles (data, coordinating, cluster manager), auto-scaling, monitoring, and deployment automation
-          
+
           Regarding the migration plan outline, the response should reflect the following:
           - lead with the cluster sizing recommendation and infrastructure plan
           - most prominent sections: deployment sequencing and operational runbook
@@ -548,3 +548,242 @@ tests:
         - Schema is the TMDB schema
         - Name is Peter Parker
         The response should state that no session with name 'my-test-session' exists.
+  - description: "Faiss rather than NMLib mentioning for semantic search libs"
+    metadata:
+      continue: false
+    vars:
+      query: |
+        I am a search engineer. Help me migrate solr to opensearch. Its Solr version 8.4. Lets address one question
+        first: which library should I use in the semantic search configuration for the similarity calculation?
+    assert:
+    - type: llm-rubric
+      value: >-
+        Response shall not recommend NMLib. Response shall explicitly state faiss library.
+  - description: "Business StakeHolder Chat Route System Description"
+    metadata:
+      continue: false
+    vars:
+      query: |
+        I am a product manager / business stakeholder. Help me migrate solr to opensearch.
+        You can use the session name 'test-session-[timestamp]', where timestamp is the timestamp of the time
+        we started this chat here. Go ahead with the steps suitable for the mentioned role. Do not confirm role with me,
+        your role assignment will be fine.
+    assert:
+    - type: llm-rubric
+      value: >-
+        The response asks for information regarding a range of criteria:
+        - use case of the search system
+        - users of the system
+        - criticality of th system
+        - traffic estimate
+        - index update requirements (rate of adds and updates)
+        - typical document size
+  - description: "Business StakeHolder Chat Route Schema Description"
+    metadata:
+      continue: true
+    vars:
+      query: |
+        Our system is an internal document search. The company has 2000 employees, and most of them use the system
+        daily. Given this dependency on a well-running search, SLA is 99.9% uptime. I dont have exact traffic
+        estimates, but on average every user will perform around 500 searches per day at minimum, and around 
+        a max of 2000, since some internal tooling runs a range of searches on a single user request.
+        We have 40M documents in the system right now. They wont be updated. Yet we get around 500 new documents in
+        every day. Documents range from small newspaper articles to full books, thus we need to accomodate for
+        a range of different types.
+    assert:
+    - type: llm-rubric
+      value: >-
+        Response recaps information provided.
+        It also presents plausible estimates on average document size, index size, daily data growth and peak queries
+        per second. Asks the user to validate the information, provide more information or whether to proceed to next step.
+  - description: "Business StakeHolder Chat Route Schema Description - Step 2"
+    metadata:
+      continue: true
+    vars:
+      query: |
+        Go ahead.
+    assert:
+    - type: llm-rubric
+      value: >-
+        Response asks for description of the type of data that the 
+        search system searches in. It specifically asks for specification regarding:
+        - type of information stored in the documents. Allows user to describe of pass a JSON.
+        - important fields
+        - use case per field, and providing example usages such as: text search, date, numeric, facetting, filtering,
+          sorting, specific normalizations per field, autocomplete.
+  - description: "Business StakeHolder Chat Route Schema Review"
+    metadata:
+      continue: true
+    vars:
+      query: |
+        The document types are too broad to list here. Basically we are an internal documentation service, where
+        employees need access across a wide range of documents (short news snippets, full articles up to full books).
+        Documents are split by type of section, which can be the full news snippet as type NEWS_SNIPPET, article sections
+        as ARTICLE_SECTION, books divided by BOOK_CHAPTER and BOOK_PARAGRAPH. So those are important for text / keyword
+        search and similarity search. We need to have the reference from a text part back to the containing bigger part,
+        e.g book or article. We also provide filters by publishing date and authors. Work with the information I
+        provide to generate the result for the current step.
+    assert:
+    - type: llm-rubric
+      value: >-
+        Response recaps information provided. Response contains a descriptions of fields that should be included
+        in a index schema, based on the information provided by the user.
+        Besides textual fields to search in such as news snippets, article sections, book chapters and pragraphs,
+        it shall also mention publishing date as date field, author(s) as keyword field. Both publishing and author(s)
+        field are used in filters.
+        It also mentions similarity search and utilization of a vector field. 
+        Response also covers representation of parent-child document relationships as present in splitting articles or
+        books into subparts such as section, chapter and / or paragraph.
+        Asks the user to validate the information, provide more information or whether to proceed to next step.
+  - description: "Business StakeHolder Chat Route Schema Review"
+    metadata:
+      continue: true
+    vars:
+      query: |
+        Go ahead.
+    assert:
+    - type: llm-rubric
+      value: >-
+        Response gives an overview of potential blockers / impediments with business impact and provides a summary
+        with total blocker count by severity and rough time estimate for resolution without going into technical
+        details. Asks the user to validate the information, provide more information or whether to proceed to next step.
+  - description: "Business StakeHolder Chat Query Translation"
+    metadata:
+      continue: true
+    vars:
+      query: |
+        Go ahead.
+    assert:
+    - type: llm-rubric
+      value: >-
+        Response asks for the types of searches performed by the users of the current system, covering aspects such as:
+        - text search and which part of the document is most important for good search matches
+        - filtering by facets
+        - range filters
+        - spatial search
+        - important of being able to find full phrases vs single token matching
+        Alternatively, it suggests usages based on already provided information which includes common usages for
+        an internal document search service. Asks the user to validate the information, provide more information or whether to proceed to next step.
+  - description: "Business StakeHolder Chat Query Translation - Step 2"
+    metadata:
+      continue: true
+    vars:
+      query: |
+        For the text search and filters refer to the information I already provided.
+        As per the point on importance of phrase search vs single token matching: both are similarly important,
+        along with semantic matching. Employees often need to find full phrases or specific words. Sometimes they
+        just need to get an overview over specific or related topics which would not or rarely be foud with
+        keyword or phrase matching.
+    assert:
+    - type: llm-rubric
+      value: >-
+        Response provides a set of example queries based on the information provided by the user.
+        These should cover text search, facetting, phrase search and vector similarity search.
+        Yet response shall not give an exact query DSL but describe query in terms of the search functionality
+        it enables. Response shall also highlight if any significant engineering effort needed for replication and
+        a time estimate for any such effort found (if any). If not significant effort identified, response shall
+        clearly state so and provide a reason for it. Response asks user whether to proceed to next step.
+  - description: "Business StakeHolder Chat Customizations - Step 1"
+    metadata:
+      continue: true
+    vars:
+      query: |
+        Go ahead.
+    assert:
+      - type: llm-rubric
+        value: >-
+          Response asks user for overview of any customizations the user knows off, such as custom plugins 
+          for adjustment of text processing, search / ranking logic,  
+          auth, security, query and indexing separation, indexing / update logic and multi-tenancy.
+  - description: "Business StakeHolder Chat Customizations - Step 2"
+    metadata:
+      continue: true
+    vars:
+      query: |
+        We added customized scoring which takes into account employee ratings, and times someone utilized 
+        a document in a created report. We do some sanity reference checking in the import pipeline.
+        I heard someone mention kerberos is used.
+    assert:
+    - type: llm-rubric
+      value: >-
+        Response gives a high level description of customizations as capabilities and provides an overview of customizations
+        requiring significant engineering effort with a rough effort estimate. If none such efforts are identified, 
+        response needs to clearly state that and give reason for it, such as
+        that the migration case is pretty standard and does not make extensive customizations necessary.
+        Asks the user whether to proceed to next step.
+  - description: "Business StakeHolder Chat Infra Assessment - Step 1"
+    metadata:
+      continue: true
+    vars:
+      query: |
+        Go ahead.
+    assert:
+      - type: llm-rubric
+        value: >-
+          Response gives an overview of an example topology of a SOLR source system, including 
+          some inferred aspects as plausible for an internal document search system used by 2000 internal employees
+          and with minimum of 500 searches per user per day:
+          - Standalone Solr or SolrCloud
+          - Number of nodes, shards, replicas
+          - Document count and index size
+          - Peak query throughput and indexing rates
+          Response also provides estimated monthly infrastructure cost (instance types × count × hours), 
+          expected query latency, and uptime characteristics without going deep into technical reasoning.
+          Response gives user option to refine the stated assumptions or do proceed.
+  - description: "Business StakeHolder Chat Client and Front-end Integration - Step 1"
+    metadata:
+      continue: true
+    vars:
+      query: |
+        Go ahead.
+    assert:
+    - type: llm-rubric
+      value: >-
+        Response asks the user which applications / services are currently accessing the Solr system, covering the aspects:
+        - searches on the system
+        - admin access and / or index updates
+        - client facing UI with direct requests to Solr?
+  - description: "Business StakeHolder Chat Client and Front-end Integration - Step 2"
+    metadata:
+      continue: true
+    vars:
+      query: |
+        The only ones I know of are our indexer backend service that needs to perform index updates, our backend
+        service handling search requests by the user and the UI via which requests are sent to that backend service.
+    assert:
+    - type: llm-rubric
+      value: >-
+        Response summarizes indexer, backend search service and UI as systems to adjust when migrating.
+        Response provides number of engineering teams affected and rough effort estimate per integration.
+        Asks the user whether to proceed to next step.
+  - description: "Business StakeHolder Chat Price Estimate"
+    metadata:
+      continue: true
+    vars:
+      query: |
+        Go ahead.
+    assert:
+      - type: llm-rubric
+        value: >-
+          Response asks whether user would like a pricing estimate for the OpenSearch deployment
+          for managed clusters or OpenSearch serverless collections.
+  - description: "Business StakeHolder Chat Migration Report"
+    metadata:
+      continue: true
+    vars:
+      query: |
+        Skip the price estimate step and go to the next step, creating the migration report.
+    assert:
+    - type: llm-rubric
+      value: >-
+        Response contains a migration report covering the following aspects, starting with 
+        a recommendation:
+        - total estimated cost
+        - proposed timeline with milestones
+        - blocker count by severity
+        - go / no-go recommendation
+        Technical details are clearly marked as optional reading and put into the appendix.
+        Response asks user whether report shall be persisted, suggesting the following content to filename mapping:
+        - concise 1-pager for business stakeholder purposes: MIGRATION_REPORT_BUSINESS.md
+        - additional details, including more technical detail: MIGRATION_REPORT_DETAILS.md
+        Alternatively it mentions those files have already been saved.
