@@ -145,6 +145,12 @@ public class Es812CodecSubstitutingInput extends FilterIndexInput {
         return new Es812CodecSubstitutingInput(in.slice(sliceDescription, offset, length), codecReplacements);
     }
 
+    // Lucene's FilterIndexInput framework invokes clone() polymorphically on IndexInput
+    // to create per-thread views of an input. A copy constructor/factory is not viable
+    // here: callers hold a base-class reference and call .clone(). We follow the S1182
+    // recipe (super.clone() + covariant return + explicit re-clone of mutable state),
+    // but SonarQube's S2975 still flags any clone() override regardless of body shape.
+    @SuppressWarnings("java:S2975")
     @Override
     public Es812CodecSubstitutingInput clone() {
         Es812CodecSubstitutingInput c = (Es812CodecSubstitutingInput) super.clone();
