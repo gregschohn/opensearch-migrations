@@ -12,7 +12,10 @@ metadata:
     "helm.sh/hook-weight": "0"
     "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
 spec:
-  backoffLimit: 1
+  # backoffLimit=1 meant a single transient flake failed helm install.
+  backoffLimit: 6
+  # Bound total retry window.
+  activeDeadlineSeconds: 1200
   ttlSecondsAfterFinished: 600
   template:
     metadata:

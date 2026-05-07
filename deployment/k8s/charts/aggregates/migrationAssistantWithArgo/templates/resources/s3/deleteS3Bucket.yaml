@@ -9,7 +9,9 @@ metadata:
     "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
 spec:
   ttlSecondsAfterFinished: 600
-  backoffLimit: 0
+  # backoffLimit=0 meant a single LocalStack/S3 flake killed helm uninstall.
+  backoffLimit: 6
+  activeDeadlineSeconds: 600
   template:
     metadata:
       labels:

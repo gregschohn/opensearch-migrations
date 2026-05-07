@@ -12,7 +12,9 @@ metadata:
     "helm.sh/hook-weight": "-10"
     "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
 spec:
-  backoffLimit: 1
+  # See installJob.yaml.
+  backoffLimit: 6
+  activeDeadlineSeconds: 900
   ttlSecondsAfterFinished: 600
   template:
     metadata:
@@ -58,7 +60,9 @@ metadata:
     "helm.sh/hook-weight": "10"
     "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
 spec:
-  backoffLimit: 1
+  # See installJob.yaml.
+  backoffLimit: 6
+  activeDeadlineSeconds: 900
   ttlSecondsAfterFinished: 600
   template:
     metadata:
