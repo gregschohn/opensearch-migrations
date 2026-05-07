@@ -289,7 +289,7 @@
             "-lc"
           ],
           "args": [
-            "\nset -euo pipefail\n\nkubectl delete approvalgates.migrations.opensearch.org \\\n  -l \"migrations.opensearch.org/workflow={{workflow.name}}\" \\\n  --ignore-not-found\n"
+            "\nkubectl delete approvalgates.migrations.opensearch.org \\\n  -l \"migrations.opensearch.org/workflow={{workflow.name}}\" \\\n  --ignore-not-found\n"
           ]
         },
         "metadata": {

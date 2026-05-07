@@ -128,8 +128,6 @@ kubectl get approvalgates.migrations.opensearch.org -l "$selector" -o name \\
             .addResources(DEFAULT_RESOURCES.SHELL_MIGRATION_CONSOLE_CLI)
             .addCommand(["/bin/bash", "-lc"])
             .addArgs([`
-set -euo pipefail
-
 kubectl delete approvalgates.migrations.opensearch.org \\
   -l "migrations.opensearch.org/workflow={{workflow.name}}" \\
   --ignore-not-found
