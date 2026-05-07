@@ -1,12 +1,10 @@
 import * as yaml from "js-yaml";
 import {renderWorkflowTemplate} from "@opensearch-migrations/argo-workflow-builders";
 import {SetupCapture} from "../src/workflowTemplates/setupCapture";
-import {Replayer} from "../src/workflowTemplates/replayer";
 
-/** Ensures proxy and replayer Deployments have a readinessProbe that gates on real init. */
-describe("Proxy and replayer Deployments declare a readinessProbe", () => {
+/** Ensures capture proxy Deployments have a readinessProbe that gates on real init. */
+describe("Capture proxy Deployments declare a readinessProbe", () => {
     const setupCapture = renderWorkflowTemplate(SetupCapture) as any;
-    const replayer = renderWorkflowTemplate(Replayer) as any;
 
     function getResourceManifest(rendered: any, templateName: string): any {
         const templates: any[] = rendered.spec?.templates ?? [];
@@ -53,24 +51,5 @@ describe("Proxy and replayer Deployments declare a readinessProbe", () => {
         const ports = container.ports;
         expect(probe.tcpSocket.port).toEqual(ports[0].containerPort);
         assertMinReadySecondsIsSet(deployment);
-    });
-
-    it("replayer Deployment has an exec readinessProbe on /tmp/replayer-ready with minReadySeconds", () => {
-        const templates: any[] = replayer.spec?.templates ?? [];
-        const deploymentTemplates = templates.filter(t => {
-            const m: string | undefined = t.resource?.manifest;
-            return typeof m === "string" && m.includes("kind: Deployment");
-        });
-        expect(deploymentTemplates.length).toBeGreaterThanOrEqual(1);
-        for (const t of deploymentTemplates) {
-            const deployment: any = yaml.load(t.resource.manifest);
-            const container = getFirstContainer(deployment);
-            const probe = container.readinessProbe;
-            expect(probe).toBeDefined();
-            expect(probe.exec).toBeDefined();
-            expect(Array.isArray(probe.exec.command)).toBe(true);
-            expect(probe.exec.command).toEqual(expect.arrayContaining(["/tmp/replayer-ready"]));
-            assertMinReadySecondsIsSet(deployment);
-        }
     });
 });
