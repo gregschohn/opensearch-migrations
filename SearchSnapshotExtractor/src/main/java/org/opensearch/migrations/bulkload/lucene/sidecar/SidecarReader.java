@@ -7,109 +7,192 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
+import shadow.lucene10.org.apache.lucene.codecs.CodecUtil;
+import shadow.lucene10.org.apache.lucene.codecs.lucene90.IndexedDISI;
 import shadow.lucene10.org.apache.lucene.store.IOContext;
 import shadow.lucene10.org.apache.lucene.store.IndexInput;
 import shadow.lucene10.org.apache.lucene.store.MMapDirectory;
 import shadow.lucene10.org.apache.lucene.store.RandomAccessInput;
 import shadow.lucene10.org.apache.lucene.util.IOUtils;
+import shadow.lucene10.org.apache.lucene.util.packed.DirectMonotonicReader;
 
 /**
- * Reads a sidecar built by {@link SidecarBuilder}. MMap-backed; supports files &gt; 2 GiB natively.
- * {@link #get(int)} clones the sidecar input so concurrent readers don't share position state.
+ * Reader for the single-container sidecar produced by {@link SidecarBuilder}.
+ * MMap-backed; handles files &gt; 2 GiB via Lucene's {@link MMapDirectory}.
+ *
+ * <p>{@link #get(int)} clones IndexInputs per call so concurrent readers don't share
+ * position state, matching the thread-safety contract {@link IndexInput} provides.
  */
 public final class SidecarReader implements AutoCloseable {
+
+    /** Size of the trailing meta block in bytes. Kept in sync with {@link SidecarBuilder}. */
+    private static final int TRAILER_BYTES =
+            14 * Long.BYTES   // 14 longs: 7 section start/end pairs
+          + 3 * Integer.BYTES // numTerms, maxDoc, numDocsWithValues
+          + 1                 // DISI dense rank power
+          + Short.BYTES       // DISI jump-table entry count
+          + 1;                // DirectMonotonic block shift
 
     private final Path spillDir;
     private final int maxDoc;
     private final int numTerms;
+    private final int numDocsWithValues;
 
     private final MMapDirectory dir;
-    private final IndexInput termsInput;
-    private final IndexInput termOffsetsInput;
-    private final IndexInput sidecarInput;
-    private final IndexInput docIndexInput;
-    private final RandomAccessInput termOffsetsRA;
-    private final RandomAccessInput docIndexRA;
+    private final IndexInput container;
+
+    private final DirectMonotonicReader termOffsets;
+    private final DirectMonotonicReader docOffsets;
+
+    // IndexedDISI — reconstructed per-get with the raw container input + offset/length.
+    private final long disiStart;
+    private final long disiLength;
+    private final int disiJumpTableEntryCount;
+    private final byte disiDenseRankPower;
 
     private volatile boolean closed;
 
-    private SidecarReader(Path spillDir, int maxDoc, int numTerms, MMapDirectory dir,
-                          IndexInput termsInput, IndexInput termOffsetsInput,
-                          IndexInput sidecarInput, IndexInput docIndexInput,
-                          RandomAccessInput termOffsetsRA, RandomAccessInput docIndexRA) {
-        this.spillDir = spillDir;
-        this.maxDoc = maxDoc;
-        this.numTerms = numTerms;
-        this.dir = dir;
-        this.termsInput = termsInput;
-        this.termOffsetsInput = termOffsetsInput;
-        this.sidecarInput = sidecarInput;
-        this.docIndexInput = docIndexInput;
-        this.termOffsetsRA = termOffsetsRA;
-        this.docIndexRA = docIndexRA;
+    private SidecarReader(Builder b) {
+        this.spillDir = b.spillDir;
+        this.maxDoc = b.maxDoc;
+        this.numTerms = b.numTerms;
+        this.numDocsWithValues = b.numDocsWithValues;
+        this.dir = b.dir;
+        this.container = b.container;
+        this.termOffsets = b.termOffsets;
+        this.docOffsets = b.docOffsets;
+        this.disiStart = b.disiStart;
+        this.disiLength = b.disiLength;
+        this.disiJumpTableEntryCount = b.disiJumpTableEntryCount;
+        this.disiDenseRankPower = b.disiDenseRankPower;
     }
 
-    static SidecarReader open(Path spillDir, int maxDoc, int numTerms) throws IOException {
+    static SidecarReader open(Path spillDir) throws IOException {
         MMapDirectory dir = new MMapDirectory(spillDir);
-        IndexInput terms = null;
-        IndexInput termOffsets = null;
-        IndexInput sidecar = null;
-        IndexInput docIndex = null;
+        IndexInput container = null;
         try {
-            terms       = dir.openInput(SidecarBuilder.TERMS_FILE,        IOContext.DEFAULT);
-            termOffsets = dir.openInput(SidecarBuilder.TERM_OFFSETS_FILE, IOContext.DEFAULT);
-            sidecar     = dir.openInput(SidecarBuilder.SIDECAR_FILE,      IOContext.DEFAULT);
-            docIndex    = dir.openInput(SidecarBuilder.DOC_INDEX_FILE,    IOContext.DEFAULT);
-            return new SidecarReader(spillDir, maxDoc, numTerms, dir, terms, termOffsets, sidecar, docIndex,
-                    termOffsets.randomAccessSlice(0L, termOffsets.length()),
-                    docIndex.randomAccessSlice(0L, docIndex.length()));
+            container = dir.openInput(SidecarBuilder.SIDECAR_FILE, IOContext.DEFAULT);
+            CodecUtil.checkIndexHeader(container, SidecarBuilder.CODEC_NAME,
+                    SidecarBuilder.VERSION_CURRENT, SidecarBuilder.VERSION_CURRENT,
+                    SidecarBuilder.SIDECAR_HEADER_ID, "");
+
+            long fileLen = container.length();
+            long footerLen = CodecUtil.footerLength();
+            long trailerPos = fileLen - footerLen - TRAILER_BYTES;
+            if (trailerPos < 0) {
+                throw new IOException("Sidecar container shorter than expected trailer: " + fileLen);
+            }
+            container.seek(trailerPos);
+            long termsStart        = container.readLong();
+            long termsEnd          = container.readLong();
+            long payloadsStart     = container.readLong();
+            long payloadsEnd       = container.readLong();
+            long termOffDataStart  = container.readLong();
+            long termOffDataEnd    = container.readLong();
+            long termOffMetaStart  = container.readLong();
+            long termOffMetaEnd    = container.readLong();
+            long docOffDataStart   = container.readLong();
+            long docOffDataEnd     = container.readLong();
+            long docOffMetaStart   = container.readLong();
+            long docOffMetaEnd     = container.readLong();
+            long disiStart         = container.readLong();
+            long disiEnd           = container.readLong();
+            int numTerms           = container.readInt();
+            int maxDoc             = container.readInt();
+            int numDocsWithValues  = container.readInt();
+            byte denseRankPower    = container.readByte();
+            short disiJumpCount    = container.readShort();
+            byte blockShift        = container.readByte();
+
+            // Final checksum verify (does not shift the file pointer from our POV; we re-seek anyway).
+            container.seek(0);
+            CodecUtil.checksumEntireFile(container);
+
+            Builder b = new Builder();
+            b.spillDir = spillDir;
+            b.dir = dir;
+            b.container = container;
+            b.maxDoc = maxDoc;
+            b.numTerms = numTerms;
+            b.numDocsWithValues = numDocsWithValues;
+
+            // termsEnd / payloadsEnd are currently only used for bounds validation of the
+            // container layout; slicing them would be redundant since term/payload reads go
+            // through cloned container inputs using absolute offsets.
+            if (termsStart > termsEnd || payloadsStart > payloadsEnd) {
+                throw new IOException("Sidecar container has malformed section offsets");
+            }
+
+            b.termOffsets = numTerms == 0 ? null
+                    : loadMonotonic(container,
+                            termOffDataStart, termOffDataEnd,
+                            termOffMetaStart, termOffMetaEnd,
+                            numTerms, blockShift, "termOffsets");
+
+            b.docOffsets = numDocsWithValues == 0 ? null
+                    : loadMonotonic(container,
+                            docOffDataStart, docOffDataEnd,
+                            docOffMetaStart, docOffMetaEnd,
+                            numDocsWithValues, blockShift, "docOffsets");
+
+            b.disiStart = disiStart;
+            b.disiLength = disiEnd - disiStart;
+            b.disiJumpTableEntryCount = disiJumpCount;
+            b.disiDenseRankPower = denseRankPower;
+
+            return new SidecarReader(b);
         } catch (Throwable t) {
-            IOUtils.closeWhileHandlingException(terms, termOffsets, sidecar, docIndex, dir);
+            IOUtils.closeWhileHandlingException(container, dir);
             throw t;
         }
     }
 
-    /**
-     * Returns the tokens for {@code docId}, deduplicated by Lucene position.
-     *
-     * <p>When a token filter (e.g. {@code word_delimiter_graph}) emits multiple tokens at the
-     * same position — a compound form and its sub-tokens — all share the same position in the
-     * sidecar. We keep only the <em>longest</em> token per position, which is always the
-     * unsplit original. For example, given {@code ("2000 09", pos=4)}, {@code ("2000", pos=4)},
-     * and {@code ("09", pos=4)}, only {@code "2000 09"} is returned.
-     *
-     * <p>The returned list is in position-ascending order, matching original token order.
-     */
+    private static DirectMonotonicReader loadMonotonic(
+            IndexInput container,
+            long dataStart, long dataEnd, long metaStart, long metaEnd,
+            long numValues, int blockShift, String name) throws IOException {
+        IndexInput metaSlice = container.slice(name + "-meta", metaStart, metaEnd - metaStart);
+        DirectMonotonicReader.Meta meta = DirectMonotonicReader.loadMeta(metaSlice, numValues, blockShift);
+        RandomAccessInput dataSlice = container.randomAccessSlice(dataStart, dataEnd - dataStart);
+        return DirectMonotonicReader.getInstance(meta, dataSlice);
+    }
+
+    /** Returns the tokens for {@code docId}, position-ordered, deduplicated by longest-at-same-position. */
     public List<TermEntry> get(int docId) throws IOException {
         if (closed) throw new IOException("SidecarReader closed");
         if (docId < 0 || docId >= maxDoc) return Collections.emptyList();
-        long offset = docIndexRA.readLong(docId * 8L);
-        if (offset == SidecarBuilder.DOC_INDEX_NO_TOKENS) return Collections.emptyList();
-        if (offset < 0) throw new IOException("Sidecar offset out of range: " + offset);
+        if (numDocsWithValues == 0) return Collections.emptyList();
 
-        IndexInput in = sidecarInput.clone();
-        in.seek(offset);
+        // Ordinal lookup via DISI: does this doc have a payload, and if so at which ordinal?
+        // The public IndexedDISI constructor takes the raw container input with offset+length;
+        // clone so concurrent get() calls don't share position state.
+        IndexedDISI disi = new IndexedDISI(
+                container.clone(), disiStart, disiLength, disiJumpTableEntryCount,
+                disiDenseRankPower, numDocsWithValues);
+        int found = disi.advance(docId);
+        if (found != docId) return Collections.emptyList();
+        long ordinal = disi.index();
+
+        // docOffsets stores absolute container byte offsets to each doc's payload start.
+        long payloadOffset = docOffsets.get(ordinal);
+
+        IndexInput in = container.clone();
+        in.seek(payloadOffset);
         int numEntries = in.readVInt();
 
-        // First pass: read all raw entries, then dedup by position keeping longest.
-        // We accumulate into a list of raw (pos, termId, startOff, endOff) tuples and
-        // resolve term strings only after dedup to avoid redundant disk reads.
         int[] rawPos      = new int[numEntries];
         int[] rawTermId   = new int[numEntries];
         int[] rawStartOff = new int[numEntries];
         int[] rawEndOff   = new int[numEntries];
         int prevPos = 0;
         for (int i = 0; i < numEntries; i++) {
-            prevPos          += in.readVInt();  // delta-encoded position
-            rawPos[i]         = prevPos;
-            rawTermId[i]      = in.readVInt();
-            rawStartOff[i]    = in.readZInt();
-            rawEndOff[i]      = in.readZInt();
+            prevPos        += in.readVInt();
+            rawPos[i]       = prevPos;
+            rawTermId[i]    = in.readVInt();
+            rawStartOff[i]  = in.readZInt();
+            rawEndOff[i]    = in.readZInt();
         }
 
-        // Dedup: for each position group, keep the entry whose term is longest.
-        // The sidecar is sorted (docId, pos, termId) ASC so same-position entries are adjacent.
-        // Resolve all term strings up front so the inner loop is a simple length comparison.
         String[] resolvedTerms = new String[numEntries];
         for (int k = 0; k < numEntries; k++) {
             resolvedTerms[k] = readTerm(rawTermId[k]);
@@ -119,12 +202,10 @@ public final class SidecarReader implements AutoCloseable {
         int i = 0;
         while (i < numEntries) {
             int groupPos = rawPos[i];
-            int best     = i;
+            int best = i;
             int j = i + 1;
             while (j < numEntries && rawPos[j] == groupPos) {
-                if (resolvedTerms[j].length() > resolvedTerms[best].length()) {
-                    best = j;
-                }
+                if (resolvedTerms[j].length() > resolvedTerms[best].length()) best = j;
                 j++;
             }
             result.add(new TermEntry(resolvedTerms[best], rawStartOff[best], rawEndOff[best]));
@@ -133,10 +214,7 @@ public final class SidecarReader implements AutoCloseable {
         return result;
     }
 
-    /**
-     * Convenience method — returns only the term strings, for callers that do not need
-     * character offsets (e.g. existing callers prior to offset support).
-     */
+    /** Convenience — strings only. */
     public List<String> getTermStrings(int docId) throws IOException {
         List<TermEntry> entries = get(docId);
         List<String> strings = new ArrayList<>(entries.size());
@@ -148,10 +226,14 @@ public final class SidecarReader implements AutoCloseable {
         if (termId < 0 || termId >= numTerms) {
             throw new IOException("termId out of range: " + termId + " (numTerms=" + numTerms + ")");
         }
-        IndexInput in = termsInput.clone();
-        in.seek(termOffsetsRA.readLong(termId * 8L));
-        byte[] bytes = new byte[in.readVInt()];
-        in.readBytes(bytes, 0, bytes.length);
+        // termOffsets stores absolute container byte offsets (rebased from stage-relative
+        // in the builder), so we can seek directly.
+        long absoluteOffset = termOffsets.get(termId);
+        IndexInput in = container.clone();
+        in.seek(absoluteOffset);
+        int len = in.readVInt();
+        byte[] bytes = new byte[len];
+        in.readBytes(bytes, 0, len);
         return new String(bytes, StandardCharsets.UTF_8);
     }
 
@@ -159,8 +241,23 @@ public final class SidecarReader implements AutoCloseable {
     public void close() {
         if (closed) return;
         closed = true;
-        IOUtils.closeWhileHandlingException(termsInput, termOffsetsInput, sidecarInput, docIndexInput, dir);
+        IOUtils.closeWhileHandlingException(container, dir);
     }
 
     Path spillDir() { return spillDir; }
+
+    private static final class Builder {
+        Path spillDir;
+        MMapDirectory dir;
+        IndexInput container;
+        DirectMonotonicReader termOffsets;
+        DirectMonotonicReader docOffsets;
+        long disiStart;
+        long disiLength;
+        int disiJumpTableEntryCount;
+        byte disiDenseRankPower;
+        int maxDoc;
+        int numTerms;
+        int numDocsWithValues;
+    }
 }
