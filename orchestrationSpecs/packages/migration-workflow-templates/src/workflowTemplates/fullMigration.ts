@@ -113,7 +113,8 @@ selector='migrations.opensearch.org/workflow={{workflow.name}}'
 patch='{"metadata":{"ownerReferences":[{"apiVersion":"argoproj.io/v1alpha1","kind":"Workflow","name":"{{workflow.name}}","uid":"{{workflow.uid}}"}]}}'
 
 kubectl get approvalgates.migrations.opensearch.org -l "$selector" -o name \\
-  | xargs -r -n 1 kubectl patch --type merge -p "$patch"
+  | xargs -r -n 1 kubectl patch --type merge -p "$patch" \\
+  || { echo "ERROR: failed to patch one or more approvalgate ownerReferences" >&2; exit 1; }
 `])
         )
         .addRetryParameters(CONTAINER_TEMPLATE_RETRY_STRATEGY)

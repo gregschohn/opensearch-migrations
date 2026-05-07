@@ -153,7 +153,7 @@
             "-lc"
           ],
           "args": [
-            "\nset -euo pipefail\n\nselector='migrations.opensearch.org/workflow={{workflow.name}}'\npatch='{\"metadata\":{\"ownerReferences\":[{\"apiVersion\":\"argoproj.io/v1alpha1\",\"kind\":\"Workflow\",\"name\":\"{{workflow.name}}\",\"uid\":\"{{workflow.uid}}\"}]}}'\n\nkubectl get approvalgates.migrations.opensearch.org -l \"$selector\" -o name \\\n  | xargs -r -n 1 kubectl patch --type merge -p \"$patch\"\n"
+            "\nset -euo pipefail\n\nselector='migrations.opensearch.org/workflow={{workflow.name}}'\npatch='{\"metadata\":{\"ownerReferences\":[{\"apiVersion\":\"argoproj.io/v1alpha1\",\"kind\":\"Workflow\",\"name\":\"{{workflow.name}}\",\"uid\":\"{{workflow.uid}}\"}]}}'\n\nkubectl get approvalgates.migrations.opensearch.org -l \"$selector\" -o name \\\n  | xargs -r -n 1 kubectl patch --type merge -p \"$patch\" \\\n  || { echo \"ERROR: failed to patch one or more approvalgate ownerReferences\" >&2; exit 1; }\n"
           ]
         },
         "metadata": {
