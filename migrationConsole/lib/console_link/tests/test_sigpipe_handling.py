@@ -4,6 +4,7 @@ Regression coverage for
 https://github.com/opensearch-project/opensearch-migrations/issues/2803
 """
 
+import shutil
 import subprocess
 import sys
 import textwrap
@@ -13,6 +14,11 @@ import pytest
 skip_on_windows = pytest.mark.skipif(
     sys.platform == "win32",
     reason="SIGPIPE is POSIX-only",
+)
+
+skip_if_not_installed = pytest.mark.skipif(
+    not shutil.which("workflow"),
+    reason="workflow CLI not installed",
 )
 
 
@@ -57,6 +63,7 @@ def test_workflow_cli_import_installs_sigpipe_sig_dfl():
 # ---------- End-to-end: actual bug reproduction ----------
 
 @skip_on_windows
+@skip_if_not_installed
 @pytest.mark.parametrize("consumer", [
     "head -0",
     "head",
@@ -80,6 +87,7 @@ def test_workflow_configure_sample_pipe_no_traceback(consumer):
 
 
 @skip_on_windows
+@skip_if_not_installed
 def test_workflow_configure_sample_full_read_still_works():
     """Sanity check: the fix must not break the happy path (full stdout read)."""
     proc = subprocess.run(
