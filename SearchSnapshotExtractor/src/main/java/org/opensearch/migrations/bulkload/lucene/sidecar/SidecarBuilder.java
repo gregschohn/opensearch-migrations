@@ -160,8 +160,7 @@ public final class SidecarBuilder implements PostingsSink, AutoCloseable {
                 termOffsetsBuf[i] += termsStart;
             }
 
-            // Term offsets: data comes first so the reader can slice [dataStart, dataEnd);
-            // meta comes after, its start captured for loadMeta.
+            // writeMonotonic writes data then meta; returns byte ranges of both streams.
             Section termOffsets = writeMonotonic(container, termOffsetsBuf, nextTermId);
             Section docOffsets  = writeMonotonic(container, pr.docOffsets,  pr.numDocsWithValues);
 
@@ -319,9 +318,27 @@ public final class SidecarBuilder implements PostingsSink, AutoCloseable {
     }
 
     /** Byte-range of a DirectMonotonic section within the container. */
-    private record Section(long dataStart, long dataEnd, long metaStart, long metaEnd) {}
+    private static final class Section {
+        final long dataStart;
+        final long dataEnd;
+        final long metaStart;
+        final long metaEnd;
+        Section(long dataStart, long dataEnd, long metaStart, long metaEnd) {
+            this.dataStart = dataStart;
+            this.dataEnd = dataEnd;
+            this.metaStart = metaStart;
+            this.metaEnd = metaEnd;
+        }
+    }
 
-    private record PayloadResult(long[] docOffsets, int numDocsWithValues) {}
+    private static final class PayloadResult {
+        final long[] docOffsets;
+        final int numDocsWithValues;
+        PayloadResult(long[] docOffsets, int numDocsWithValues) {
+            this.docOffsets = docOffsets;
+            this.numDocsWithValues = numDocsWithValues;
+        }
+    }
 
     @Override
     public void close() {

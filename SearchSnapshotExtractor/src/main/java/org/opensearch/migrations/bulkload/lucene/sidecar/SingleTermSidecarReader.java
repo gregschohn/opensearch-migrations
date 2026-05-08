@@ -32,7 +32,6 @@ public final class SingleTermSidecarReader implements AutoCloseable {
     private final int maxDoc;
     private final int numTerms;
     private final int numPresent;
-    private final int bitsPerValue;
 
     private final MMapDirectory dir;
     private final IndexInput container;
@@ -53,7 +52,6 @@ public final class SingleTermSidecarReader implements AutoCloseable {
         this.maxDoc = b.maxDoc;
         this.numTerms = b.numTerms;
         this.numPresent = b.numPresent;
-        this.bitsPerValue = b.bitsPerValue;
         this.dir = b.dir;
         this.container = b.container;
         this.termsStart = b.termsStart;
@@ -159,7 +157,7 @@ public final class SingleTermSidecarReader implements AutoCloseable {
 
         // term offset: 8B per term from termOffsetsStart.
         IndexInput in = container.clone();
-        in.seek(termOffsetsStart + (long) termId * 8L);
+        in.seek(termOffsetsStart + termId * 8L);
         long termOffset = in.readLong();
         in.seek(termsStart + termOffset);
         int len = in.readVInt();

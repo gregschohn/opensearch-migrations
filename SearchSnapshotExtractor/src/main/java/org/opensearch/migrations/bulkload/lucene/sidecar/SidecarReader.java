@@ -160,59 +160,70 @@ public final class SidecarReader implements AutoCloseable {
     /** Returns the tokens for {@code docId}, position-ordered, deduplicated by longest-at-same-position. */
     public List<TermEntry> get(int docId) throws IOException {
         if (closed) throw new IOException("SidecarReader closed");
-        if (docId < 0 || docId >= maxDoc) return Collections.emptyList();
-        if (numDocsWithValues == 0) return Collections.emptyList();
+        if (docId < 0 || docId >= maxDoc || numDocsWithValues == 0) return Collections.emptyList();
 
-        // Ordinal lookup via DISI: does this doc have a payload, and if so at which ordinal?
-        // The public IndexedDISI constructor takes the raw container input with offset+length;
-        // clone so concurrent get() calls don't share position state.
+        long ordinal = findOrdinal(docId);
+        if (ordinal < 0) return Collections.emptyList();
+
+        return decodePayload(docOffsets.get(ordinal));
+    }
+
+    /** @return the DISI ordinal of {@code docId}, or -1 if the doc has no payload. */
+    private long findOrdinal(int docId) throws IOException {
         IndexedDISI disi = new IndexedDISI(
                 container.clone(), disiStart, disiLength, disiJumpTableEntryCount,
                 disiDenseRankPower, numDocsWithValues);
-        int found = disi.advance(docId);
-        if (found != docId) return Collections.emptyList();
-        long ordinal = disi.index();
+        return disi.advance(docId) == docId ? disi.index() : -1L;
+    }
 
-        // docOffsets stores absolute container byte offsets to each doc's payload start.
-        long payloadOffset = docOffsets.get(ordinal);
-
+    private List<TermEntry> decodePayload(long payloadOffset) throws IOException {
         IndexInput in = container.clone();
         in.seek(payloadOffset);
         int numEntries = in.readVInt();
 
-        int[] rawPos      = new int[numEntries];
-        int[] rawTermId   = new int[numEntries];
-        int[] rawStartOff = new int[numEntries];
-        int[] rawEndOff   = new int[numEntries];
-        int prevPos = 0;
+        int[] pos      = new int[numEntries];
+        int[] termIds  = new int[numEntries];
+        int[] startOff = new int[numEntries];
+        int[] endOff   = new int[numEntries];
+        int prev = 0;
         for (int i = 0; i < numEntries; i++) {
-            prevPos        += in.readVInt();
-            rawPos[i]       = prevPos;
-            rawTermId[i]    = in.readVInt();
-            rawStartOff[i]  = in.readZInt();
-            rawEndOff[i]    = in.readZInt();
+            prev        += in.readVInt();
+            pos[i]       = prev;
+            termIds[i]   = in.readVInt();
+            startOff[i]  = in.readZInt();
+            endOff[i]    = in.readZInt();
         }
+        return dedupByLongestTerm(pos, termIds, startOff, endOff);
+    }
 
-        // Within each position group, pick the winner by term length, then materialize
-        // the winner's bytes. Singleton groups (the common case) read one term body.
-        // Multi-entry groups read a cheap vInt length per candidate + one body for the winner.
-        List<TermEntry> result = new ArrayList<>(numEntries);
+    /**
+     * Within each position group, pick the winner by term length, then materialize
+     * the winner's bytes. Singleton groups (the common case) read one term body;
+     * multi-entry groups read one vInt length per candidate plus the winner's body.
+     */
+    private List<TermEntry> dedupByLongestTerm(
+            int[] pos, int[] termIds, int[] startOff, int[] endOff) throws IOException {
+        int n = pos.length;
+        List<TermEntry> result = new ArrayList<>(n);
         int i = 0;
-        while (i < numEntries) {
+        while (i < n) {
             int j = i + 1;
-            while (j < numEntries && rawPos[j] == rawPos[i]) j++;
-            int best = i;
-            if (j - i > 1) {
-                int bestLen = readTermLength(rawTermId[i]);
-                for (int k = i + 1; k < j; k++) {
-                    int lk = readTermLength(rawTermId[k]);
-                    if (lk > bestLen) { best = k; bestLen = lk; }
-                }
-            }
-            result.add(new TermEntry(readTerm(rawTermId[best]), rawStartOff[best], rawEndOff[best]));
+            while (j < n && pos[j] == pos[i]) j++;
+            int best = (j - i == 1) ? i : pickLongest(termIds, i, j);
+            result.add(new TermEntry(readTerm(termIds[best]), startOff[best], endOff[best]));
             i = j;
         }
         return result;
+    }
+
+    private int pickLongest(int[] termIds, int from, int to) throws IOException {
+        int best = from;
+        int bestLen = readTermLength(termIds[from]);
+        for (int k = from + 1; k < to; k++) {
+            int lk = readTermLength(termIds[k]);
+            if (lk > bestLen) { best = k; bestLen = lk; }
+        }
+        return best;
     }
 
     private int readTermLength(int termId) throws IOException {

@@ -45,6 +45,7 @@ public final class SingleTermSidecarBuilder implements SingleTermSink, AutoClose
     static final String CODEC_NAME = "RfsSingleTerm";
     static final int VERSION_CURRENT = 0;
     static final String SIDECAR_FILE = "single-sidecar.bin";
+    private static final String TERMS_STAGE_FILE = "terms-stage.bin";
     static final byte[] HEADER_ID = new byte[16];
 
     /** Block shift for DirectMonotonicWriter — matches {@link SidecarBuilder#DIRECT_MONOTONIC_BLOCK_SHIFT}. */
@@ -71,8 +72,8 @@ public final class SingleTermSidecarBuilder implements SingleTermSink, AutoClose
         Files.createDirectories(spillDir);
         this.dir = new NIOFSDirectory(spillDir);
 
-        this.termsStage = dir.createOutput("terms-stage.bin", IOContext.DEFAULT);
-        this.termsStagePath = spillDir.resolve("terms-stage.bin");
+        this.termsStage = dir.createOutput(TERMS_STAGE_FILE, IOContext.DEFAULT);
+        this.termsStagePath = spillDir.resolve(TERMS_STAGE_FILE);
 
         this.docToTermId = new int[this.maxDoc];
         java.util.Arrays.fill(this.docToTermId, NO_VALUE);
@@ -107,7 +108,7 @@ public final class SingleTermSidecarBuilder implements SingleTermSink, AutoClose
             CodecUtil.writeIndexHeader(container, CODEC_NAME, VERSION_CURRENT, HEADER_ID, "");
 
             long termsStart = container.getFilePointer();
-            copyFileInto(container, "terms-stage.bin");
+            copyFileInto(container, TERMS_STAGE_FILE);
             long termsEnd = container.getFilePointer();
 
             long termOffDataStart = container.getFilePointer();
@@ -176,7 +177,13 @@ public final class SingleTermSidecarBuilder implements SingleTermSink, AutoClose
 
             CodecUtil.writeFooter(container);
         } finally {
-            try { dir.deleteFile("terms-stage.bin"); } catch (IOException ignored) {}
+            try {
+                dir.deleteFile(TERMS_STAGE_FILE);
+            } catch (IOException e) {
+                // Best-effort cleanup; leaving the stage file behind is harmless because the
+                // spill dir is per-(segment, field) and removed wholesale by SegmentTermIndex.close().
+                log.debug("Ignored terms-stage delete error: {}", e.toString());
+            }
         }
 
         closed = true;
