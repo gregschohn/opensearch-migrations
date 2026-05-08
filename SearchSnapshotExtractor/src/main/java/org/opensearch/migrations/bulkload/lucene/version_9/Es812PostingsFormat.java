@@ -113,8 +113,10 @@ public class Es812PostingsFormat extends PostingsFormat {
         // FilterIndexInput.in is protected final, so super.clone()'s shallow copy would share
         // the delegate with the original — violating IndexInput's contract that clones have
         // independent position state. Copy-factory style (mirrors Lucene's own
-        // EndiannessReverserIndexInput) clones the delegate explicitly.
-        @SuppressWarnings("java:S1182")
+        // EndiannessReverserIndexInput) clones the delegate explicitly. Sonar S1182 wants
+        // super.clone() and S2975 wants no clone() override at all; both are unsound here
+        // (the framework calls IndexInput.clone() polymorphically), so suppress both.
+        @SuppressWarnings({"java:S1182", "java:S2975"})
         @Override
         public IndexInput clone() {
             return new RewritingInput(in.clone());
