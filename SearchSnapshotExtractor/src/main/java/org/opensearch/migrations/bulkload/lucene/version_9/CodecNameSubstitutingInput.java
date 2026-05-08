@@ -45,12 +45,14 @@ public class CodecNameSubstitutingInput extends FilterIndexInput {
         return new CodecNameSubstitutingInput(in.slice(sliceDescription, offset, length), codecReplacements);
     }
 
+    // FilterIndexInput.in is protected final, so a super.clone() shallow-copy would share
+    // the delegate with the original — violating Lucene's IndexInput clone contract that
+    // clones must have independent position state. We clone the delegate explicitly and
+    // wrap it (mirrors Lucene's own EndiannessReverserIndexInput). S1182 wants super.clone()
+    // here, but with a final delegate that path is unsound; suppress.
+    @SuppressWarnings("java:S1182")
     @Override
     public IndexInput clone() {
-        // Lucene's IndexInput.clone() contract requires a clone whose position state is
-        // independent of the original — so we clone the delegate explicitly and wrap it.
-        // Copy-factory style (mirrors Lucene's own EndiannessReverserIndexInput) avoids the
-        // SonarQube S2975 "remove this clone" finding triggered by Object.clone() overrides.
         return new CodecNameSubstitutingInput(in.clone(), codecReplacements);
     }
 }
