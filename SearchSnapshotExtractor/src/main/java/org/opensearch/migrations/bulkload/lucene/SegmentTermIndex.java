@@ -1,21 +1,19 @@
 package org.opensearch.migrations.bulkload.lucene;
 
 import java.io.IOException;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Stream;
 
 import org.opensearch.migrations.bulkload.lucene.sidecar.SidecarBuilder;
 import org.opensearch.migrations.bulkload.lucene.sidecar.SidecarReader;
 import org.opensearch.migrations.bulkload.lucene.sidecar.TermEntry;
 
 import lombok.extern.slf4j.Slf4j;
+import shadow.lucene10.org.apache.lucene.util.IOUtils;
 
 /**
  * Per-segment cache of per-field term indexes.
@@ -204,19 +202,10 @@ public class SegmentTermIndex implements AutoCloseable {
         }
         byField.clear();
         numericByField.clear();
-        deleteRecursively(spillRoot);
-    }
-
-    private static void deleteRecursively(Path root) {
-        if (!Files.exists(root)) return;
-        try (Stream<Path> walk = Files.walk(root)) {
-            walk.sorted(Comparator.reverseOrder()).forEach(p -> {
-                try { Files.deleteIfExists(p); } catch (IOException ignored) {
-                    // Best-effort cleanup; ignore per-file failures during teardown.
-                }
-            });
+        try {
+            IOUtils.rm(spillRoot);
         } catch (IOException e) {
-            log.warn("Failed to delete spill root {}: {}", root, e.toString());
+            log.warn("Failed to delete spill root {}: {}", spillRoot, e.toString());
         }
     }
 }

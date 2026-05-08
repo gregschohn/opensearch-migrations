@@ -1,15 +1,12 @@
 package org.opensearch.migrations.bulkload.lucene.sidecar;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Random;
 import java.util.TreeSet;
-import java.util.stream.Stream;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -18,6 +15,8 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.opensearch.migrations.bulkload.lucene.sidecar.SidecarTestSupport.bytesRef;
+import static org.opensearch.migrations.bulkload.lucene.sidecar.SidecarTestSupport.rm;
 
 /**
  * Round-trip tests for {@link SingleTermSidecarBuilder} / {@link SingleTermSidecarReader},
@@ -39,12 +38,7 @@ class SingleTermSidecarRoundTripTest {
 
     @AfterEach
     void tearDown() throws IOException {
-        if (spillDir == null) return;
-        try (Stream<Path> walk = Files.walk(spillDir)) {
-            walk.sorted(Comparator.reverseOrder()).forEach(p -> {
-                try { Files.deleteIfExists(p); } catch (IOException ignored) {}
-            });
-        }
+        rm(spillDir);
     }
 
     @Test
@@ -214,8 +208,4 @@ class SingleTermSidecarRoundTripTest {
         }
     }
 
-    private static BytesRefLike bytesRef(String s) {
-        byte[] b = s.getBytes(StandardCharsets.UTF_8);
-        return new BytesRefLike(b, 0, b.length);
-    }
 }

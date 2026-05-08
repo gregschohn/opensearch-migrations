@@ -22,13 +22,11 @@ public final class SingleTermSidecarReader implements AutoCloseable {
 
     /** Size of the trailing meta block in bytes; kept in sync with {@link SingleTermSidecarBuilder}. */
     private static final int TRAILER_BYTES =
-            10 * Long.BYTES   // 10 longs: 4 section pairs + 2 reserved
+            8 * Long.BYTES    // 8 longs: 4 section start/end pairs
           + 4 * Integer.BYTES // numTerms, maxDoc, numPresent, bitsPerValue
           + 1                 // DISI dense rank power
-          + Short.BYTES       // DISI jump-table entry count
-          + 1;                // DirectMonotonic block shift (unused today, reserved)
+          + Short.BYTES;      // DISI jump-table entry count
 
-    private final Path spillDir;
     private final int maxDoc;
     private final int numTerms;
     private final int numPresent;
@@ -48,7 +46,6 @@ public final class SingleTermSidecarReader implements AutoCloseable {
     private volatile boolean closed;
 
     private SingleTermSidecarReader(Builder b) {
-        this.spillDir = b.spillDir;
         this.maxDoc = b.maxDoc;
         this.numTerms = b.numTerms;
         this.numPresent = b.numPresent;
@@ -70,7 +67,7 @@ public final class SingleTermSidecarReader implements AutoCloseable {
             container = dir.openInput(SingleTermSidecarBuilder.SIDECAR_FILE, IOContext.DEFAULT);
             CodecUtil.checkIndexHeader(container, SingleTermSidecarBuilder.CODEC_NAME,
                     SingleTermSidecarBuilder.VERSION_CURRENT, SingleTermSidecarBuilder.VERSION_CURRENT,
-                    SingleTermSidecarBuilder.HEADER_ID, "");
+                    SingleTermSidecarBuilder.headerId(), "");
 
             long fileLen = container.length();
             long footerLen = CodecUtil.footerLength();
@@ -81,32 +78,28 @@ public final class SingleTermSidecarReader implements AutoCloseable {
             container.seek(trailerPos);
             long termsStart        = container.readLong();
             long termsEnd          = container.readLong();
-            long termOffDataStart  = container.readLong();
-            long termOffDataEnd    = container.readLong();
+            long termOffsetsStart  = container.readLong();
+            long termOffsetsEnd    = container.readLong();
             long disiStart         = container.readLong();
             long disiEnd           = container.readLong();
             long valuesStart       = container.readLong();
             long valuesEnd         = container.readLong();
-            container.readLong(); // reserved
-            container.readLong(); // reserved
             int numTerms           = container.readInt();
             int maxDoc             = container.readInt();
             int numPresent         = container.readInt();
             int bitsPerValue       = container.readInt();
             byte denseRankPower    = container.readByte();
             short disiJumpCount    = container.readShort();
-            container.readByte();  // block shift — unused; single-term writes raw longs
 
-            if (termsStart > termsEnd || termOffDataStart > termOffDataEnd
+            if (termsStart > termsEnd || termOffsetsStart > termOffsetsEnd
                     || disiStart > disiEnd || valuesStart > valuesEnd) {
                 throw new IOException("Malformed single-term sidecar section offsets");
             }
 
-            container.seek(0);
-            CodecUtil.checksumEntireFile(container);
+            // Skip full-file checksum — the header + footer CRC written at build time are
+            // trusted on re-open. See SidecarReader.open for rationale.
 
             Builder b = new Builder();
-            b.spillDir = spillDir;
             b.dir = dir;
             b.container = container;
             b.maxDoc = maxDoc;
@@ -114,7 +107,7 @@ public final class SingleTermSidecarReader implements AutoCloseable {
             b.numPresent = numPresent;
             b.bitsPerValue = bitsPerValue;
             b.termsStart = termsStart;
-            b.termOffsetsStart = termOffDataStart;
+            b.termOffsetsStart = termOffsetsStart;
             b.disiStart = disiStart;
             b.disiLength = disiEnd - disiStart;
             b.disiJumpTableEntryCount = disiJumpCount;
@@ -173,12 +166,10 @@ public final class SingleTermSidecarReader implements AutoCloseable {
         IOUtils.closeWhileHandlingException(container, dir);
     }
 
-    Path spillDir() { return spillDir; }
     public int maxDoc() { return maxDoc; }
     public int numTerms() { return numTerms; }
 
     private static final class Builder {
-        Path spillDir;
         MMapDirectory dir;
         IndexInput container;
         long termsStart;

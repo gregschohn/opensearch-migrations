@@ -15,7 +15,6 @@ import shadow.lucene10.org.apache.lucene.store.NIOFSDirectory;
 import shadow.lucene10.org.apache.lucene.util.BitSetIterator;
 import shadow.lucene10.org.apache.lucene.util.FixedBitSet;
 import shadow.lucene10.org.apache.lucene.util.IOUtils;
-import shadow.lucene10.org.apache.lucene.util.packed.DirectMonotonicWriter;
 import shadow.lucene10.org.apache.lucene.util.packed.DirectWriter;
 
 /**
@@ -46,10 +45,12 @@ public final class SingleTermSidecarBuilder implements SingleTermSink, AutoClose
     static final int VERSION_CURRENT = 0;
     static final String SIDECAR_FILE = "single-sidecar.bin";
     private static final String TERMS_STAGE_FILE = "terms-stage.bin";
-    static final byte[] HEADER_ID = new byte[16];
 
-    /** Block shift for DirectMonotonicWriter — matches {@link SidecarBuilder#DIRECT_MONOTONIC_BLOCK_SHIFT}. */
-    static final int DIRECT_MONOTONIC_BLOCK_SHIFT = 16;
+    /** Fresh zero-filled 16-byte ID for the {@link CodecUtil} header. See {@link SidecarBuilder#headerId}. */
+    static byte[] headerId() {
+        return new byte[16];
+    }
+
     static final byte DISI_DENSE_RANK_POWER = 9;
 
     private final Path spillDir;
@@ -57,7 +58,6 @@ public final class SingleTermSidecarBuilder implements SingleTermSink, AutoClose
     private final int maxDoc;
 
     private final IndexOutput termsStage;
-    private final Path termsStagePath;
 
     private final int[] docToTermId;
 
@@ -73,7 +73,6 @@ public final class SingleTermSidecarBuilder implements SingleTermSink, AutoClose
         this.dir = new NIOFSDirectory(spillDir);
 
         this.termsStage = dir.createOutput(TERMS_STAGE_FILE, IOContext.DEFAULT);
-        this.termsStagePath = spillDir.resolve(TERMS_STAGE_FILE);
 
         this.docToTermId = new int[this.maxDoc];
         java.util.Arrays.fill(this.docToTermId, NO_VALUE);
@@ -105,22 +104,16 @@ public final class SingleTermSidecarBuilder implements SingleTermSink, AutoClose
         termsStage.close();
 
         try (IndexOutput container = dir.createOutput(SIDECAR_FILE, IOContext.DEFAULT)) {
-            CodecUtil.writeIndexHeader(container, CODEC_NAME, VERSION_CURRENT, HEADER_ID, "");
+            CodecUtil.writeIndexHeader(container, CODEC_NAME, VERSION_CURRENT, headerId(), "");
 
             long termsStart = container.getFilePointer();
             copyFileInto(container, TERMS_STAGE_FILE);
             long termsEnd = container.getFilePointer();
 
-            long termOffDataStart = container.getFilePointer();
-            writeMonotonic(container, termOffsetsBuf, nextTermId);
-            long termOffDataEnd = container.getFilePointer();
-            // Meta for DirectMonotonic goes after data; for simplicity here we inline it the
-            // same way SidecarBuilder does. But for this single-term side the meta is also
-            // small enough that we buffer and append it in one pass. Use the helper in
-            // SidecarBuilder-style: data then meta.
-            // (Actually we need meta written in the same stream for simplicity — rewrite below.)
+            long termOffsetsStart = container.getFilePointer();
+            writeRawTermOffsets(container, termOffsetsBuf, nextTermId);
+            long termOffsetsEnd = container.getFilePointer();
 
-            // Build the has-value DISI + DirectWriter values.
             FixedBitSet present = new FixedBitSet(maxDoc);
             int numPresent = 0;
             int maxTermIdSeen = 0;
@@ -155,25 +148,22 @@ public final class SingleTermSidecarBuilder implements SingleTermSink, AutoClose
             }
             long valuesEnd = container.getFilePointer();
 
-            // Trailing meta. Fixed size: 10 longs (80) + 4 ints (16) + 1 byte + 1 short + 1 byte = 100.
+            // Trailer: 8 longs (64) + 4 ints (16) + 1 byte + 1 short = 83 bytes. Read by
+            // SingleTermSidecarReader.open by seeking back from the footer.
             container.writeLong(termsStart);
             container.writeLong(termsEnd);
-            container.writeLong(termOffDataStart);
-            container.writeLong(termOffDataEnd);
+            container.writeLong(termOffsetsStart);
+            container.writeLong(termOffsetsEnd);
             container.writeLong(disiStart);
             container.writeLong(disiEnd);
             container.writeLong(valuesStart);
             container.writeLong(valuesEnd);
-            // Reserve two more longs for potential extensions / alignment (keeps trailer layout stable).
-            container.writeLong(0L);
-            container.writeLong(0L);
             container.writeInt(nextTermId);
             container.writeInt(maxDoc);
             container.writeInt(numPresent);
             container.writeInt(bitsPerValue);
             container.writeByte(DISI_DENSE_RANK_POWER);
             container.writeShort(disiJumpCount);
-            container.writeByte((byte) DIRECT_MONOTONIC_BLOCK_SHIFT);
 
             CodecUtil.writeFooter(container);
         } finally {
@@ -192,44 +182,20 @@ public final class SingleTermSidecarBuilder implements SingleTermSink, AutoClose
 
     private void copyFileInto(IndexOutput dst, String srcName) throws IOException {
         try (IndexInput in = dir.openInput(srcName, IOContext.DEFAULT)) {
-            long len = in.length();
-            byte[] buf = new byte[8192];
-            long remaining = len;
-            while (remaining > 0) {
-                int chunk = (int) Math.min(remaining, buf.length);
-                in.readBytes(buf, 0, chunk);
-                dst.writeBytes(buf, 0, chunk);
-                remaining -= chunk;
-            }
+            dst.copyBytes(in, in.length());
         }
     }
 
     /**
-     * Writes {@code count} monotonic longs via {@link DirectMonotonicWriter}. The writer
-     * requires separate meta + data streams; for the single-term layout we keep it simple
-     * by buffering term offsets in memory and writing them via DirectMonotonicWriter into
-     * a pair of byte arrays, then splicing both into {@code container} back-to-back. The
-     * caller records start/end of the combined blob; the reader parses the meta and data
-     * independently using the recorded total length.
-     *
-     * <p>Design note: we don't need a separate meta-end pointer because
-     * {@link SingleTermSidecarReader} reconstructs the DirectMonotonic reader by capturing
-     * the writer's own byte output. To keep this simple and avoid the dual-stream complexity
-     * of the positional sidecar, the single-term path keeps term-offsets as a plain
-     * {@code long[]} written as raw {@code writeLong} entries into the container. With
-     * typical cardinalities (a single-valued keyword rarely has more than a few million
-     * distinct values), 8 B/term is fine — the meaningful win is the DirectWriter for the
-     * {@code numPresent × bitsPerValue} values section.
+     * Writes {@code count} raw 8-byte term offsets. Single-valued keyword cardinalities are
+     * low enough that DirectMonotonic compression isn't worth the dual-stream complexity
+     * used on the positional sidecar.
      */
-    private static void writeMonotonic(IndexOutput container, long[] values, int count) throws IOException {
-        // Raw long[] in-place. Simpler than DirectMonotonic for this table and avoids the
-        // dual-stream mechanics; matches what SingleTermSidecarReader reads back.
+    private static void writeRawTermOffsets(IndexOutput container, long[] values, int count) throws IOException {
         for (int i = 0; i < count; i++) {
             container.writeLong(values[i]);
         }
     }
-
-    Path spillDir() { return spillDir; }
 
     @Override
     public void close() {
@@ -237,7 +203,7 @@ public final class SingleTermSidecarBuilder implements SingleTermSink, AutoClose
         closed = true;
         IOUtils.closeWhileHandlingException(termsStage, dir);
         try {
-            Files.deleteIfExists(termsStagePath);
+            Files.deleteIfExists(spillDir.resolve(TERMS_STAGE_FILE));
         } catch (IOException e) {
             log.debug("Ignored single-term stage delete error: {}", e.toString());
         }

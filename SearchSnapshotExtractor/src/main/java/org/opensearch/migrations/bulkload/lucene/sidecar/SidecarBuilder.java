@@ -53,9 +53,13 @@ public final class SidecarBuilder implements PostingsSink, AutoCloseable {
     static final String CODEC_NAME = "RfsSidecar";
     static final int VERSION_CURRENT = 0;
     static final String SIDECAR_FILE = "sidecar.bin";
-    /** Fixed 16-byte ID used in the {@link CodecUtil} index header. Sidecars live in per-segment
-     *  spill dirs so we don't need to distinguish them; the fixed ID keeps the reader strict. */
-    static final byte[] SIDECAR_HEADER_ID = new byte[16];
+
+    /** Fresh zero-filled 16-byte ID for {@link CodecUtil#writeIndexHeader} / {@link
+     *  CodecUtil#checkIndexHeader}. Each call returns a new array so the ID can't be mutated
+     *  by a caller into poisoning another builder/reader. */
+    static byte[] headerId() {
+        return new byte[16];
+    }
 
     /** 20 bytes: docId(4) + pos(4) + termId(4) + startOff(4) + endOff(4), big-endian. */
     public static final int RECORD_BYTES = 20;
@@ -143,7 +147,7 @@ public final class SidecarBuilder implements PostingsSink, AutoCloseable {
         String sortedName = sorter.sort(SORT_INPUT_FILE);
 
         try (IndexOutput container = dir.createOutput(SIDECAR_FILE, IOContext.DEFAULT)) {
-            CodecUtil.writeIndexHeader(container, CODEC_NAME, VERSION_CURRENT, SIDECAR_HEADER_ID, "");
+            CodecUtil.writeIndexHeader(container, CODEC_NAME, VERSION_CURRENT, headerId(), "");
 
             long termsStart = container.getFilePointer();
             copyFileInto(container, TERMS_STAGE_FILE);
@@ -155,12 +159,11 @@ public final class SidecarBuilder implements PostingsSink, AutoCloseable {
             long payloadsEnd = container.getFilePointer();
 
             // Rebase term offsets to absolute container offsets: registerTerm recorded them
-            // relative to the terms-stage file, which landed at termsStart inside the container.
+            // relative to the terms-stage file, which lands at termsStart inside the container.
             for (int i = 0; i < nextTermId; i++) {
                 termOffsetsBuf[i] += termsStart;
             }
 
-            // writeMonotonic writes data then meta; returns byte ranges of both streams.
             Section termOffsets = writeMonotonic(container, termOffsetsBuf, nextTermId);
             Section docOffsets  = writeMonotonic(container, pr.docOffsets,  pr.numDocsWithValues);
 
@@ -168,7 +171,6 @@ public final class SidecarBuilder implements PostingsSink, AutoCloseable {
             short disiJumpCount = writeDisi(container, docsWithValues, pr.numDocsWithValues);
             long disiEnd = container.getFilePointer();
 
-            // Trailing meta block — fixed layout, read by SidecarReader.open.
             container.writeLong(termsStart);
             container.writeLong(termsEnd);
             container.writeLong(payloadsStart);
@@ -203,15 +205,7 @@ public final class SidecarBuilder implements PostingsSink, AutoCloseable {
 
     private void copyFileInto(IndexOutput dst, String srcName) throws IOException {
         try (IndexInput in = dir.openInput(srcName, IOContext.DEFAULT)) {
-            long len = in.length();
-            byte[] buf = new byte[8192];
-            long remaining = len;
-            while (remaining > 0) {
-                int chunk = (int) Math.min(remaining, buf.length);
-                in.readBytes(buf, 0, chunk);
-                dst.writeBytes(buf, 0, chunk);
-                remaining -= chunk;
-            }
+            dst.copyBytes(in, in.length());
         }
     }
 

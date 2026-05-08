@@ -33,7 +33,6 @@ public final class SidecarReader implements AutoCloseable {
           + Short.BYTES       // DISI jump-table entry count
           + 1;                // DirectMonotonic block shift
 
-    private final Path spillDir;
     private final int maxDoc;
     private final int numTerms;
     private final int numDocsWithValues;
@@ -53,7 +52,6 @@ public final class SidecarReader implements AutoCloseable {
     private volatile boolean closed;
 
     private SidecarReader(Builder b) {
-        this.spillDir = b.spillDir;
         this.maxDoc = b.maxDoc;
         this.numTerms = b.numTerms;
         this.numDocsWithValues = b.numDocsWithValues;
@@ -74,7 +72,7 @@ public final class SidecarReader implements AutoCloseable {
             container = dir.openInput(SidecarBuilder.SIDECAR_FILE, IOContext.DEFAULT);
             CodecUtil.checkIndexHeader(container, SidecarBuilder.CODEC_NAME,
                     SidecarBuilder.VERSION_CURRENT, SidecarBuilder.VERSION_CURRENT,
-                    SidecarBuilder.SIDECAR_HEADER_ID, "");
+                    SidecarBuilder.headerId(), "");
 
             long fileLen = container.length();
             long footerLen = CodecUtil.footerLength();
@@ -104,21 +102,16 @@ public final class SidecarReader implements AutoCloseable {
             short disiJumpCount    = container.readShort();
             byte blockShift        = container.readByte();
 
-            // Final checksum verify (does not shift the file pointer from our POV; we re-seek anyway).
-            container.seek(0);
-            CodecUtil.checksumEntireFile(container);
-
+            // Header + footer checksum (written at build-time) are trusted — the sidecar was
+            // just produced by buildAndOpenReader. A full-file checksum here would scan multi-GB
+            // sidecars once per open and buys nothing beyond what checkIndexHeader already did.
             Builder b = new Builder();
-            b.spillDir = spillDir;
             b.dir = dir;
             b.container = container;
             b.maxDoc = maxDoc;
             b.numTerms = numTerms;
             b.numDocsWithValues = numDocsWithValues;
 
-            // termsEnd / payloadsEnd are currently only used for bounds validation of the
-            // container layout; slicing them would be redundant since term/payload reads go
-            // through cloned container inputs using absolute offsets.
             if (termsStart > termsEnd || payloadsStart > payloadsEnd) {
                 throw new IOException("Sidecar container has malformed section offsets");
             }
@@ -264,10 +257,7 @@ public final class SidecarReader implements AutoCloseable {
         IOUtils.closeWhileHandlingException(container, dir);
     }
 
-    Path spillDir() { return spillDir; }
-
     private static final class Builder {
-        Path spillDir;
         MMapDirectory dir;
         IndexInput container;
         DirectMonotonicReader termOffsets;

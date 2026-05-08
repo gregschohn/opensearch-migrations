@@ -1,10 +1,8 @@
 package org.opensearch.migrations.bulkload.lucene.sidecar;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Comparator;
 import java.util.stream.Stream;
 
 import org.junit.jupiter.api.AfterEach;
@@ -15,6 +13,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.opensearch.migrations.bulkload.lucene.sidecar.SidecarTestSupport.bytesRef;
+import static org.opensearch.migrations.bulkload.lucene.sidecar.SidecarTestSupport.rm;
 
 /**
  * Pins the new unified-container sidecar format on disk:
@@ -38,12 +38,7 @@ class ContainerFormatTest {
 
     @AfterEach
     void tearDown() throws IOException {
-        if (spillDir == null) return;
-        try (Stream<Path> walk = Files.walk(spillDir)) {
-            walk.sorted(Comparator.reverseOrder()).forEach(p -> {
-                try { Files.deleteIfExists(p); } catch (IOException ignored) {}
-            });
-        }
+        rm(spillDir);
     }
 
     @Test
@@ -204,13 +199,6 @@ class ContainerFormatTest {
                 }
             }
         }
-    }
-
-    // ---- helpers --------------------------------------------------------
-
-    private static BytesRefLike bytesRef(String s) {
-        byte[] b = s.getBytes(StandardCharsets.UTF_8);
-        return new BytesRefLike(b, 0, b.length);
     }
 
     private static String listing(Path dir) {

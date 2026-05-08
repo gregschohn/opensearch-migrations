@@ -13,7 +13,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.TreeMap;
-import java.util.stream.Stream;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -52,16 +51,7 @@ class SidecarBuilderRoundTripTest {
 
     @AfterEach
     void tearDown() throws IOException {
-        if (spillDir != null) deleteRecursive(spillDir);
-    }
-
-    private static void deleteRecursive(Path root) throws IOException {
-        if (!Files.exists(root)) return;
-        try (Stream<Path> walk = Files.walk(root)) {
-            walk.sorted(Comparator.reverseOrder()).forEach(p -> {
-                try { Files.deleteIfExists(p); } catch (IOException ignored) {}
-            });
-        }
+        SidecarTestSupport.rm(spillDir);
     }
 
     @Test
