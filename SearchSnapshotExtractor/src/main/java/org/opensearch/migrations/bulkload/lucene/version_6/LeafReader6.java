@@ -272,5 +272,4 @@ public class LeafReader6 implements LuceneLeafReader {
         }
         return null;
     }
-
 }
