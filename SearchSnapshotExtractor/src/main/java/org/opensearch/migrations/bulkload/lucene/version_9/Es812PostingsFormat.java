@@ -28,13 +28,12 @@ import shadow.lucene9.org.apache.lucene.store.IndexInput;
  *
  * <p>The substitution is applied in {@code DataInput.readString()} only — raw bytes are
  * never modified, so {@code BufferedChecksumIndexInput}'s footer CRC equality holds without
- * any custom checksum input. Only this file 9 path needs the rewrite: ES 5/6/7 predate
- * ES812; ES 9.x's version_10 path simply returns {@link FallbackLuceneComponents#EMPTY_FIELDS_PRODUCER}
- * because Lucene 10 readers never need to decode postings during snapshot reconstruction
- * (stored fields suffice).
+ * any custom checksum input. Only this version_9 path needs the rewrite: ES 5/6/7 predate
+ * ES812, and the version_10 sibling returns {@link FallbackLuceneComponents#EMPTY_FIELDS_PRODUCER}
+ * because Lucene 10 / ES 9.x reconstruction never decodes postings (stored fields suffice).
  */
 @Slf4j
-public class IgnorePsmPostings extends PostingsFormat {
+public class Es812PostingsFormat extends PostingsFormat {
 
     static final String FORMAT_NAME = "ES812Postings";
 
@@ -49,7 +48,7 @@ public class IgnorePsmPostings extends PostingsFormat {
         "ES812PostingsWriterTerms", "Lucene90PostingsWriterTerms"
     );
 
-    public IgnorePsmPostings() {
+    public Es812PostingsFormat() {
         super(FORMAT_NAME);
     }
 
