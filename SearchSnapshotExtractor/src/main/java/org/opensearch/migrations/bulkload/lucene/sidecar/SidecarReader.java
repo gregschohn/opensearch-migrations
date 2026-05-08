@@ -193,25 +193,33 @@ public final class SidecarReader implements AutoCloseable {
             rawEndOff[i]    = in.readZInt();
         }
 
-        String[] resolvedTerms = new String[numEntries];
-        for (int k = 0; k < numEntries; k++) {
-            resolvedTerms[k] = readTerm(rawTermId[k]);
-        }
-
+        // Within each position group, pick the winner by term length, then materialize
+        // the winner's bytes. Singleton groups (the common case) read one term body.
+        // Multi-entry groups read a cheap vInt length per candidate + one body for the winner.
         List<TermEntry> result = new ArrayList<>(numEntries);
         int i = 0;
         while (i < numEntries) {
-            int groupPos = rawPos[i];
-            int best = i;
             int j = i + 1;
-            while (j < numEntries && rawPos[j] == groupPos) {
-                if (resolvedTerms[j].length() > resolvedTerms[best].length()) best = j;
-                j++;
+            while (j < numEntries && rawPos[j] == rawPos[i]) j++;
+            int best = i;
+            if (j - i > 1) {
+                int bestLen = readTermLength(rawTermId[i]);
+                for (int k = i + 1; k < j; k++) {
+                    int lk = readTermLength(rawTermId[k]);
+                    if (lk > bestLen) { best = k; bestLen = lk; }
+                }
             }
-            result.add(new TermEntry(resolvedTerms[best], rawStartOff[best], rawEndOff[best]));
+            result.add(new TermEntry(readTerm(rawTermId[best]), rawStartOff[best], rawEndOff[best]));
             i = j;
         }
         return result;
+    }
+
+    private int readTermLength(int termId) throws IOException {
+        checkTermId(termId);
+        IndexInput in = container.clone();
+        in.seek(termOffsets.get(termId));
+        return in.readVInt();
     }
 
     /** Convenience — strings only. */
@@ -223,18 +231,19 @@ public final class SidecarReader implements AutoCloseable {
     }
 
     private String readTerm(int termId) throws IOException {
-        if (termId < 0 || termId >= numTerms) {
-            throw new IOException("termId out of range: " + termId + " (numTerms=" + numTerms + ")");
-        }
-        // termOffsets stores absolute container byte offsets (rebased from stage-relative
-        // in the builder), so we can seek directly.
-        long absoluteOffset = termOffsets.get(termId);
+        checkTermId(termId);
         IndexInput in = container.clone();
-        in.seek(absoluteOffset);
+        in.seek(termOffsets.get(termId));
         int len = in.readVInt();
         byte[] bytes = new byte[len];
         in.readBytes(bytes, 0, len);
         return new String(bytes, StandardCharsets.UTF_8);
+    }
+
+    private void checkTermId(int termId) throws IOException {
+        if (termId < 0 || termId >= numTerms) {
+            throw new IOException("termId out of range: " + termId + " (numTerms=" + numTerms + ")");
+        }
     }
 
     @Override

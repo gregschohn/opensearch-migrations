@@ -8,8 +8,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.opensearch.migrations.bulkload.common.ObjectMapperFactory;
 
@@ -27,10 +26,7 @@ public class SourceReconstructor {
 
     private SourceReconstructor() {}
 
-    // Dedup set for the "cannot nest under scalar" warning — the intent is "warn once per
-    // (fieldName, collidingParent, scalarType) tuple" so operators see the class of problem
-    // without the log being flooded once per document reconstructed.
-    private static final Set<String> WARNED_NEST_COLLISIONS = ConcurrentHashMap.newKeySet();
+    private static final AtomicBoolean NEST_COLLISION_WARNED = new AtomicBoolean();
 
     /**
      * Skip internal fields (e.g., _id) and multi-field sub-fields (e.g., title.keyword).
@@ -125,16 +121,13 @@ public class SourceReconstructor {
                 return distributeSubfieldAcrossList((java.util.List<Object>) list, leafForList, value, fieldName);
             } else {
                 // Non-map already sits at this path — cannot nest under a scalar. Warn once
-                // per (field, collidingParent, scalarType) tuple so operators notice the
-                // dropped subfield without the log being flooded per document.
-                String scalarType = next.getClass().getSimpleName();
-                String warnKey = fieldName + '\0' + parts[i] + '\0' + scalarType;
-                if (WARNED_NEST_COLLISIONS.add(warnKey)) {
+                // per JVM so operators notice the class of problem without log floods.
+                if (NEST_COLLISION_WARNED.compareAndSet(false, true)) {
                     log.atWarn()
                         .setMessage("Cannot write nested field '{}' under scalar at '{}' (type {}); dropping recovered value (further occurrences silenced)")
                         .addArgument(fieldName)
                         .addArgument(parts[i])
-                        .addArgument(scalarType)
+                        .addArgument(next.getClass().getSimpleName())
                         .log();
                 }
                 return false;
