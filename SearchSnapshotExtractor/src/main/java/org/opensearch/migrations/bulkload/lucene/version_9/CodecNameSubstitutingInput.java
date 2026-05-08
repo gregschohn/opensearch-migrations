@@ -46,8 +46,11 @@ public class CodecNameSubstitutingInput extends FilterIndexInput {
     }
 
     @Override
-    public CodecNameSubstitutingInput clone() {
-        // Inherits FilterIndexInput's super.clone(); codecReplacements is shared (immutable map).
-        return (CodecNameSubstitutingInput) super.clone();
+    public IndexInput clone() {
+        // Lucene's IndexInput.clone() contract requires a clone whose position state is
+        // independent of the original — so we clone the delegate explicitly and wrap it.
+        // Copy-factory style (mirrors Lucene's own EndiannessReverserIndexInput) avoids the
+        // SonarQube S2975 "remove this clone" finding triggered by Object.clone() overrides.
+        return new CodecNameSubstitutingInput(in.clone(), codecReplacements);
     }
 }
