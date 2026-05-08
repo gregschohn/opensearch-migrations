@@ -9,14 +9,16 @@ import shadow.lucene9.org.apache.lucene.store.IOContext;
 import shadow.lucene9.org.apache.lucene.store.IndexInput;
 
 /**
- * A {@link FilterDirectory} that wraps every opened {@link IndexInput} with
- * {@link Es812CodecSubstitutingInput} so that
- * {@link shadow.lucene9.org.apache.lucene.codecs.CodecUtil#checkHeader} reads
- * see Lucene codec names instead of ES812 codec names.
+ * A {@link FilterDirectory} that rewrites codec name strings as they are read by
+ * {@code CodecUtil.checkIndexHeader} so the stock Lucene 9.9 reader accepts files
+ * written by Elasticsearch's ES812 codec.
  *
- * <p>The substitution happens only inside {@link IndexInput#readString()} — no
- * bytes in the underlying file are changed, so file length and CRC32 footer
- * remain valid.
+ * <p>The substitution is implemented as an override of {@link IndexInput#readString()}
+ * — the running CRC computed by {@code BufferedChecksumIndexInput} hashes raw
+ * {@code readByte()} traffic, so the footer CRC equality holds without any
+ * special handling. {@code openChecksumInput} therefore inherits the default
+ * {@link Directory} implementation (it wraps {@code openInput} with a
+ * {@code BufferedChecksumIndexInput}), and we do not need a custom checksum input.
  */
 public class CodecHeaderRewritingDirectory extends FilterDirectory {
 
@@ -29,17 +31,6 @@ public class CodecHeaderRewritingDirectory extends FilterDirectory {
 
     @Override
     public IndexInput openInput(String name, IOContext context) throws IOException {
-        IndexInput raw = super.openInput(name, context);
-        return new Es812CodecSubstitutingInput(raw, codecReplacements);
-    }
-
-    @Override
-    public shadow.lucene9.org.apache.lucene.store.ChecksumIndexInput openChecksumInput(String name, IOContext context) throws IOException {
-        IndexInput raw = in.openInput(name, context);
-        Es812CodecSubstitutingInput substituted = new Es812CodecSubstitutingInput(raw, codecReplacements);
-        // Pass a second raw clone so Es812ChecksumIndexInput can peek at the footer CRC.
-        IndexInput rawForPeek = in.openInput(name, context);
-        return new Es812ChecksumIndexInput(
-            "Es812Checksum(" + name + ")", substituted, rawForPeek);
+        return new CodecNameSubstitutingInput(super.openInput(name, context), codecReplacements);
     }
 }

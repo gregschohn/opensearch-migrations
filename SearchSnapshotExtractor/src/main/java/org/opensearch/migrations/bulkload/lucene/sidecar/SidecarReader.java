@@ -25,13 +25,9 @@ import shadow.lucene10.org.apache.lucene.util.packed.DirectMonotonicReader;
  */
 public final class SidecarReader implements AutoCloseable {
 
-    /** Size of the trailing meta block in bytes. Kept in sync with {@link SidecarBuilder}. */
-    private static final int TRAILER_BYTES =
-            14 * Long.BYTES   // 14 longs: 7 section start/end pairs
-          + 3 * Integer.BYTES // numTerms, maxDoc, numDocsWithValues
-          + 1                 // DISI dense rank power
-          + Short.BYTES       // DISI jump-table entry count
-          + 1;                // DirectMonotonic block shift
+    /** Size of the meta-start back-pointer that {@link SidecarBuilder} writes immediately
+     *  before the {@code CodecUtil} footer. */
+    private static final int META_BACK_POINTER_BYTES = Long.BYTES;
 
     private final int maxDoc;
     private final int numTerms;
@@ -76,11 +72,16 @@ public final class SidecarReader implements AutoCloseable {
 
             long fileLen = container.length();
             long footerLen = CodecUtil.footerLength();
-            long trailerPos = fileLen - footerLen - TRAILER_BYTES;
-            if (trailerPos < 0) {
-                throw new IOException("Sidecar container shorter than expected trailer: " + fileLen);
+            long backPointerPos = fileLen - footerLen - META_BACK_POINTER_BYTES;
+            if (backPointerPos < 0) {
+                throw new IOException("Sidecar container shorter than expected back-pointer: " + fileLen);
             }
-            container.seek(trailerPos);
+            container.seek(backPointerPos);
+            long metaStart = container.readLong();
+            if (metaStart < 0 || metaStart > backPointerPos) {
+                throw new IOException("Sidecar container has malformed meta back-pointer: " + metaStart);
+            }
+            container.seek(metaStart);
             long termsStart        = container.readLong();
             long termsEnd          = container.readLong();
             long payloadsStart     = container.readLong();
@@ -95,12 +96,12 @@ public final class SidecarReader implements AutoCloseable {
             long docOffMetaEnd     = container.readLong();
             long disiStart         = container.readLong();
             long disiEnd           = container.readLong();
-            int numTerms           = container.readInt();
-            int maxDoc             = container.readInt();
-            int numDocsWithValues  = container.readInt();
+            int numTerms           = container.readVInt();
+            int maxDoc             = container.readVInt();
+            int numDocsWithValues  = container.readVInt();
             byte denseRankPower    = container.readByte();
-            short disiJumpCount    = container.readShort();
-            byte blockShift        = container.readByte();
+            int disiJumpCount      = container.readVInt();
+            int blockShift         = container.readVInt();
 
             // Header + footer checksum (written at build-time) are trusted — the sidecar was
             // just produced by buildAndOpenReader. A full-file checksum here would scan multi-GB

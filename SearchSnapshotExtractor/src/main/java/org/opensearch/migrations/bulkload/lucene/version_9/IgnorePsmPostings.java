@@ -29,14 +29,14 @@ public class IgnorePsmPostings extends PostingsFormat {
 
     static final String FORMAT_NAME = "ES812Postings";
 
-    /** Maps ES812 header codec names to Lucene99 equivalents expected by the stock reader. */
+    /**
+     * Maps ES812 codec name strings to the Lucene names that {@code Lucene99PostingsReader}
+     * (Doc/Pos/Pay) and {@code Lucene40BlockTreeTermsReader} (Terms) check at header time.
+     */
     private static final Map<String, String> CODEC_RENAMES = Map.of(
         "ES812PostingsWriterDoc",      "Lucene99PostingsWriterDoc",
         "ES812PostingsWriterPos",      "Lucene99PostingsWriterPos",
         "ES812PostingsWriterPay",      "Lucene99PostingsWriterPay",
-        "ES812PostingsWriterTim",      "Lucene99PostingsWriterTim",
-        "ES812PostingsWriterTip",      "Lucene99PostingsWriterTip",
-        "ES812PostingsWriterTermMeta", "Lucene99PostingsWriterTermMeta",
         "ES812PostingsWriterTerms",    "Lucene90PostingsWriterTerms"
     );
 

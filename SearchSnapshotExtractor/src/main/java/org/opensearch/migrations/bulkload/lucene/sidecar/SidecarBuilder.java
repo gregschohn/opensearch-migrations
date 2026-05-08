@@ -16,6 +16,7 @@ import shadow.lucene10.org.apache.lucene.store.IOContext;
 import shadow.lucene10.org.apache.lucene.store.IndexInput;
 import shadow.lucene10.org.apache.lucene.store.IndexOutput;
 import shadow.lucene10.org.apache.lucene.store.NIOFSDirectory;
+import shadow.lucene10.org.apache.lucene.util.ArrayUtil;
 import shadow.lucene10.org.apache.lucene.util.BitSetIterator;
 import shadow.lucene10.org.apache.lucene.util.BitUtil;
 import shadow.lucene10.org.apache.lucene.util.BytesRef;
@@ -29,8 +30,9 @@ import shadow.lucene10.org.apache.lucene.util.packed.DirectMonotonicWriter;
  * Builds a per-(segment, field) sidecar that indexes {@code docId -> (pos, termId, startOff, endOff)+}.
  *
  * <p>On-disk layout is a single container file {@value #SIDECAR_FILE}, fronted by
- * {@link CodecUtil#writeIndexHeader} and closed by {@link CodecUtil#writeFooter}. Each section's
- * byte range is captured in a trailing fixed-size meta block. Encoding leans on Lucene:
+ * {@link CodecUtil#writeIndexHeader} and closed by {@link CodecUtil#writeFooter}. Section byte
+ * ranges and counts are captured in an inline meta block; the file ends with an 8-byte
+ * back-pointer to the meta block start, immediately before the footer. Encoding leans on Lucene:
  *
  * <ul>
  *   <li><b>terms</b> — {@code vInt(len) + UTF-8 bytes} per distinct term, in registration
@@ -51,7 +53,9 @@ import shadow.lucene10.org.apache.lucene.util.packed.DirectMonotonicWriter;
 public final class SidecarBuilder implements PostingsSink, AutoCloseable {
 
     static final String CODEC_NAME = "RfsSidecar";
-    static final int VERSION_CURRENT = 0;
+    /** Bumped from 0 → 1: trailer rewritten as inline meta pointed to by a back-pointer
+     *  immediately before the footer. Drops the fixed-byte TRAILER_BYTES constant. */
+    static final int VERSION_CURRENT = 1;
     static final String SIDECAR_FILE = "sidecar.bin";
 
     /** Fresh zero-filled 16-byte ID for {@link CodecUtil#writeIndexHeader} / {@link
@@ -106,11 +110,7 @@ public final class SidecarBuilder implements PostingsSink, AutoCloseable {
 
     @Override
     public int registerTerm(BytesRefLike term) throws IOException {
-        if (nextTermId == termOffsetsBuf.length) {
-            long[] grown = new long[termOffsetsBuf.length * 2];
-            System.arraycopy(termOffsetsBuf, 0, grown, 0, termOffsetsBuf.length);
-            termOffsetsBuf = grown;
-        }
+        termOffsetsBuf = ArrayUtil.grow(termOffsetsBuf, nextTermId + 1);
         termOffsetsBuf[nextTermId] = termsStage.getFilePointer();
         int len = term.length();
         termsStage.writeVInt(len);
@@ -171,6 +171,8 @@ public final class SidecarBuilder implements PostingsSink, AutoCloseable {
             short disiJumpCount = writeDisi(container, docsWithValues, pr.numDocsWithValues);
             long disiEnd = container.getFilePointer();
 
+            // Meta block: section offsets and counts. Order matches SidecarReader.open.
+            long metaStart = container.getFilePointer();
             container.writeLong(termsStart);
             container.writeLong(termsEnd);
             container.writeLong(payloadsStart);
@@ -185,12 +187,16 @@ public final class SidecarBuilder implements PostingsSink, AutoCloseable {
             container.writeLong(docOffsets.metaEnd);
             container.writeLong(disiStart);
             container.writeLong(disiEnd);
-            container.writeInt(nextTermId);
-            container.writeInt(maxDoc);
-            container.writeInt(pr.numDocsWithValues);
+            container.writeVInt(nextTermId);
+            container.writeVInt(maxDoc);
+            container.writeVInt(pr.numDocsWithValues);
             container.writeByte(DISI_DENSE_RANK_POWER);
-            container.writeShort(disiJumpCount);
-            container.writeByte((byte) DIRECT_MONOTONIC_BLOCK_SHIFT);
+            container.writeVInt(disiJumpCount & 0xFFFF);
+            container.writeVInt(DIRECT_MONOTONIC_BLOCK_SHIFT);
+
+            // Fixed 8-byte back-pointer to the start of the meta block, written
+            // immediately before the footer. Reader seeks to length-footerLen-8 to find it.
+            container.writeLong(metaStart);
 
             CodecUtil.writeFooter(container);
         } finally {
@@ -233,7 +239,8 @@ public final class SidecarBuilder implements PostingsSink, AutoCloseable {
 
                 if (docId != currentDoc) {
                     if (currentDoc >= 0) {
-                        docOffsets = appendOffset(docOffsets, numDocsWithValues, container.getFilePointer());
+                        docOffsets = ArrayUtil.grow(docOffsets, numDocsWithValues + 1);
+                        docOffsets[numDocsWithValues] = container.getFilePointer();
                         container.writeVInt(pairCount);
                         staging.copyTo(container);
                         numDocsWithValues++;
@@ -252,23 +259,14 @@ public final class SidecarBuilder implements PostingsSink, AutoCloseable {
                 pairCount++;
             }
             if (currentDoc >= 0) {
-                docOffsets = appendOffset(docOffsets, numDocsWithValues, container.getFilePointer());
+                docOffsets = ArrayUtil.grow(docOffsets, numDocsWithValues + 1);
+                docOffsets[numDocsWithValues] = container.getFilePointer();
                 container.writeVInt(pairCount);
                 staging.copyTo(container);
                 numDocsWithValues++;
             }
         }
         return new PayloadResult(docOffsets, numDocsWithValues);
-    }
-
-    private static long[] appendOffset(long[] buf, int index, long value) {
-        if (index == buf.length) {
-            long[] grown = new long[buf.length * 2];
-            System.arraycopy(buf, 0, grown, 0, buf.length);
-            buf = grown;
-        }
-        buf[index] = value;
-        return buf;
     }
 
     /**

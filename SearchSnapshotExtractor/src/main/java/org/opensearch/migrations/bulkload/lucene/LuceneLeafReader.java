@@ -7,7 +7,6 @@ import java.util.Map;
 import java.util.Optional;
 
 import org.opensearch.migrations.bulkload.lucene.sidecar.PostingsSink;
-import org.opensearch.migrations.bulkload.lucene.sidecar.SingleTermSink;
 import org.opensearch.migrations.bulkload.lucene.sidecar.TermEntry;
 
 public interface LuceneLeafReader {
@@ -85,21 +84,6 @@ public interface LuceneLeafReader {
      * {@code int[]} passed to {@code accept} is only borrowed for the duration of the call.
      */
     default void streamFieldPostings(String fieldName, PostingsSink sink) throws IOException {
-        // no-op: default reader has no terms to stream.
-    }
-
-    /**
-     * DOCS-only variant of {@link #streamFieldPostings}: walks the terms dictionary for a field
-     * indexed with {@code IndexOptions.DOCS} (single-valued keyword is the canonical case) and
-     * emits one (termId, docId) per posting — no positions, no offsets, no freq.
-     *
-     * <p>Intended for the single-term sidecar (flat int[maxDoc] ~ 4 B/doc), strictly smaller
-     * than the positional sidecar (~20 B/occurrence). Callers must register each term via
-     * {@link SingleTermSink#registerTerm} on first encounter.
-     *
-     * <p>Default is a no-op; LeafReader6/7/9 override for the ES5/ES6/ES7/ES8 hot path.
-     */
-    default void streamFieldPostingsDocsOnly(String fieldName, SingleTermSink sink) throws IOException {
         // no-op: default reader has no terms to stream.
     }
 

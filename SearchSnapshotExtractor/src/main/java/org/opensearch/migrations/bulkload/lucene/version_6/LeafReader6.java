@@ -273,23 +273,4 @@ public class LeafReader6 implements LuceneLeafReader {
         return null;
     }
 
-    /** See {@link LuceneLeafReader#streamFieldPostingsDocsOnly}. */
-    @Override
-    public void streamFieldPostingsDocsOnly(String fieldName,
-            org.opensearch.migrations.bulkload.lucene.sidecar.SingleTermSink sink) throws IOException {
-        Terms terms = wrapped.terms(fieldName);
-        if (terms == null) return;
-        TermsEnum termsEnum = terms.iterator();
-        BytesRef term;
-        while ((term = termsEnum.next()) != null) {
-            int termId = sink.registerTerm(
-                new org.opensearch.migrations.bulkload.lucene.sidecar.BytesRefLike(
-                    term.bytes, term.offset, term.length));
-            PostingsEnum postings = termsEnum.postings(null, PostingsEnum.NONE);
-            int doc;
-            while ((doc = postings.nextDoc()) != PostingsEnum.NO_MORE_DOCS) {
-                sink.accept(termId, doc);
-            }
-        }
-    }
 }

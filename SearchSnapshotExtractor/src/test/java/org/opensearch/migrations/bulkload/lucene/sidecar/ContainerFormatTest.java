@@ -10,7 +10,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.opensearch.migrations.bulkload.lucene.sidecar.SidecarTestSupport.bytesRef;
@@ -22,7 +21,6 @@ import static org.opensearch.migrations.bulkload.lucene.sidecar.SidecarTestSuppo
  * <ul>
  *   <li>Positional sidecar: one file {@code sidecar.bin} with {@link
  *       shadow.lucene10.org.apache.lucene.codecs.CodecUtil} header + footer.
- *   <li>Single-term sidecar: one file {@code single-sidecar.bin}, same envelope.
  *   <li>DirectMonotonicWriter meta+data for term/doc offsets, IndexedDISI for
  *       has-values bitmaps. Reader fails cleanly if the header is tampered with.
  * </ul>
@@ -63,27 +61,6 @@ class ContainerFormatTest {
                 + listing(spillDir));
     }
 
-    @Test
-    void singleTermSidecar_producesSingleContainerFile() throws IOException {
-        try (SingleTermSidecarBuilder builder = new SingleTermSidecarBuilder(spillDir, 5)) {
-            int t = builder.registerTerm(bytesRef("alpha"));
-            builder.accept(t, 0);
-            builder.accept(t, 3);
-            try (SingleTermSidecarReader reader = builder.buildAndOpenReader()) {
-                assertEquals("alpha", reader.get(0));
-                assertNull(reader.get(1));
-                assertEquals("alpha", reader.get(3));
-                assertNull(reader.get(4));
-            }
-        }
-        long binFiles;
-        try (Stream<Path> s = Files.list(spillDir)) {
-            binFiles = s.filter(p -> p.getFileName().toString().equals("single-sidecar.bin")).count();
-        }
-        assertEquals(1L, binFiles, "Expected a single single-sidecar.bin container; spill dir contents: "
-                + listing(spillDir));
-    }
-
     /**
      * Sparse docs force the IndexedDISI bitmap to store gaps — proves the reader's DISI
      * ordinal mapping lines up with the DirectMonotonic doc-offsets table.
@@ -104,35 +81,6 @@ class ContainerFormatTest {
                 assertTrue(reader.get(0).isEmpty());
                 assertTrue(reader.get(100).isEmpty());
                 assertTrue(reader.get(9_998).isEmpty());
-            }
-        }
-    }
-
-    /**
-     * DirectWriter bit-packing kicks in: many distinct termIds need ceil(log2(N)) bits/value,
-     * which is strictly less than 32 for anything under 2^32 distinct terms. Proves the
-     * round-trip of the bit-packed value stream.
-     */
-    @Test
-    void singleTermSidecar_bitPacksValuesAtFewBitsPerDoc() throws IOException {
-        int numTerms = 200;   // bitsRequired(199) = 8 — well below 32.
-        int numDocs  = 1_000;
-        try (SingleTermSidecarBuilder builder = new SingleTermSidecarBuilder(spillDir, numDocs)) {
-            int[] termIds = new int[numTerms];
-            for (int i = 0; i < numTerms; i++) {
-                termIds[i] = builder.registerTerm(bytesRef("t" + i));
-            }
-            for (int d = 0; d < numDocs; d++) {
-                // Assign each doc a deterministic termId — a hash-like pattern covers
-                // the whole termId range.
-                builder.accept(termIds[(d * 37) % numTerms], d);
-            }
-            try (SingleTermSidecarReader reader = builder.buildAndOpenReader()) {
-                for (int d = 0; d < numDocs; d++) {
-                    int expectedId = (d * 37) % numTerms;
-                    assertEquals("t" + expectedId, reader.get(d),
-                            "Mismatch for doc " + d);
-                }
             }
         }
     }
@@ -163,16 +111,6 @@ class ContainerFormatTest {
              SidecarReader reader = builder.buildAndOpenReader()) {
             for (int d = 0; d < 5; d++) {
                 assertTrue(reader.get(d).isEmpty());
-            }
-        }
-    }
-
-    @Test
-    void emptySegment_singleTerm_roundTrip() throws IOException {
-        try (SingleTermSidecarBuilder builder = new SingleTermSidecarBuilder(spillDir, 5);
-             SingleTermSidecarReader reader = builder.buildAndOpenReader()) {
-            for (int d = 0; d < 5; d++) {
-                assertNull(reader.get(d));
             }
         }
     }
