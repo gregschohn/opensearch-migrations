@@ -141,6 +141,36 @@ class SolrSchemaConverterTest {
             .fields().next().getValue().get("match_mapping_type").asText(), equalTo("string"));
     }
 
+    @Test
+    void dynamicFieldTemplateOmitsMatchMappingTypeForBinaryAndUnknownOsTypes() {
+        // BINARY (and any future / unrecognized OpenSearch type) has no JSON value
+        // shape we can confidently gate on, so the template falls through to the
+        // default branch and emits no match_mapping_type. path_match alone scopes it.
+        var binaryTemplate = SolrSchemaConverter.buildDynamicTemplate("blob_*", "binary");
+        var binaryInner = binaryTemplate.fields().next().getValue();
+        assertThat(binaryInner.get("path_match").asText(), equalTo("blob_*"));
+        assertThat("BINARY: no match_mapping_type emitted",
+            binaryInner.has("match_mapping_type"), equalTo(false));
+        assertThat(binaryInner.get("mapping").get("type").asText(), equalTo("binary"));
+
+        var unknownTemplate = SolrSchemaConverter.buildDynamicTemplate("x_*", "some_future_type");
+        var unknownInner = unknownTemplate.fields().next().getValue();
+        assertThat("Unknown OS type: no match_mapping_type emitted",
+            unknownInner.has("match_mapping_type"), equalTo(false));
+    }
+
+    @Test
+    void dynamicFieldTemplateOmitsMatchMappingTypeWhenOsTypeIsNull() {
+        // resolveOsType can return null when the Solr fieldType doesn't map to any
+        // known OS type and isn't class-resolvable. The template still emits a
+        // path_match-scoped entry, but with no match_mapping_type gate.
+        var template = SolrSchemaConverter.buildDynamicTemplate("ignore_*", null);
+        var inner = template.fields().next().getValue();
+        assertThat(inner.get("path_match").asText(), equalTo("ignore_*"));
+        assertThat("Null osType: no match_mapping_type emitted",
+            inner.has("match_mapping_type"), equalTo(false));
+    }
+
     // --- CopyField tests ---
 
     @Test
