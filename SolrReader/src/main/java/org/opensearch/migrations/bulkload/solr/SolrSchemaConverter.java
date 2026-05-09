@@ -27,6 +27,16 @@ public final class SolrSchemaConverter {
     private static final String OS_BOOLEAN = "boolean";
     private static final String OS_KEYWORD = "keyword";
     private static final String OS_TEXT = "text";
+    /**
+     * JSON value-shape token for OpenSearch dynamic_template's {@code match_mapping_type}
+     * when the leaf value is a string. Distinct from any OS field-type constant: the
+     * value-shape vocabulary is {@code "string" | "long" | "double" | "boolean" | "date"
+     * | "*"} (see OpenSearch dynamic_templates docs), which only partially overlaps
+     * field-type names. We reuse {@link #OS_LONG} / {@link #OS_DOUBLE} / {@link #OS_BOOLEAN}
+     * where the strings happen to coincide; "string" gets its own constant since no
+     * field-type is named "string".
+     */
+    private static final String MMT_STRING = "string";
     private static final String OS_BINARY = "binary";
     private static final String OS_FORMAT_FIELD = "format";
 
@@ -336,15 +346,15 @@ public final class SolrSchemaConverter {
                 // the converted documents present date leaves as JSON longs. Gating
                 // dynamic date templates by "long" matches the actual wire shape and
                 // still excludes object containers (which never carry a value type).
-                return "long";
+                return OS_LONG;
             case OS_FLOAT:
             case OS_DOUBLE:
-                return "double";
+                return OS_DOUBLE;
             case OS_BOOLEAN:
                 return OS_BOOLEAN;
             case OS_KEYWORD:
             case OS_TEXT:
-                return "string";
+                return MMT_STRING;
             default:
                 // BINARY and any future types: leave match_mapping_type unset and
                 // rely on path_match alone. Object containers still never match
