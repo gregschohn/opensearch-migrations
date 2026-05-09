@@ -336,6 +336,118 @@ public class SolrToOpenSearchEndToEndTest {
     }
 
     /**
+     * E2E regression: dotted field names whose top-level segment ALSO matches a Solr
+     * dynamic-field prefix pattern.
+     *
+     * <p>Solr's default schema declares a prefix-style dynamic field {@code attr_*}.
+     * A doc field like {@code attr_field.withdot=42} therefore both (a) belongs to a
+     * dotted path and (b) prefix-matches {@code attr_*}. Without a careful template
+     * spec, OpenSearch will apply the {@code attr_*} template to the parent object
+     * {@code attr_field} (typing it as {@code integer}) and then reject the child
+     * key {@code .withdot} with {@code mapper_parsing_exception}. The bulk request
+     * fails outright — the migrated doc is silently lost.
+     *
+     * <p>Verifies the converter emits dynamic templates that pin to the JSON value
+     * shape ({@code match_mapping_type}) and use {@code path_match}, so the template
+     * fires only on the leaf value and never on intermediate object containers.
+     */
+    @ParameterizedTest(name = "dynamic-field + dotted name: {0} → {1}")
+    @MethodSource("solr8ToOpenSearch")
+    void migratesDynamicFieldsWithDotsInLeafName(
+        SolrClusterContainer.SolrVersion solrVersion,
+        SearchClusterContainer.ContainerVersion targetVersion
+    ) throws Exception {
+        try (
+            var solr = new SolrClusterContainer(solrVersion);
+            var target = new SearchClusterContainer(targetVersion)
+        ) {
+            solr.start();
+            target.start();
+
+            createSolrCollection(solr, COLLECTION_NAME);
+
+            // Solr default schema already has attr_* (text_general) and *_s, *_i, *_b, *_f, *_dt
+            // dynamic fields. Index a doc that uses each of those patterns with a
+            // dotted leaf name so the parent segment also prefix-matches the pattern.
+            var doc = "[{"
+                + "\"id\":\"dyn-dot-1\","
+                + "\"attr_thing.withdot\":\"vip\","        // attr_*  (text_general) + dotted leaf
+                + "\"label.tag_s\":\"alpha\","             // *_s     (string)        + dotted leaf
+                + "\"counter.value_i\":17,"                // *_i     (pint)          + dotted leaf
+                + "\"flag.is.set_b\":true,"                // *_b     (boolean)       + dotted leaf (3 segments)
+                + "\"price.unit_f\":9.99,"                 // *_f     (pfloat)        + dotted leaf
+                + "\"event.created_dt\":\"2024-06-15T12:00:00Z\""  // *_dt (pdate)    + dotted leaf
+                + "}]";
+            solr.execInContainer("curl", "-s", "-H", "Content-Type: application/json",
+                "http://localhost:8983/solr/" + COLLECTION_NAME + "/update?commit=true",
+                "-d", doc);
+
+            var schema = fetchSolrSchema(solr, COLLECTION_NAME);
+            var backupDir = createAndCopyBackup(solr, COLLECTION_NAME);
+
+            var source = new SolrBackupSource(backupDir, COLLECTION_NAME, schema);
+            var targetClient = createOpenSearchClient(target);
+            var sink = new OpenSearchDocumentSink(
+                targetClient, null, false, DocumentExceptionAllowlist.empty(), null
+            );
+            new DocumentMigrationPipeline(source, sink, 100, Long.MAX_VALUE)
+                .migrateAll().collectList().block();
+
+            var restClient = createRestClient(target);
+            var ctx = DocumentMigrationTestContext.factory().noOtelTracking();
+            restClient.get("_refresh", ctx.createUnboundRequestContext());
+
+            // The migrated doc must exist — bulk would have failed if dynamic templates
+            // had collided with the dotted parent segment.
+            var searchResp = restClient.get(
+                COLLECTION_NAME + "/_search?q=id:dyn-dot-1&size=1",
+                ctx.createUnboundRequestContext()
+            );
+            var hits = MAPPER.readTree(searchResp.body).path("hits").path("hits");
+            assertThat("dyn-dot-1 should be present", hits.size(), equalTo(1));
+
+            var src = hits.get(0).path("_source");
+            log.atInfo().setMessage("Migrated dynamic+dotted _source: {}").addArgument(src).log();
+            assertThat(src.path("attr_thing.withdot").asText(), equalTo("vip"));
+            assertThat(src.path("label.tag_s").asText(), equalTo("alpha"));
+            assertThat(src.path("counter.value_i").asInt(), equalTo(17));
+            assertThat(src.path("flag.is.set_b").asBoolean(), equalTo(true));
+            assertThat((double) src.path("price.unit_f").floatValue(), closeTo(9.99, 0.01));
+
+            // Verify dynamic templates produced the right *typed* mapping for the dotted
+            // leaves — proving the path_match + match_mapping_type pair worked.
+            var capsResp = restClient.get(
+                COLLECTION_NAME + "/_field_caps?fields="
+                    + "attr_thing.withdot,label.tag_s,counter.value_i,flag.is.set_b,price.unit_f,event.created_dt",
+                ctx.createUnboundRequestContext()
+            );
+            var fields = MAPPER.readTree(capsResp.body).path("fields");
+            log.atInfo().setMessage("OpenSearch field_caps for dynamic+dotted fields: {}")
+                .addArgument(fields).log();
+
+            assertThat("attr_thing.withdot → text (attr_* template)",
+                fields.path("attr_thing.withdot").path("text").path("type").asText(), equalTo("text"));
+            assertThat("label.tag_s → keyword (*_s template)",
+                fields.path("label.tag_s").path("keyword").path("type").asText(), equalTo("keyword"));
+            assertThat("counter.value_i → integer (*_i template)",
+                fields.path("counter.value_i").path("integer").path("type").asText(), equalTo("integer"));
+            assertThat("flag.is.set_b → boolean (*_b template)",
+                fields.path("flag.is.set_b").path("boolean").path("type").asText(), equalTo("boolean"));
+            assertThat("price.unit_f → float (*_f template)",
+                fields.path("price.unit_f").path("float").path("type").asText(), equalTo("float"));
+            assertThat("event.created_dt → date (*_dt template)",
+                fields.path("event.created_dt").path("date").path("type").asText(), equalTo("date"));
+
+            // And queries by the original dotted path resolve to the doc.
+            var qHits = MAPPER.readTree(restClient.get(
+                COLLECTION_NAME + "/_search?q=counter.value_i:17&size=10",
+                ctx.createUnboundRequestContext()
+            ).body).path("hits").path("hits");
+            assertThat("query counter.value_i:17 matches dyn-dot-1", qHits.size(), equalTo(1));
+        }
+    }
+
+    /**
      * E2E: Multi-shard backup discovery and parallel reading.
      * Creates a simulated multi-shard backup directory structure and verifies
      * all shards are discovered and documents from each shard are migrated.

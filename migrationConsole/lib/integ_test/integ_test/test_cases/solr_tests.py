@@ -137,10 +137,10 @@ class TestSolr0001SingleDocumentBackfill(MATestBase):
             cluster=self.source_cluster, index_name=self.dotted_collection,
             num_shards=1, replication_factor=1)
         self._add_solr_schema_fields(self.dotted_collection, [
-            {"name": "category.name",      "type": "string",  "stored": True, "indexed": True, "docValues": True},
-            {"name": "category.id",        "type": "pint",    "stored": True, "indexed": True, "docValues": True},
-            {"name": "metric.cpu.percent", "type": "pfloat",  "stored": True, "indexed": True, "docValues": True},
-            {"name": "is.active",          "type": "boolean", "stored": True, "docValues": True},
+            {"name": "category.name", "type": "string", "stored": True, "indexed": True, "docValues": True},
+            {"name": "category.id", "type": "pint", "stored": True, "indexed": True, "docValues": True},
+            {"name": "metric.cpu.percent", "type": "pfloat", "stored": True, "indexed": True, "docValues": True},
+            {"name": "is.active", "type": "boolean", "stored": True, "docValues": True},
         ])
         self.source_operations.create_document(
             cluster=self.source_cluster, index_name=self.dotted_collection,

@@ -94,9 +94,11 @@ class SolrSchemaConverterTest {
     void dynamicFieldSuffixPatternMapsCorrectly() {
         var template = SolrSchemaConverter.buildDynamicTemplate("*_s", "keyword");
         assertNotNull(template);
-        // Template should have a match pattern
+        // Template should have a path_match pattern (matches full dotted path) gated
+        // by match_mapping_type so it fires only on leaves, never object containers.
         var inner = template.fields().next().getValue();
-        assertThat(inner.get("match").asText(), equalTo("*_s"));
+        assertThat(inner.get("path_match").asText(), equalTo("*_s"));
+        assertThat(inner.get("match_mapping_type").asText(), equalTo("string"));
         assertThat(inner.get("mapping").get("type").asText(), equalTo("keyword"));
     }
 
@@ -105,8 +107,38 @@ class SolrSchemaConverterTest {
         var template = SolrSchemaConverter.buildDynamicTemplate("attr_*", "text");
         assertNotNull(template);
         var inner = template.fields().next().getValue();
-        assertThat(inner.get("match").asText(), equalTo("attr_*"));
+        assertThat(inner.get("path_match").asText(), equalTo("attr_*"));
+        assertThat(inner.get("match_mapping_type").asText(), equalTo("string"));
         assertThat(inner.get("mapping").get("type").asText(), equalTo("text"));
+    }
+
+    @Test
+    void dynamicFieldTemplateGatesByJsonShapeForEachOpenSearchType() {
+        // path_match alone is not enough: an int dynamic-field pattern like attr_*
+        // would otherwise also match an OBJECT container "attr_field" produced by a
+        // dotted-name leaf like attr_field.withdot, causing OpenSearch to try to
+        // make attr_field an integer and then explode when the .withdot child
+        // arrives. match_mapping_type pins each template to the JSON value shape
+        // that OpenSearch reports for that type, so containers (no value shape)
+        // can never trigger it.
+        assertThat(SolrSchemaConverter.buildDynamicTemplate("attr_*", "integer")
+            .fields().next().getValue().get("match_mapping_type").asText(), equalTo("long"));
+        assertThat(SolrSchemaConverter.buildDynamicTemplate("attr_*", "long")
+            .fields().next().getValue().get("match_mapping_type").asText(), equalTo("long"));
+        assertThat(SolrSchemaConverter.buildDynamicTemplate("price_*", "float")
+            .fields().next().getValue().get("match_mapping_type").asText(), equalTo("double"));
+        assertThat(SolrSchemaConverter.buildDynamicTemplate("price_*", "double")
+            .fields().next().getValue().get("match_mapping_type").asText(), equalTo("double"));
+        assertThat(SolrSchemaConverter.buildDynamicTemplate("flag_*", "boolean")
+            .fields().next().getValue().get("match_mapping_type").asText(), equalTo("boolean"));
+        // Date: Solr stores dates as epoch millis (long) in stored fields, so the
+        // converted documents present date leaves as JSON longs — gate accordingly.
+        assertThat(SolrSchemaConverter.buildDynamicTemplate("when_*", "date")
+            .fields().next().getValue().get("match_mapping_type").asText(), equalTo("long"));
+        assertThat(SolrSchemaConverter.buildDynamicTemplate("name_*", "keyword")
+            .fields().next().getValue().get("match_mapping_type").asText(), equalTo("string"));
+        assertThat(SolrSchemaConverter.buildDynamicTemplate("body_*", "text")
+            .fields().next().getValue().get("match_mapping_type").asText(), equalTo("string"));
     }
 
     // --- CopyField tests ---
