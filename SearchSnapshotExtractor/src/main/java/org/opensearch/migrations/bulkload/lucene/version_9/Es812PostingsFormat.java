@@ -10,6 +10,8 @@ import shadow.lucene9.org.apache.lucene.codecs.FieldsProducer;
 import shadow.lucene9.org.apache.lucene.codecs.PostingsFormat;
 import shadow.lucene9.org.apache.lucene.index.SegmentReadState;
 import shadow.lucene9.org.apache.lucene.index.SegmentWriteState;
+import shadow.lucene9.org.apache.lucene.store.BufferedChecksumIndexInput;
+import shadow.lucene9.org.apache.lucene.store.ChecksumIndexInput;
 import shadow.lucene9.org.apache.lucene.store.Directory;
 import shadow.lucene9.org.apache.lucene.store.FilterDirectory;
 import shadow.lucene9.org.apache.lucene.store.FilterIndexInput;
@@ -31,6 +33,13 @@ import shadow.lucene9.org.apache.lucene.store.IndexInput;
  * any custom checksum input. Only this version_9 path needs the rewrite: ES 5/6/7 predate
  * ES812, and the version_10 sibling returns {@link FallbackLuceneComponents#EMPTY_FIELDS_PRODUCER}
  * because Lucene 10 / ES 9.x reconstruction never decodes postings (stored fields suffice).
+ *
+ * <p>One wrinkle: {@code Directory.openChecksumInput} wraps our {@link RewritingInput} in a
+ * {@link BufferedChecksumIndexInput} whose inherited {@link DataInput#readString()} reads
+ * bytes directly via its own {@code readByte()}/{@code readBytes()}, bypassing the delegate's
+ * {@code readString()} override. So we also override {@code openChecksumInput} and subclass
+ * {@code BufferedChecksumIndexInput} to substitute codec names after {@code super.readString()}
+ * (which still hashes the raw ES812 bytes, keeping the footer CRC intact).
  */
 @Slf4j
 public class Es812PostingsFormat extends PostingsFormat {
@@ -86,6 +95,14 @@ public class Es812PostingsFormat extends PostingsFormat {
         public IndexInput openInput(String name, IOContext context) throws IOException {
             return new RewritingInput(super.openInput(name, context));
         }
+
+        @Override
+        public ChecksumIndexInput openChecksumInput(String name, IOContext context) throws IOException {
+            // Default Directory.openChecksumInput wraps openInput() in a BufferedChecksumIndexInput
+            // whose inherited readString() bypasses RewritingInput.readString(). Substitute on the
+            // wrapper itself so the substitution still happens on CodecUtil.checkIndexHeader reads.
+            return new RewritingChecksumIndexInput(super.openInput(name, context));
+        }
     }
 
     /**
@@ -120,6 +137,26 @@ public class Es812PostingsFormat extends PostingsFormat {
         @Override
         public IndexInput clone() {
             return new RewritingInput(in.clone());
+        }
+    }
+
+    /**
+     * A {@link BufferedChecksumIndexInput} that substitutes ES812 codec names via
+     * {@link #readString()}. Needed because the inherited {@code DataInput.readString()}
+     * reads raw bytes (and hashes them into the running CRC), bypassing any
+     * {@code readString()} override on the wrapped delegate. Overriding here lets the
+     * super implementation read the raw ES812 bytes (keeping the footer CRC correct) while
+     * we return the Lucene90/99 equivalent to satisfy {@code CodecUtil.checkIndexHeader}.
+     */
+    private static final class RewritingChecksumIndexInput extends BufferedChecksumIndexInput {
+        RewritingChecksumIndexInput(IndexInput main) {
+            super(main);
+        }
+
+        @Override
+        public String readString() throws IOException {
+            String raw = super.readString();
+            return CODEC_RENAMES.getOrDefault(raw, raw);
         }
     }
 }
