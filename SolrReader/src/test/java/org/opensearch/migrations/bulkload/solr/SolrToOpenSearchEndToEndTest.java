@@ -198,6 +198,144 @@ public class SolrToOpenSearchEndToEndTest {
     }
 
     /**
+     * E2E: Solr fields whose names contain '.' (e.g. "category.name", "metric.cpu.percent")
+     * migrate to OpenSearch with the original key shape preserved in {@code _source}, the
+     * declared types honored, and queries written against the original dotted field path
+     * still resolving correctly.
+     *
+     * <p>OpenSearch interprets dotted JSON keys as nested-object paths during indexing, so
+     * {@code "category.name": "books"} ends up stored under {@code category.properties.name}
+     * in the mapping tree. {@code _source}, {@code _search} field-path resolution, and
+     * {@code _field_caps} still expose the field by its original {@code "category.name"}
+     * name, which is the customer-visible behavior Solr users expect.</p>
+     */
+    @ParameterizedTest(name = "dotted field names: {0} → {1}")
+    @MethodSource("solr8ToOpenSearch")
+    void migratesFieldsWithDotsInName(
+        SolrClusterContainer.SolrVersion solrVersion,
+        SearchClusterContainer.ContainerVersion targetVersion
+    ) throws Exception {
+        try (
+            var solr = new SolrClusterContainer(solrVersion);
+            var target = new SearchClusterContainer(targetVersion)
+        ) {
+            solr.start();
+            target.start();
+
+            createSolrCollection(solr, COLLECTION_NAME);
+
+            // Solr permits flat field names with '.'. Declare a few of them with mixed
+            // types so we can verify both the mapping and the round-tripped values.
+            var schemaUpdate = "{"
+                + "\"add-field\": ["
+                + "  {\"name\":\"category.name\",       \"type\":\"string\",  \"stored\":true,  \"indexed\":true,  \"docValues\":true},"
+                + "  {\"name\":\"category.id\",         \"type\":\"pint\",    \"stored\":true,  \"indexed\":true,  \"docValues\":true},"
+                + "  {\"name\":\"metric.cpu.percent\",  \"type\":\"pfloat\",  \"stored\":true,  \"indexed\":true,  \"docValues\":true},"
+                + "  {\"name\":\"event.created\",       \"type\":\"pdate\",   \"stored\":true,  \"indexed\":true,  \"docValues\":true},"
+                + "  {\"name\":\"is.active\",           \"type\":\"boolean\", \"stored\":true,  \"docValues\":true}"
+                + "]}";
+            solr.execInContainer(
+                "curl", "-s", "-H", "Content-Type: application/json",
+                "http://localhost:8983/solr/" + COLLECTION_NAME + "/schema",
+                "-d", schemaUpdate
+            );
+
+            var doc = "[{"
+                + "\"id\": \"doc1\","
+                + "\"category.name\": \"books\","
+                + "\"category.id\": 7,"
+                + "\"metric.cpu.percent\": 42.5,"
+                + "\"event.created\": \"2024-01-15T10:30:00Z\","
+                + "\"is.active\": true"
+                + "}]";
+            solr.execInContainer(
+                "curl", "-s", "-H", "Content-Type: application/json",
+                "http://localhost:8983/solr/" + COLLECTION_NAME + "/update?commit=true",
+                "-d", doc
+            );
+
+            var schema = fetchSolrSchema(solr, COLLECTION_NAME);
+            var backupDir = createAndCopyBackup(solr, COLLECTION_NAME);
+
+            var source = new SolrBackupSource(backupDir, COLLECTION_NAME, schema);
+            var targetClient = createOpenSearchClient(target);
+            var sink = new OpenSearchDocumentSink(
+                targetClient, null, false, DocumentExceptionAllowlist.empty(), null
+            );
+            new DocumentMigrationPipeline(source, sink, 100, Long.MAX_VALUE)
+                .migrateAll().collectList().block();
+
+            var restClient = createRestClient(target);
+            var ctx = DocumentMigrationTestContext.factory().noOtelTracking();
+            restClient.get("_refresh", ctx.createUnboundRequestContext());
+
+            // --- Verify field_caps reports the original dotted field names with the right types ---
+            var capsResp = restClient.get(
+                COLLECTION_NAME + "/_field_caps?fields=category.name,category.id,metric.cpu.percent,event.created,is.active",
+                ctx.createUnboundRequestContext()
+            );
+            var fields = MAPPER.readTree(capsResp.body).path("fields");
+            log.atInfo().setMessage("OpenSearch field_caps for dotted fields: {}").addArgument(fields).log();
+
+            assertThat("category.name → keyword",
+                fields.path("category.name").path("keyword").path("type").asText(), equalTo("keyword"));
+            assertThat("category.id → integer",
+                fields.path("category.id").path("integer").path("type").asText(), equalTo("integer"));
+            assertThat("metric.cpu.percent → float",
+                fields.path("metric.cpu.percent").path("float").path("type").asText(), equalTo("float"));
+            assertThat("event.created → date",
+                fields.path("event.created").path("date").path("type").asText(), equalTo("date"));
+            assertThat("is.active → boolean",
+                fields.path("is.active").path("boolean").path("type").asText(), equalTo("boolean"));
+
+            // --- Verify _source preserves the dotted keys verbatim ---
+            var searchResp = restClient.get(
+                COLLECTION_NAME + "/_search?q=id:doc1&size=1", ctx.createUnboundRequestContext()
+            );
+            var hits = MAPPER.readTree(searchResp.body).path("hits").path("hits");
+            assertThat("Should find doc1", hits.size(), equalTo(1));
+            var src = hits.get(0).path("_source");
+            log.atInfo().setMessage("Migrated dotted-field doc _source: {}").addArgument(src).log();
+
+            assertThat("_source keeps category.name as-is",
+                src.path("category.name").asText(), equalTo("books"));
+            assertThat("_source keeps category.id as-is",
+                src.path("category.id").asInt(), equalTo(7));
+            assertThat("_source keeps metric.cpu.percent as-is",
+                (double) src.path("metric.cpu.percent").floatValue(), closeTo(42.5, 0.01));
+            assertThat("_source keeps is.active as-is",
+                src.path("is.active").asBoolean(), equalTo(true));
+
+            // --- Verify queries against the original dotted path resolve to this doc ---
+            // Solr customers query like q=category.name:books — the same path must work in OS.
+            var qByDottedKeyword = restClient.get(
+                COLLECTION_NAME + "/_search?q=category.name:books&size=10",
+                ctx.createUnboundRequestContext()
+            );
+            var keywordHits = MAPPER.readTree(qByDottedKeyword.body).path("hits").path("hits");
+            assertThat("category.name:books should match doc1", keywordHits.size(), equalTo(1));
+            assertThat(keywordHits.get(0).path("_id").asText(), equalTo("doc1"));
+
+            // Numeric range query on a dotted-name int field.
+            var qByDottedInt = restClient.get(
+                COLLECTION_NAME + "/_search?q=category.id:7&size=10",
+                ctx.createUnboundRequestContext()
+            );
+            var intHits = MAPPER.readTree(qByDottedInt.body).path("hits").path("hits");
+            assertThat("category.id:7 should match doc1", intHits.size(), equalTo(1));
+
+            // Three-segment dotted field name still resolves as a query path.
+            var qByThreeSegmentFloat = restClient.get(
+                COLLECTION_NAME + "/_search?q=metric.cpu.percent:42.5&size=10",
+                ctx.createUnboundRequestContext()
+            );
+            var floatHits = MAPPER.readTree(qByThreeSegmentFloat.body).path("hits").path("hits");
+            assertThat("query on metric.cpu.percent should match doc1",
+                floatHits.size(), equalTo(1));
+        }
+    }
+
+    /**
      * E2E: Multi-shard backup discovery and parallel reading.
      * Creates a simulated multi-shard backup directory structure and verifies
      * all shards are discovered and documents from each shard are migrated.

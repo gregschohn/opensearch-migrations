@@ -10,12 +10,16 @@ workflow has non-trivial setup/teardown overhead, the realistic-customer scenari
 is packed into a single test that exercises:
   - Multiple collections (pre-existing 'dummy' + customer-created ones)
   - A multi-shard collection (regression for SolrBackupIndexMetadataFactory)
+  - A collection with flat field names containing '.' (e.g. category.name)
   - Hundreds of documents (bulk indexing path)
   - Full doc-count equivalence + sampled document retrieval on the target
 """
 import logging
 
+import requests
+
 from ..cluster_version import SolrV8_X, OpensearchV2_X, OpensearchV3_X
+from ..common_utils import execute_api_call
 from .ma_argo_test_base import MATestBase, MigrationType, MATestUserArguments
 
 logger = logging.getLogger(__name__)
@@ -64,6 +68,14 @@ class TestSolr0001SingleDocumentBackfill(MATestBase):
         self.sharded_collection = f"sharded_{self._suffix}"
         self.sharded_num_shards = 2
         self.sharded_doc_count = 40
+
+        # Dotted-field collection — exercises migration of flat Solr field names
+        # whose names contain '.' (e.g. 'category.name'). OpenSearch interprets
+        # such keys as nested-object paths during indexing, but _source preserves
+        # the original key shape and queries against the original dotted path
+        # continue to resolve, so the migration is intuitive for Solr users.
+        self.dotted_collection = f"dotted_{self._suffix}"
+        self.dotted_doc_id = "dotted_doc_0001"
 
     def prepare_clusters(self):
         # (1) Pre-existing 'dummy' collection — single smoke document.
@@ -114,6 +126,52 @@ class TestSolr0001SingleDocumentBackfill(MATestBase):
             docs=sharded_docs)
         self._assert_source_count(self.sharded_collection, self.sharded_doc_count)
 
+        # (4) Dotted-field collection — declare explicit Solr schema fields whose
+        # names contain '.' and index a doc that uses them. This is the realistic
+        # customer scenario: Solr permits flat dotted names as a naming
+        # convention; the migration must round-trip them through to OpenSearch
+        # without renaming or dropping data.
+        logger.info(f"Creating SolrCloud collection '{self.dotted_collection}' "
+                    f"with explicit dotted-name fields")
+        self.source_operations.create_index(
+            cluster=self.source_cluster, index_name=self.dotted_collection,
+            num_shards=1, replication_factor=1)
+        self._add_solr_schema_fields(self.dotted_collection, [
+            {"name": "category.name",      "type": "string",  "stored": True, "indexed": True, "docValues": True},
+            {"name": "category.id",        "type": "pint",    "stored": True, "indexed": True, "docValues": True},
+            {"name": "metric.cpu.percent", "type": "pfloat",  "stored": True, "indexed": True, "docValues": True},
+            {"name": "is.active",          "type": "boolean", "stored": True, "docValues": True},
+        ])
+        self.source_operations.create_document(
+            cluster=self.source_cluster, index_name=self.dotted_collection,
+            doc_id=self.dotted_doc_id,
+            data={
+                "category.name": "books",
+                "category.id": 7,
+                "metric.cpu.percent": 42.5,
+                "is.active": True,
+            })
+        self._assert_source_count(self.dotted_collection, 1)
+
+    def _add_solr_schema_fields(self, collection: str, fields: list):
+        """Declare explicit schema fields on a Solr collection via the Schema API.
+
+        Solr's _default configset is dynamic-field-driven; declaring explicit
+        fields with concrete types is what real Solr customers do for
+        production data and is what makes type assertions on the OpenSearch
+        side meaningful.
+        """
+        url = f"{self.source_cluster.endpoint}/solr/{collection}/schema"
+        body = {"add-field": fields}
+        r = requests.post(url, json=body,
+                          headers={"Content-Type": "application/json"}, timeout=15)
+        r.raise_for_status()
+        # Solr returns 200 with errors embedded in the body on failure.
+        result = r.json()
+        if "errors" in result:
+            raise AssertionError(
+                f"Failed to add Solr schema fields for '{collection}': {result['errors']}")
+
     def _assert_source_count(self, collection: str, expected: int):
         actual = self.source_operations.get_doc_count(
             cluster=self.source_cluster, index_name=collection)
@@ -149,12 +207,73 @@ class TestSolr0001SingleDocumentBackfill(MATestBase):
                                       "collectionPreparer to download shard_backup_metadata "
                                       "from S3 before counting)."))
 
+        # (4) Dotted fields: doc-count, _source preservation of dotted keys, and
+        # query-by-dotted-path resolution all matter to customers. If the
+        # migration silently renamed or split the field names, this scenario
+        # would catch it.
+        self._assert_target_count(self.dotted_collection, 1,
+                                  regression_hint=(
+                                      "Dotted-field collection failed to migrate. Check that "
+                                      "SolrSchemaConverter emits dotted field names as literal "
+                                      "keys under 'properties' and that the document indexer "
+                                      "does not collide on a parent key (e.g. both 'category' "
+                                      "as leaf and 'category.id' as object form)."))
+        self._assert_dotted_field_doc_round_trip()
+
+    def _assert_dotted_field_doc_round_trip(self):
+        """Verify a dotted-field document round-trips through the migration.
+
+        Asserts:
+          - The exact doc id is retrievable.
+          - _source preserves the original dotted keys (category.name, etc.).
+          - Queries written against the original dotted path
+            (q=category.name:books) resolve to the migrated document.
+        """
+        # _source preservation
+        resp = execute_api_call(
+            cluster=self.target_cluster,
+            path=f"/{self.dotted_collection}/_search?q=id:{self.dotted_doc_id}&size=1")
+        body = resp.json()
+        hits = body.get("hits", {}).get("hits", [])
+        assert len(hits) == 1, (
+            f"Expected to find dotted-field doc by id, got {len(hits)} hits. "
+            f"Body: {body}")
+        src = hits[0].get("_source", {})
+        assert src.get("category.name") == "books", (
+            f"_source should preserve 'category.name' verbatim, got {src!r}")
+        assert src.get("category.id") == 7, (
+            f"_source should preserve 'category.id' verbatim, got {src!r}")
+        actual_pct = src.get("metric.cpu.percent")
+        assert actual_pct is not None and abs(actual_pct - 42.5) < 0.01, (
+            f"_source should preserve 'metric.cpu.percent' verbatim, got {src!r}")
+        assert src.get("is.active") is True, (
+            f"_source should preserve 'is.active' verbatim, got {src!r}")
+
+        # Query against original dotted path resolves to the migrated doc.
+        resp2 = execute_api_call(
+            cluster=self.target_cluster,
+            path=f"/{self.dotted_collection}/_search?q=category.name:books&size=10")
+        kw_hits = resp2.json().get("hits", {}).get("hits", [])
+        assert len(kw_hits) == 1 and kw_hits[0].get("_id") == self.dotted_doc_id, (
+            f"Query 'category.name:books' should match the migrated dotted-field "
+            f"doc, got: {kw_hits}")
+
+        # Exact-match query on a multi-segment dotted field name resolves.
+        resp3 = execute_api_call(
+            cluster=self.target_cluster,
+            path=f"/{self.dotted_collection}/_search?q=metric.cpu.percent:42.5&size=10")
+        flt_hits = resp3.json().get("hits", {}).get("hits", [])
+        assert len(flt_hits) == 1, (
+            f"Query on 'metric.cpu.percent' should match the dotted-field "
+            f"doc, got: {flt_hits}")
+        logger.info("Dotted-field doc round-trip verified: _source preserved + "
+                    "queries by original dotted path resolve correctly.")
+
     def _assert_target_count(self, collection: str, expected: int, regression_hint: str = ""):
         # Retry a few times — bulk migration may not be fully flushed to the target yet.
         # Uses a direct _count API call per collection rather than get_all_index_details
         # (which crashes when called without index_prefix_ignore_list).
         import time
-        from ..common_utils import execute_api_call
         actual = 0
         for attempt in range(1, 31):
             try:

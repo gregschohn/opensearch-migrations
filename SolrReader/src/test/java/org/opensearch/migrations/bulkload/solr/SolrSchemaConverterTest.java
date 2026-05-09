@@ -319,6 +319,59 @@ class SolrSchemaConverterTest {
             "Non-date fields should not have format");
     }
 
+    // --- Dotted field name tests ---
+    //
+    // Solr permits flat field names that contain '.' (e.g. "category.name"). When
+    // the converter emits these as keys under "properties", OpenSearch silently
+    // expands them into nested-object form (properties.category.properties.name)
+    // — a documented OpenSearch behavior, not a bug. Queries written against the
+    // original "category.name" path continue to resolve and the _source preserves
+    // the original key shape, so the migration is intuitive from the customer's
+    // point of view. These tests pin that contract down so it does not regress.
+
+    @Test
+    void preservesDottedFieldNamesAsLiteralKeys() {
+        var fields = MAPPER.createArrayNode();
+        fields.add(field("id", "string"));
+        fields.add(field("category.name", "string"));
+        fields.add(field("metric.cpu.percent", "pfloat"));
+        fields.add(field("event.created", "pdate"));
+
+        var mappings = SolrSchemaConverter.convertToOpenSearchMappings(fields);
+        var properties = mappings.get("properties");
+
+        // Keys stay literal — the converter does NOT pre-split them.
+        assertNotNull(properties.get("category.name"),
+            "dotted field name should be emitted as a literal key");
+        assertThat(properties.get("category.name").get("type").asText(), equalTo("keyword"));
+
+        assertNotNull(properties.get("metric.cpu.percent"),
+            "multi-segment dotted field name should be emitted as a literal key");
+        assertThat(properties.get("metric.cpu.percent").get("type").asText(), equalTo("float"));
+
+        // Date format is propagated even when the field name has dots.
+        var eventCreated = properties.get("event.created");
+        assertNotNull(eventCreated);
+        assertThat(eventCreated.get("type").asText(), equalTo("date"));
+        assertThat(eventCreated.get("format").asText(), equalTo(SolrSchemaConverter.OS_DATE_FORMAT));
+    }
+
+    @Test
+    void dottedFieldNamesCoexistWithFlatFields() {
+        var fields = MAPPER.createArrayNode();
+        fields.add(field("id", "string"));
+        fields.add(field("title", "text_general"));
+        fields.add(field("user.id", "string"));
+        fields.add(field("user.email", "string"));
+
+        var mappings = SolrSchemaConverter.convertToOpenSearchMappings(fields);
+        var properties = mappings.get("properties");
+
+        assertThat(properties.get("title").get("type").asText(), equalTo("text"));
+        assertThat(properties.get("user.id").get("type").asText(), equalTo("keyword"));
+        assertThat(properties.get("user.email").get("type").asText(), equalTo("keyword"));
+    }
+
     // --- Helpers ---
 
     private static ObjectNode field(String name, String type) {
