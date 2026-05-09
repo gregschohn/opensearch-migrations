@@ -28,21 +28,20 @@ public final class SolrSchemaConverter {
     private static final String OS_KEYWORD = "keyword";
     private static final String OS_TEXT = "text";
     /**
-     * JSON value-shape token for OpenSearch dynamic_template's {@code match_mapping_type}
-     * when the leaf value is a string. Distinct from any OS field-type constant: the
-     * value-shape vocabulary is {@code "string" | "long" | "double" | "boolean" | "date"
-     * | "*"} (see OpenSearch dynamic_templates docs), which only partially overlaps
-     * field-type names. We reuse {@link #OS_LONG} / {@link #OS_DOUBLE} / {@link #OS_BOOLEAN}
-     * where the strings happen to coincide; "string" gets its own constant since no
-     * field-type is named "string".
+     * The literal token {@code "string"}. It serves two unrelated purposes: it's the
+     * name of Solr's {@code StrField}-backed {@code string} fieldType (used as a key
+     * in {@link #SOLR_TO_OS_TYPE}), and it's also the JSON value-shape token used in
+     * OpenSearch dynamic_template's {@code match_mapping_type} ("string" | "long" |
+     * "double" | "boolean" | "date" | "*"). Two callers, same string — kept on one
+     * constant so SonarQube java:S1192 (duplicate string literal) stays clean.
      */
-    private static final String MMT_STRING = "string";
+    private static final String STRING_TOKEN = "string";
     private static final String OS_BINARY = "binary";
     private static final String OS_FORMAT_FIELD = "format";
 
     /** Maps Solr field type names to OpenSearch types. */
     private static final Map<String, String> SOLR_TO_OS_TYPE = Map.ofEntries(
-        Map.entry("string", OS_KEYWORD),
+        Map.entry(STRING_TOKEN, OS_KEYWORD),
         Map.entry("strings", OS_KEYWORD),
         Map.entry("text_general", OS_TEXT),
         Map.entry("text_en", OS_TEXT),
@@ -354,7 +353,7 @@ public final class SolrSchemaConverter {
                 return OS_BOOLEAN;
             case OS_KEYWORD:
             case OS_TEXT:
-                return MMT_STRING;
+                return STRING_TOKEN;
             default:
                 // BINARY and any future types: leave match_mapping_type unset and
                 // rely on path_match alone. Object containers still never match
