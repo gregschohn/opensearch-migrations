@@ -315,11 +315,11 @@ public final class SolrSchemaConverter {
      * Map an OpenSearch field type to its {@code match_mapping_type} JSON-shape token,
      * or {@code null} when no shape can be confidently asserted. Solr-extracted dates
      * arrive as epoch-millis longs, so date templates gate on {@code long}.
+     *
+     * <p>{@code osType} is always non-null in practice ({@link #resolveOsType} falls
+     * back to {@code OS_TEXT}), so no defensive null guard is needed.
      */
     private static String osTypeToMatchMappingType(String osType) {
-        if (osType == null) {
-            return null;
-        }
         switch (osType) {
             case OS_INTEGER:
             case OS_LONG:
