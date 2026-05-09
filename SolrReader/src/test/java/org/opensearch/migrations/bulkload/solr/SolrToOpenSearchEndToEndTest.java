@@ -198,16 +198,9 @@ public class SolrToOpenSearchEndToEndTest {
     }
 
     /**
-     * E2E: Solr fields whose names contain '.' (e.g. "category.name", "metric.cpu.percent")
-     * migrate to OpenSearch with the original key shape preserved in {@code _source}, the
-     * declared types honored, and queries written against the original dotted field path
-     * still resolving correctly.
-     *
-     * <p>OpenSearch interprets dotted JSON keys as nested-object paths during indexing, so
-     * {@code "category.name": "books"} ends up stored under {@code category.properties.name}
-     * in the mapping tree. {@code _source}, {@code _search} field-path resolution, and
-     * {@code _field_caps} still expose the field by its original {@code "category.name"}
-     * name, which is the customer-visible behavior Solr users expect.</p>
+     * E2E: Solr fields with dots in their names (e.g. {@code category.name}) migrate
+     * with their declared types, {@code _source} preserves the original keys, and
+     * queries against the original dotted path resolve to the migrated docs.
      */
     @ParameterizedTest(name = "dotted field names: {0} → {1}")
     @MethodSource("solr8ToOpenSearch")
@@ -336,20 +329,11 @@ public class SolrToOpenSearchEndToEndTest {
     }
 
     /**
-     * E2E regression: dotted field names whose top-level segment ALSO matches a Solr
-     * dynamic-field prefix pattern.
-     *
-     * <p>Solr's default schema declares a prefix-style dynamic field {@code attr_*}.
-     * A doc field like {@code attr_field.withdot=42} therefore both (a) belongs to a
-     * dotted path and (b) prefix-matches {@code attr_*}. Without a careful template
-     * spec, OpenSearch will apply the {@code attr_*} template to the parent object
-     * {@code attr_field} (typing it as {@code integer}) and then reject the child
-     * key {@code .withdot} with {@code mapper_parsing_exception}. The bulk request
-     * fails outright — the migrated doc is silently lost.
-     *
-     * <p>Verifies the converter emits dynamic templates that pin to the JSON value
-     * shape ({@code match_mapping_type}) and use {@code path_match}, so the template
-     * fires only on the leaf value and never on intermediate object containers.
+     * E2E regression: a dotted-name field whose top-level segment also matches a
+     * Solr dynamic-field pattern (e.g. {@code attr_thing.withdot} under {@code attr_*}).
+     * Without {@code path_match} + {@code match_mapping_type}, the dynamic template
+     * fires on the synthesized parent object and the bulk write fails with
+     * {@code mapper_parsing_exception}, silently dropping the doc.
      */
     @ParameterizedTest(name = "dynamic-field + dotted name: {0} → {1}")
     @MethodSource("solr8ToOpenSearch")

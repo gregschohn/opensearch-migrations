@@ -27,21 +27,12 @@ public final class SolrSchemaConverter {
     private static final String OS_BOOLEAN = "boolean";
     private static final String OS_KEYWORD = "keyword";
     private static final String OS_TEXT = "text";
-    /**
-     * The literal token {@code "string"}. It serves two unrelated purposes: it's the
-     * name of Solr's {@code StrField}-backed {@code string} fieldType (used as a key
-     * in {@link #SOLR_TO_OS_TYPE}), and it's also the JSON value-shape token used in
-     * OpenSearch dynamic_template's {@code match_mapping_type} ("string" | "long" |
-     * "double" | "boolean" | "date" | "*"). Two callers, same string — kept on one
-     * constant so SonarQube java:S1192 (duplicate string literal) stays clean.
-     */
-    private static final String STRING_TOKEN = "string";
     private static final String OS_BINARY = "binary";
     private static final String OS_FORMAT_FIELD = "format";
 
     /** Maps Solr field type names to OpenSearch types. */
     private static final Map<String, String> SOLR_TO_OS_TYPE = Map.ofEntries(
-        Map.entry(STRING_TOKEN, OS_KEYWORD),
+        Map.entry("string", OS_KEYWORD),
         Map.entry("strings", OS_KEYWORD),
         Map.entry("text_general", OS_TEXT),
         Map.entry("text_en", OS_TEXT),
@@ -276,21 +267,16 @@ public final class SolrSchemaConverter {
     }
 
     /**
-     * Build an OpenSearch dynamic_template from a Solr dynamic field pattern.
-     * Solr patterns: "*_s" (suffix), "attr_*" (prefix).
+     * Build an OpenSearch dynamic_template from a Solr dynamic field pattern
+     * ({@code "*_s"} suffix or {@code "attr_*"} prefix).
      *
-     * <p>Uses {@code path_match} (not {@code match}) so the template matches against
-     * the field's full dotted path. This matters for Solr fields whose names contain
-     * dots (e.g. a doc field named {@code attr_field.withdot} under an {@code attr_*}
-     * dynamic template). With plain {@code match}, OpenSearch would only consider the
-     * leaf name segment ({@code withdot}), miss the prefix, fall back to dynamic
-     * mapping for the parent ({@code attr_field}) as the template's target type, and
-     * then fail with {@code mapper_parsing_exception} when the child key is added
-     * because the parent is no longer an object.
-     *
-     * <p>Pairs {@code path_match} with {@code match_mapping_type} so the template
-     * fires only on leaves (which carry a JSON value type), never on intermediate
-     * object containers — preventing the same parent/child collision.
+     * <p>Uses {@code path_match} + {@code match_mapping_type} (not plain {@code match}).
+     * When a Solr doc field has dots in its name (e.g. {@code attr_field.withdot})
+     * OpenSearch auto-expands it into a nested object on write. With plain {@code match},
+     * the {@code attr_*} template would also fire on the synthesized parent
+     * ({@code attr_field}), type it as the target type, and then reject the child key
+     * with {@code mapper_parsing_exception}. {@code match_mapping_type} gates on the
+     * JSON value shape, which intermediate object containers never carry.
      */
     static ObjectNode buildDynamicTemplate(String solrPattern, String osType) {
         String matchPattern;
@@ -326,12 +312,9 @@ public final class SolrSchemaConverter {
     }
 
     /**
-     * Map an OpenSearch field type to the JSON value shape OpenSearch reports for it
-     * during dynamic mapping ({@code match_mapping_type}). Returning a non-null shape
-     * gates the dynamic template to leaf values only — intermediate object containers
-     * never carry a {@code match_mapping_type}, so they can't accidentally trigger
-     * the template when a Solr dynamic-field pattern (e.g. {@code attr_*}) happens
-     * to also prefix-match a parent object name produced by a dotted-name leaf.
+     * Map an OpenSearch field type to its {@code match_mapping_type} JSON-shape token,
+     * or {@code null} when no shape can be confidently asserted. Solr-extracted dates
+     * arrive as epoch-millis longs, so date templates gate on {@code long}.
      */
     private static String osTypeToMatchMappingType(String osType) {
         if (osType == null) {
@@ -341,10 +324,6 @@ public final class SolrSchemaConverter {
             case OS_INTEGER:
             case OS_LONG:
             case OS_DATE:
-                // Solr serializes dates as epoch millis (long) in stored fields, so
-                // the converted documents present date leaves as JSON longs. Gating
-                // dynamic date templates by "long" matches the actual wire shape and
-                // still excludes object containers (which never carry a value type).
                 return OS_LONG;
             case OS_FLOAT:
             case OS_DOUBLE:
@@ -353,11 +332,8 @@ public final class SolrSchemaConverter {
                 return OS_BOOLEAN;
             case OS_KEYWORD:
             case OS_TEXT:
-                return STRING_TOKEN;
+                return "string";
             default:
-                // BINARY and any future types: leave match_mapping_type unset and
-                // rely on path_match alone. Object containers still never match
-                // because OpenSearch only consults dynamic_templates on leaves.
                 return null;
         }
     }
