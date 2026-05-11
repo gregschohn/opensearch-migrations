@@ -53,16 +53,11 @@ public class SolrBackupSource implements DocumentSource {
     private static final String INDEX_DIR_NAME = "index";
     private static final String SEGMENTS_FILE_PREFIX = "segments_";
     private static final ObjectMapper MAPPER = new ObjectMapper();
-    private static final int DEFAULT_SOLR_MAJOR = 8;
 
     private final Path backupDir;
     private final String collectionName;
     private final JsonNode solrSchema;
     private final int solrMajorVersion;
-
-    public SolrBackupSource(Path backupDir, String collectionName, JsonNode solrSchema) {
-        this(backupDir, collectionName, solrSchema, DEFAULT_SOLR_MAJOR);
-    }
 
     public SolrBackupSource(Path backupDir, String collectionName, JsonNode solrSchema, int solrMajorVersion) {
         this.backupDir = backupDir;

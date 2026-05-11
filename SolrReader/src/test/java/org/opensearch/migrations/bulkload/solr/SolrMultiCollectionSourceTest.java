@@ -36,7 +36,7 @@ class SolrMultiCollectionSourceTest {
         schemas.put("collA", schemaWrapper());
         schemas.put("collB", schemaWrapper());
 
-        try (var source = new SolrMultiCollectionSource(tempDir, schemas)) {
+        try (var source = new SolrMultiCollectionSource(tempDir, schemas, null, null, 8)) {
             var names = source.listCollections();
             assertThat(names.size(), equalTo(2));
             assertThat(names, hasItem("collA"));
@@ -58,7 +58,7 @@ class SolrMultiCollectionSourceTest {
         try (var source = new SolrMultiCollectionSource(tempDir, schemas, c -> {
                 preparerCalls.incrementAndGet();
                 preparedName.set(c);
-            })) {
+            }, null, 8)) {
             // First access triggers the preparer.
             source.listPartitions("collA");
             // Subsequent accesses must NOT call the preparer again.
@@ -86,7 +86,7 @@ class SolrMultiCollectionSourceTest {
         var shardCalls = new AtomicInteger(0);
         try (var source = new SolrMultiCollectionSource(tempDir, schemas, null, p -> {
                 shardCalls.incrementAndGet();
-            })) {
+            }, 8)) {
             var partitions = source.listPartitions("collA");
             assertThat(partitions.size(), equalTo(2));
             // Reading from each partition triggers the shardPreparer once.
@@ -129,7 +129,7 @@ class SolrMultiCollectionSourceTest {
         }
         var schemas = Map.<String, JsonNode>of("collA", schemaWrapper());
 
-        try (var source = new SolrMultiCollectionSource(tempDir, schemas)) {
+        try (var source = new SolrMultiCollectionSource(tempDir, schemas, null, null, 8)) {
             var meta = source.readCollectionMetadata("collA");
             assertThat(meta.partitionCount(), equalTo(3));
         } catch (Exception e) {
@@ -146,7 +146,7 @@ class SolrMultiCollectionSourceTest {
 
         var preparerCalls = new AtomicInteger(0);
         try (var source = new SolrMultiCollectionSource(tempDir, schemas,
-                c -> preparerCalls.incrementAndGet())) {
+                c -> preparerCalls.incrementAndGet(), null, 8)) {
             source.listPartitions("collA");
             source.readCollectionMetadata("collA");
             source.listPartitions("collA");

@@ -28,7 +28,7 @@ class SolrBackupSourceTest {
         Files.createFile(tempDir.resolve("segments_1"));
         Files.createFile(tempDir.resolve("_0.cfs"));
 
-        var source = new SolrBackupSource(tempDir, "test", emptySchema());
+        var source = new SolrBackupSource(tempDir, "test", emptySchema(), 8);
         var partitions = source.listPartitions("test");
 
         assertThat("Single flat shard", partitions.size(), equalTo(1));
@@ -45,7 +45,7 @@ class SolrBackupSourceTest {
         Files.createFile(shard1.resolve("segments_1"));
         Files.createFile(shard2.resolve("segments_2"));
 
-        var source = new SolrBackupSource(tempDir, "test", emptySchema());
+        var source = new SolrBackupSource(tempDir, "test", emptySchema(), 8);
         var partitions = source.listPartitions("test");
 
         assertThat("Two shards discovered", partitions.size(), equalTo(2));
@@ -61,7 +61,7 @@ class SolrBackupSourceTest {
         Files.createFile(indexDir1.resolve("segments_1"));
         Files.createFile(indexDir2.resolve("segments_1"));
 
-        var source = new SolrBackupSource(tempDir, "test", emptySchema());
+        var source = new SolrBackupSource(tempDir, "test", emptySchema(), 8);
         var partitions = source.listPartitions("test");
 
         assertThat("Two SolrCloud shards", partitions.size(), equalTo(2));
@@ -70,7 +70,7 @@ class SolrBackupSourceTest {
     @Test
     void fallsBackToSingleShardForEmptyDir() throws IOException {
         // Empty directory — falls back to treating it as single shard
-        var source = new SolrBackupSource(tempDir, "test", emptySchema());
+        var source = new SolrBackupSource(tempDir, "test", emptySchema(), 8);
         var partitions = source.listPartitions("test");
 
         assertThat("Fallback to single shard", partitions.size(), equalTo(1));
@@ -88,7 +88,7 @@ class SolrBackupSourceTest {
         Files.createFile(shard2.resolve("segments_1"));
         Files.createFile(shard3.resolve("segments_1"));
 
-        var source = new SolrBackupSource(tempDir, "test", emptySchema());
+        var source = new SolrBackupSource(tempDir, "test", emptySchema(), 8);
         var metadata = source.readCollectionMetadata("test");
 
         assertThat("Partition count matches shards", metadata.partitionCount(), equalTo(3));

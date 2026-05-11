@@ -30,21 +30,7 @@ class SolrBackupIndexMetadataFactoryTest {
     Path tempDir;
 
     @Test
-    void twoArgConstructorDefaultsToSolr8() throws IOException {
-        // The 2-arg constructor delegates to the 4-arg with DEFAULT_SOLR_MAJOR=8.
-        // We can't introspect the field, but we can verify shard counting works.
-        seedSingleShardBackup(tempDir.resolve("collA"));
-        var schemas = Map.<String, JsonNode>of("collA", schemaWithOneField());
-
-        var factory = new SolrBackupIndexMetadataFactory(tempDir, schemas);
-        var meta = factory.fromRepo("snap1", "collA");
-
-        var json = MAPPER.readTree(((SolrIndexMetadata) meta).getRawJson().toString());
-        assertThat(json.path("settings").path("index").path("number_of_shards").asText(), equalTo("1"));
-    }
-
-    @Test
-    void threeArgConstructorRunsCollectionPreparer() throws IOException {
+    void collectionPreparerRunsExplicitly() throws IOException {
         seedSingleShardBackup(tempDir.resolve("collA"));
         var schemas = new LinkedHashMap<String, JsonNode>();
         schemas.put("collA", null); // populated by the preparer
@@ -55,7 +41,7 @@ class SolrBackupIndexMetadataFactoryTest {
             preparerCalls.incrementAndGet();
             preparedCollection.set(c);
             schemas.put(c, schemaWithOneField());
-        });
+        }, 8);
 
         factory.fromRepo("snap1", "collA");
 
@@ -130,7 +116,7 @@ class SolrBackupIndexMetadataFactoryTest {
         schemas.put("collA", schemaWithOneField());
         schemas.put("collB", schemaWithOneField());
 
-        var factory = new SolrBackupIndexMetadataFactory(tempDir, schemas);
+        var factory = new SolrBackupIndexMetadataFactory(tempDir, schemas, null, 8);
         var indices = factory.getRepoDataProvider().getIndicesInSnapshot("any");
 
         assertThat(indices.size(), equalTo(2));
@@ -141,14 +127,14 @@ class SolrBackupIndexMetadataFactoryTest {
 
     @Test
     void getRepoDataProviderRejectsRepoAccess() {
-        var factory = new SolrBackupIndexMetadataFactory(tempDir, Map.of());
+        var factory = new SolrBackupIndexMetadataFactory(tempDir, Map.of(), null, 8);
         var provider = factory.getRepoDataProvider();
         assertThrows(UnsupportedOperationException.class, provider::getRepo);
     }
 
     @Test
     void smileFactoryAndFromJsonNodeAreUnsupported() {
-        var factory = new SolrBackupIndexMetadataFactory(tempDir, Map.of());
+        var factory = new SolrBackupIndexMetadataFactory(tempDir, Map.of(), null, 8);
         assertThrows(UnsupportedOperationException.class, factory::getSmileFactory);
         assertThrows(UnsupportedOperationException.class,
             () -> factory.fromJsonNode(MAPPER.createObjectNode(), "id", "name"));
@@ -156,7 +142,7 @@ class SolrBackupIndexMetadataFactoryTest {
 
     @Test
     void getIndexFileIdReturnsIndexName() {
-        var factory = new SolrBackupIndexMetadataFactory(tempDir, Map.of());
+        var factory = new SolrBackupIndexMetadataFactory(tempDir, Map.of(), null, 8);
         assertThat(factory.getIndexFileId("snap1", "collA"), equalTo("collA"));
     }
 

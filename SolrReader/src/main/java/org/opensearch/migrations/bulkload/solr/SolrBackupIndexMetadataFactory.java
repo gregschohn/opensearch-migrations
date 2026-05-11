@@ -22,19 +22,10 @@ import lombok.extern.slf4j.Slf4j;
 public class SolrBackupIndexMetadataFactory implements IndexMetadata.Factory {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
-    private static final int DEFAULT_SOLR_MAJOR = 8;
     private final Path backupDir;
     private final Map<String, JsonNode> schemas;
     private final Consumer<String> collectionPreparer;
     private final int solrMajorVersion;
-
-    public SolrBackupIndexMetadataFactory(Path backupDir, Map<String, JsonNode> schemas) {
-        this(backupDir, schemas, null, DEFAULT_SOLR_MAJOR);
-    }
-
-    public SolrBackupIndexMetadataFactory(Path backupDir, Map<String, JsonNode> schemas, Consumer<String> collectionPreparer) {
-        this(backupDir, schemas, collectionPreparer, DEFAULT_SOLR_MAJOR);
-    }
 
     /**
      * @param collectionPreparer called once per collection before counting shards.
