@@ -74,7 +74,7 @@ OpenSearch Migration Assistant is a comprehensive set of tools designed to facil
 <tr><td>OpenSearch 1.x</td><td>✅</td><td>✅</td><td>✅</td></tr>
 <tr><td>OpenSearch 2.x</td><td></td><td>✅</td><td>✅</td></tr>
 <tr><td>OpenSearch 3.x</td><td></td><td></td><td>🔜 <a href="https://github.com/orgs/opensearch-project/projects/229?pane=issue&itemId=117495207">link</a></td></tr>
-<tr><td>Apache Solr 6.x–9.x*</td><td></td><td></td><td>✅</td></tr>
+<tr><td>Apache Solr 8.x–9.x*</td><td></td><td></td><td>✅</td></tr>
 </table>
 
 \* Backfill only — Capture and Replay is not supported for Solr sources.
