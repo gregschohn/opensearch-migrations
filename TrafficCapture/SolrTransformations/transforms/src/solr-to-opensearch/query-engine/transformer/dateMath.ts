@@ -91,7 +91,7 @@ function solrUnitToOpenSearch(unit: string): string | null {
  */
 function translateSolrDateMathBody(body: string): string | null {
   // Pattern: optional sign + digits + UNIT  OR  '/' + UNIT
-  const segmentPattern = /([+\-]\d+|\/)([A-Za-z]+)/g;
+  const segmentPattern = /([+-]\d+|\/)([A-Za-z]+)/g;
   let out = '';
   let lastIndex = 0;
   let match: RegExpExecArray | null;
