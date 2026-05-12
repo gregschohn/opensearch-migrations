@@ -363,8 +363,9 @@ def test_get_workflow_logs_success(argo_service, mock_success_result):
         mock_runner_instance.run.return_value = mock_success_result
         mock_command_runner_class.return_value = mock_runner_instance
 
-        result = argo_service._get_workflow_logs("test-workflow", follow=True, print_output=True,
-                                                stream_output=True)
+        result = argo_service._get_workflow_logs(
+            "test-workflow", follow=True, print_output=True, stream_output=True
+        )
 
         assert result.success is True
         expected_args = {
