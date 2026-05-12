@@ -809,12 +809,6 @@ class _OrderedGroup(click.Group):
 def approve_group(ctx, list_flag, workflow_name, argo_server, namespace, insecure, token):
     """Approve workflow gates.
 
-    \b
-    Subcommands:
-      step      Approve user-defined migration checkpoints.
-      change    Acknowledge gated configuration field changes.
-      retry     Confirm recovery is complete after an impossible change.
-
     Run any subcommand with --help for details.
     """
     if ctx.invoked_subcommand is not None:
