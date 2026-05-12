@@ -1148,10 +1148,6 @@ exports[`test schemas matches expected argo schema matches expected 1`] = `
                     "useRecoverySource": {
                       "type": "boolean",
                       "default": false
-                    },
-                    "allowExistingIndexes": {
-                      "type": "boolean",
-                      "default": true
                     }
                   }
                 },
@@ -2607,12 +2603,6 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                         "type": "boolean",
                         "default": false,
                         "description": "When enabled, treat the _recovery_source stored field (present in ES 7+ / OpenSearch snapshots with soft-deletes) as _source. This field is transient and may not be present for all documents, so results can be inconsistent. Use only when reconstruction from doc_values and stored fields is insufficient."
-                      },
-                      "allowExistingIndexes": {
-                        "type": "boolean",
-                        "default": true,
-                        "description": "When true (default), indexes that already exist on the target cluster are reported as a non-fatal warning instead of a fatal error. This makes metadata migration idempotent so it can be safely re-run alongside document backfill within the same SnapshotMigration resource. Set to false to fail the migration if any target index already exists.",
-                        "changeRestriction": "gated"
                       }
                     },
                     "description": "Configuration for migrating index metadata (mappings, settings, templates) from the snapshot to the target. Omit to skip metadata migration."
