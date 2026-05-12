@@ -298,6 +298,8 @@ function makeSnapshotMigrationManifest(
             metadataMigrationTransformerConfigBase64: makeStringTypeProxy(expr.dig(config, ["metadataMigrationConfig", "transformerConfigBase64"], expr.literal(""))),
             metadataMigrationTransformerConfig: makeStringTypeProxy(expr.dig(config, ["metadataMigrationConfig", "transformerConfig"], expr.literal(""))),
             metadataMigrationTransformerConfigFile: makeStringTypeProxy(expr.dig(config, ["metadataMigrationConfig", "transformerConfigFile"], expr.literal(""))),
+            metadataMigrationTransformsImage: makeStringTypeProxy(expr.dig(config, ["metadataMigrationConfig", "transformsImage"], expr.literal(""))),
+            metadataMigrationTransformsConfigMap: makeStringTypeProxy(expr.dig(config, ["metadataMigrationConfig", "transformsConfigMap"], expr.literal(""))),
             documentBackfillPodReplicas: makeDirectTypeProxy(expr.dig(config, ["documentBackfillConfig", "podReplicas"], 1)),
             documentBackfillJvmArgs: makeStringTypeProxy(expr.dig(config, ["documentBackfillConfig", "jvmArgs"], expr.literal(""))),
             documentBackfillLoggingConfigurationOverrideConfigMap: makeStringTypeProxy(expr.dig(config, ["documentBackfillConfig", "loggingConfigurationOverrideConfigMap"], expr.literal(""))),
@@ -310,6 +312,8 @@ function makeSnapshotMigrationManifest(
             documentBackfillDocTransformerConfigBase64: makeStringTypeProxy(expr.dig(config, ["documentBackfillConfig", "docTransformerConfigBase64"], expr.literal(""))),
             documentBackfillDocTransformerConfig: makeStringTypeProxy(expr.dig(config, ["documentBackfillConfig", "docTransformerConfig"], expr.literal(""))),
             documentBackfillDocTransformerConfigFile: makeStringTypeProxy(expr.dig(config, ["documentBackfillConfig", "docTransformerConfigFile"], expr.literal(""))),
+            documentBackfillTransformsImage: makeStringTypeProxy(expr.dig(config, ["documentBackfillConfig", "transformsImage"], expr.literal(""))),
+            documentBackfillTransformsConfigMap: makeStringTypeProxy(expr.dig(config, ["documentBackfillConfig", "transformsConfigMap"], expr.literal(""))),
             documentBackfillDocumentsPerBulkRequest: makeDirectTypeProxy(expr.dig(config, ["documentBackfillConfig", "documentsPerBulkRequest"], 0x7fffffff)),
             documentBackfillDocumentsSizePerBulkRequest: makeDirectTypeProxy(expr.dig(config, ["documentBackfillConfig", "documentsSizePerBulkRequest"], 10 * 1024 * 1024)),
             documentBackfillInitialLeaseDuration: makeStringTypeProxy(expr.dig(config, ["documentBackfillConfig", "initialLeaseDuration"], expr.literal("PT1H"))),
@@ -343,6 +347,8 @@ function makeTrafficReplayManifest(
         ),
         podReplicas: expr.dig(opts, ["podReplicas"], 1),
         resources: expr.get(opts, "resources"),
+        transformsImage: expr.dig(opts, ["transformsImage"], expr.literal("")),
+        transformsConfigMap: expr.dig(opts, ["transformsConfigMap"], expr.literal("")),
     });
     return {
         apiVersion: CRD_API_VERSION,

@@ -28,7 +28,8 @@ import {OwnerReference} from "@opensearch-migrations/k8s-types";
 import {makeRepoParamDict} from "./metadataMigration";
 import {
     setupLog4jConfigForContainer,
-    setupTestCredsForContainer
+    setupTestCredsForContainer,
+    setupTransformsForContainer
 } from "./commonUtils/containerFragments";
 import {CommonWorkflowParameters} from "./commonUtils/workflowParameters";
 import {makeRequiredImageParametersForKeys} from "./commonUtils/imageDefinitions";
@@ -110,6 +111,8 @@ function getRfsDeploymentManifest
     useLocalstackAwsCreds: BaseExpression<boolean>,
     loggingConfigMap: BaseExpression<string>,
     jvmArgs: BaseExpression<string>,
+    transformsImage: BaseExpression<string>,
+    transformsConfigMap: BaseExpression<string>,
 
     rfsImageName: BaseExpression<string>,
     rfsImagePullPolicy: BaseExpression<IMAGE_PULL_POLICY>,
@@ -158,13 +161,17 @@ function getRfsDeploymentManifest
         resources: makeDirectTypeProxy(args.resources)
     };
 
-    const finalContainerDefinition = setupTestCredsForContainer(
-        args.useLocalstackAwsCreds,
-        setupLog4jConfigForContainer(
-            useCustomLogging,
-            args.loggingConfigMap,
-            {container: baseContainerDefinition, volumes: []},
-            args.jvmArgs
+    const finalContainerDefinition = setupTransformsForContainer(
+        args.transformsImage,
+        args.transformsConfigMap,
+        setupTestCredsForContainer(
+            args.useLocalstackAwsCreds,
+            setupLog4jConfigForContainer(
+                useCustomLogging,
+                args.loggingConfigMap,
+                {container: baseContainerDefinition, volumes: []},
+                args.jvmArgs
+            )
         )
     );
     const deploymentName = getRfsDeploymentName(args.sessionName);
@@ -338,6 +345,8 @@ export const DocumentBulkLoad = WorkflowBuilder.create({
         .addRequiredInput("podReplicas", typeToken<number>())
         .addRequiredInput("jvmArgs", typeToken<string>())
         .addRequiredInput("loggingConfigurationOverrideConfigMap", typeToken<string>())
+        .addRequiredInput("transformsImage", typeToken<string>())
+        .addRequiredInput("transformsConfigMap", typeToken<string>())
         .addRequiredInput("useLocalStack", typeToken<boolean>(), "Only used for local testing")
         .addRequiredInput("resources", typeToken<ResourceRequirementsType>())
         .addRequiredInput("crdName", typeToken<string>())
@@ -357,6 +366,8 @@ export const DocumentBulkLoad = WorkflowBuilder.create({
                     podReplicas: expr.deserializeRecord(b.inputs.podReplicas),
                     loggingConfigMap: b.inputs.loggingConfigurationOverrideConfigMap,
                     jvmArgs: b.inputs.jvmArgs,
+                    transformsImage: b.inputs.transformsImage,
+                    transformsConfigMap: b.inputs.transformsConfigMap,
                     useLocalstackAwsCreds: expr.deserializeRecord(b.inputs.useLocalStack),
                     sessionName: b.inputs.sessionName,
                     targetBasicCredsSecretNameOrEmpty: b.inputs.targetBasicCredsSecretNameOrEmpty,
@@ -402,6 +413,8 @@ export const DocumentBulkLoad = WorkflowBuilder.create({
                     coordinatorBasicCredsSecretNameOrEmpty: getHttpAuthSecretName(b.inputs.rfsCoordinatorConfig),
                     loggingConfigurationOverrideConfigMap: expr.dig(expr.deserializeRecord(b.inputs.documentBackfillConfig), ["loggingConfigurationOverrideConfigMap"], ""),
                     jvmArgs: expr.dig(expr.deserializeRecord(b.inputs.documentBackfillConfig), ["jvmArgs"], ""),
+                    transformsImage: expr.dig(expr.deserializeRecord(b.inputs.documentBackfillConfig), ["transformsImage"], ""),
+                    transformsConfigMap: expr.dig(expr.deserializeRecord(b.inputs.documentBackfillConfig), ["transformsConfigMap"], ""),
                     useLocalStack: expr.dig(expr.deserializeRecord(b.inputs.snapshotConfig), ["repoConfig", "useLocalStack"], false),
                     rfsJsonConfig: expr.asString(expr.serialize(
                         makeParamsDict(b.inputs.sourceVersion,
