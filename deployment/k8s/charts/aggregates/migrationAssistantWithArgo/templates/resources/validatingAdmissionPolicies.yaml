@@ -388,6 +388,26 @@ spec:
         (!has(oldObject.spec.metadataMigrationUseRecoverySource) || !has(object.spec.metadataMigrationUseRecoverySource) ||
          object.spec.metadataMigrationUseRecoverySource == oldObject.spec.metadataMigrationUseRecoverySource)
       message: "Impossible: SnapshotMigration metadata migration fields cannot be changed. Delete and recreate."
+    # Gated: USER_METADATA_PROCESS_OPTIONS fields marked gated
+    - expression: |
+        (
+          (!has(oldObject.spec.metadataMigrationAllowExistingIndexes) || !has(object.spec.metadataMigrationAllowExistingIndexes) ||
+           object.spec.metadataMigrationAllowExistingIndexes == oldObject.spec.metadataMigrationAllowExistingIndexes)
+        ) ||
+        (has(object.metadata.annotations) &&
+         'migrations.opensearch.org/approved-by-run' in object.metadata.annotations &&
+         has(object.metadata.labels) &&
+         'workflows.argoproj.io/run-uid' in object.metadata.labels &&
+         object.metadata.annotations['migrations.opensearch.org/approved-by-run'] ==
+           object.metadata.labels['workflows.argoproj.io/run-uid'])
+      messageExpression: |
+        "Gated changes detected on SnapshotMigration metadata migration fields [" +
+        ["metadataMigrationAllowExistingIndexes"
+        ].filter(f,
+          (f == "metadataMigrationAllowExistingIndexes" && (has(object.spec.metadataMigrationAllowExistingIndexes) != has(oldObject.spec.metadataMigrationAllowExistingIndexes) ||
+            (has(object.spec.metadataMigrationAllowExistingIndexes) && object.spec.metadataMigrationAllowExistingIndexes != oldObject.spec.metadataMigrationAllowExistingIndexes)))
+        ).join(", ") +
+        "]. Approve the corresponding ApprovalGate to proceed."
     # Impossible: USER_RFS_PROCESS_OPTIONS fields marked impossible
     - expression: |
         (!has(oldObject.spec.documentBackfillIndexAllowlist) || !has(object.spec.documentBackfillIndexAllowlist) ||

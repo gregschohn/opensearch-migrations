@@ -2611,7 +2611,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                       "allowExistingIndexes": {
                         "type": "boolean",
                         "default": true,
-                        "description": "When true (default), indexes that already exist on the target cluster are reported as a non-fatal warning instead of a fatal error. This makes metadata migration idempotent so it can be safely re-run alongside document backfill within the same SnapshotMigration resource. Set to false to fail the migration if any target index already exists."
+                        "description": "When true (default), indexes that already exist on the target cluster are reported as a non-fatal warning instead of a fatal error. This makes metadata migration idempotent so it can be safely re-run alongside document backfill within the same SnapshotMigration resource. Set to false to fail the migration if any target index already exists.",
+                        "changeRestriction": "gated"
                       }
                     },
                     "description": "Configuration for migrating index metadata (mappings, settings, templates) from the snapshot to the target. Omit to skip metadata migration."

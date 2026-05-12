@@ -634,7 +634,8 @@ export const USER_METADATA_PROCESS_OPTIONS = z.object({
         .describe("When true (default), indexes that already exist on the target cluster are reported as a non-fatal " +
             "warning instead of a fatal error. This makes metadata migration idempotent so it can be safely re-run " +
             "alongside document backfill within the same SnapshotMigration resource. Set to false to fail the migration " +
-            "if any target index already exists."),
+            "if any target index already exists.")
+        .changeRestriction('gated'),
 }).describe("Process-level options for the metadata migration command, controlling which metadata is migrated and how it is transformed.");
 
 export const USER_METADATA_WORKFLOW_OPTION_KEYS = getZodKeys(USER_METADATA_WORKFLOW_OPTIONS);
