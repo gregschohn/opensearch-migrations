@@ -179,7 +179,8 @@ public class Items implements JsonOutput {
               .append("--index-allowlist <index1,index2,...>")
               .append(System.lineSeparator())
               .append(Format.indentToLevel(3))
-              .append("  3. Re-run with --allow-existing-indexes to treat existing indexes as non-fatal warnings.");
+              .append("  3. If existing target indexes are expected (e.g. resuming a previous run), ")
+              .append("re-run with --allow-existing-indexes true to treat existing indexes as non-fatal warnings.");
         }
 
         return sb.toString();
