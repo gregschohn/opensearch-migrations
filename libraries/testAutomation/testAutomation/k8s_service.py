@@ -241,7 +241,10 @@ class K8sService:
         self.run_command(command=command_list, ignore_errors=True)
 
     def delete_all_pvcs(self) -> None:
-        """Deletes all PersistentVolumeClaims (PVCs) in the namespace."""
+        """Delete all PersistentVolumeClaims in the namespace, waiting up to 300s
+        for terminations. 300s covers BYOS 'large' (24 RFS worker PVCs) and
+        multi-broker Kafka on CDC pipelines.
+        """
         logger.info(f"Removing all PVCs in '{self.namespace}' namespace")
         pvcs = self.k8s_client.list_namespaced_persistent_volume_claim(self.namespace).items
 
@@ -253,7 +256,7 @@ class K8sService:
             logger.debug(f"Deleted PVC: {pvc.metadata.name}")
 
         # Wait for PVCs to finish terminating
-        timeout_seconds = 120
+        timeout_seconds = 300
         poll_interval = 5  # check every 5 seconds
         start_time = time.time()
 
@@ -325,19 +328,24 @@ class K8sService:
             time.sleep(2)
         logger.warning(f"Timeout waiting for pods to terminate in {self.namespace}")
 
-    def wait_for_namespace_deleted(self, namespace: str, timeout_seconds: int = 120) -> None:
-        """Poll until namespace is fully deleted, raise TimeoutError if not."""
+    def wait_for_namespace_deleted(self, namespace: str, timeout_seconds: int = 120) -> bool:
+        """Poll until a namespace is fully deleted.
+
+        Returns True if gone before the deadline, False if the poll timed out.
+        Callers decide whether a timeout is fatal.
+        """
         deadline = time.time() + timeout_seconds
         while time.time() < deadline:
             result = self.run_command(
                 self._kubectl_base() + ["get", "namespace", namespace, "-o", "name"],
-                ignore_errors=True
+                ignore_errors=True,
             )
             if not result or not result.stdout.strip():
                 logger.info(f"Namespace '{namespace}' deleted successfully")
-                return
+                return True
             time.sleep(3)
-        raise TimeoutError(f"Namespace '{namespace}' still exists after {timeout_seconds}s")
+        logger.warning(f"Namespace '{namespace}' still exists after {timeout_seconds}s")
+        return False
 
     def delete_namespace(self) -> None:
         logger.info(f"Deleting namespace '{self.namespace}'")
@@ -477,26 +485,21 @@ class K8sService:
             return True
 
         logger.info(f"Uninstalling {release_name}...")
-        return self.run_command(self._helm_base() + ["uninstall", release_name, "-n", self.namespace])
+        # 10m: helm default (5m) is tight for large deployments' pre-delete hooks.
+        return self.run_command(self._helm_base() + [
+            "uninstall", release_name, "-n", self.namespace, "--timeout", "10m0s"
+        ])
 
     def cleanup_ack_dashboard_crs(self) -> None:
-        """Delete Dashboard CRs and wait for ACK controller to process them before helm uninstall."""
+        """Test-only: delete ACK Dashboard CRs before helm uninstall.
+        Customer escape hatch for a stuck 'ma' namespace:
+            kubectl delete dashboards.cloudwatch.services.k8s.aws --all -n ma
+        """
         self.run_command(
             self._kubectl_base() + ["delete", "dashboards.cloudwatch.services.k8s.aws",
                                     "--all", "-n", self.namespace, "--timeout=60s"],
             ignore_errors=True
         )
-
-    def cleanup_strimzi_crs(self) -> None:
-        """Delete Strimzi CRs while the operator is still running to process finalizers."""
-        for cr_type in ["kafkatopics.kafka.strimzi.io",
-                        "kafkanodepools.kafka.strimzi.io",
-                        "kafkas.kafka.strimzi.io"]:
-            self.run_command(
-                self._kubectl_base() + ["delete", cr_type, "--all",
-                                        "-n", self.namespace, "--timeout=60s"],
-                ignore_errors=True
-            )
 
     def get_helm_installations(self) -> List[str]:
         target_namespace = self.namespace

@@ -2,6 +2,8 @@ import subprocess
 import os
 import logging
 import sys
+import threading
+import time
 from typing import Any, Dict, List, Optional
 
 from console_link.models.command_result import CommandResult
@@ -12,8 +14,22 @@ FlagOnlyArgument = None
 
 
 class CommandRunner:
+    """Run an external command with optional bounded wall-clock / idle timeouts.
+
+    Timeout semantics (only applied when timeout= is set):
+      synchronous mode → wall-clock timeout via subprocess.run(timeout=...)
+      streaming mode   → idle timeout via threading.Timer that is re-armed on
+                         every line of output, so a command that is actively
+                         producing progress (helm install --wait, etc.) is not
+                         killed while it's making progress.
+
+    Default is opt-in: timeout=None preserves the previous unbounded-wait
+    behaviour. Callers that are reachable from tests (see argo_service) set
+    an explicit timeout= to bound hangs.
+    """
     def __init__(self, command_root: str, command_args: Dict[str, Any], sensitive_fields: Optional[List[str]] = None,
-                 run_as_detatched: bool = False, log_file: Optional[str] = None):
+                 run_as_detatched: bool = False, log_file: Optional[str] = None,
+                 timeout: Optional[float] = None):
         self.command_args = command_args
         self.command = [command_root]
         for key, value in command_args.items():
@@ -26,6 +42,8 @@ class CommandRunner:
         self.sensitive_fields = sensitive_fields
         self.run_as_detached = run_as_detatched
         self.log_file = log_file
+        # None disables the per-call timeout; any positive number is the budget.
+        self.timeout = timeout
 
     def run(self, print_to_console=True, print_on_error=False, stream_output=False) -> CommandResult:
         if self.run_as_detached:
@@ -67,19 +85,34 @@ class CommandRunner:
                 logger.debug(log_message_err)
 
     def _run_as_synchronous_process(self, print_to_console: bool, print_on_error: bool) -> CommandResult:
+        run_kwargs = dict(stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+        if self.timeout is not None:
+            run_kwargs["timeout"] = self.timeout
         try:
-            cmd_output = subprocess.run(self.command,
-                                        stdout=subprocess.PIPE,
-                                        stderr=subprocess.PIPE,
-                                        text=True,
-                                        check=True)
+            cmd_output = subprocess.run(self.command, **run_kwargs)
             self.print_output_if_enabled(holder=cmd_output, should_print=print_to_console, is_error=False)
             return CommandResult(success=True, value="Command executed successfully", output=cmd_output)
+        except subprocess.TimeoutExpired as e:
+            # subprocess.run already sent SIGKILL and reaped the child before raising.
+            # stdout / stderr may be None if the child produced no output before
+            # being killed; log what we have and preserve the command for triage.
+            captured_stdout = e.stdout.decode() if isinstance(e.stdout, bytes) else e.stdout
+            captured_stderr = e.stderr.decode() if isinstance(e.stderr, bytes) else e.stderr
+            logger.error(
+                f"Command timed out after {self.timeout}s: {' '.join(self.sanitized_command())}\n"
+                f"  captured stdout: {captured_stdout if captured_stdout else '(none)'}\n"
+                f"  captured stderr: {captured_stderr if captured_stderr else '(none)'}"
+            )
+            raise CommandRunnerError(-1, self.sanitized_command(), captured_stdout, captured_stderr) from e
         except subprocess.CalledProcessError as e:
             self.print_output_if_enabled(holder=e, should_print=print_on_error, is_error=True)
             raise CommandRunnerError(e.returncode, self.sanitized_command(), e.stdout, e.stderr)
 
     def _run_as_streaming_process(self, print_to_console: bool = True) -> CommandResult:
+        process: Optional[subprocess.Popen] = None
+        idle_timer_holder: List[Optional[threading.Timer]] = [None]
+        timed_out = {"value": False}
+        start_time = time.monotonic()
         try:
             # Start process with pipes for real-time output
             process = subprocess.Popen(
@@ -91,10 +124,37 @@ class CommandRunner:
                 universal_newlines=True
             )
 
+            # Idle-timeout semantics: arm a Timer that SIGKILLs the child if
+            # it produces no output for self.timeout seconds. Re-arm on every
+            # line received, so a command that is making visible progress
+            # (helm install --wait, buildx build, etc.) is never killed.
+            def _kill_on_idle_timeout(proc: subprocess.Popen) -> None:
+                timed_out["value"] = True
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    # Child already exited between readline() returning EOF
+                    # and this handler firing.  Nothing to kill.
+                    pass
+
+            def _arm_idle_timer() -> None:
+                if self.timeout is None:
+                    return
+                existing = idle_timer_holder[0]
+                if existing is not None:
+                    existing.cancel()
+                timer = threading.Timer(self.timeout, _kill_on_idle_timeout, args=(process,))
+                timer.daemon = True
+                idle_timer_holder[0] = timer
+                timer.start()
+
+            _arm_idle_timer()
+
             # Read output line by line as it comes
             if process.stdout:
                 for line in iter(process.stdout.readline, ''):
                     if line:
+                        _arm_idle_timer()  # progress observed — reset the idle clock
                         if print_to_console:
                             sys.stdout.write(line)
                             sys.stdout.flush()
@@ -103,14 +163,26 @@ class CommandRunner:
             # Wait for process to complete
             return_code = process.wait()
 
+            if timed_out["value"]:
+                elapsed = time.monotonic() - start_time
+                logger.error(
+                    f"Command idle-timed-out after {self.timeout}s of no output "
+                    f"(ran for {elapsed:.1f}s): {' '.join(self.sanitized_command())}"
+                )
+                raise CommandRunnerError(-1, self.sanitized_command(), None,
+                                         f"idle-timed-out after {self.timeout}s of silence")
             if return_code == 0:
                 return CommandResult(success=True, value="Command executed successfully")
-            else:
-                raise CommandRunnerError(return_code, self.sanitized_command())
+            raise CommandRunnerError(return_code, self.sanitized_command())
 
+        except CommandRunnerError:
+            raise
         except Exception as e:
             logger.error(f"Streaming command failed: {e}")
             raise CommandRunnerError(-1, self.sanitized_command(), None, str(e))
+        finally:
+            if idle_timer_holder[0] is not None:
+                idle_timer_holder[0].cancel()
 
     def _run_as_detached_process(self, log_file: str) -> CommandResult:
         try:

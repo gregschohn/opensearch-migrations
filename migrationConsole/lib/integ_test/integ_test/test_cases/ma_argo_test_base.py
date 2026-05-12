@@ -268,14 +268,71 @@ class MATestBase:
     def verify_clusters(self):
         pass
 
+    def _is_capture_and_replay_test(self) -> bool:
+        """True if this test exercises the capture-and-replay (CDC) pipeline.
+
+        CDC workflows on the imported-clusters path have no terminating suspend
+        and run indefinitely (capture + replay have no built-in stopping
+        condition). Lifecycle hooks use this flag to drive the workflow to a
+        terminal phase themselves instead of relying on cluster-inline
+        suspend points.
+        """
+        return MigrationType.CAPTURE_AND_REPLAY in self.migrations_required
+
     def workflow_finish(self):
         if not self.workflow_name:
             raise ValueError("Workflow name is not available, workflow may not have been started")
+        # Three distinct paths, with different requirements to reach a terminal phase:
+        #
+        # 1. k8s-local (imported_clusters=False): the workflow is waiting at its
+        #    second suspend (pause-for-migration-verification). Resume it so it
+        #    finalizes, then wait for the ending phase.
+        # 2. CDC imported-clusters (imported_clusters=True AND migrations_required
+        #    includes CAPTURE_AND_REPLAY): the cdc-*-imported-clusters templates
+        #    have no terminating suspend, so the workflow will never reach a
+        #    terminal phase on its own. Stop it explicitly and wait.
+        # 3. Non-CDC imported-clusters (full-migration-imported-clusters, ...):
+        #    workflow_perform_migrations already waited for the ending phase, so
+        #    the workflow is already terminal by the time we get here.
         if not self.imported_clusters:
             self.argo_service.resume_workflow(workflow_name=self.workflow_name)
             self.argo_service.wait_for_ending_phase(workflow_name=self.workflow_name)
+        elif self._is_capture_and_replay_test():
+            logger.info(
+                "CDC imported-clusters test: stopping workflow '%s' "
+                "(template has no terminating suspend)",
+                self.workflow_name,
+            )
+            try:
+                self.argo_service.stop_workflow(workflow_name=self.workflow_name)
+            except Exception as e:
+                # stop_workflow is best-effort — a workflow that has already
+                # terminated (e.g. raced the test to failure) will reject the
+                # stop, which is fine for our purposes.
+                logger.warning(
+                    "stop_workflow('%s') failed; proceeding to wait anyway: %s",
+                    self.workflow_name, e,
+                )
+            self.argo_service.wait_for_ending_phase(
+                workflow_name=self.workflow_name, timeout_seconds=300
+            )
 
     def test_after(self):
         status_result = self.argo_service.get_workflow_status(workflow_name=self.workflow_name)
         phase = status_result.value.get("phase", "")
-        assert phase == "Succeeded"
+        # CDC imported-clusters tests drive their workflow to a terminal phase
+        # by explicitly stopping it in workflow_finish(). Argo lands a stopped
+        # workflow in phase=Failed with message "Stopped with strategy 'Stop'",
+        # which is the expected success state for these tests — verify_clusters
+        # already asserted the functional migration outcome.
+        if self.imported_clusters and self._is_capture_and_replay_test():
+            message = status_result.value.get("message", "") or ""
+            assert phase in ("Succeeded", "Failed"), (
+                f"Expected CDC workflow in a terminal phase, was '{phase}'"
+            )
+            if phase == "Failed":
+                assert "Stopped" in message, (
+                    f"CDC workflow ended Failed with non-stop message: {message!r}"
+                )
+        else:
+            assert phase == "Succeeded", f"Expected workflow phase 'Succeeded', got '{phase}'"

@@ -162,10 +162,15 @@ class ArgoService:
 
     def get_workflow_status(self, workflow_name: str) -> CommandResult:
         workflow_data = self._get_workflow_status_json(workflow_name)
-        phase = workflow_data.get("status", {}).get("phase", "")
+        status = workflow_data.get("status", {}) or {}
+        phase = status.get("phase", "")
+        # `message` is populated by Argo on termination (e.g. "Stopped with strategy 'Stop'"
+        # when stop_workflow is called). Tests need it to distinguish a workflow stopped
+        # deliberately by the test framework from one that failed on its own.
+        message = status.get("message", "") or ""
 
         # Check for suspended nodes
-        nodes = workflow_data.get("status", {}).get("nodes", {})
+        nodes = status.get("nodes", {}) or {}
         has_suspended_nodes = False
         for node_id, node in nodes.items():
             if node.get("phase") == "Running":
@@ -174,6 +179,7 @@ class ArgoService:
 
         status_info = {
             "phase": phase,
+            "message": message,
             "has_suspended_nodes": has_suspended_nodes
         }
 
@@ -321,7 +327,12 @@ class ArgoService:
         }
         command_args.update(argo_args)
 
-        runner = CommandRunner("kubectl", command_args)
+        # These ephemeral `kubectl run --rm -i` invocations are the primary
+        # surface for argo CLI calls from the test framework (resume_workflow,
+        # stop_workflow, get_workflow_status, ...). A stuck pod on the worker
+        # side used to hang pytest indefinitely; bound it so any such hang
+        # surfaces as a CommandRunnerError within 2 minutes.
+        runner = CommandRunner("kubectl", command_args, timeout=120.0)
         try:
             return runner.run(print_to_console=print_output, stream_output=stream_output)
         except CommandRunnerError as e:
@@ -329,7 +340,10 @@ class ArgoService:
             raise
 
     def _run_kubectl_command(self, kubectl_args: Dict[str, Any], print_output: bool = False) -> CommandResult:
-        runner = CommandRunner("kubectl", kubectl_args)
+        # Short kubectl queries (get/describe/patch status) from the test
+        # framework — keep a tight 2-minute budget to fail fast on api-server
+        # stalls rather than hang the test.
+        runner = CommandRunner("kubectl", kubectl_args, timeout=120.0)
         try:
             return runner.run(print_to_console=print_output)
         except CommandRunnerError as e:
