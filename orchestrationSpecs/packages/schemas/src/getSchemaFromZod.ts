@@ -25,6 +25,27 @@ function injectMetaExtensions(jsonSchema: any, zodSchema: z.ZodType): void {
     }
 }
 
+function makeBareNullableSchemasAjvCompatible(jsonSchema: any): void {
+    if (Array.isArray(jsonSchema)) {
+        jsonSchema.forEach(makeBareNullableSchemasAjvCompatible);
+        return;
+    }
+    if (!jsonSchema || typeof jsonSchema !== "object") {
+        return;
+    }
+
+    if (jsonSchema.nullable === true && jsonSchema.type === undefined
+        && jsonSchema.$ref === undefined
+        && jsonSchema.oneOf === undefined
+        && jsonSchema.anyOf === undefined
+        && jsonSchema.allOf === undefined) {
+        jsonSchema.type = ["string", "number", "boolean", "object", "array", "null"];
+        delete jsonSchema.nullable;
+    }
+
+    Object.values(jsonSchema).forEach(makeBareNullableSchemasAjvCompatible);
+}
+
 /**
  * Convert a Zod schema (ZodObject or ZodArray) to a JSON Schema object
  * @param schema - The Zod schema to convert
@@ -49,5 +70,6 @@ export function zodSchemaToJsonSchema(
 
     const result = components.components?.schemas?.[schemaName];
     injectMetaExtensions(result, schema);
+    makeBareNullableSchemasAjvCompatible(result);
     return result;
 }

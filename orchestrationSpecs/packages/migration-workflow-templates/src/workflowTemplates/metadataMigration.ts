@@ -12,7 +12,7 @@ import {
     BaseExpression, configMapKey,
     defineRequiredParam,
     expr, FunctionExpression, InputParameterSource, InputParametersRecord, InputParamsToExpressions,
-    INTERNAL, PlainObject,
+    INTERNAL, makeDirectTypeProxy, PlainObject,
     selectInputsForRegister,
     Serialized,
     typeToken,
@@ -29,6 +29,7 @@ import {
     getSourceTargetPathAndSnapshotAndMigrationIndex
 } from "./commonUtils/configContextPathConstructors";
 import {ResourceManagement} from "./resourceManagement";
+import {makeTransformsVolume, TRANSFORMS_MOUNT_PATH} from "./commonUtils/containerFragments";
 
 const METADATA_OUTPUT_PATH = "/tmp/outputs/metadata-output.log";
 
@@ -212,6 +213,14 @@ export const MetadataMigration = WorkflowBuilder.create({
                         optional: true
                     },
                     mountPath: "/config/credentials",
+                    readOnly: true
+                },
+                'user-transforms': {
+                    volume: makeDirectTypeProxy(makeTransformsVolume(
+                        expr.dig(expr.deserializeRecord(b.inputs.metadataMigrationConfig), ["transformsImage"], ""),
+                        expr.dig(expr.deserializeRecord(b.inputs.metadataMigrationConfig), ["transformsConfigMap"], "")
+                    )),
+                    mountPath: TRANSFORMS_MOUNT_PATH,
                     readOnly: true
                 }
             })

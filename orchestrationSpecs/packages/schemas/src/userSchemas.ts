@@ -157,6 +157,89 @@ export const OPTIONAL_HTTP_ENDPOINT_PATTERN = `^(?:https?:\\/\\/${HOSTNAME_PATTE
 export const GENERIC_JSON_OBJECT = z.record(z.string(), z.any());
 export const K8S_NAMING_PATTERN = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/;
 
+export const TRANSFORMS_IMAGE_SOURCE = z.object({
+    image: z.string()
+        .describe("OCI image reference (preferably with digest) whose root contains transform files. " +
+            "The workflow mounts the image at /transforms/. Build with deployment/k8s/package-transforms.sh.")
+});
+
+export const TRANSFORMS_CONFIGMAP_SOURCE = z.object({
+    configMap: z.string()
+        .describe("Name of a pre-existing Kubernetes ConfigMap. Each key becomes a file in /transforms/.")
+});
+
+export const TRANSFORMS_SOURCE = z.union([
+    TRANSFORMS_IMAGE_SOURCE,
+    TRANSFORMS_CONFIGMAP_SOURCE
+]).describe("Source for user-defined transform files. Exactly one of 'image' or 'configMap'.");
+
+export const TRANSFORMS_SOURCES_MAP = z.record(
+    z.string().regex(K8S_NAMING_PATTERN),
+    TRANSFORMS_SOURCE
+).describe("Map of transform source names to their definitions.");
+
+export const TRANSFORM_LANGUAGE = z.enum(["javascript", "python"]);
+
+export const TRANSFORM_RELATIVE_FILE = z.string()
+    .regex(/^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$)).+$/)
+    .describe("Script path relative to /transforms, e.g. 'request.js' or 'lib/request.py'.");
+
+export const TRANSFORM_SPEC = z.object({
+    language: TRANSFORM_LANGUAGE
+        .describe("Runtime for this transform script."),
+    file: TRANSFORM_RELATIVE_FILE.optional()
+        .describe("Script path relative to /transforms. Defaults by transform kind and language."),
+    bindingsObject: GENERIC_JSON_OBJECT.default({}).optional()
+        .describe("Optional JSON object passed to the transform at initialization.")
+});
+
+export const TRANSFORM_PIPELINE = z.preprocess(
+    v => v === undefined || Array.isArray(v) ? v : [v],
+    z.array(TRANSFORM_SPEC)
+).describe("Ordered transform pipeline. Each item is run in sequence.");
+
+function hasTransformPipelineEntries(value: unknown): boolean {
+    return Array.isArray(value) && value.length > 0;
+}
+
+function hasConfiguredString(value: unknown): boolean {
+    return typeof value === "string" && value.trim().length > 0;
+}
+
+function validatePipelineRawConfigConflict(
+    ctx: z.RefinementCtx,
+    data: Record<string, unknown>,
+    pipelineKey: string,
+    rawConfigKeys: string[]
+) {
+    if (!hasTransformPipelineEntries(data[pipelineKey])) {
+        return;
+    }
+    const conflictingKey = rawConfigKeys.find(key => hasConfiguredString(data[key]));
+    if (conflictingKey !== undefined) {
+        ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `Cannot configure both '${pipelineKey}' and '${conflictingKey}'. Use either the transform pipeline or the raw transformer config source.`,
+            path: [pipelineKey]
+        });
+    }
+}
+
+function validateTransformsSourceForPipelines(
+    ctx: z.RefinementCtx,
+    data: Record<string, unknown>,
+    pipelineKeys: string[]
+) {
+    const hasPipeline = pipelineKeys.some(key => hasTransformPipelineEntries(data[key]));
+    if (hasPipeline && !hasConfiguredString(data.transformsSource)) {
+        ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "'transformsSource' is required when transform pipelines are configured.",
+            path: ["transformsSource"]
+        });
+    }
+}
+
 const OTEL_COLLECTOR_ENDPOINT = z.string().default("http://otel-collector:4317").optional()
     .describe("URL for the OpenTelemetry Collector endpoint used for metrics and traces (e.g. 'http://otel-collector:4317').");
 
@@ -461,6 +544,9 @@ export const USER_REPLAYER_WORKFLOW_OPTIONS = z.object({
 }).describe("Kubernetes deployment-level options for the traffic replayer.");
 
 export const USER_REPLAYER_PROCESS_OPTIONS = z.object({
+    transformsSource: z.string().optional()
+        .describe("Key into top-level transformsSources. Mounts /transforms/ into the replayer pod.")
+        .changeRestriction('impossible'),
     kafkaTrafficEnableMSKAuth: z.boolean().default(false).optional()
         .describe("Enable SASL/IAM authentication for the replayer's Kafka consumer when connecting to Amazon MSK. Uses the pod's IAM role via EKS Pod Identity.")
         .changeRestriction('impossible'),
@@ -503,6 +589,9 @@ export const USER_REPLAYER_PROCESS_OPTIONS = z.object({
     transformerConfigFile: z.string().optional()
         .describe("Path to a JSON file containing request transformer configuration." + REQUEST_TRANSFORMER_SUFFIX + EXPERT_FILE_SUFFIX)
         .changeRestriction('gated'),
+    requestTransforms: TRANSFORM_PIPELINE.optional()
+        .describe("Request transform pipeline. Generates the existing transformerConfig inline JSON option.")
+        .changeRestriction('gated'),
     tupleTransformerConfig: z.string().optional()
         .describe("Inline tuple transformer configuration as a JSON string." + TUPLE_TRANSFORMER_SUFFIX)
         .changeRestriction('gated'),
@@ -511,6 +600,9 @@ export const USER_REPLAYER_PROCESS_OPTIONS = z.object({
         .changeRestriction('gated'),
     tupleTransformerConfigFile: z.string().optional()
         .describe("Path to a JSON file containing tuple transformer configuration." + TUPLE_TRANSFORMER_SUFFIX + EXPERT_FILE_SUFFIX)
+        .changeRestriction('gated'),
+    tupleTransforms: TRANSFORM_PIPELINE.optional()
+        .describe("Tuple transform pipeline. Generates the existing tupleTransformerConfig inline JSON option.")
         .changeRestriction('gated'),
     tupleMaxBufferSeconds: z.number().default(60).optional()
         .describe("Maximum seconds before rotating/uploading a tuple file to S3.")
@@ -529,6 +621,18 @@ export const USER_REPLAYER_OPTIONS = z.object({
     ...USER_REPLAYER_WORKFLOW_OPTIONS.shape,
     ...USER_REPLAYER_PROCESS_OPTIONS.shape,
 }).superRefine((data, ctx) => {
+    validateTransformsSourceForPipelines(ctx, data, ["requestTransforms", "tupleTransforms"]);
+    validatePipelineRawConfigConflict(ctx, data, "requestTransforms", [
+        "transformerConfig",
+        "transformerConfigEncoded",
+        "transformerConfigFile"
+    ]);
+    validatePipelineRawConfigConflict(ctx, data, "tupleTransforms", [
+        "tupleTransformerConfig",
+        "tupleTransformerConfigBase64",
+        "tupleTransformerConfigFile"
+    ]);
+
     if (data.lookaheadTimeSeconds !== undefined && data.observedPacketConnectionTimeout !== undefined
         && data.lookaheadTimeSeconds <= data.observedPacketConnectionTimeout) {
         ctx.addIssue({
@@ -589,6 +693,10 @@ export const USER_METADATA_WORKFLOW_OPTIONS = z.object({
 }).describe("Workflow-level options for metadata migration, controlling JVM settings and approval gates.");
 
 export const USER_METADATA_PROCESS_OPTIONS = z.object({
+    transformsSource: z.string().optional()
+        .describe("Key into top-level transformsSources. Mounts /transforms/ into the metadata migration pod.")
+        .checksumFor('snapshot', 'replayer')
+        .changeRestriction('impossible'),
     componentTemplateAllowlist: z.array(z.string()).default([]).optional()
         .describe("List of component template names to include in the metadata migration. " +
             "Each entry is either an exact name or a regex pattern prefixed with 'regex:'. " +
@@ -622,6 +730,10 @@ export const USER_METADATA_PROCESS_OPTIONS = z.object({
         .describe("Inline JSON transformer configuration. Keys are transformer names and values are their configuration." + METADATA_TRANSFORMER_SUFFIX),
     transformerConfigFile: z.string().optional()
         .describe("Path to a JSON file containing transformer configuration." + METADATA_TRANSFORMER_SUFFIX + EXPERT_FILE_SUFFIX),
+    metadataTransforms: TRANSFORM_PIPELINE.optional()
+        .describe("Metadata transform pipeline. Generates the existing transformerConfig inline JSON option.")
+        .checksumFor('snapshot', 'replayer')
+        .changeRestriction('impossible'),
     enableSourcelessMigrations: z.boolean().default(false).optional()
         .describe("Enable migration of indices that have _source disabled or partially filtered (includes/excludes). " +
             "When enabled, document backfill will reconstruct documents from stored fields and doc_values. " +
@@ -638,6 +750,13 @@ export const USER_METADATA_PROCESS_OPTION_KEYS = getZodKeys(USER_METADATA_PROCES
 export const USER_METADATA_OPTIONS = z.object({
     ...USER_METADATA_WORKFLOW_OPTIONS.shape,
     ...USER_METADATA_PROCESS_OPTIONS.shape,
+}).superRefine((data, ctx) => {
+    validateTransformsSourceForPipelines(ctx, data, ["metadataTransforms"]);
+    validatePipelineRawConfigConflict(ctx, data, "metadataTransforms", [
+        "transformerConfig",
+        "transformerConfigBase64",
+        "transformerConfigFile"
+    ]);
 });
 
 export const USER_RFS_WORKFLOW_OPTIONS = z.object({
@@ -671,6 +790,10 @@ export const USER_RFS_WORKFLOW_OPTIONS = z.object({
 }).describe("Kubernetes deployment-level options for the Reindex From Snapshot (RFS) document backfill.");
 
 export const USER_RFS_PROCESS_OPTIONS = z.object({
+    transformsSource: z.string().optional()
+        .describe("Key into top-level transformsSources. Mounts /transforms/ into the RFS pod.")
+        .checksumFor('replayer')
+        .changeRestriction('impossible'),
     indexAllowlist: z.array(z.string()).default([]).optional()
         .describe("Filters which indices are migrated by the document backfill (RFS) — evaluated client-side on the snapshot contents after the snapshot has been taken. " +
             "Each entry is either an exact index name or a regex pattern prefixed with 'regex:' (e.g. 'regex:logs-.*'). " +
@@ -693,6 +816,10 @@ export const USER_RFS_PROCESS_OPTIONS = z.object({
         .changeRestriction('impossible'),
     docTransformerConfigFile: z.string().optional()
         .describe("Path to a JSON file containing transformer configuration." + DOC_TRANSFORMER_SUFFIX + EXPERT_FILE_SUFFIX)
+        .checksumFor('replayer')
+        .changeRestriction('impossible'),
+    documentTransforms: TRANSFORM_PIPELINE.optional()
+        .describe("Document transform pipeline. Generates the existing docTransformerConfig inline JSON option.")
         .checksumFor('replayer')
         .changeRestriction('impossible'),
     documentsPerBulkRequest: z.number().default(0x7fffffff).optional()
@@ -753,6 +880,14 @@ export const USER_RFS_OPTIONS = z.object({
     ...USER_RFS_WORKFLOW_OPTIONS.shape,
     ...USER_RFS_PROCESS_OPTIONS.shape,
 })
+    .superRefine((data, ctx) => {
+        validateTransformsSourceForPipelines(ctx, data, ["documentTransforms"]);
+        validatePipelineRawConfigConflict(ctx, data, "documentTransforms", [
+            "docTransformerConfig",
+            "docTransformerConfigBase64",
+            "docTransformerConfigFile"
+        ]);
+    })
     .transform((data) => {
         const requestEphemeral = data.resources?.requests?.["ephemeral-storage"];
         const userRequestEphemeralStorageBytes = requestEphemeral
@@ -1088,6 +1223,8 @@ export const OVERALL_MIGRATION_CONFIG = //validateOptionalDefaultConsistency
         kafkaClusterConfiguration: KAFKA_CLUSTERS_MAP.default({}).optional()
             .describe("Kafka cluster configurations. If empty and traffic capture is configured, a default ephemeral Kafka cluster is auto-created for each referenced cluster label. " +
                 "Each entry defines a Kafka cluster (auto-created or external) referenced by proxies via 'kafka'."),
+        transformsSources: TRANSFORMS_SOURCES_MAP.default({}).optional()
+            .describe("Named transform sources. Define once, reference by key in transform-eligible tool options."),
         sourceClusters: SOURCE_CLUSTERS_MAP
             .describe("Source Elasticsearch or OpenSearch clusters to migrate from."),
         targetClusters: TARGET_CLUSTERS_MAP
@@ -1099,6 +1236,17 @@ export const OVERALL_MIGRATION_CONFIG = //validateOptionalDefaultConsistency
                 "All top-level items are independent, but replayers can declare dependencies on snapshot migrations to ensure data consistency.")
             .optional()
     }).describe("Top-level migration configuration defining source clusters, target clusters, snapshot migrations, and optional traffic capture/replay.").superRefine((data, ctx) => {
+        const transformSources = data.transformsSources ?? {};
+        const validateTransformSourceReference = (sourceName: string | undefined, path: (string | number)[]) => {
+            if (sourceName !== undefined && !(sourceName in transformSources)) {
+                ctx.addIssue({
+                    code: z.ZodIssueCode.custom,
+                    message: `Unknown transformsSource '${sourceName}'. Available: ${Object.keys(transformSources).join(', ') || '(none)'}`,
+                    path
+                });
+            }
+        };
+
         for (let i = 0; i < data.snapshotMigrationConfigs.length; i++) {
             const mc = data.snapshotMigrationConfigs[i];
 
@@ -1130,6 +1278,18 @@ export const OVERALL_MIGRATION_CONFIG = //validateOptionalDefaultConsistency
                         });
                     }
                 }
+                for (const [snapName, migrations] of Object.entries(mc.perSnapshotConfig)) {
+                    migrations.forEach((migration, migrationIndex) => {
+                        validateTransformSourceReference(
+                            migration.metadataMigrationConfig?.transformsSource,
+                            ['snapshotMigrationConfigs', i, 'perSnapshotConfig', snapName, migrationIndex, 'metadataMigrationConfig', 'transformsSource']
+                        );
+                        validateTransformSourceReference(
+                            migration.documentBackfillConfig?.transformsSource,
+                            ['snapshotMigrationConfigs', i, 'perSnapshotConfig', snapName, migrationIndex, 'documentBackfillConfig', 'transformsSource']
+                        );
+                    });
+                }
             }
         }
 
@@ -1154,6 +1314,11 @@ export const OVERALL_MIGRATION_CONFIG = //validateOptionalDefaultConsistency
             }
 
             for (const [replayerName, rc] of Object.entries(data.traffic.replayers)) {
+                validateTransformSourceReference(
+                    rc.replayerConfig?.transformsSource,
+                    ['traffic', 'replayers', replayerName, 'replayerConfig', 'transformsSource']
+                );
+
                 if (!(rc.toTarget in data.targetClusters)) {
                     ctx.addIssue({
                         code: z.ZodIssueCode.custom,

@@ -1,7 +1,6 @@
 import {z} from "zod";
 import {
     NAMED_TARGET_CLUSTER_CONFIG,
-    USER_REPLAYER_OPTIONS,
     ResourceRequirementsType, ARGO_REPLAYER_OPTIONS, ARGO_REPLAYER_WORKFLOW_OPTION_KEYS, KAFKA_CLIENT_CONFIG,
 } from "@opensearch-migrations/schemas";
 import {
@@ -14,7 +13,7 @@ import {
     WorkflowBuilder
 } from "@opensearch-migrations/argo-workflow-builders";
 import {OwnerReference} from "@opensearch-migrations/k8s-types";
-import {setupLog4jConfigForContainer} from "./commonUtils/containerFragments";
+import {setupLog4jConfigForContainer, setupTransformsForContainer} from "./commonUtils/containerFragments";
 import {CommonWorkflowParameters} from "./commonUtils/workflowParameters";
 import {getHttpAuthSecretName} from "./commonUtils/clusterSettingManipulators";
 import {getTargetHttpAuthCredsEnvVars} from "./commonUtils/basicCredsGetters";
@@ -71,7 +70,7 @@ function makeReplayerTargetParamDict(
 
 function makeReplayerParamsDict(
     targetConfig: BaseExpression<Serialized<z.infer<typeof NAMED_TARGET_CLUSTER_CONFIG>>>,
-    options: BaseExpression<Serialized<z.infer<typeof USER_REPLAYER_OPTIONS>>>,
+    options: BaseExpression<Serialized<z.infer<typeof ARGO_REPLAYER_OPTIONS>>>,
     kafkaConfig: BaseExpression<Serialized<z.infer<typeof KAFKA_CLIENT_CONFIG>>>,
     kafkaGroupId: BaseExpression<string>,
     resolvedKafkaConnection: BaseExpression<string>,
@@ -147,6 +146,8 @@ function getReplayerDeploymentManifest
     useCustomLogging: BaseExpression<boolean>,
     loggingConfigMap: BaseExpression<string>,
     jvmArgs: BaseExpression<string>,
+    transformsImage: BaseExpression<string>,
+    transformsConfigMap: BaseExpression<string>,
 
     basicAuthSecretName: BaseExpression<string>,
 
@@ -204,7 +205,8 @@ function getReplayerDeploymentManifest
         ]
     };
     const finalContainerDefinition =
-        setupLog4jConfigForContainer(args.useCustomLogging, args.loggingConfigMap,
+        setupTransformsForContainer(args.transformsImage, args.transformsConfigMap,
+            setupLog4jConfigForContainer(args.useCustomLogging, args.loggingConfigMap,
             {container: baseContainerDefinition, volumes: [
                 {
                     name: "kafka-auth-config",
@@ -222,7 +224,8 @@ function getReplayerDeploymentManifest
                     }
                 }
             ]},
-            args.jvmArgs);
+            args.jvmArgs)
+        );
     return {
         apiVersion: "apps/v1",
         kind: "Deployment",
@@ -287,6 +290,8 @@ export const Replayer = WorkflowBuilder.create({
       .addRequiredInput("podReplicas", typeToken<number>())
       .addRequiredInput("jvmArgs", typeToken<string>())
       .addRequiredInput("loggingConfigurationOverrideConfigMap", typeToken<string>())
+      .addRequiredInput("transformsImage", typeToken<string>())
+      .addRequiredInput("transformsConfigMap", typeToken<string>())
       .addRequiredInput("basicAuthSecretName", typeToken<string>())
       .addRequiredInput("sourceK8sLabel", typeToken<string>())
       .addRequiredInput("targetK8sLabel", typeToken<string>())
@@ -304,6 +309,8 @@ export const Replayer = WorkflowBuilder.create({
                     useCustomLogging: expr.not(expr.isEmpty(b.inputs.loggingConfigurationOverrideConfigMap)),
                     loggingConfigMap: b.inputs.loggingConfigurationOverrideConfigMap,
                     jvmArgs: b.inputs.jvmArgs,
+                    transformsImage: b.inputs.transformsImage,
+                    transformsConfigMap: b.inputs.transformsConfigMap,
                     basicAuthSecretName: b.inputs.basicAuthSecretName,
                     name: b.inputs.name,
                     replayerImageName: b.inputs.imageTrafficReplayerLocation,
@@ -407,6 +414,16 @@ export const Replayer = WorkflowBuilder.create({
               loggingConfigurationOverrideConfigMap: expr.dig(
                 expr.deserializeRecord(b.inputs.replayerOptions),
                 ["loggingConfigurationOverrideConfigMap"],
+                "",
+              ),
+              transformsImage: expr.dig(
+                expr.deserializeRecord(b.inputs.replayerOptions),
+                ["transformsImage"],
+                "",
+              ),
+              transformsConfigMap: expr.dig(
+                expr.deserializeRecord(b.inputs.replayerOptions),
+                ["transformsConfigMap"],
                 "",
               ),
               basicAuthSecretName: getHttpAuthSecretName(b.inputs.targetConfig),
