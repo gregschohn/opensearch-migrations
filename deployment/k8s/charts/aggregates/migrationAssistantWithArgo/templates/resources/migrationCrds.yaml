@@ -272,6 +272,8 @@ spec:
                   type: boolean
                 metadataMigrationUseRecoverySource:
                   type: boolean
+                metadataMigrationAllowExistingIndexes:
+                  type: boolean
                 metadataMigrationMultiTypeBehavior:
                   type: string
                 metadataMigrationOtelCollectorEndpoint:

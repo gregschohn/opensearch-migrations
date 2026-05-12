@@ -630,6 +630,11 @@ export const USER_METADATA_PROCESS_OPTIONS = z.object({
         .describe("When enabled, treat the _recovery_source stored field (present in ES 7+ / OpenSearch snapshots " +
             "with soft-deletes) as _source. This field is transient and may not be present for all documents, " +
             "so results can be inconsistent. Use only when reconstruction from doc_values and stored fields is insufficient."),
+    allowExistingIndexes: z.boolean().default(true).optional()
+        .describe("When true (default), indexes that already exist on the target cluster are reported as a non-fatal " +
+            "warning instead of a fatal error. This makes metadata migration idempotent so it can be safely re-run " +
+            "alongside document backfill within the same SnapshotMigration resource. Set to false to fail the migration " +
+            "if any target index already exists."),
 }).describe("Process-level options for the metadata migration command, controlling which metadata is migrated and how it is transformed.");
 
 export const USER_METADATA_WORKFLOW_OPTION_KEYS = getZodKeys(USER_METADATA_WORKFLOW_OPTIONS);
