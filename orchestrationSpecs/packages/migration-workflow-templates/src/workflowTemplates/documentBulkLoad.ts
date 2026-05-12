@@ -351,7 +351,7 @@ export const DocumentBulkLoad = WorkflowBuilder.create({
 
         .addResourceTask(b => b
             .setDefinition({
-                action: "create",
+                action: "apply",
                 setOwnerReference: false,
                 manifest: getRfsDeploymentManifest({
                     podReplicas: expr.deserializeRecord(b.inputs.podReplicas),

@@ -383,6 +383,7 @@ kubectl delete approvalgates.migrations.opensearch.org \\
         .addRequiredInput("resourceUid", typeToken<string>())
         .addRequiredInput("resourceCreationTimestamp", typeToken<string>())
         .addRequiredInput("configChecksum", typeToken<string>())
+        .addRequiredInput("workloadIdentityChecksum", typeToken<string>())
         .addRequiredInput("groupName_view", typeToken<string>())
         .addOptionalInput("sourceEndpoint", c => expr.literal(""))
         .addOptionalInput("metadataMigrationConfig", c =>
@@ -394,7 +395,6 @@ kubectl delete approvalgates.migrations.opensearch.org \\
         .addInputsFromRecord(ImageParameters)
 
         .addSteps(b => b
-            .addStep("idGenerator", INTERNAL, "doNothing")
             .addStep("metadataMigrate", MetadataMigration, "migrateMetaData", c => {
                     return c.register({
                         ...selectInputsForRegister(b, c),
@@ -408,7 +408,7 @@ kubectl delete approvalgates.migrations.opensearch.org \\
             .addStep("bulkLoadDocuments", DocumentBulkLoad, "setupAndRunBulkLoad", c =>
                     c.register({
                         ...(selectInputsForRegister(b, c)),
-                        sessionName: c.steps.idGenerator.id,
+                        sessionName: expr.concat(expr.literal("rfs-"), b.inputs.workloadIdentityChecksum),
                         sourceVersion: b.inputs.sourceVersion,
                         sourceLabel: b.inputs.sourceLabel,
                         crdName: b.inputs.crdName,
@@ -522,6 +522,7 @@ kubectl delete approvalgates.migrations.opensearch.org \\
                         resourceUid: b.inputs.resourceUid,
                         resourceCreationTimestamp: c.steps.reconcileSnapshotMigrationResource.outputs.resourceCreationTimestamp,
                         groupName_view: expr.get(snapshotMigrationConfig, "migrationLabel"),
+                        workloadIdentityChecksum: expr.get(snapshotMigrationConfig, "workloadIdentityChecksum"),
                         sourceEndpoint: expr.dig(snapshotMigrationConfig, ["sourceEndpoint"], "")
                     });
                 }, {

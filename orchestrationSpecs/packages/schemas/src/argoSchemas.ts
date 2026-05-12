@@ -218,6 +218,7 @@ export const SNAPSHOT_MIGRATION_CONFIG = z.object({
     sourceAuth: z.any().optional(),
     configChecksum: z.string(),
     checksumForReplayer: z.string(),
+    workloadIdentityChecksum: z.string(),
     resourceUid: z.string(),
 });
 
