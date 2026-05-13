@@ -161,6 +161,16 @@ class Test0041CdcFullE2eAossTarget(MATestBase):
         logger.info("AOSS target: %s", self.target_cluster.endpoint)
         logger.info("Source: %s", self.source_cluster.endpoint)
 
+    def prepare_workflow_snapshot_and_migration_config(self):
+        """Scope metadata + backfill to this test's own indices."""
+        allowlist = [self.idx_pre, self.idx_post]
+        self.workflow_snapshot_and_migration_config = [{
+            "migrations": [{
+                "metadataMigrationConfig": {"indexAllowlist": allowlist},
+                "documentBackfillConfig": {"indexAllowlist": allowlist},
+            }]
+        }]
+
     def prepare_workflow_parameters(self, keep_workflows: bool = False):
         super().prepare_workflow_parameters(keep_workflows=keep_workflows)
         self.workflow_template = "cdc-full-e2e-imported-clusters"
