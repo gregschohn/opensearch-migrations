@@ -13,23 +13,23 @@
 # retry <max_attempts> <sleep_seconds> <description> -- <command...>
 # Wrap pipes/redirects in a shell function and pass that function name.
 retry() {
-  local max=$1
-  local sleep_s=$2
-  local desc=$3
+  _retry_max=$1
+  _retry_sleep=$2
+  _retry_desc=$3
   shift 3
   if [ "$1" = "--" ]; then shift; fi
-  local i=1
+  _retry_i=1
   while true; do
     if "$@"; then
       return 0
     fi
-    if [ "$i" -ge "$max" ]; then
-      echo "FAIL: $desc — exhausted $max attempts" >&2
+    if [ "$_retry_i" -ge "$_retry_max" ]; then
+      echo "FAIL: $_retry_desc — exhausted $_retry_max attempts" >&2
       return 1
     fi
-    echo "Transient: $desc failed (attempt $i/$max), sleeping ${sleep_s}s..." >&2
-    sleep "$sleep_s"
-    i=$((i + 1))
+    echo "Transient: $_retry_desc failed (attempt $_retry_i/$_retry_max), sleeping ${_retry_sleep}s..." >&2
+    sleep "$_retry_sleep"
+    _retry_i=$((_retry_i + 1))
   done
 }
 {{- end -}}

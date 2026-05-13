@@ -45,9 +45,9 @@ spec:
             - |
               #!/bin/sh
               set -e
+              {{- include "migration.retryFunctions" . | nindent 14 }}
+              {{- include "migration.helmUninstallFunctions" . | nindent 14 }}
 
-              {{ include "migration.retryFunctions" . | nindent 14 }}
-              {{ include "migration.helmUninstallFunctions" . | nindent 14 }}
               # Phase 1: Uninstall all charts except fluent-bit (kept for logging) and kyverno (uninstalled last).
               # See _uninstallHelper.tpl for the full uninstall strategy documentation.
               uninstall_all_charts_except fluent-bit
@@ -103,9 +103,9 @@ spec:
             - |
               #!/bin/sh
               set -e
+              {{- include "migration.retryFunctions" . | nindent 14 }}
+              {{- include "migration.helmUninstallFunctions" . | nindent 14 }}
 
-              {{ include "migration.retryFunctions" . | nindent 14 }}
-              {{ include "migration.helmUninstallFunctions" . | nindent 14 }}
               # Phase 2: Uninstall remaining charts (fluent-bit etc.) that were kept active during Phase 1.
               # Charts already removed in Phase 1 are safely skipped (discovery-based, ownership-checked).
               uninstall_all_charts_except

@@ -10,7 +10,7 @@
 {{- else }}
               VALUE_PARAM=""
 {{- end }}
-              do_install_{{ $name }}() {
+              do_install_{{ $name | replace "-" "_" }}() {
 {{- $repo := $chart.repository }}
 {{- if hasPrefix "oci://" $repo }}
                 helm upgrade --install {{ $name }} {{ $repo }} \
@@ -31,6 +31,6 @@
                   --wait
 {{- end }}
               }
-              retry 3 15 "helm upgrade --install {{ $name }}" -- do_install_{{ $name }}
+              retry 2 15 "helm upgrade --install {{ $name }}" -- do_install_{{ $name | replace "-" "_" }}
               touch /tmp/helm-status/{{ $name }}.done
 {{- end }}

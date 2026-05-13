@@ -85,7 +85,7 @@ uninstall_all_charts_except() {
 
           if [ "$OWNERSHIP" = "$UMBRELLA_CHART_ID" ]; then
             echo "Chart $RELEASE_NAME is managed by this umbrella chart. Uninstalling..."
-            (retry 3 10 "helm uninstall $RELEASE_NAME" -- helm uninstall $RELEASE_NAME -n $NAMESPACE --debug \
+            (retry 2 10 "helm uninstall $RELEASE_NAME" -- helm uninstall $RELEASE_NAME -n $NAMESPACE --debug \
               && echo "Successfully uninstalled chart: $RELEASE_NAME" \
               || echo "Failed to uninstall chart: $RELEASE_NAME") &
           else

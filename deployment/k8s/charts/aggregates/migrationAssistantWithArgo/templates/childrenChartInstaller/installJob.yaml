@@ -56,8 +56,7 @@ spec:
             - |
               #!/bin/sh
               set -e
-
-              {{ include "migration.retryFunctions" . | nindent 14 }}
+              {{- include "migration.retryFunctions" . | nindent 14 }}
 
       {{- if .Values.ecrAuth }}
               echo "Authenticating with ECR for OCI chart pulls..."
@@ -65,13 +64,13 @@ spec:
               ecr_login_token() {
                 echo "{{ .Values.ecrAuth.token }}" | helm registry login --username AWS --password-stdin {{ .Values.ecrAuth.registry }}
               }
-              retry 5 5 "ECR registry login (token)" -- ecr_login_token
+              retry 2 5 "ECR registry login (token)" -- ecr_login_token
       {{- else }}
               ecr_login_iam() {
                 aws ecr get-login-password --region "${AWS_DEFAULT_REGION}" 2>/dev/null | \
                   helm registry login --username AWS --password-stdin {{ .Values.ecrAuth.registry }}
               }
-              retry 5 5 "ECR registry login (IAM)" -- ecr_login_iam || \
+              retry 2 5 "ECR registry login (IAM)" -- ecr_login_iam || \
                 echo "WARNING: Could not authenticate with ECR. OCI chart pulls may fail."
       {{- end }}
       {{- end }}
@@ -91,12 +90,12 @@ spec:
           {{- $repo := $chart.repository }}
           {{- if and (index $.Values.conditionalPackageInstalls $name) (ne (substr 0 6 $repo) "oci://") }}
               echo "Adding chart repository..."
-              retry 4 5 "helm repo add {{ $name }}" -- helm repo add chart-repo-{{ $name }} {{ $repo }}
+              retry 3 5 "helm repo add {{ $name }}" -- helm repo add chart-repo-{{ $name }} {{ $repo }}
           {{- end }}
       {{- end }}
 
       {{- if .Values.charts }}
-              retry 4 10 "helm repo update" -- helm repo update || \
+              retry 3 10 "helm repo update" -- helm repo update || \
                 echo "No traditional helm repos to update (OCI repos don't need it)"
       {{- end }}
 
@@ -136,7 +135,7 @@ spec:
       {{- if $.Values.kyvernoPolicies.zeroResourceRequests }}
               echo "Applying zero-resource-requests ClusterPolicy before installing other charts..."
               kubectl wait --for=condition=Established crd/clusterpolicies.kyverno.io --timeout=60s
-              retry 4 5 "apply zero-resource-requests policy" -- kubectl apply -f /policy/policy.yaml
+              retry 3 5 "apply zero-resource-requests policy" -- kubectl apply -f /policy/policy.yaml
               echo "Waiting for zero-resource-requests policy to be ready..."
               kubectl wait --for=condition=Ready clusterpolicy/zero-resource-requests --timeout=60s
               echo "Verifying policy is actively enforcing via canary pod..."
@@ -190,7 +189,7 @@ spec:
                 check_dependency "{{ $chart.dependsOn }}"
           {{- end }}
 
-                do_install() {
+                do_install_{{ $name | replace "-" "_" }}() {
           {{- $repo := $chart.repository }}
           {{- $version := $chart.version }}
           {{- if hasPrefix "oci://" $repo }}
@@ -230,7 +229,7 @@ spec:
                     --wait
           {{- end }}
                 }
-                retry 3 15 "helm upgrade --install {{ $name }}" -- do_install
+                retry 2 15 "helm upgrade --install {{ $name }}" -- do_install_{{ $name | replace "-" "_" }}
 
                 # Mark this chart as done
                 touch /tmp/helm-status/{{ $name }}.done
@@ -253,7 +252,7 @@ spec:
               apply_dashboards() {
                 echo '{{ include "cloudwatch.dashboardCRs" (dict "region" $region "account" $account "stage" $stage "root" $) | b64enc }}' | base64 -d | kubectl apply -f -
               }
-              retry 4 5 "apply CloudWatch Dashboard CRs" -- apply_dashboards
+              retry 3 5 "apply CloudWatch Dashboard CRs" -- apply_dashboards
               echo "Dashboard CRs applied."
       {{- end }}
 
@@ -291,7 +290,7 @@ spec:
               cat /tmp/all-notes.yaml
 
               # Apply the ConfigMap to store all notes
-              retry 4 5 "apply installation-notes ConfigMap" -- kubectl apply -f /tmp/all-notes.yaml
+              retry 2 5 "apply installation-notes ConfigMap" -- kubectl apply -f /tmp/all-notes.yaml
 
               echo "Installation complete! View aggregated notes with:"
               echo "kubectl get configmap {{ $.Release.Name }}-installation-notes -n {{ $.Release.Namespace }} -o jsonpath='{.data.all-notes\\.txt}'"
