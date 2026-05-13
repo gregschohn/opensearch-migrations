@@ -383,6 +383,7 @@ kubectl delete approvalgates.migrations.opensearch.org \\
         .addRequiredInput("resourceUid", typeToken<string>())
         .addRequiredInput("resourceCreationTimestamp", typeToken<string>())
         .addRequiredInput("configChecksum", typeToken<string>())
+        .addRequiredInput("checksumForReplayer", typeToken<string>())
         .addRequiredInput("workloadIdentityChecksum", typeToken<string>())
         .addRequiredInput("groupName_view", typeToken<string>())
         .addOptionalInput("sourceEndpoint", c => expr.literal(""))
@@ -412,7 +413,9 @@ kubectl delete approvalgates.migrations.opensearch.org \\
                         sourceVersion: b.inputs.sourceVersion,
                         sourceLabel: b.inputs.sourceLabel,
                         crdName: b.inputs.crdName,
-                        crdUid: b.inputs.resourceUid
+                        crdUid: b.inputs.resourceUid,
+                        configChecksum: b.inputs.configChecksum,
+                        checksumForReplayer: b.inputs.checksumForReplayer
                     }),
                 {when: {templateExp: expr.not(expr.isEmpty(b.inputs.documentBackfillConfig))}}
             )
@@ -523,12 +526,17 @@ kubectl delete approvalgates.migrations.opensearch.org \\
                         resourceCreationTimestamp: c.steps.reconcileSnapshotMigrationResource.outputs.resourceCreationTimestamp,
                         groupName_view: expr.get(snapshotMigrationConfig, "migrationLabel"),
                         workloadIdentityChecksum: expr.get(snapshotMigrationConfig, "workloadIdentityChecksum"),
+                        checksumForReplayer: expr.dig(snapshotMigrationConfig, ["checksumForReplayer"], ""),
                         sourceEndpoint: expr.dig(snapshotMigrationConfig, ["sourceEndpoint"], "")
                     });
                 }, {
                     when: c => ({templateExp: checksumNotDone(c.reconcileSnapshotMigrationResource.outputs.currentConfigChecksum, b.inputs.configChecksum)}),
                 }
             )
+            // Metadata-only path: workflow patches SM.status itself. On the
+            // RFS-enabled path, the RFS-completion CronJob is the sole writer
+            // of SM.status (INV-1), so this step is suppressed when a
+            // documentBackfillConfig is present.
             .addStep("patchSnapshotMigrationCompleted", ResourceManagement, "patchSnapshotMigrationCompleted",
                 c => c.register({
                     resourceName: b.inputs.resourceName,
@@ -539,7 +547,12 @@ kubectl delete approvalgates.migrations.opensearch.org \\
                         ["checksumForReplayer"], ""
                     ),
                 }),
-                {when: c => ({templateExp: checksumNotDone(c.reconcileSnapshotMigrationResource.outputs.currentConfigChecksum, b.inputs.configChecksum)})}
+                {when: c => ({templateExp: expr.and(
+                    checksumNotDone(c.reconcileSnapshotMigrationResource.outputs.currentConfigChecksum, b.inputs.configChecksum),
+                    expr.not(expr.hasKey(
+                        expr.deserializeRecord(b.inputs.snapshotMigrationConfig),
+                        "documentBackfillConfig"))
+                )})}
             )
         })
     )

@@ -996,6 +996,9 @@
               "name": "configChecksum"
             },
             {
+              "name": "checksumForReplayer"
+            },
+            {
               "name": "workloadIdentityChecksum"
             },
             {
@@ -1153,6 +1156,14 @@
                   {
                     "name": "crdName",
                     "value": "{{inputs.parameters.crdName}}"
+                  },
+                  {
+                    "name": "configChecksum",
+                    "value": "{{inputs.parameters.configChecksum}}"
+                  },
+                  {
+                    "name": "checksumForReplayer",
+                    "value": "{{inputs.parameters.checksumForReplayer}}"
                   },
                   {
                     "name": "sourceEndpoint",
@@ -1446,6 +1457,10 @@
                     "value": "{{=fromJSON(inputs.parameters.snapshotMigrationConfig)['workloadIdentityChecksum']}}"
                   },
                   {
+                    "name": "checksumForReplayer",
+                    "value": "{{=sprig.dig('checksumForReplayer', '', fromJSON(inputs.parameters.snapshotMigrationConfig))}}"
+                  },
+                  {
                     "name": "sourceEndpoint",
                     "value": "{{=sprig.dig('sourceEndpoint', '', fromJSON(inputs.parameters.snapshotMigrationConfig))}}"
                   }
@@ -1460,7 +1475,7 @@
                 "template": "patchsnapshotmigrationcompleted",
                 "name": "resource-management"
               },
-              "when": "{{=true && !(steps.reconcileSnapshotMigrationResource.outputs.parameters.currentConfigChecksum == inputs.parameters.configChecksum)}}",
+              "when": "{{=true && !(steps.reconcileSnapshotMigrationResource.outputs.parameters.currentConfigChecksum == inputs.parameters.configChecksum) && !('documentBackfillConfig' in fromJSON(inputs.parameters.snapshotMigrationConfig))}}",
               "arguments": {
                 "parameters": [
                   {
