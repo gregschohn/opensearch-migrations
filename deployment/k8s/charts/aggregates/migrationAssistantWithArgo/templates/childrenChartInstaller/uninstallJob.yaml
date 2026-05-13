@@ -12,10 +12,19 @@ metadata:
     "helm.sh/hook-weight": "-10"
     "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
 spec:
-  # See installJob.yaml.
-  backoffLimit: 6
+  backoffLimit: 1
   activeDeadlineSeconds: 900
   ttlSecondsAfterFinished: 600
+  podFailurePolicy:
+    rules:
+      - action: Ignore
+        onPodConditions:
+          - type: DisruptionTarget
+      - action: FailJob
+        onExitCodes:
+          containerName: helm-uninstaller
+          operator: NotIn
+          values: [0]
   template:
     metadata:
       labels:
@@ -37,6 +46,7 @@ spec:
               #!/bin/sh
               set -e
 
+              {{ include "migration.retryFunctions" . | nindent 14 }}
               {{ include "migration.helmUninstallFunctions" . | nindent 14 }}
               # Phase 1: Uninstall all charts except fluent-bit (kept for logging) and kyverno (uninstalled last).
               # See _uninstallHelper.tpl for the full uninstall strategy documentation.
@@ -60,10 +70,19 @@ metadata:
     "helm.sh/hook-weight": "10"
     "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
 spec:
-  # See installJob.yaml.
-  backoffLimit: 6
+  backoffLimit: 1
   activeDeadlineSeconds: 900
   ttlSecondsAfterFinished: 600
+  podFailurePolicy:
+    rules:
+      - action: Ignore
+        onPodConditions:
+          - type: DisruptionTarget
+      - action: FailJob
+        onExitCodes:
+          containerName: helm-uninstaller-logging
+          operator: NotIn
+          values: [0]
   template:
     metadata:
       labels:
@@ -85,6 +104,7 @@ spec:
               #!/bin/sh
               set -e
 
+              {{ include "migration.retryFunctions" . | nindent 14 }}
               {{ include "migration.helmUninstallFunctions" . | nindent 14 }}
               # Phase 2: Uninstall remaining charts (fluent-bit etc.) that were kept active during Phase 1.
               # Charts already removed in Phase 1 are safely skipped (discovery-based, ownership-checked).
