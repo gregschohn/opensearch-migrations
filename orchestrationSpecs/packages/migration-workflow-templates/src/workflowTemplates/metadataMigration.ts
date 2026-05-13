@@ -25,6 +25,7 @@ import {makeRequiredImageParametersForKeys} from "./commonUtils/imageDefinitions
 import {makeTargetParamDict} from "./commonUtils/clusterSettingManipulators";
 import {getHttpAuthSecretName} from "./commonUtils/clusterSettingManipulators";
 import {getTargetHttpAuthCreds} from "./commonUtils/basicCredsGetters";
+import {CONTAINER_TEMPLATE_RETRY_STRATEGY} from "./commonUtils/resourceRetryStrategy";
 import {
     getApprovalMap,
     getSourceTargetPathAndSnapshotAndMigrationIndex
@@ -261,6 +262,7 @@ export const MetadataMigration = WorkflowBuilder.create({
                 }
             }))
         )
+        .addRetryParameters(CONTAINER_TEMPLATE_RETRY_STRATEGY)
     )
     .addTemplate("runMetadataWithImageTransforms", t => t
         .addInputsFromRecord(runMetadataInputs)

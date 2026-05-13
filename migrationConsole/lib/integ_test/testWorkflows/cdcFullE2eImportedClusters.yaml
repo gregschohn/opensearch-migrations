@@ -1,6 +1,10 @@
 # Full E2E CDC test: snapshot migration + capture proxy (capturing from start) + replayer.
 # Proxy starts with noCapture=false so traffic is captured throughout the entire
 # migration lifecycle (before, during, and after backfill).
+#
+# The CDC traffic overlay (Kafka config, capture-proxy, replayer) is provided by
+# the shared cdc-overlay.add-traffic-config template so that the with-clusters
+# variant (cdc-e2e-migration-with-clusters) stays in sync.
 apiVersion: argoproj.io/v1alpha1
 kind: WorkflowTemplate
 metadata:
@@ -20,6 +24,8 @@ spec:
         value: "120"
       - name: speedup-factor
         value: "20"
+      - name: observed-packet-timeout
+        value: "30"
       - name: transforms-sources
         value: "{}"
       - name: replayer-config-overrides
@@ -35,6 +41,30 @@ spec:
             default: "{}"
           - name: replayer-config-overrides
             default: "{}"
+          - name: tupleS3Region
+            valueFrom:
+              configMapKeyRef:
+                name: "{{workflow.parameters.s3-snapshot-configmap}}"
+                key: AWS_REGION
+          - name: useLocalStack
+            default: "false"
+            valueFrom:
+              configMapKeyRef:
+                name: "{{workflow.parameters.s3-snapshot-configmap}}"
+                key: USE_LOCAL_STACK
+                optional: true
+          - name: tupleS3Endpoint
+            default: ""
+            valueFrom:
+              configMapKeyRef:
+                name: "{{workflow.parameters.s3-snapshot-configmap}}"
+                key: ENDPOINT_HTTP
+                optional: true
+          - name: tupleS3BucketName
+            valueFrom:
+              configMapKeyRef:
+                name: "{{workflow.parameters.s3-snapshot-configmap}}"
+                key: BUCKET_NAME
           - name: imageMigrationConsoleLocation
             valueFrom:
               configMapKeyRef:
@@ -64,17 +94,31 @@ spec:
                   value: "{{inputs.parameters.imageMigrationConsolePullPolicy}}"
 
         - - name: add-traffic-config
-            template: add-traffic-config
+            templateRef:
+              name: cdc-overlay
+              template: add-traffic-config
             arguments:
               parameters:
                 - name: baseConfigBase64
                   value: "{{steps.generate-base-config.outputs.parameters.migrationConfigBase64}}"
+                - name: speedupFactor
+                  value: "{{workflow.parameters.speedup-factor}}"
+                - name: observedPacketTimeout
+                  value: "{{workflow.parameters.observed-packet-timeout}}"
                 - name: imageMigrationConsoleLocation
                   value: "{{inputs.parameters.imageMigrationConsoleLocation}}"
                 - name: imageMigrationConsolePullPolicy
                   value: "{{inputs.parameters.imageMigrationConsolePullPolicy}}"
                 - name: replayer-config-overrides
                   value: "{{inputs.parameters.replayer-config-overrides}}"
+                - name: tupleS3Region
+                  value: "{{inputs.parameters.tupleS3Region}}"
+                - name: useLocalStack
+                  value: "{{inputs.parameters.useLocalStack}}"
+                - name: tupleS3Endpoint
+                  value: "{{inputs.parameters.tupleS3Endpoint}}"
+                - name: tupleS3BucketName
+                  value: "{{inputs.parameters.tupleS3BucketName}}"
 
         - - name: run-full-migration-with-workflow-cli
             templateRef:
@@ -90,104 +134,3 @@ spec:
                   value: "{{inputs.parameters.imageMigrationConsolePullPolicy}}"
                 - name: keepMigrationWorkflow
                   value: "true"
-
-    - name: add-traffic-config
-      inputs:
-        parameters:
-          - name: baseConfigBase64
-          - name: imageMigrationConsoleLocation
-          - name: imageMigrationConsolePullPolicy
-          - name: replayer-config-overrides
-          - name: tupleS3Region
-            valueFrom:
-              configMapKeyRef:
-                name: "{{workflow.parameters.s3-snapshot-configmap}}"
-                key: AWS_REGION
-          - name: useLocalStack
-            default: "false"
-            valueFrom:
-              configMapKeyRef:
-                name: "{{workflow.parameters.s3-snapshot-configmap}}"
-                key: USE_LOCAL_STACK
-                optional: true
-          - name: tupleS3Endpoint
-            default: ""
-            valueFrom:
-              configMapKeyRef:
-                name: "{{workflow.parameters.s3-snapshot-configmap}}"
-                key: ENDPOINT_HTTP
-                optional: true
-          - name: tupleS3BucketName
-            valueFrom:
-              configMapKeyRef:
-                name: "{{workflow.parameters.s3-snapshot-configmap}}"
-                key: BUCKET_NAME
-      container:
-        image: "{{inputs.parameters.imageMigrationConsoleLocation}}"
-        imagePullPolicy: "{{inputs.parameters.imageMigrationConsolePullPolicy}}"
-        command: [sh, -c]
-        args:
-          - |
-            set -e
-            BASE_CONFIG=$(echo "{{inputs.parameters.baseConfigBase64}}" | base64 -d)
-            REPLAYER_CONFIG_OVERRIDES='{{inputs.parameters.replayer-config-overrides}}'
-            TUPLE_S3_REGION='{{inputs.parameters.tupleS3Region}}'
-            USE_LOCAL_STACK='{{inputs.parameters.useLocalStack}}'
-            TUPLE_S3_ENDPOINT='{{inputs.parameters.tupleS3Endpoint}}'
-            TUPLE_S3_BUCKET='{{inputs.parameters.tupleS3BucketName}}'
-
-            # Overlay CDC traffic config with capture enabled from start
-            CDC_CONFIG=$(echo "$BASE_CONFIG" | jq \
-              --arg tupleS3Bucket "$TUPLE_S3_BUCKET" \
-              --arg tupleS3Region "$TUPLE_S3_REGION" \
-              --argjson useLocalStack "$USE_LOCAL_STACK" \
-              --arg tupleS3Endpoint "$TUPLE_S3_ENDPOINT" \
-              --argjson replayerOverrides "$REPLAYER_CONFIG_OVERRIDES" \
-              '. + {
-              "kafkaClusterConfiguration": {
-                "default": {
-                  "autoCreate": {}
-                }
-              },
-              "traffic": {
-                "proxies": {
-                  "capture-proxy": {
-                    "source": "source1",
-                    "proxyConfig": {
-                      "listenPort": 9201,
-                      "noCapture": false
-                    }
-                  }
-                },
-                "replayers": {
-                  "replay1": {
-                    "fromProxy": "capture-proxy",
-                    "toTarget": "target1",
-                    "dependsOnSnapshotMigrations": [
-                      {"source": "source1", "snapshot": "testsnapshot"}
-                    ],
-                    "replayerConfig": ({
-                      "observedPacketConnectionTimeout": 30,
-                      "speedupFactor": {{workflow.parameters.speedup-factor}},
-                      "useLocalStack": $useLocalStack
-                    }
-                    + (if $tupleS3Bucket != "" then {
-                        "tupleS3Bucket": $tupleS3Bucket,
-                        "tupleS3Region": $tupleS3Region,
-                        "tupleS3Prefix": "tuples/"
-                      } else {} end)
-                    + (if $tupleS3Endpoint != "" then {"tupleS3Endpoint": $tupleS3Endpoint} else {} end)
-                    + $replayerOverrides)
-                  }
-                }
-              }
-            }')
-
-            echo "CDC full E2E migration config:"
-            echo "$CDC_CONFIG" | jq .
-            echo "$CDC_CONFIG" | base64 | tr -d '\n' > /tmp/migration-config-base64
-      outputs:
-        parameters:
-          - name: migrationConfigBase64
-            valueFrom:
-              path: /tmp/migration-config-base64
