@@ -20,6 +20,10 @@ spec:
         value: "120"
       - name: speedup-factor
         value: "20"
+      - name: transforms-sources
+        value: "{}"
+      - name: replayer-config-overrides
+        value: "{}"
 
   templates:
     - name: main
@@ -27,6 +31,10 @@ spec:
         parameters:
           - name: source-configs
           - name: target-config
+          - name: transforms-sources
+            default: "{}"
+          - name: replayer-config-overrides
+            default: "{}"
           - name: imageMigrationConsoleLocation
             valueFrom:
               configMapKeyRef:
@@ -48,6 +56,8 @@ spec:
                   value: "{{inputs.parameters.source-configs}}"
                 - name: target-config
                   value: "{{inputs.parameters.target-config}}"
+                - name: transforms-sources
+                  value: "{{inputs.parameters.transforms-sources}}"
                 - name: imageMigrationConsoleLocation
                   value: "{{inputs.parameters.imageMigrationConsoleLocation}}"
                 - name: imageMigrationConsolePullPolicy
@@ -63,6 +73,8 @@ spec:
                   value: "{{inputs.parameters.imageMigrationConsoleLocation}}"
                 - name: imageMigrationConsolePullPolicy
                   value: "{{inputs.parameters.imageMigrationConsolePullPolicy}}"
+                - name: replayer-config-overrides
+                  value: "{{inputs.parameters.replayer-config-overrides}}"
 
         - - name: run-full-migration-with-workflow-cli
             templateRef:
@@ -85,6 +97,7 @@ spec:
           - name: baseConfigBase64
           - name: imageMigrationConsoleLocation
           - name: imageMigrationConsolePullPolicy
+          - name: replayer-config-overrides
           - name: tupleS3Region
             valueFrom:
               configMapKeyRef:
@@ -117,6 +130,7 @@ spec:
           - |
             set -e
             BASE_CONFIG=$(echo "{{inputs.parameters.baseConfigBase64}}" | base64 -d)
+            REPLAYER_CONFIG_OVERRIDES='{{inputs.parameters.replayer-config-overrides}}'
             TUPLE_S3_REGION='{{inputs.parameters.tupleS3Region}}'
             USE_LOCAL_STACK='{{inputs.parameters.useLocalStack}}'
             TUPLE_S3_ENDPOINT='{{inputs.parameters.tupleS3Endpoint}}'
@@ -128,6 +142,7 @@ spec:
               --arg tupleS3Region "$TUPLE_S3_REGION" \
               --argjson useLocalStack "$USE_LOCAL_STACK" \
               --arg tupleS3Endpoint "$TUPLE_S3_ENDPOINT" \
+              --argjson replayerOverrides "$REPLAYER_CONFIG_OVERRIDES" \
               '. + {
               "kafkaClusterConfiguration": {
                 "default": {
@@ -161,7 +176,8 @@ spec:
                         "tupleS3Region": $tupleS3Region,
                         "tupleS3Prefix": "tuples/"
                       } else {} end)
-                    + (if $tupleS3Endpoint != "" then {"tupleS3Endpoint": $tupleS3Endpoint} else {} end))
+                    + (if $tupleS3Endpoint != "" then {"tupleS3Endpoint": $tupleS3Endpoint} else {} end)
+                    + $replayerOverrides)
                   }
                 }
               }
