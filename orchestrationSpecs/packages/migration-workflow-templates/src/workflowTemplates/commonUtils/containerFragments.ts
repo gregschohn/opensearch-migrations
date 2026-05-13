@@ -14,6 +14,7 @@ export type ContainerVolumePair = {
 
 export const TRANSFORMS_MOUNT_PATH = "/transforms";
 const TRANSFORMS_VOLUME_NAME = "user-transforms";
+export type TransformVolumeMode = "image" | "configMap" | "emptyDir";
 
 export function makeTransformsVolume(
     transformsImage: BaseExpression<string>,
@@ -59,6 +60,61 @@ export function setupTransformsForContainer(
         volumes: [
             ...def.volumes,
             makeDirectTypeProxy(makeTransformsVolume(transformsImage, transformsConfigMap)) as unknown as Volume
+        ],
+        container: {
+            ...restOfContainer,
+            volumeMounts: [
+                ...(volumeMounts === undefined ? [] : volumeMounts),
+                {
+                    name: TRANSFORMS_VOLUME_NAME,
+                    mountPath: TRANSFORMS_MOUNT_PATH,
+                    readOnly: true
+                }
+            ]
+        }
+    } as const;
+}
+
+function makeTransformsVolumeForMode(
+    mode: TransformVolumeMode,
+    transformsImage: BaseExpression<string>,
+    transformsConfigMap: BaseExpression<string>
+): Volume {
+    if (mode === "image") {
+        return {
+            name: TRANSFORMS_VOLUME_NAME,
+            image: {
+                reference: makeStringTypeProxy(transformsImage),
+                pullPolicy: "IfNotPresent"
+            }
+        };
+    }
+
+    if (mode === "configMap") {
+        return {
+            name: TRANSFORMS_VOLUME_NAME,
+            configMap: {
+                name: makeStringTypeProxy(transformsConfigMap)
+            }
+        };
+    }
+
+    return {
+        name: TRANSFORMS_VOLUME_NAME,
+        emptyDir: {}
+    };
+}
+
+export function setupTransformsForContainerForMode(
+    mode: TransformVolumeMode,
+    transformsImage: BaseExpression<string>,
+    transformsConfigMap: BaseExpression<string>,
+    def: ContainerVolumePair): ContainerVolumePair {
+    const {volumeMounts, ...restOfContainer} = def.container;
+    return {
+        volumes: [
+            ...def.volumes,
+            makeTransformsVolumeForMode(mode, transformsImage, transformsConfigMap)
         ],
         container: {
             ...restOfContainer,
