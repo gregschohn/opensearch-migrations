@@ -203,6 +203,7 @@ export const ARGO_REPLAYER_WORKFLOW_OPTION_KEYS = getZodKeys(ARGO_REPLAYER_OPTIO
     jvmArgs: true,
     loggingConfigurationOverrideConfigMap: true,
     podReplicas: true,
+    useLocalStack: true,
     resources: true,
     transformsImage: true,
     transformsConfigMap: true,

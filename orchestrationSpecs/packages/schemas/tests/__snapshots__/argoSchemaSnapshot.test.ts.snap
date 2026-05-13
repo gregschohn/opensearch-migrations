@@ -1733,6 +1733,10 @@ exports[`test schemas matches expected argo schema matches expected 1`] = `
                       "type": "number",
                       "default": 1
                     },
+                    "useLocalStack": {
+                      "type": "boolean",
+                      "default": false
+                    },
                     "resources": {
                       "type": "object",
                       "nullable": true,
@@ -1876,6 +1880,25 @@ exports[`test schemas matches expected argo schema matches expected 1`] = `
                       "description": "Path to a JSON file containing tuple transformer configuration. Tuple transformers operate on request-response pairs, enabling stateful transformations that depend on the source cluster's response. [Expert] The file must be mounted into the container by the user (e.g. via Kyverno pod mutation or custom image). Not wired through the workflow by default.",
                       "changeRestriction": "gated"
                     },
+                    "tupleS3Bucket": {
+                      "type": "string",
+                      "description": "S3 bucket for tuple output. When set, tuples are written directly to S3.",
+                      "changeRestriction": "gated"
+                    },
+                    "tupleS3Region": {
+                      "type": "string",
+                      "description": "AWS region for the tuple S3 bucket. Required when tupleS3Bucket is set.",
+                      "changeRestriction": "gated"
+                    },
+                    "tupleS3Prefix": {
+                      "type": "string",
+                      "default": "tuples/"
+                    },
+                    "tupleS3Endpoint": {
+                      "type": "string",
+                      "pattern": "^(?:https?:\\\\/\\\\/[^:\\\\/\\\\s]+(?::(?:[1-9]\\\\d{0,3}|[1-5]\\\\d{4}|6[0-4]\\\\d{3}|65[0-4]\\\\d{2}|655[0-2]\\\\d|6553[0-5]))?(?:\\\\/)?)?$",
+                      "default": ""
+                    },
                     "tupleMaxBufferSeconds": {
                       "type": "number",
                       "default": 60
@@ -1883,6 +1906,10 @@ exports[`test schemas matches expected argo schema matches expected 1`] = `
                     "tupleMaxFileSizeMb": {
                       "type": "number",
                       "default": 256
+                    },
+                    "tupleMaxPerFile": {
+                      "type": "number",
+                      "default": 0
                     },
                     "userAgent": {
                       "type": "string",
@@ -3458,6 +3485,11 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                     "default": 1,
                     "description": "Number of replayer pod replicas in the Kubernetes Deployment. Each replica independently consumes from Kafka and replays traffic to the target."
                   },
+                  "useLocalStack": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Mount local test AWS credentials for LocalStack-backed tuple S3 output. This is a workflow-only testing option and is not passed to the replayer process."
+                  },
                   "resources": {
                     "type": "object",
                     "nullable": true,
@@ -3700,6 +3732,29 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                     "description": "Tuple transform pipeline. Generates the existing tupleTransformerConfig inline JSON option.",
                     "changeRestriction": "gated"
                   },
+                  "tupleS3Bucket": {
+                    "type": "string",
+                    "description": "S3 bucket for tuple output. When set, tuples are written directly to S3.",
+                    "changeRestriction": "gated"
+                  },
+                  "tupleS3Region": {
+                    "type": "string",
+                    "description": "AWS region for the tuple S3 bucket. Required when tupleS3Bucket is set.",
+                    "changeRestriction": "gated"
+                  },
+                  "tupleS3Prefix": {
+                    "type": "string",
+                    "default": "tuples/",
+                    "description": "S3 key prefix for tuple objects.",
+                    "changeRestriction": "gated"
+                  },
+                  "tupleS3Endpoint": {
+                    "type": "string",
+                    "pattern": "^(?:https?:\\\\/\\\\/[^:\\\\/\\\\s]+(?::(?:[1-9]\\\\d{0,3}|[1-5]\\\\d{4}|6[0-4]\\\\d{3}|65[0-4]\\\\d{2}|655[0-2]\\\\d|6553[0-5]))?(?:\\\\/)?)?$",
+                    "default": "",
+                    "description": "Custom S3 endpoint URL for tuple output.",
+                    "changeRestriction": "gated"
+                  },
                   "tupleMaxBufferSeconds": {
                     "type": "number",
                     "default": 60,
@@ -3710,6 +3765,12 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                     "type": "number",
                     "default": 256,
                     "description": "Maximum uncompressed size in MB before rotating a tuple file to S3.",
+                    "changeRestriction": "gated"
+                  },
+                  "tupleMaxPerFile": {
+                    "type": "number",
+                    "default": 0,
+                    "description": "Maximum number of tuples per S3 object. 0 means no count limit.",
                     "changeRestriction": "gated"
                   },
                   "userAgent": {
