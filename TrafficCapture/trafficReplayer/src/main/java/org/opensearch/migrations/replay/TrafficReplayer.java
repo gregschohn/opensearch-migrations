@@ -704,7 +704,10 @@ public class TrafficReplayer {
             }, ACTIVE_WORK_MONITOR_CADENCE_MS, ACTIVE_WORK_MONITOR_CADENCE_MS, TimeUnit.MILLISECONDS);
 
             setupShutdownHookForReplayer(tr);
-            var tupleWriter = createS3TupleWriterIfConfigured(params);
+            var tupleWriter = createS3TupleWriterIfConfigured(
+                params,
+                () -> transformationLoader.getTransformerFactoryLoader(tupleTransformerConfig)
+            );
             if (tupleWriter != null) {
                 tr.setupRunAndWaitForReplayWithShutdownChecks(
                     Duration.ofSeconds(params.observedPacketConnectionTimeout),
@@ -741,7 +744,10 @@ public class TrafficReplayer {
         }
     }
 
-    private static ThreadLocalTupleWriter createS3TupleWriterIfConfigured(Parameters params) {
+    private static ThreadLocalTupleWriter createS3TupleWriterIfConfigured(
+        Parameters params,
+        Supplier<IJsonTransformer> tupleTransformerSupplier
+    ) {
         if (params.tupleS3Bucket == null || params.tupleS3Bucket.isEmpty()) {
             return null;
         }
@@ -768,7 +774,8 @@ public class TrafficReplayer {
                 params.tupleMaxFileSizeMb * 1024L * 1024L,
                 Duration.ofSeconds(params.tupleMaxBufferSeconds),
                 params.tupleMaxPerFile
-            )
+            ),
+            tupleTransformerSupplier
         );
     }
 
