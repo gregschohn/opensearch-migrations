@@ -13,7 +13,7 @@ import {
     WorkflowBuilder
 } from "@opensearch-migrations/argo-workflow-builders";
 import {OwnerReference} from "@opensearch-migrations/k8s-types";
-import {setupLog4jConfigForContainer, setupTransformsForContainer} from "./commonUtils/containerFragments";
+import {setupLog4jConfigForContainer, setupTestCredsForContainer, setupTransformsForContainer} from "./commonUtils/containerFragments";
 import {CommonWorkflowParameters} from "./commonUtils/workflowParameters";
 import {getHttpAuthSecretName} from "./commonUtils/clusterSettingManipulators";
 import {getTargetHttpAuthCredsEnvVars} from "./commonUtils/basicCredsGetters";
@@ -144,6 +144,7 @@ function getReplayerDeploymentManifest
     name: BaseExpression<string>,
 
     useCustomLogging: BaseExpression<boolean>,
+    useLocalStack: BaseExpression<boolean>,
     loggingConfigMap: BaseExpression<string>,
     jvmArgs: BaseExpression<string>,
     transformsImage: BaseExpression<string>,
@@ -206,8 +207,9 @@ function getReplayerDeploymentManifest
     };
     const finalContainerDefinition =
         setupTransformsForContainer(args.transformsImage, args.transformsConfigMap,
-            setupLog4jConfigForContainer(args.useCustomLogging, args.loggingConfigMap,
-            {container: baseContainerDefinition, volumes: [
+            setupTestCredsForContainer(args.useLocalStack,
+                setupLog4jConfigForContainer(args.useCustomLogging, args.loggingConfigMap,
+                {container: baseContainerDefinition, volumes: [
                 {
                     name: "kafka-auth-config",
                     configMap: {name: makeStringTypeProxy(args.kafkaAuthConfigMapName)}
@@ -223,8 +225,8 @@ function getReplayerDeploymentManifest
                         optional: makeDirectTypeProxy(expr.not(isScramAuth))
                     }
                 }
-            ]},
-            args.jvmArgs)
+                ]},
+                args.jvmArgs))
         );
     return {
         apiVersion: "apps/v1",
@@ -288,6 +290,7 @@ export const Replayer = WorkflowBuilder.create({
       .addRequiredInput("kafkaCaSecretName", typeToken<string>())
       .addRequiredInput("ownerUid", typeToken<string>())
       .addRequiredInput("podReplicas", typeToken<number>())
+      .addRequiredInput("useLocalStack", typeToken<boolean>())
       .addRequiredInput("jvmArgs", typeToken<string>())
       .addRequiredInput("loggingConfigurationOverrideConfigMap", typeToken<string>())
       .addRequiredInput("transformsImage", typeToken<string>())
@@ -307,6 +310,7 @@ export const Replayer = WorkflowBuilder.create({
                 manifest: getReplayerDeploymentManifest({
                     podReplicas: expr.deserializeRecord(b.inputs.podReplicas),
                     useCustomLogging: expr.not(expr.isEmpty(b.inputs.loggingConfigurationOverrideConfigMap)),
+                    useLocalStack: expr.deserializeRecord(b.inputs.useLocalStack),
                     loggingConfigMap: b.inputs.loggingConfigurationOverrideConfigMap,
                     jvmArgs: b.inputs.jvmArgs,
                     transformsImage: b.inputs.transformsImage,
@@ -362,6 +366,7 @@ export const Replayer = WorkflowBuilder.create({
         "replayerOptions",
         typeToken<z.infer<typeof ARGO_REPLAYER_OPTIONS>>(),
       )
+      .addRequiredInput("useLocalStack", typeToken<boolean>())
       .addOptionalInput("resolvedKafkaConnection", (c) => "")
       .addOptionalInput("resolvedKafkaListenerName", (c) => "")
       .addOptionalInput("resolvedKafkaAuthType", (c) => "")
@@ -406,6 +411,7 @@ export const Replayer = WorkflowBuilder.create({
                 ["podReplicas"],
                 1,
               ),
+              useLocalStack: b.inputs.useLocalStack,
               jvmArgs: expr.dig(
                 expr.deserializeRecord(b.inputs.replayerOptions),
                 ["jvmArgs"],

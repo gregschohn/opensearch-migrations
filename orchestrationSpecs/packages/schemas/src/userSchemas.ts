@@ -536,6 +536,8 @@ export const USER_REPLAYER_WORKFLOW_OPTIONS = z.object({
         .describe(LOGGING_CONFIG_OVERRIDE_DESC),
     podReplicas: z.number().default(1).optional()
         .describe("Number of replayer pod replicas in the Kubernetes Deployment. Each replica independently consumes from Kafka and replays traffic to the target."),
+    useLocalStack: z.boolean().default(false).optional()
+        .describe("Mount local test AWS credentials for LocalStack-backed tuple S3 output. This is a workflow-only testing option and is not passed to the replayer process."),
     resources: z.preprocess((v) => deepmerge(DEFAULT_RESOURCES.REPLAYER, (v ?? {})), RESOURCE_REQUIREMENTS)
         .describe("Kubernetes resource limits and requests for the replayer container. " +
             "Partial overrides are deep-merged with the built-in defaults. " +
@@ -604,11 +606,26 @@ export const USER_REPLAYER_PROCESS_OPTIONS = z.object({
     tupleTransforms: TRANSFORM_PIPELINE.optional()
         .describe("Tuple transform pipeline. Generates the existing tupleTransformerConfig inline JSON option.")
         .changeRestriction('gated'),
+    tupleS3Bucket: z.string().optional()
+        .describe("S3 bucket for tuple output. When set, tuples are written directly to S3.")
+        .changeRestriction('gated'),
+    tupleS3Region: z.string().optional()
+        .describe("AWS region for the tuple S3 bucket. Required when tupleS3Bucket is set.")
+        .changeRestriction('gated'),
+    tupleS3Prefix: z.string().default("tuples/").optional()
+        .describe("S3 key prefix for tuple objects.")
+        .changeRestriction('gated'),
+    tupleS3Endpoint: z.string().regex(new RegExp(OPTIONAL_HTTP_ENDPOINT_PATTERN)).default("").optional()
+        .describe("Custom S3 endpoint URL for tuple output.")
+        .changeRestriction('gated'),
     tupleMaxBufferSeconds: z.number().default(60).optional()
         .describe("Maximum seconds before rotating/uploading a tuple file to S3.")
         .changeRestriction('gated'),
     tupleMaxFileSizeMb: z.number().default(256).optional()
         .describe("Maximum uncompressed size in MB before rotating a tuple file to S3.")
+        .changeRestriction('gated'),
+    tupleMaxPerFile: z.number().default(0).optional()
+        .describe("Maximum number of tuples per S3 object. 0 means no count limit.")
         .changeRestriction('gated'),
     userAgent: z.string().optional()
         .describe("String appended to the User-Agent header on all replayed requests to the target cluster. Useful for identifying replayed traffic in target cluster logs."),
@@ -632,6 +649,13 @@ export const USER_REPLAYER_OPTIONS = z.object({
         "tupleTransformerConfigBase64",
         "tupleTransformerConfigFile"
     ]);
+    if (hasConfiguredString(data.tupleS3Bucket) && !hasConfiguredString(data.tupleS3Region)) {
+        ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "'tupleS3Region' is required when 'tupleS3Bucket' is configured.",
+            path: ["tupleS3Region"]
+        });
+    }
 
     if (data.lookaheadTimeSeconds !== undefined && data.observedPacketConnectionTimeout !== undefined
         && data.lookaheadTimeSeconds <= data.observedPacketConnectionTimeout) {
