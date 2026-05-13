@@ -3,11 +3,14 @@ import {
     AllowLiteralOrExpression,
     BaseExpression,
     expr,
+    FunctionExpression,
     INTERNAL,
     InputParamDef,
     InputParametersRecord,
     makeDirectTypeProxy,
     makeStringTypeProxy,
+    NonSerializedPlainObject,
+    PlainObject,
     selectInputsForRegister,
     Serialized,
     TemplateBuilder,
@@ -68,6 +71,16 @@ function placeholderStatusFields<T extends StringStatusFields>(fields: T): Recor
         proxied[String(key)] = `{{inputs.parameters.${String(key)}}}`;
     }
     return proxied;
+}
+
+function makeYamlJsonLiteralProxy<T extends NonSerializedPlainObject>(value: BaseExpression<T, any>): T {
+    // Resource templates substitute Argo expressions before kubectl parses the YAML.
+    // toJSON keeps quote-heavy strings, arrays, and objects valid as YAML literals.
+    const jsonExpression = new FunctionExpression<Serialized<T>, NonSerializedPlainObject, any>(
+        "toJSON",
+        [value] as unknown as BaseExpression<NonSerializedPlainObject, any>[]
+    );
+    return makeDirectTypeProxy(jsonExpression as unknown as BaseExpression<Record<string, PlainObject>>) as unknown as T;
 }
 
 function buildPatchStatusTemplate<
@@ -296,10 +309,10 @@ function makeSnapshotMigrationManifest(
             metadataMigrationOtelCollectorEndpoint: makeStringTypeProxy(expr.dig(config, ["metadataMigrationConfig", "otelCollectorEndpoint"], expr.literal(""))),
             metadataMigrationOutput: makeStringTypeProxy(expr.dig(config, ["metadataMigrationConfig", "output"], expr.literal("HUMAN_READABLE"))),
             metadataMigrationTransformerConfigBase64: makeStringTypeProxy(expr.dig(config, ["metadataMigrationConfig", "transformerConfigBase64"], expr.literal(""))),
-            metadataMigrationTransformerConfig: makeStringTypeProxy(expr.dig(config, ["metadataMigrationConfig", "transformerConfig"], expr.literal(""))),
+            metadataMigrationTransformerConfig: makeYamlJsonLiteralProxy(expr.dig(config, ["metadataMigrationConfig", "transformerConfig"], expr.literal(""))),
             metadataMigrationTransformerConfigFile: makeStringTypeProxy(expr.dig(config, ["metadataMigrationConfig", "transformerConfigFile"], expr.literal(""))),
-            metadataMigrationTransformsImage: makeStringTypeProxy(expr.dig(config, ["metadataMigrationConfig", "transformsImage"], expr.literal(""))),
-            metadataMigrationTransformsConfigMap: makeStringTypeProxy(expr.dig(config, ["metadataMigrationConfig", "transformsConfigMap"], expr.literal(""))),
+            metadataMigrationTransformsImage: makeYamlJsonLiteralProxy(expr.dig(config, ["metadataMigrationConfig", "transformsImage"], expr.literal(""))),
+            metadataMigrationTransformsConfigMap: makeYamlJsonLiteralProxy(expr.dig(config, ["metadataMigrationConfig", "transformsConfigMap"], expr.literal(""))),
             documentBackfillPodReplicas: makeDirectTypeProxy(expr.dig(config, ["documentBackfillConfig", "podReplicas"], 1)),
             documentBackfillJvmArgs: makeStringTypeProxy(expr.dig(config, ["documentBackfillConfig", "jvmArgs"], expr.literal(""))),
             documentBackfillLoggingConfigurationOverrideConfigMap: makeStringTypeProxy(expr.dig(config, ["documentBackfillConfig", "loggingConfigurationOverrideConfigMap"], expr.literal(""))),
@@ -310,10 +323,10 @@ function makeSnapshotMigrationManifest(
             documentBackfillEnableSourcelessMigrations: makeDirectTypeProxy(expr.dig(config, ["documentBackfillConfig", "enableSourcelessMigrations"], false)),
             documentBackfillUseRecoverySource: makeDirectTypeProxy(expr.dig(config, ["documentBackfillConfig", "useRecoverySource"], false)),
             documentBackfillDocTransformerConfigBase64: makeStringTypeProxy(expr.dig(config, ["documentBackfillConfig", "docTransformerConfigBase64"], expr.literal(""))),
-            documentBackfillDocTransformerConfig: makeStringTypeProxy(expr.dig(config, ["documentBackfillConfig", "docTransformerConfig"], expr.literal(""))),
+            documentBackfillDocTransformerConfig: makeYamlJsonLiteralProxy(expr.dig(config, ["documentBackfillConfig", "docTransformerConfig"], expr.literal(""))),
             documentBackfillDocTransformerConfigFile: makeStringTypeProxy(expr.dig(config, ["documentBackfillConfig", "docTransformerConfigFile"], expr.literal(""))),
-            documentBackfillTransformsImage: makeStringTypeProxy(expr.dig(config, ["documentBackfillConfig", "transformsImage"], expr.literal(""))),
-            documentBackfillTransformsConfigMap: makeStringTypeProxy(expr.dig(config, ["documentBackfillConfig", "transformsConfigMap"], expr.literal(""))),
+            documentBackfillTransformsImage: makeYamlJsonLiteralProxy(expr.dig(config, ["documentBackfillConfig", "transformsImage"], expr.literal(""))),
+            documentBackfillTransformsConfigMap: makeYamlJsonLiteralProxy(expr.dig(config, ["documentBackfillConfig", "transformsConfigMap"], expr.literal(""))),
             documentBackfillDocumentsPerBulkRequest: makeDirectTypeProxy(expr.dig(config, ["documentBackfillConfig", "documentsPerBulkRequest"], 0x7fffffff)),
             documentBackfillDocumentsSizePerBulkRequest: makeDirectTypeProxy(expr.dig(config, ["documentBackfillConfig", "documentsSizePerBulkRequest"], 10 * 1024 * 1024)),
             documentBackfillInitialLeaseDuration: makeStringTypeProxy(expr.dig(config, ["documentBackfillConfig", "initialLeaseDuration"], expr.literal("PT1H"))),
