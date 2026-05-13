@@ -1,11 +1,12 @@
 import {z} from "zod";
 import {
     NAMED_TARGET_CLUSTER_CONFIG,
-    USER_REPLAYER_OPTIONS,
     ResourceRequirementsType, ARGO_REPLAYER_OPTIONS, ARGO_REPLAYER_WORKFLOW_OPTION_KEYS, KAFKA_CLIENT_CONFIG,
 } from "@opensearch-migrations/schemas";
 import {
     BaseExpression, Deployment,
+    defineParam,
+    defineRequiredParam,
     expr,
     IMAGE_PULL_POLICY,
     INTERNAL, makeDirectTypeProxy, makeStringTypeProxy,
@@ -14,7 +15,12 @@ import {
     WorkflowBuilder
 } from "@opensearch-migrations/argo-workflow-builders";
 import {OwnerReference} from "@opensearch-migrations/k8s-types";
-import {setupLog4jConfigForContainer} from "./commonUtils/containerFragments";
+import {
+    setupLog4jConfigForContainer,
+    setupTestCredsForContainer,
+    setupTransformsForContainerForMode,
+    TransformVolumeMode
+} from "./commonUtils/containerFragments";
 import {CommonWorkflowParameters} from "./commonUtils/workflowParameters";
 import {getHttpAuthSecretName} from "./commonUtils/clusterSettingManipulators";
 import {getTargetHttpAuthCredsEnvVars} from "./commonUtils/basicCredsGetters";
@@ -71,7 +77,7 @@ function makeReplayerTargetParamDict(
 
 function makeReplayerParamsDict(
     targetConfig: BaseExpression<Serialized<z.infer<typeof NAMED_TARGET_CLUSTER_CONFIG>>>,
-    options: BaseExpression<Serialized<z.infer<typeof USER_REPLAYER_OPTIONS>>>,
+    options: BaseExpression<Serialized<z.infer<typeof ARGO_REPLAYER_OPTIONS>>>,
     kafkaConfig: BaseExpression<Serialized<z.infer<typeof KAFKA_CLIENT_CONFIG>>>,
     kafkaGroupId: BaseExpression<string>,
     resolvedKafkaConnection: BaseExpression<string>,
@@ -145,8 +151,12 @@ function getReplayerDeploymentManifest
     name: BaseExpression<string>,
 
     useCustomLogging: BaseExpression<boolean>,
+    useLocalStack: BaseExpression<boolean>,
     loggingConfigMap: BaseExpression<string>,
     jvmArgs: BaseExpression<string>,
+    transformsImage: BaseExpression<string>,
+    transformsConfigMap: BaseExpression<string>,
+    transformsVolumeMode: TransformVolumeMode,
 
     basicAuthSecretName: BaseExpression<string>,
 
@@ -204,25 +214,28 @@ function getReplayerDeploymentManifest
         ]
     };
     const finalContainerDefinition =
-        setupLog4jConfigForContainer(args.useCustomLogging, args.loggingConfigMap,
-            {container: baseContainerDefinition, volumes: [
-                {
-                    name: "kafka-auth-config",
-                    configMap: {name: makeStringTypeProxy(args.kafkaAuthConfigMapName)}
-                },
-                {
-                    name: "kafka-ca",
-                    secret: {
-                        secretName: makeStringTypeProxy(expr.ternary(
-                            isScramAuth,
-                            args.kafkaCaSecretName,
-                            expr.literal("empty")
-                        )),
-                        optional: makeDirectTypeProxy(expr.not(isScramAuth))
+        setupTransformsForContainerForMode(args.transformsVolumeMode, args.transformsImage, args.transformsConfigMap,
+            setupTestCredsForContainer(args.useLocalStack,
+                setupLog4jConfigForContainer(args.useCustomLogging, args.loggingConfigMap,
+                {container: baseContainerDefinition, volumes: [
+                    {
+                        name: "kafka-auth-config",
+                        configMap: {name: makeStringTypeProxy(args.kafkaAuthConfigMapName)}
+                    },
+                    {
+                        name: "kafka-ca",
+                        secret: {
+                            secretName: makeStringTypeProxy(expr.ternary(
+                                isScramAuth,
+                                args.kafkaCaSecretName,
+                                expr.literal("empty")
+                            )),
+                            optional: makeDirectTypeProxy(expr.not(isScramAuth))
+                        }
                     }
-                }
-            ]},
-            args.jvmArgs);
+                ]},
+                args.jvmArgs))
+        );
     return {
         apiVersion: "apps/v1",
         kind: "Deployment",
@@ -267,6 +280,28 @@ function getReplayerDeploymentManifest
     }
 }
 
+const createDeploymentInputs = {
+    name: defineRequiredParam<string>(),
+    jsonConfig: defineRequiredParam<string>(),
+    kafkaAuthConfigMapName: defineRequiredParam<string>(),
+    kafkaAuthType: defineRequiredParam<string>(),
+    kafkaSecretName: defineRequiredParam<string>(),
+    kafkaCaSecretName: defineRequiredParam<string>(),
+    ownerUid: defineRequiredParam<string>(),
+    podReplicas: defineRequiredParam<number>(),
+    useLocalStack: defineRequiredParam<boolean>(),
+    jvmArgs: defineRequiredParam<string>(),
+    loggingConfigurationOverrideConfigMap: defineRequiredParam<string>(),
+    transformsImage: defineRequiredParam<string>(),
+    transformsConfigMap: defineRequiredParam<string>(),
+    basicAuthSecretName: defineRequiredParam<string>(),
+    sourceK8sLabel: defineRequiredParam<string>(),
+    targetK8sLabel: defineRequiredParam<string>(),
+    taskK8sLabel: defineParam<string>({expression: expr.literal("trafficReplayer")}),
+    ...makeRequiredImageParametersForKeys(["TrafficReplayer"]),
+    resources: defineRequiredParam<ResourceRequirementsType>()
+};
+
 
 export const Replayer = WorkflowBuilder.create({
   k8sResourceName: "replayer",
@@ -275,25 +310,81 @@ export const Replayer = WorkflowBuilder.create({
 
   .addParams(CommonWorkflowParameters)
 
-  .addTemplate("createDeployment", (t) =>
+  .addTemplate("createDeploymentWithImageTransforms", (t) =>
     t
-      .addRequiredInput("name", typeToken<string>())
-      .addRequiredInput("jsonConfig", typeToken<string>())
-      .addRequiredInput("kafkaAuthConfigMapName", typeToken<string>())
-      .addRequiredInput("kafkaAuthType", typeToken<string>())
-      .addRequiredInput("kafkaSecretName", typeToken<string>())
-      .addRequiredInput("kafkaCaSecretName", typeToken<string>())
-      .addRequiredInput("ownerUid", typeToken<string>())
-      .addRequiredInput("podReplicas", typeToken<number>())
-      .addRequiredInput("jvmArgs", typeToken<string>())
-      .addRequiredInput("loggingConfigurationOverrideConfigMap", typeToken<string>())
-      .addRequiredInput("basicAuthSecretName", typeToken<string>())
-      .addRequiredInput("sourceK8sLabel", typeToken<string>())
-      .addRequiredInput("targetK8sLabel", typeToken<string>())
-      .addOptionalInput("taskK8sLabel", c => "trafficReplayer")
-      .addInputsFromRecord(makeRequiredImageParametersForKeys(["TrafficReplayer"]))
-      .addRequiredInput("resources", typeToken<ResourceRequirementsType>())
-
+      .addInputsFromRecord(createDeploymentInputs)
+      .addResourceTask(b => b
+        .setDefinition({
+          action: "apply",
+          setOwnerReference: false,
+          successCondition: "status.readyReplicas > 0",
+          manifest: getReplayerDeploymentManifest({
+            podReplicas: expr.deserializeRecord(b.inputs.podReplicas),
+            useCustomLogging: expr.not(expr.isEmpty(b.inputs.loggingConfigurationOverrideConfigMap)),
+            useLocalStack: expr.deserializeRecord(b.inputs.useLocalStack),
+            loggingConfigMap: b.inputs.loggingConfigurationOverrideConfigMap,
+            jvmArgs: b.inputs.jvmArgs,
+            transformsImage: b.inputs.transformsImage,
+            transformsConfigMap: b.inputs.transformsConfigMap,
+            transformsVolumeMode: "image",
+            basicAuthSecretName: b.inputs.basicAuthSecretName,
+            name: b.inputs.name,
+            replayerImageName: b.inputs.imageTrafficReplayerLocation,
+            replayerImagePullPolicy: b.inputs.imageTrafficReplayerPullPolicy,
+            workflowName: expr.getWorkflowValue("name"),
+            jsonConfig: expr.toBase64(b.inputs.jsonConfig),
+            resources: expr.deserializeRecord(b.inputs.resources),
+            kafkaAuthConfigMapName: b.inputs.kafkaAuthConfigMapName,
+            kafkaAuthType: b.inputs.kafkaAuthType,
+            kafkaSecretName: b.inputs.kafkaSecretName,
+            kafkaCaSecretName: b.inputs.kafkaCaSecretName,
+            ownerUid: b.inputs.ownerUid,
+            sourceK8sLabel: b.inputs.sourceK8sLabel,
+            targetK8sLabel: b.inputs.targetK8sLabel,
+            taskK8sLabel: b.inputs.taskK8sLabel,
+          })
+        }))
+      .addRetryParameters(K8S_RESOURCE_RETRY_STRATEGY)
+  )
+  .addTemplate("createDeploymentWithConfigMapTransforms", (t) =>
+    t
+      .addInputsFromRecord(createDeploymentInputs)
+      .addResourceTask(b => b
+        .setDefinition({
+          action: "apply",
+          setOwnerReference: false,
+          successCondition: "status.readyReplicas > 0",
+          manifest: getReplayerDeploymentManifest({
+            podReplicas: expr.deserializeRecord(b.inputs.podReplicas),
+            useCustomLogging: expr.not(expr.isEmpty(b.inputs.loggingConfigurationOverrideConfigMap)),
+            useLocalStack: expr.deserializeRecord(b.inputs.useLocalStack),
+            loggingConfigMap: b.inputs.loggingConfigurationOverrideConfigMap,
+            jvmArgs: b.inputs.jvmArgs,
+            transformsImage: b.inputs.transformsImage,
+            transformsConfigMap: b.inputs.transformsConfigMap,
+            transformsVolumeMode: "configMap",
+            basicAuthSecretName: b.inputs.basicAuthSecretName,
+            name: b.inputs.name,
+            replayerImageName: b.inputs.imageTrafficReplayerLocation,
+            replayerImagePullPolicy: b.inputs.imageTrafficReplayerPullPolicy,
+            workflowName: expr.getWorkflowValue("name"),
+            jsonConfig: expr.toBase64(b.inputs.jsonConfig),
+            resources: expr.deserializeRecord(b.inputs.resources),
+            kafkaAuthConfigMapName: b.inputs.kafkaAuthConfigMapName,
+            kafkaAuthType: b.inputs.kafkaAuthType,
+            kafkaSecretName: b.inputs.kafkaSecretName,
+            kafkaCaSecretName: b.inputs.kafkaCaSecretName,
+            ownerUid: b.inputs.ownerUid,
+            sourceK8sLabel: b.inputs.sourceK8sLabel,
+            targetK8sLabel: b.inputs.targetK8sLabel,
+            taskK8sLabel: b.inputs.taskK8sLabel,
+          })
+        }))
+      .addRetryParameters(K8S_RESOURCE_RETRY_STRATEGY)
+  )
+  .addTemplate("createDeploymentNoTransforms", (t) =>
+    t
+      .addInputsFromRecord(createDeploymentInputs)
         .addResourceTask(b => b
             .setDefinition({
                 action: "apply",
@@ -302,8 +393,12 @@ export const Replayer = WorkflowBuilder.create({
                 manifest: getReplayerDeploymentManifest({
                     podReplicas: expr.deserializeRecord(b.inputs.podReplicas),
                     useCustomLogging: expr.not(expr.isEmpty(b.inputs.loggingConfigurationOverrideConfigMap)),
+                    useLocalStack: expr.deserializeRecord(b.inputs.useLocalStack),
                     loggingConfigMap: b.inputs.loggingConfigurationOverrideConfigMap,
                     jvmArgs: b.inputs.jvmArgs,
+                    transformsImage: b.inputs.transformsImage,
+                    transformsConfigMap: b.inputs.transformsConfigMap,
+                    transformsVolumeMode: "emptyDir",
                     basicAuthSecretName: b.inputs.basicAuthSecretName,
                     name: b.inputs.name,
                     replayerImageName: b.inputs.imageTrafficReplayerLocation,
@@ -322,7 +417,29 @@ export const Replayer = WorkflowBuilder.create({
                 })
             }))
         .addRetryParameters(K8S_RESOURCE_RETRY_STRATEGY)
-    )
+  )
+  .addTemplate("createDeployment", (t) =>
+    t
+      .addInputsFromRecord(createDeploymentInputs)
+      .addSteps(b => {
+        const hasImage = expr.not(expr.isEmpty(b.inputs.transformsImage));
+        const hasConfigMap = expr.not(expr.isEmpty(b.inputs.transformsConfigMap));
+
+        return b
+          .addStep("withImageTransforms", INTERNAL, "createDeploymentWithImageTransforms", c =>
+              c.register({...selectInputsForRegister(b, c), taskK8sLabel: b.inputs.taskK8sLabel}),
+              {when: {templateExp: hasImage}}
+          )
+          .addStep("withConfigMapTransforms", INTERNAL, "createDeploymentWithConfigMapTransforms", c =>
+              c.register({...selectInputsForRegister(b, c), taskK8sLabel: b.inputs.taskK8sLabel}),
+              {when: {templateExp: expr.and(expr.not(hasImage), hasConfigMap)}}
+          )
+          .addStep("withoutTransforms", INTERNAL, "createDeploymentNoTransforms", c =>
+              c.register({...selectInputsForRegister(b, c), taskK8sLabel: b.inputs.taskK8sLabel}),
+              {when: {templateExp: expr.and(expr.not(hasImage), expr.not(hasConfigMap))}}
+          );
+      })
+  )
 
   .addTemplate("createKafkaClientPropertiesConfigMap", (t) =>
     t
@@ -355,6 +472,7 @@ export const Replayer = WorkflowBuilder.create({
         "replayerOptions",
         typeToken<z.infer<typeof ARGO_REPLAYER_OPTIONS>>(),
       )
+      .addRequiredInput("useLocalStack", typeToken<boolean>())
       .addOptionalInput("resolvedKafkaConnection", (c) => "")
       .addOptionalInput("resolvedKafkaListenerName", (c) => "")
       .addOptionalInput("resolvedKafkaAuthType", (c) => "")
@@ -399,6 +517,7 @@ export const Replayer = WorkflowBuilder.create({
                 ["podReplicas"],
                 1,
               ),
+              useLocalStack: b.inputs.useLocalStack,
               jvmArgs: expr.dig(
                 expr.deserializeRecord(b.inputs.replayerOptions),
                 ["jvmArgs"],
@@ -407,6 +526,16 @@ export const Replayer = WorkflowBuilder.create({
               loggingConfigurationOverrideConfigMap: expr.dig(
                 expr.deserializeRecord(b.inputs.replayerOptions),
                 ["loggingConfigurationOverrideConfigMap"],
+                "",
+              ),
+              transformsImage: expr.dig(
+                expr.deserializeRecord(b.inputs.replayerOptions),
+                ["transformsImage"],
+                "",
+              ),
+              transformsConfigMap: expr.dig(
+                expr.deserializeRecord(b.inputs.replayerOptions),
+                ["transformsConfigMap"],
                 "",
               ),
               basicAuthSecretName: getHttpAuthSecretName(b.inputs.targetConfig),

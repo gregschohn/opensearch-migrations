@@ -12,6 +12,124 @@ export type ContainerVolumePair = {
     readonly volumes: Volume[]
 };
 
+export const TRANSFORMS_MOUNT_PATH = "/transforms";
+const TRANSFORMS_VOLUME_NAME = "user-transforms";
+export type TransformVolumeMode = "image" | "configMap" | "emptyDir";
+
+export function makeTransformsVolume(
+    transformsImage: BaseExpression<string>,
+    transformsConfigMap: BaseExpression<string>
+) {
+    const hasImage = expr.not(expr.isEmpty(transformsImage));
+    const hasConfigMap = expr.not(expr.isEmpty(transformsConfigMap));
+    const imageVolume = expr.makeDict({
+        name: TRANSFORMS_VOLUME_NAME,
+        image: expr.makeDict({
+            reference: transformsImage,
+            pullPolicy: expr.literal("IfNotPresent"),
+        }),
+    }) as BaseExpression<any>;
+    const configMapVolume = expr.makeDict({
+        name: TRANSFORMS_VOLUME_NAME,
+        configMap: expr.makeDict({
+            name: transformsConfigMap,
+        }),
+    }) as BaseExpression<any>;
+    const emptyDirVolume = expr.makeDict({
+        name: TRANSFORMS_VOLUME_NAME,
+        emptyDir: expr.makeDict({}),
+    }) as BaseExpression<any>;
+
+    return expr.ternary(
+        hasImage,
+        imageVolume,
+        expr.ternary(
+            hasConfigMap,
+            configMapVolume,
+            emptyDirVolume
+        )
+    );
+}
+
+export function setupTransformsForContainer(
+    transformsImage: BaseExpression<string>,
+    transformsConfigMap: BaseExpression<string>,
+    def: ContainerVolumePair): ContainerVolumePair {
+    const {volumeMounts, ...restOfContainer} = def.container;
+    return {
+        volumes: [
+            ...def.volumes,
+            makeDirectTypeProxy(makeTransformsVolume(transformsImage, transformsConfigMap)) as unknown as Volume
+        ],
+        container: {
+            ...restOfContainer,
+            volumeMounts: [
+                ...(volumeMounts === undefined ? [] : volumeMounts),
+                {
+                    name: TRANSFORMS_VOLUME_NAME,
+                    mountPath: TRANSFORMS_MOUNT_PATH,
+                    readOnly: true
+                }
+            ]
+        }
+    } as const;
+}
+
+function makeTransformsVolumeForMode(
+    mode: TransformVolumeMode,
+    transformsImage: BaseExpression<string>,
+    transformsConfigMap: BaseExpression<string>
+): Volume {
+    if (mode === "image") {
+        return {
+            name: TRANSFORMS_VOLUME_NAME,
+            image: {
+                reference: makeStringTypeProxy(transformsImage),
+                pullPolicy: "IfNotPresent"
+            }
+        };
+    }
+
+    if (mode === "configMap") {
+        return {
+            name: TRANSFORMS_VOLUME_NAME,
+            configMap: {
+                name: makeStringTypeProxy(transformsConfigMap)
+            }
+        };
+    }
+
+    return {
+        name: TRANSFORMS_VOLUME_NAME,
+        emptyDir: {}
+    };
+}
+
+export function setupTransformsForContainerForMode(
+    mode: TransformVolumeMode,
+    transformsImage: BaseExpression<string>,
+    transformsConfigMap: BaseExpression<string>,
+    def: ContainerVolumePair): ContainerVolumePair {
+    const {volumeMounts, ...restOfContainer} = def.container;
+    return {
+        volumes: [
+            ...def.volumes,
+            makeTransformsVolumeForMode(mode, transformsImage, transformsConfigMap)
+        ],
+        container: {
+            ...restOfContainer,
+            volumeMounts: [
+                ...(volumeMounts === undefined ? [] : volumeMounts),
+                {
+                    name: TRANSFORMS_VOLUME_NAME,
+                    mountPath: TRANSFORMS_MOUNT_PATH,
+                    readOnly: true
+                }
+            ]
+        }
+    } as const;
+}
+
 export function setupTestCredsForContainer(
     useLocalStack: BaseExpression<boolean>,
     def: ContainerVolumePair): ContainerVolumePair {
