@@ -310,6 +310,8 @@ kubectl delete approvalgates.migrations.opensearch.org \\
                     semaphoreKey: expr.get(
                         expr.deserializeRecord(b.inputs.snapshotItemConfig), "semaphoreKey"),
                     configChecksum: b.inputs.configChecksum,
+                    dataSnapshotName: b.inputs.resourceName,
+                    dataSnapshotUid: expr.get(expr.deserializeRecord(b.inputs.snapshotItemConfig), "resourceUid"),
                 }),
                 {when: c => ({templateExp: expr.and(
                     expr.not(expr.equals(c.readSnapshotPhase.outputs.phase, "Completed")),
@@ -346,7 +348,8 @@ kubectl delete approvalgates.migrations.opensearch.org \\
                             expr.deserializeRecord(expr.recordToString(c.item)),
                             "dependsOnProxySetups"
                         ),
-                        configChecksum: expr.get(c.item, "configChecksum")
+                        configChecksum: expr.get(c.item, "configChecksum"),
+                        resourceUid: expr.get(c.item, "resourceUid")
                     })),
 //                    snapshotItemConfig: expr.cast(c.item).to<Serialized<z.infer<typeof PER_SOURCE_CREATE_SNAPSHOTS_CONFIG>>>(),
                     sourceConfig: expr.serialize(

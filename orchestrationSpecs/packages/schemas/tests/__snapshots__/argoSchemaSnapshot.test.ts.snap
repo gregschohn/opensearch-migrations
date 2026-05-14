@@ -908,6 +908,9 @@ exports[`test schemas matches expected argo schema matches expected 1`] = `
                       },
                       "configChecksum": {
                         "type": "string"
+                      },
+                      "resourceUid": {
+                        "type": "string"
                       }
                     },
                     "required": [
@@ -918,7 +921,8 @@ exports[`test schemas matches expected argo schema matches expected 1`] = `
                       "semaphoreConfigMapName",
                       "semaphoreKey",
                       "dependsOnProxySetups",
-                      "configChecksum"
+                      "configChecksum",
+                      "resourceUid"
                     ]
                   },
                   "minItems": 1

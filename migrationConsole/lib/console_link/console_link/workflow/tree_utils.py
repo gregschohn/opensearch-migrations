@@ -16,6 +16,7 @@ CRD_GROUP = 'migrations.opensearch.org'
 CRD_VERSION = 'v1alpha1'
 APPROVAL_GATE_PLURAL = 'approvalgates'
 SNAPSHOT_MIGRATION_PLURAL = 'snapshotmigrations'
+DATA_SNAPSHOT_PLURAL = 'datasnapshots'
 
 
 @dataclass
@@ -70,6 +71,10 @@ def _approval_gate_name(node: Dict[str, Any]) -> Optional[str]:
 
 
 def _snapshot_migration_name(node: Dict[str, Any]) -> Optional[str]:
+    return get_node_input_parameter(node, 'resourceName')
+
+
+def _data_snapshot_name(node: Dict[str, Any]) -> Optional[str]:
     return get_node_input_parameter(node, 'resourceName')
 
 
@@ -144,8 +149,23 @@ def _default_snapshot_migration_reader(name: str, namespace: str) -> Dict[str, A
     )
 
 
+def _default_data_snapshot_reader(name: str, namespace: str) -> Dict[str, Any]:
+    load_k8s_config()
+    return client.CustomObjectsApi().get_namespaced_custom_object(
+        group=CRD_GROUP,
+        version=CRD_VERSION,
+        namespace=namespace,
+        plural=DATA_SNAPSHOT_PLURAL,
+        name=name,
+    )
+
+
 def _is_snapshot_migration_wait_node(node: Dict[str, Any]) -> bool:
     return _normalize_attempt_suffix(node.get('display_name', '')) == 'waitForSnapshotMigration'
+
+
+def _is_data_snapshot_wait_node(node: Dict[str, Any]) -> bool:
+    return _normalize_attempt_suffix(node.get('display_name', '')) == 'waitForDataSnapshot'
 
 
 def overlay_snapshot_migration_backfill_status(
@@ -183,6 +203,43 @@ def overlay_snapshot_migration_backfill_status(
         migration_name = _snapshot_migration_name(node)
         if migration_name in backfill_statuses:
             node['snapshot_migration_backfill_status'] = backfill_statuses[migration_name]
+
+
+def overlay_data_snapshot_creation_status(
+    tree_nodes: List[Dict[str, Any]],
+    namespace: str,
+    data_snapshot_reader: Optional[Callable[[str, str], Dict[str, Any]]] = None
+) -> None:
+    """Attach DataSnapshot.status.snapshotCreation to snapshot wait nodes."""
+    snapshot_names = {
+        name
+        for node in _iter_tree_nodes(tree_nodes)
+        if _is_data_snapshot_wait_node(node)
+        for name in [_data_snapshot_name(node)]
+        if name
+    }
+    if not namespace or not snapshot_names:
+        return
+
+    reader = data_snapshot_reader or _default_data_snapshot_reader
+    snapshot_statuses: Dict[str, Dict[str, Any]] = {}
+    for snapshot_name in snapshot_names:
+        try:
+            data_snapshot = reader(snapshot_name, namespace)
+        except Exception as e:
+            logger.debug("Could not fetch DataSnapshot %s/%s: %s", namespace, snapshot_name, e)
+            continue
+
+        snapshot_status = data_snapshot.get('status', {}).get('snapshotCreation')
+        if isinstance(snapshot_status, dict):
+            snapshot_statuses[snapshot_name] = snapshot_status
+
+    for node in _iter_tree_nodes(tree_nodes):
+        if not _is_data_snapshot_wait_node(node):
+            continue
+        snapshot_name = _data_snapshot_name(node)
+        if snapshot_name in snapshot_statuses:
+            node['data_snapshot_creation_status'] = snapshot_statuses[snapshot_name]
 
 
 def build_nested_workflow_tree(workflow_data: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -418,7 +475,12 @@ def filter_tree_nodes(tree_nodes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
     def should_keep_by_type(node):
         # Keep leaf nodes (actual work) and approval gate nodes
-        return node['type'] in ["Pod", "Skipped"] or is_approval_node(node) or _is_snapshot_migration_wait_node(node)
+        return (
+            node['type'] in ["Pod", "Skipped"]
+            or is_approval_node(node)
+            or _is_snapshot_migration_wait_node(node)
+            or _is_data_snapshot_wait_node(node)
+        )
 
     def has_group_name(node):
         # Keep containers that have a groupName (meaningful grouping)
@@ -582,6 +644,46 @@ def _format_snapshot_migration_backfill_status(status: Dict[str, Any]) -> Option
     return rendered
 
 
+def _format_data_snapshot_creation_status(status: Dict[str, Any]) -> Optional[str]:
+    summary = status.get('summary') if isinstance(status.get('summary'), dict) else {}
+    phase = status.get('phase') or status.get('status')
+    message = status.get('message')
+    updated_at = status.get('updatedAt')
+
+    details = []
+    shards_total = _format_number(summary.get('shardsTotal'))
+    shards_successful = _format_number(summary.get('shardsSuccessful'))
+    if shards_total is not None:
+        details.append(f"shards {shards_successful or '0'}/{shards_total}")
+
+    shards_failed = _format_number(summary.get('shardsFailed'))
+    if shards_failed is not None:
+        details.append(f"failed {shards_failed}")
+
+    data_processed = summary.get('dataProcessed')
+    data_unit = summary.get('dataProcessedUnit')
+    if data_processed:
+        details.append(f"data {data_processed}{(' ' + data_unit) if data_unit else ''}")
+
+    eta = summary.get('eta')
+    if eta:
+        details.append(f"ETA {eta}")
+
+    parts = [str(phase)] if phase else []
+    if details:
+        parts.append(f"({', '.join(details)})")
+    elif message:
+        parts.append(str(message))
+
+    if not parts:
+        return None
+
+    rendered = f"Snapshot: {' '.join(parts)}"
+    if updated_at:
+        rendered += f" updated {updated_at}"
+    return rendered
+
+
 def get_step_rich_label(
     node: dict, status_output: Optional[Union[str, ArtifactRef]],
     show_approval_name: bool = True
@@ -656,6 +758,10 @@ def get_step_rich_label(
         rendered_backfill_status = _format_snapshot_migration_backfill_status(backfill_status)
         if rendered_backfill_status:
             status_suffix += f": {rendered_backfill_status}"
+    if snapshot_status := node.get('data_snapshot_creation_status'):
+        rendered_snapshot_status = _format_data_snapshot_creation_status(snapshot_status)
+        if rendered_snapshot_status:
+            status_suffix += f": {rendered_snapshot_status}"
     from rich.markup import escape
     escaped_line = escape(full_unformatted_line + status_suffix)
     return f"[{color}]{symbol} {escaped_line} [/{color}]"

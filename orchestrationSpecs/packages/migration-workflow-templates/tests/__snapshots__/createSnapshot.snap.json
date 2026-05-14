@@ -146,21 +146,29 @@
         }
       },
       {
-        "name": "checksnapshotstatusinternal",
+        "name": "applysnapshotdonecronjob",
         "inputs": {
           "parameters": [
             {
               "name": "configContents"
             },
             {
+              "name": "dataSnapshotName"
+            },
+            {
+              "name": "dataSnapshotUid"
+            },
+            {
+              "name": "snapshotName"
+            },
+            {
+              "name": "configChecksum"
+            },
+            {
               "name": "sourceK8sLabel"
             },
             {
               "name": "snapshotK8sLabel"
-            },
-            {
-              "name": "taskK8sLabel",
-              "value": "snapshotStatusCheck"
             },
             {
               "name": "imageMigrationConsoleLocation"
@@ -170,119 +178,42 @@
             }
           ]
         },
-        "steps": [
-          [
-            {
-              "templateRef": {
-                "template": "runmigrationcommandforstatus",
-                "name": "migration-console"
-              },
-              "arguments": {
-                "parameters": [
-                  {
-                    "name": "configContents",
-                    "value": "{{inputs.parameters.configContents}}"
-                  },
-                  {
-                    "name": "sourceK8sLabel",
-                    "value": "{{inputs.parameters.sourceK8sLabel}}"
-                  },
-                  {
-                    "name": "snapshotK8sLabel",
-                    "value": "{{inputs.parameters.snapshotK8sLabel}}"
-                  },
-                  {
-                    "name": "taskK8sLabel",
-                    "value": "{{inputs.parameters.taskK8sLabel}}"
-                  },
-                  {
-                    "name": "imageMigrationConsoleLocation",
-                    "value": "{{inputs.parameters.imageMigrationConsoleLocation}}"
-                  },
-                  {
-                    "name": "imageMigrationConsolePullPolicy",
-                    "value": "{{inputs.parameters.imageMigrationConsolePullPolicy}}"
-                  },
-                  {
-                    "name": "command",
-                    "value": "set -e\n  touch /tmp/status-output.txt\n  touch /tmp/phase-output.txt\n  \n  # Quick status check - if SUCCESS, we're done\n  status=$(console --config-file=/config/migration_services.yaml snapshot status)\n  if [ \"$status\" = \"SUCCESS\" ]; then\n    echo \"Snapshot completed successfully\" > /tmp/status-output.txt\n    exit 0\n  fi\n\n  # If snapshot has permanently failed, stop retrying\n  if [ \"$status\" = \"FAILED\" ]; then\n    echo \"Snapshot failed\" > /tmp/status-output.txt\n    echo Failed > /tmp/phase-output.txt\n    exit 0\n  fi\n  \n  # Deep check and save output in case there was a race condition\n  deep_output=$(console --config-file=/config/migration_services.yaml snapshot status --deep-check)\n  \n  # Check if deep check also returned SUCCESS (snapshot completed during execution)\n  if [ \"$deep_output\" = \"SUCCESS\" ]; then\n    echo \"Snapshot completed successfully\" > /tmp/status-output.txt\n    exit 0\n  fi\n  \n  # Process deep check output with awk for in-progress snapshots\n  echo \"$deep_output\" | awk '\n    /Total shards:/ { total = $3 }\n    /Successful shards:/ { successful = $3 }\n    /Data processed:/ { data = $3; unit = $4 }\n    /Estimated time to completion:/ { \n      sub(/.*: /, \"\");\n      eta = $0\n    }\n    END {\n      if (total) {\n        output = \"Shards: \" successful \"/\" total \" | Data: \" data \" \" unit\n        if (eta != \"0h 0m 0s\") {\n          output = output \" | ETA: \" eta\n        }\n        print output\n      }\n    }\n  ' > /tmp/status-output.txt\n  echo Checked > /tmp/phase-output.txt\n  \n  exit 1"
-                  }
-                ]
-              },
-              "name": "checkSnapshotCompletion"
+        "container": {
+          "env": [],
+          "image": "{{inputs.parameters.imageMigrationConsoleLocation}}",
+          "imagePullPolicy": "{{inputs.parameters.imageMigrationConsolePullPolicy}}",
+          "command": [
+            "/bin/bash",
+            "-c"
+          ],
+          "resources": {
+            "limits": {
+              "cpu": "500m",
+              "memory": "500Mi"
+            },
+            "requests": {
+              "cpu": "500m",
+              "memory": "500Mi"
             }
+          },
+          "args": [
+            "set -eu\n\nCRONJOB_NAME=\"{{=inputs.parameters.dataSnapshotName+'-snapshot-done'}}\"\nSESSION_NAME=\"{{inputs.parameters.dataSnapshotName}}\"\nWORKFLOW_NAME=\"{{workflow.name}}\"\nWORKFLOW_UID=\"{{workflow.uid}}\"\nPARENT_WORKFLOW_NAME=\"{{workflow.name}}\"\nPARENT_WORKFLOW_UID=\"{{workflow.uid}}\"\nDATASNAPSHOT_NAME=\"{{inputs.parameters.dataSnapshotName}}\"\nDATASNAPSHOT_UID=\"{{inputs.parameters.dataSnapshotUid}}\"\nSNAPSHOT_NAME=\"{{inputs.parameters.snapshotName}}\"\nCONFIG_CHECKSUM=\"{{inputs.parameters.configChecksum}}\"\nCONSOLE_IMAGE=\"{{inputs.parameters.imageMigrationConsoleLocation}}\"\nCONSOLE_IMAGE_PULL_POLICY=\"{{inputs.parameters.imageMigrationConsolePullPolicy}}\"\nSOURCE_LABEL=\"{{inputs.parameters.sourceK8sLabel}}\"\nSNAPSHOT_LABEL=\"{{inputs.parameters.snapshotK8sLabel}}\"\nCONSOLE_CONFIG_BASE64=\"{{=toBase64(inputs.parameters.configContents)}}\"\nSTARTUP_GRACE_SECONDS=\"600\"\nCLAIMED_AT=\"$(date -u +%s)\"\n\nWORKFLOW_UID_LABEL=\"migrations.opensearch.org/snapshot-monitor-workflow-uid\"\nSESSION_LABEL=\"migrations.opensearch.org/snapshot-monitor-session\"\nSNAPSHOT_DONE_SCRIPT_B64=\"c2V0IC1ldQoKU05BUFNIT1RfTU9OSVRPUl9DQURFTkNFX0xBQkVMPSJtaWdyYXRpb25zLm9wZW5zZWFyY2gub3JnL3NuYXBzaG90LW1vbml0b3ItY2FkZW5jZS1zdGVwIgpTTkFQU0hPVF9NT05JVE9SX1dPUktGTE9XX1VJRF9MQUJFTD0ibWlncmF0aW9ucy5vcGVuc2VhcmNoLm9yZy9zbmFwc2hvdC1tb25pdG9yLXdvcmtmbG93LXVpZCIKSzhTX0FQSV9TRVJWRVI9Imh0dHBzOi8vJHtLVUJFUk5FVEVTX1NFUlZJQ0VfSE9TVH06JHtLVUJFUk5FVEVTX1NFUlZJQ0VfUE9SVF9IVFRQUzotNDQzfSIKSzhTX1NBX1RPS0VOX0ZJTEU9Ii92YXIvcnVuL3NlY3JldHMva3ViZXJuZXRlcy5pby9zZXJ2aWNlYWNjb3VudC90b2tlbiIKSzhTX1NBX0NBX0ZJTEU9Ii92YXIvcnVuL3NlY3JldHMva3ViZXJuZXRlcy5pby9zZXJ2aWNlYWNjb3VudC9jYS5jcnQiCks4U19TQV9UT0tFTj0iJChjYXQgIiRLOFNfU0FfVE9LRU5fRklMRSIpIgoKbWtkaXIgLXAgL2NvbmZpZwplY2hvICIkQ09OU09MRV9DT05GSUdfQkFTRTY0IiB8IGJhc2U2NCAtZCA+IC9jb25maWcvbWlncmF0aW9uX3NlcnZpY2VzLnlhbWxfCmpxIC1mIHdvcmtmbG93Q29uZmlnVG9TZXJ2aWNlc0NvbmZpZy5qcSA8IC9jb25maWcvbWlncmF0aW9uX3NlcnZpY2VzLnlhbWxfID4gL2NvbmZpZy9taWdyYXRpb25fc2VydmljZXMueWFtbApleHBvcnQgTUlHUkFUSU9OX1VTRV9TRVJWSUNFU19ZQU1MX0NPTkZJRz10cnVlCgprOHNfYXBpKCkgewogICAgbWV0aG9kPSIkMSIKICAgIHBhdGg9IiQyIgogICAgY29udGVudF90eXBlPSIkMyIKICAgIGJvZHk9IiR7NDotfSIKICAgIGlmIFsgLW4gIiRib2R5IiBdOyB0aGVuCiAgICAgICAgY3VybCAtZnNTIFwKICAgICAgICAgICAgLS1jYWNlcnQgIiRLOFNfU0FfQ0FfRklMRSIgXAogICAgICAgICAgICAtSCAiQXV0aG9yaXphdGlvbjogQmVhcmVyICRLOFNfU0FfVE9LRU4iIFwKICAgICAgICAgICAgLUggIkNvbnRlbnQtVHlwZTogJGNvbnRlbnRfdHlwZSIgXAogICAgICAgICAgICAtWCAiJG1ldGhvZCIgXAogICAgICAgICAgICAiJEs4U19BUElfU0VSVkVSJHBhdGgiIFwKICAgICAgICAgICAgLS1kYXRhICIkYm9keSIKICAgIGVsc2UKICAgICAgICBjdXJsIC1mc1MgXAogICAgICAgICAgICAtLWNhY2VydCAiJEs4U19TQV9DQV9GSUxFIiBcCiAgICAgICAgICAgIC1IICJBdXRob3JpemF0aW9uOiBCZWFyZXIgJEs4U19TQV9UT0tFTiIgXAogICAgICAgICAgICAtSCAiQ29udGVudC1UeXBlOiAkY29udGVudF90eXBlIiBcCiAgICAgICAgICAgIC1YICIkbWV0aG9kIiBcCiAgICAgICAgICAgICIkSzhTX0FQSV9TRVJWRVIkcGF0aCIKICAgIGZpCn0KCmNyb25qb2JfanNvbj0iJChrdWJlY3RsIGdldCBjcm9uam9iICIkU05BUFNIT1RfQ1JPTkpPQl9OQU1FIiAtbyBqc29uIDI+L2Rldi9udWxsIHx8IHRydWUpIgppZiBbIC16ICIkY3JvbmpvYl9qc29uIiBdOyB0aGVuCiAgICBlY2hvICJjcm9uam9iICRTTkFQU0hPVF9DUk9OSk9CX05BTUUgbm90IGZvdW5kOyBub3RoaW5nIHRvIGRvIgogICAgZXhpdCAwCmZpCmNqX3dvcmtmbG93X3VpZD0iJChlY2hvICIkY3JvbmpvYl9qc29uIiB8IGpxIC1yIC0tYXJnIGsgIiRTTkFQU0hPVF9NT05JVE9SX1dPUktGTE9XX1VJRF9MQUJFTCIgJy5tZXRhZGF0YS5sYWJlbHNbJGtdIC8vICIiJykiCmlmIFsgIiRjal93b3JrZmxvd191aWQiICE9ICIkV09SS0ZMT1dfVUlEIiBdOyB0aGVuCiAgICBlY2hvICJzdXBlcnNlZGVkOiBjcm9uam9iIHdvcmtmbG93LXVpZD0kY2pfd29ya2Zsb3dfdWlkIGVudi5XT1JLRkxPV19VSUQ9JFdPUktGTE9XX1VJRCIKICAgIGV4aXQgMApmaQpjal91aWQ9IiQoZWNobyAiJGNyb25qb2JfanNvbiIgfCBqcSAtciAnLm1ldGFkYXRhLnVpZCcpIgpjal9ydj0iJChlY2hvICIkY3JvbmpvYl9qc29uIiB8IGpxIC1yICcubWV0YWRhdGEucmVzb3VyY2VWZXJzaW9uJykiCmNqX25hbWVzcGFjZT0iJChlY2hvICIkY3JvbmpvYl9qc29uIiB8IGpxIC1yICcubWV0YWRhdGEubmFtZXNwYWNlJykiCgpkZWxldGVfY3JvbmpvYl93aXRoX3ByZWNvbmRpdGlvbnMoKSB7CiAgICBib2R5PSIkKGpxIC1uYyAtLWFyZyB1aWQgIiRjal91aWQiIC0tYXJnIHJ2ICIkY2pfcnYiIFwKICAgICAgICAne2FwaVZlcnNpb246InYxIixraW5kOiJEZWxldGVPcHRpb25zIixwcmVjb25kaXRpb25zOnt1aWQ6JHVpZCxyZXNvdXJjZVZlcnNpb246JHJ2fX0nKSIKICAgIGlmIGs4c19hcGkgREVMRVRFICIvYXBpcy9iYXRjaC92MS9uYW1lc3BhY2VzLyRjal9uYW1lc3BhY2UvY3JvbmpvYnMvJFNOQVBTSE9UX0NST05KT0JfTkFNRSIgXAogICAgICAgICJhcHBsaWNhdGlvbi9qc29uIiAiJGJvZHkiID4vZGV2L251bGwgMj4mMTsgdGhlbgogICAgICAgIHJldHVybiAwCiAgICBmaQogICAgZWNobyAicHJlY29uZGl0aW9uZWQgY3JvbmpvYiBkZWxldGUgcmV0dXJuZWQgbm9uLXplcm8gKGxpa2VseSA0MDk6IHN1cGVyc2VkZWQgb3IgUlYgYWR2YW5jZWQpIgogICAgcmV0dXJuIDEKfQoKbWF5YmVfYnVtcF9jYWRlbmNlKCkgewogICAgcmF3X3N0ZXA9IiQoZWNobyAiJGNyb25qb2JfanNvbiIgfCBqcSAtciAtLWFyZyBrICIkU05BUFNIT1RfTU9OSVRPUl9DQURFTkNFX0xBQkVMIiAnLm1ldGFkYXRhLmxhYmVsc1ska10gLy8gIjEiJykiCiAgICBjYXNlICIkcmF3X3N0ZXAiIGluCiAgICAgICAgMXwyfDN8NHw1KSBjdXJyZW50PSIkcmF3X3N0ZXAiIDs7CiAgICAgICAgKikgICAgICAgICBjdXJyZW50PTEgOzsKICAgIGVzYWMKICAgIGlmIFsgIiRjdXJyZW50IiAtZ2UgNSBdOyB0aGVuIHJldHVybiAwOyBmaQogICAgZGVzaXJlZD0kKChjdXJyZW50ICsgMSkpCiAgICBib2R5PSIkKGpxIC1uYyBcCiAgICAgICAgLS1hcmcgbGFiZWwgIiRTTkFQU0hPVF9NT05JVE9SX0NBREVOQ0VfTEFCRUwiIFwKICAgICAgICAtLWFyZyBkZXNpcmVkICIkZGVzaXJlZCIgXAogICAgICAgIC0tYXJnIHNjaGVkICIqLyRkZXNpcmVkICogKiAqICoiIFwKICAgICAgICAtLWFyZyBydiAiJGNqX3J2IiBcCiAgICAgICAgJ3ttZXRhZGF0YTp7cmVzb3VyY2VWZXJzaW9uOiRydixsYWJlbHM6eygkbGFiZWwpOiRkZXNpcmVkfX0sc3BlYzp7c2NoZWR1bGU6JHNjaGVkfX0nKSIKICAgIGlmIGs4c19hcGkgUEFUQ0ggIi9hcGlzL2JhdGNoL3YxL25hbWVzcGFjZXMvJGNqX25hbWVzcGFjZS9jcm9uam9icy8kU05BUFNIT1RfQ1JPTkpPQl9OQU1FIiBcCiAgICAgICAgImFwcGxpY2F0aW9uL21lcmdlLXBhdGNoK2pzb24iICIkYm9keSIgPi9kZXYvbnVsbCAyPiYxOyB0aGVuCiAgICAgICAgZWNobyAiY2FkZW5jZTogJGN1cnJlbnQgLT4gJGRlc2lyZWQiCiAgICBlbHNlCiAgICAgICAgZWNobyAiY2FkZW5jZSBwYXRjaCBmYWlsZWQgKHJlc291cmNlVmVyc2lvbiBtaXNtYXRjaDogY29uY3VycmVudCByZWNsYWltKTsgaWdub3JpbmciCiAgICBmaQp9CgpwYXJlbnRfd29ya2Zsb3dfcnVubmluZygpIHsKICAgIHBoYXNlPSIkKGt1YmVjdGwgZ2V0IHdvcmtmbG93ICIkUEFSRU5UX1dPUktGTE9XX05BTUUiIC1vIGpzb25wYXRoPSd7LnN0YXR1cy5waGFzZX0nIDI+L2Rldi9udWxsIHx8IHRydWUpIgogICAgWyAiJHBoYXNlIiA9ICJSdW5uaW5nIiBdIHx8IFsgIiRwaGFzZSIgPSAiUGVuZGluZyIgXQp9CgpudW1iZXJfb3JfemVybygpIHsKICAgIGNhc2UgIiR7MTotfSIgaW4KICAgICAgICAnJ3wqWyEwLTldKikgZWNobyAwIDs7CiAgICAgICAgKikgZWNobyAiJDEiIDs7CiAgICBlc2FjCn0KCmV4dHJhY3RfbGluZV92YWx1ZSgpIHsKICAgIHBhdHRlcm49IiQxIgogICAgcHJpbnRmICclc1xuJyAiJFNOQVBTSE9UX0RFRVBfT1VUUFVUIiB8IGF3ayAtdiBwPSIkcGF0dGVybiIgJyQwIH4gcCB7IHN1YigvXlteOl0qOltbOnNwYWNlOl1dKi8sICIiKTsgcHJpbnQ7IGV4aXQgfScKfQoKbWFrZV9zbmFwc2hvdF9zdGF0dXNfcGF0Y2goKSB7CiAgICBkYXRhX3NuYXBzaG90X3BoYXNlPSIkMSIKICAgIHNuYXBzaG90X3BoYXNlPSIkMiIKICAgIG1lc3NhZ2U9IiQzIgogICAgbm93PSIkKGRhdGUgLXUgKyIlWS0lbS0lZFQlSDolTTolU1oiKSIKICAgIHRvdGFsPSIkKG51bWJlcl9vcl96ZXJvICIkKGV4dHJhY3RfbGluZV92YWx1ZSAiVG90YWwgc2hhcmRzIikiKSIKICAgIHN1Y2Nlc3NmdWw9IiQobnVtYmVyX29yX3plcm8gIiQoZXh0cmFjdF9saW5lX3ZhbHVlICJTdWNjZXNzZnVsIHNoYXJkcyIpIikiCiAgICBmYWlsZWQ9IiQobnVtYmVyX29yX3plcm8gIiQoZXh0cmFjdF9saW5lX3ZhbHVlICJGYWlsZWQgc2hhcmRzIikiKSIKICAgIGRhdGFfbGluZT0iJChleHRyYWN0X2xpbmVfdmFsdWUgIkRhdGEgcHJvY2Vzc2VkIikiCiAgICBkYXRhX3Byb2Nlc3NlZD0iJChwcmludGYgJyVzJyAiJGRhdGFfbGluZSIgfCBhd2sgJ3twcmludCAkMX0nKSIKICAgIGRhdGFfcHJvY2Vzc2VkX3VuaXQ9IiQocHJpbnRmICclcycgIiRkYXRhX2xpbmUiIHwgYXdrICd7cHJpbnQgJDJ9JykiCiAgICBldGE9IiQoZXh0cmFjdF9saW5lX3ZhbHVlICJFc3RpbWF0ZWQgdGltZSB0byBjb21wbGV0aW9uIikiCgogICAganEgLW5jIFwKICAgICAgICAtLWFyZyBkYXRhU25hcHNob3RQaGFzZSAiJGRhdGFfc25hcHNob3RfcGhhc2UiIFwKICAgICAgICAtLWFyZyBzbmFwc2hvdFBoYXNlICIkc25hcHNob3RfcGhhc2UiIFwKICAgICAgICAtLWFyZyB1cGRhdGVkQXQgIiRub3ciIFwKICAgICAgICAtLWFyZyBtZXNzYWdlICIkbWVzc2FnZSIgXAogICAgICAgIC0tYXJnIHNuYXBzaG90TmFtZSAiJFNOQVBTSE9UX05BTUUiIFwKICAgICAgICAtLWFyZyBjb25maWdDaGVja3N1bSAiJENPTkZJR19DSEVDS1NVTSIgXAogICAgICAgIC0tYXJnIGNoZWNrc3VtRm9yU25hcHNob3RNaWdyYXRpb24gIiRDT05GSUdfQ0hFQ0tTVU0iIFwKICAgICAgICAtLWFyZ2pzb24gc2hhcmRzVG90YWwgIiR0b3RhbCIgXAogICAgICAgIC0tYXJnanNvbiBzaGFyZHNTdWNjZXNzZnVsICIkc3VjY2Vzc2Z1bCIgXAogICAgICAgIC0tYXJnanNvbiBzaGFyZHNGYWlsZWQgIiRmYWlsZWQiIFwKICAgICAgICAtLWFyZyBkYXRhUHJvY2Vzc2VkICIkZGF0YV9wcm9jZXNzZWQiIFwKICAgICAgICAtLWFyZyBkYXRhUHJvY2Vzc2VkVW5pdCAiJGRhdGFfcHJvY2Vzc2VkX3VuaXQiIFwKICAgICAgICAtLWFyZyBldGEgIiRldGEiIFwKICAgICAgICAne3N0YXR1czp7CiAgICAgICAgICAgIHBoYXNlOiRkYXRhU25hcHNob3RQaGFzZSwKICAgICAgICAgICAgc25hcHNob3ROYW1lOiRzbmFwc2hvdE5hbWUsCiAgICAgICAgICAgIGNvbmZpZ0NoZWNrc3VtOiRjb25maWdDaGVja3N1bSwKICAgICAgICAgICAgY2hlY2tzdW1Gb3JTbmFwc2hvdE1pZ3JhdGlvbjokY2hlY2tzdW1Gb3JTbmFwc2hvdE1pZ3JhdGlvbiwKICAgICAgICAgICAgc25hcHNob3RDcmVhdGlvbjp7CiAgICAgICAgICAgICAgICBwaGFzZTokc25hcHNob3RQaGFzZSwKICAgICAgICAgICAgICAgIHVwZGF0ZWRBdDokdXBkYXRlZEF0LAogICAgICAgICAgICAgICAgbWVzc2FnZTokbWVzc2FnZSwKICAgICAgICAgICAgICAgIHN1bW1hcnk6ewogICAgICAgICAgICAgICAgICAgIHNoYXJkc1RvdGFsOiRzaGFyZHNUb3RhbCwKICAgICAgICAgICAgICAgICAgICBzaGFyZHNTdWNjZXNzZnVsOiRzaGFyZHNTdWNjZXNzZnVsLAogICAgICAgICAgICAgICAgICAgIHNoYXJkc0ZhaWxlZDokc2hhcmRzRmFpbGVkLAogICAgICAgICAgICAgICAgICAgIGRhdGFQcm9jZXNzZWQ6KCRkYXRhUHJvY2Vzc2VkIHwgaWYgLiA9PSAiIiB0aGVuIG51bGwgZWxzZSAuIGVuZCksCiAgICAgICAgICAgICAgICAgICAgZGF0YVByb2Nlc3NlZFVuaXQ6KCRkYXRhUHJvY2Vzc2VkVW5pdCB8IGlmIC4gPT0gIiIgdGhlbiBudWxsIGVsc2UgLiBlbmQpLAogICAgICAgICAgICAgICAgICAgIGV0YTooJGV0YSB8IGlmIC4gPT0gIiIgdGhlbiBudWxsIGVsc2UgLiBlbmQpCiAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgIH0KICAgICAgICB9fScKfQoKcGF0Y2hfc25hcHNob3Rfc3RhdHVzKCkgewogICAgZGF0YV9zbmFwc2hvdF9waGFzZT0iJDEiCiAgICBzbmFwc2hvdF9waGFzZT0iJDIiCiAgICBtZXNzYWdlPSIkMyIKICAgIHBhdGNoX2JvZHk9IiQobWFrZV9zbmFwc2hvdF9zdGF0dXNfcGF0Y2ggIiRkYXRhX3NuYXBzaG90X3BoYXNlIiAiJHNuYXBzaG90X3BoYXNlIiAiJG1lc3NhZ2UiKSIKICAgIGt1YmVjdGwgcGF0Y2ggZGF0YXNuYXBzaG90ICIkREFUQVNOQVBTSE9UX05BTUUiIFwKICAgICAgICAtLXN1YnJlc291cmNlPXN0YXR1cyAtLXR5cGU9bWVyZ2UgLXAgIiRwYXRjaF9ib2R5Igp9Cgpkc19qc29uPSIkKGt1YmVjdGwgZ2V0IGRhdGFzbmFwc2hvdCAiJERBVEFTTkFQU0hPVF9OQU1FIiAtbyBqc29uIDI+L2Rldi9udWxsIHx8IHRydWUpIgppZiBbIC16ICIkZHNfanNvbiIgXTsgdGhlbgogICAgaWYgcGFyZW50X3dvcmtmbG93X3J1bm5pbmc7IHRoZW4KICAgICAgICBlY2hvICJkYXRhc25hcHNob3QgJERBVEFTTkFQU0hPVF9OQU1FIG5vdCBmb3VuZCB5ZXQ7IHBhcmVudCB3b3JrZmxvdyBzdGlsbCBydW5uaW5nIgogICAgICAgIG1heWJlX2J1bXBfY2FkZW5jZQogICAgICAgIGV4aXQgMAogICAgZmkKICAgIGVsYXBzZWQ9JCgoICQoZGF0ZSAtdSArJXMpIC0gQ0xBSU1FRF9BVCApKQogICAgaWYgWyAiJGVsYXBzZWQiIC1sZSAiJFNUQVJUVVBfR1JBQ0VfU0VDT05EUyIgXTsgdGhlbgogICAgICAgIGVjaG8gImRhdGFzbmFwc2hvdCAkREFUQVNOQVBTSE9UX05BTUUgbm90IGZvdW5kOyB3aXRoaW4gc3RhcnR1cCBncmFjZSIKICAgICAgICBtYXliZV9idW1wX2NhZGVuY2UKICAgICAgICBleGl0IDAKICAgIGZpCiAgICBlY2hvICJkYXRhc25hcHNob3QgJERBVEFTTkFQU0hPVF9OQU1FIG1pc3NpbmcgYW5kIHBhcmVudCB3b3JrZmxvdyBpcyBnb25lOyBzZWxmLWRlbGV0aW5nIgogICAgZGVsZXRlX2Nyb25qb2Jfd2l0aF9wcmVjb25kaXRpb25zIHx8IHRydWUKICAgIGV4aXQgMApmaQoKZHNfcGhhc2U9IiQoZWNobyAiJGRzX2pzb24iIHwganEgLXIgJy5zdGF0dXMucGhhc2UgLy8gIiInKSIKZHNfY29uZmlnX2NoZWNrc3VtPSIkKGVjaG8gIiRkc19qc29uIiB8IGpxIC1yICcuc3RhdHVzLmNvbmZpZ0NoZWNrc3VtIC8vICIiJykiCmlmIHsgWyAiJGRzX3BoYXNlIiA9ICJDb21wbGV0ZWQiIF0gfHwgWyAiJGRzX3BoYXNlIiA9ICJFcnJvciIgXTsgfSAmJiBbICIkZHNfY29uZmlnX2NoZWNrc3VtIiA9ICIkQ09ORklHX0NIRUNLU1VNIiBdOyB0aGVuCiAgICBlY2hvICJkYXRhc25hcHNob3QgYWxyZWFkeSB0ZXJtaW5hbCBmb3IgdGhpcyBjb25maWc7IHNlbGYtZGVsZXRpbmciCiAgICBkZWxldGVfY3JvbmpvYl93aXRoX3ByZWNvbmRpdGlvbnMgfHwgdHJ1ZQogICAgZXhpdCAwCmZpCgpzdGF0dXNfZXJyb3JfZmlsZT0iL3RtcC9zbmFwc2hvdC1zdGF0dXMtZXJyb3IudHh0IgpzdGF0dXM9IiQoY29uc29sZSAtLWNvbmZpZy1maWxlPS9jb25maWcvbWlncmF0aW9uX3NlcnZpY2VzLnlhbWwgc25hcHNob3Qgc3RhdHVzIDI+IiRzdGF0dXNfZXJyb3JfZmlsZSIgfHwgdHJ1ZSkiCnN0YXR1c19lcnJvcj0iJChjYXQgIiRzdGF0dXNfZXJyb3JfZmlsZSIgMj4vZGV2L251bGwgfHwgdHJ1ZSkiClNOQVBTSE9UX0RFRVBfT1VUUFVUPSIkKGNvbnNvbGUgLS1jb25maWctZmlsZT0vY29uZmlnL21pZ3JhdGlvbl9zZXJ2aWNlcy55YW1sIHNuYXBzaG90IHN0YXR1cyAtLWRlZXAtY2hlY2sgMj4+IiRzdGF0dXNfZXJyb3JfZmlsZSIgfHwgdHJ1ZSkiCmlmIFsgLXogIiRTTkFQU0hPVF9ERUVQX09VVFBVVCIgXTsgdGhlbgogICAgU05BUFNIT1RfREVFUF9PVVRQVVQ9IiRzdGF0dXNfZXJyb3IiCmZpCgpjYXNlICIkc3RhdHVzIiBpbgogICAgU1VDQ0VTUykKICAgICAgICBwYXRjaF9zbmFwc2hvdF9zdGF0dXMgIkNvbXBsZXRlZCIgIkNvbXBsZXRlZCIgIlNuYXBzaG90IGNvbXBsZXRlZCBzdWNjZXNzZnVsbHkiCiAgICAgICAgZGVsZXRlX2Nyb25qb2Jfd2l0aF9wcmVjb25kaXRpb25zIHx8IHRydWUKICAgICAgICBleGl0IDAKICAgICAgICA7OwogICAgRkFJTEVEKQogICAgICAgIHBhdGNoX3NuYXBzaG90X3N0YXR1cyAiRXJyb3IiICJGYWlsZWQiICJTbmFwc2hvdCBmYWlsZWQiCiAgICAgICAgZGVsZXRlX2Nyb25qb2Jfd2l0aF9wcmVjb25kaXRpb25zIHx8IHRydWUKICAgICAgICBleGl0IDAKICAgICAgICA7Owplc2FjCgpjYXNlICIkU05BUFNIT1RfREVFUF9PVVRQVVQiIGluCiAgICBTVUNDRVNTKQogICAgICAgIHBhdGNoX3NuYXBzaG90X3N0YXR1cyAiQ29tcGxldGVkIiAiQ29tcGxldGVkIiAiU25hcHNob3QgY29tcGxldGVkIHN1Y2Nlc3NmdWxseSIKICAgICAgICBkZWxldGVfY3JvbmpvYl93aXRoX3ByZWNvbmRpdGlvbnMgfHwgdHJ1ZQogICAgICAgIGV4aXQgMAogICAgICAgIDs7CiAgICBGQUlMRUQpCiAgICAgICAgcGF0Y2hfc25hcHNob3Rfc3RhdHVzICJFcnJvciIgIkZhaWxlZCIgIlNuYXBzaG90IGZhaWxlZCIKICAgICAgICBkZWxldGVfY3JvbmpvYl93aXRoX3ByZWNvbmRpdGlvbnMgfHwgdHJ1ZQogICAgICAgIGV4aXQgMAogICAgICAgIDs7CmVzYWMKCmlmIFsgLXogIiRzdGF0dXMiIF0gJiYgWyAteiAiJFNOQVBTSE9UX0RFRVBfT1VUUFVUIiBdOyB0aGVuCiAgICBwYXRjaF9zbmFwc2hvdF9zdGF0dXMgIlJ1bm5pbmciICJVbmtub3duIiAiU25hcHNob3Qgc3RhdHVzIGNoZWNrIGlzIG5vdCBhdmFpbGFibGUgeWV0IgogICAgbWF5YmVfYnVtcF9jYWRlbmNlCiAgICBleGl0IDAKZmkKCm1lc3NhZ2U9IiQocHJpbnRmICclc1xuJyAiJFNOQVBTSE9UX0RFRVBfT1VUUFVUIiB8IGF3ayAnCiAgICAvVG90YWwgc2hhcmRzOi8geyB0b3RhbCA9ICQzIH0KICAgIC9TdWNjZXNzZnVsIHNoYXJkczovIHsgc3VjY2Vzc2Z1bCA9ICQzIH0KICAgIC9EYXRhIHByb2Nlc3NlZDovIHsgZGF0YSA9ICQzOyB1bml0ID0gJDQgfQogICAgL0VzdGltYXRlZCB0aW1lIHRvIGNvbXBsZXRpb246LyB7IHN1YigvLio6IC8sICIiKTsgZXRhID0gJDAgfQogICAgRU5EIHsKICAgICAgICBpZiAodG90YWwpIHsKICAgICAgICAgICAgb3V0cHV0ID0gIlNoYXJkczogIiBzdWNjZXNzZnVsICIvIiB0b3RhbAogICAgICAgICAgICBpZiAoZGF0YSAhPSAiIikgb3V0cHV0ID0gb3V0cHV0ICIgfCBEYXRhOiAiIGRhdGEgIiAiIHVuaXQKICAgICAgICAgICAgaWYgKGV0YSAhPSAiIiAmJiBldGEgIT0gIjBoIDBtIDBzIikgb3V0cHV0ID0gb3V0cHV0ICIgfCBFVEE6ICIgZXRhCiAgICAgICAgICAgIHByaW50IG91dHB1dAogICAgICAgIH0KICAgIH0KJykiCmlmIFsgLXogIiRtZXNzYWdlIiBdOyB0aGVuCiAgICBtZXNzYWdlPSIkKHByaW50ZiAnJXMnICIke3N0YXR1c19lcnJvcjotJHtTTkFQU0hPVF9ERUVQX09VVFBVVDotU25hcHNob3QgaXMgcnVubmluZ319IiB8IGhlYWQgLWMgMTAyNCkiCmZpCgpwYXRjaF9zbmFwc2hvdF9zdGF0dXMgIlJ1bm5pbmciICJSdW5uaW5nIiAiJG1lc3NhZ2UiCm1heWJlX2J1bXBfY2FkZW5jZQpleGl0IDAK\"\n\nrender_cronjob_yaml() {\n    cat <<YAML\napiVersion: batch/v1\nkind: CronJob\nmetadata:\n  name: ${CRONJOB_NAME}\n  ownerReferences:\n    - apiVersion: migrations.opensearch.org/v1alpha1\n      kind: DataSnapshot\n      name: ${DATASNAPSHOT_NAME}\n      uid: ${DATASNAPSHOT_UID}\n      controller: false\n      blockOwnerDeletion: true\n  labels:\n    ${WORKFLOW_UID_LABEL}: \"${WORKFLOW_UID}\"\n    ${SESSION_LABEL}: \"${SESSION_NAME}\"\n    workflows.argoproj.io/workflow: \"${WORKFLOW_NAME}\"\n    migrations.opensearch.org/source: \"${SOURCE_LABEL}\"\n    migrations.opensearch.org/snapshot: \"${SNAPSHOT_LABEL}\"\nspec:\n  schedule: \"*/1 * * * *\"\n  concurrencyPolicy: Forbid\n  successfulJobsHistoryLimit: 1\n  failedJobsHistoryLimit: 3\n  jobTemplate:\n    metadata:\n      labels:\n        ${WORKFLOW_UID_LABEL}: \"${WORKFLOW_UID}\"\n        ${SESSION_LABEL}: \"${SESSION_NAME}\"\n        workflows.argoproj.io/workflow: \"${WORKFLOW_NAME}\"\n        migrations.opensearch.org/source: \"${SOURCE_LABEL}\"\n        migrations.opensearch.org/snapshot: \"${SNAPSHOT_LABEL}\"\n    spec:\n      template:\n        metadata:\n          labels:\n            ${WORKFLOW_UID_LABEL}: \"${WORKFLOW_UID}\"\n            ${SESSION_LABEL}: \"${SESSION_NAME}\"\n            workflows.argoproj.io/workflow: \"${WORKFLOW_NAME}\"\n            migrations.opensearch.org/source: \"${SOURCE_LABEL}\"\n            migrations.opensearch.org/snapshot: \"${SNAPSHOT_LABEL}\"\n        spec:\n          serviceAccountName: argo-workflow-executor\n          restartPolicy: Never\n          containers:\n            - name: snapshot-monitor\n              image: \"${CONSOLE_IMAGE}\"\n              imagePullPolicy: \"${CONSOLE_IMAGE_PULL_POLICY}\"\n              command: [\"/bin/sh\", \"-c\"]\n              args:\n                - |\n$(echo \"$SNAPSHOT_DONE_SCRIPT_B64\" | base64 -d | sed 's/^/                  /')\n              env:\n                - {name: WORKFLOW_UID,             value: \"${WORKFLOW_UID}\"}\n                - {name: PARENT_WORKFLOW_NAME,     value: \"${PARENT_WORKFLOW_NAME}\"}\n                - {name: PARENT_WORKFLOW_UID,      value: \"${PARENT_WORKFLOW_UID}\"}\n                - {name: CLAIMED_AT,               value: \"${CLAIMED_AT}\"}\n                - {name: DATASNAPSHOT_NAME,        value: \"${DATASNAPSHOT_NAME}\"}\n                - {name: SNAPSHOT_NAME,            value: \"${SNAPSHOT_NAME}\"}\n                - {name: CONFIG_CHECKSUM,          value: \"${CONFIG_CHECKSUM}\"}\n                - {name: SNAPSHOT_CRONJOB_NAME,    value: \"${CRONJOB_NAME}\"}\n                - {name: STARTUP_GRACE_SECONDS,    value: \"${STARTUP_GRACE_SECONDS}\"}\n                - {name: CONSOLE_CONFIG_BASE64,    value: \"${CONSOLE_CONFIG_BASE64}\"}\nYAML\n}\n\necho \"applying CronJob $CRONJOB_NAME\"\ncreate_out=\"$(render_cronjob_yaml | kubectl create -f - 2>&1 || true)\"\nif echo \"$create_out\" | grep -q \"created\"; then\n    echo \"$create_out\"\n    echo \"fresh create - no drain needed\"\nelse\n    if ! echo \"$create_out\" | grep -qi \"AlreadyExists\"; then\n        echo \"create failed unexpectedly: $create_out\" >&2\n        exit 1\n    fi\n    echo \"exists - patching jobTemplate and draining prior claim\"\n\n    patch_payload=\"$(render_cronjob_yaml \\\n        | kubectl create --dry-run=client -f - -o json \\\n        | jq -c --arg uidkey \"$WORKFLOW_UID_LABEL\" \\\n            '{\n                metadata:{labels:{($uidkey):.metadata.labels[$uidkey]}},\n                spec:{jobTemplate:.spec.jobTemplate}\n            }')\"\n    kubectl patch cronjob \"$CRONJOB_NAME\" --type=merge -p \"$patch_payload\"\n\n    OLD_FILTER=\"$SESSION_LABEL=$SESSION_NAME,$WORKFLOW_UID_LABEL!=$WORKFLOW_UID\"\n    kubectl delete jobs -l \"$OLD_FILTER\" --force --grace-period=0 --ignore-not-found || true\n    kubectl delete pods -l \"$OLD_FILTER\" --force --grace-period=0 --ignore-not-found || true\nfi\n\nnow=\"$(date -u +\"%Y-%m-%dT%H:%M:%SZ\")\"\nseed_status_patch=\"$(jq -nc \\\n    --arg updatedAt \"$now\" \\\n    --arg snapshotName \"$SNAPSHOT_NAME\" \\\n    --arg configChecksum \"$CONFIG_CHECKSUM\" \\\n    '{status:{\n        phase:\"Running\",\n        snapshotName:$snapshotName,\n        configChecksum:$configChecksum,\n        checksumForSnapshotMigration:$configChecksum,\n        snapshotCreation:{\n            phase:\"Pending\",\n            updatedAt:$updatedAt,\n            message:\"Snapshot monitor is installed\",\n            summary:{\n                shardsTotal:0,\n                shardsSuccessful:0,\n                shardsFailed:0,\n                dataProcessed:null,\n                dataProcessedUnit:null,\n                eta:null\n            }\n        }\n    }}')\"\nkubectl patch datasnapshot \"$DATASNAPSHOT_NAME\" \\\n    --subresource=status --type=merge -p \"$seed_status_patch\"\n\ndeadline=$(( $(date +%s) + 60 ))\nwhile :; do\n    cj=\"$(kubectl get cronjob \"$CRONJOB_NAME\" -o json 2>/dev/null || true)\"\n    if [ -n \"$cj\" ]; then\n        ok=true\n        echo \"$cj\" | jq -e '.metadata.deletionTimestamp == null' >/dev/null || ok=false\n        echo \"$cj\" | jq -e --arg k \"$WORKFLOW_UID_LABEL\" --arg v \"$WORKFLOW_UID\" \\\n            '.metadata.labels[$k] == $v' >/dev/null || ok=false\n        echo \"$cj\" | jq -e --arg k \"$SESSION_LABEL\" --arg v \"$SESSION_NAME\" \\\n            '.metadata.labels[$k] == $v' >/dev/null || ok=false\n        echo \"$cj\" | jq -e --arg k \"$WORKFLOW_UID_LABEL\" --arg v \"$WORKFLOW_UID\" \\\n            '.spec.jobTemplate.metadata.labels[$k] == $v' >/dev/null || ok=false\n        echo \"$cj\" | jq -e --arg k \"$SESSION_LABEL\" --arg v \"$SESSION_NAME\" \\\n            '.spec.jobTemplate.metadata.labels[$k] == $v' >/dev/null || ok=false\n        echo \"$cj\" | jq -e --arg cc \"$CONFIG_CHECKSUM\" \\\n            '[.spec.jobTemplate.spec.template.spec.containers[0].env[] | select(.name==\"CONFIG_CHECKSUM\")][0].value == $cc' \\\n            >/dev/null || ok=false\n        echo \"$cj\" | jq -e --arg claimed \"$CLAIMED_AT\" \\\n            '[.spec.jobTemplate.spec.template.spec.containers[0].env[] | select(.name==\"CLAIMED_AT\")][0].value == $claimed' \\\n            >/dev/null || ok=false\n        if [ \"$ok\" = \"true\" ]; then\n            echo \"read-back consistent\"\n            exit 0\n        fi\n    fi\n    if [ \"$(date +%s)\" -gt \"$deadline\" ]; then\n        echo \"read-back never converged within 60s\" >&2\n        exit 1\n    fi\n    sleep 2\ndone\n"
           ]
-        ],
-        "retryStrategy": {
-          "limit": "200",
-          "retryPolicy": "Always",
-          "backoff": {
-            "duration": "5",
-            "factor": "2",
-            "cap": "300"
+        },
+        "metadata": {
+          "annotations": {
+            "karpenter.sh/do-not-disrupt": "true"
           }
         },
-        "outputs": {
-          "parameters": []
-        }
-      },
-      {
-        "name": "checksnapshotstatus",
-        "inputs": {
-          "parameters": [
-            {
-              "name": "configContents"
-            },
-            {
-              "name": "sourceK8sLabel"
-            },
-            {
-              "name": "snapshotK8sLabel"
-            },
-            {
-              "name": "groupName_view",
-              "value": "checks"
-            },
-            {
-              "name": "imageMigrationConsoleLocation"
-            },
-            {
-              "name": "imageMigrationConsolePullPolicy"
-            }
-          ]
+        "retryStrategy": {
+          "limit": "5",
+          "retryPolicy": "Always",
+          "backoff": {
+            "duration": "2",
+            "factor": "2",
+            "cap": "30"
+          }
         },
-        "steps": [
-          [
-            {
-              "template": "checksnapshotstatusinternal",
-              "arguments": {
-                "parameters": [
-                  {
-                    "name": "configContents",
-                    "value": "{{inputs.parameters.configContents}}"
-                  },
-                  {
-                    "name": "sourceK8sLabel",
-                    "value": "{{inputs.parameters.sourceK8sLabel}}"
-                  },
-                  {
-                    "name": "snapshotK8sLabel",
-                    "value": "{{inputs.parameters.snapshotK8sLabel}}"
-                  },
-                  {
-                    "name": "imageMigrationConsoleLocation",
-                    "value": "{{inputs.parameters.imageMigrationConsoleLocation}}"
-                  },
-                  {
-                    "name": "imageMigrationConsolePullPolicy",
-                    "value": "{{inputs.parameters.imageMigrationConsolePullPolicy}}"
-                  }
-                ]
-              },
-              "name": "runStatusChecks"
-            }
-          ]
-        ],
         "outputs": {
           "parameters": []
         }
@@ -308,6 +239,12 @@
             },
             {
               "name": "configChecksum"
+            },
+            {
+              "name": "dataSnapshotName"
+            },
+            {
+              "name": "dataSnapshotUid"
             },
             {
               "name": "imageMigrationConsoleLocation"
@@ -379,9 +316,21 @@
           ],
           [
             {
-              "template": "checksnapshotstatus",
+              "template": "applysnapshotdonecronjob",
               "arguments": {
                 "parameters": [
+                  {
+                    "name": "dataSnapshotName",
+                    "value": "{{inputs.parameters.dataSnapshotName}}"
+                  },
+                  {
+                    "name": "dataSnapshotUid",
+                    "value": "{{inputs.parameters.dataSnapshotUid}}"
+                  },
+                  {
+                    "name": "configChecksum",
+                    "value": "{{inputs.parameters.configChecksum}}"
+                  },
                   {
                     "name": "imageMigrationConsoleLocation",
                     "value": "{{inputs.parameters.imageMigrationConsoleLocation}}"
@@ -395,6 +344,10 @@
                     "value": "{{steps.getConsoleConfig.outputs.parameters.configContents}}"
                   },
                   {
+                    "name": "snapshotName",
+                    "value": "{{=jsonpath(inputs.parameters.snapshotConfig, '$.snapshotName')}}"
+                  },
+                  {
                     "name": "sourceK8sLabel",
                     "value": "{{=jsonpath(inputs.parameters.sourceConfig, '$.label')}}"
                   },
@@ -404,40 +357,40 @@
                   }
                 ]
               },
-              "name": "waitForCompletion"
+              "name": "applySnapshotDoneCronJob"
             }
           ],
           [
             {
               "templateRef": {
-                "template": "patchdatasnapshotcompleted",
+                "template": "waitfordatasnapshot",
                 "name": "resource-management"
               },
               "arguments": {
                 "parameters": [
                   {
-                    "name": "resourceName",
-                    "value": "{{=jsonpath(inputs.parameters.sourceConfig, '$.label')+'-'+jsonpath(inputs.parameters.snapshotConfig, '$.label')}}"
-                  },
-                  {
-                    "name": "phase",
-                    "value": "Completed"
-                  },
-                  {
-                    "name": "snapshotName",
-                    "value": "{{=jsonpath(inputs.parameters.snapshotConfig, '$.snapshotName')}}"
-                  },
-                  {
                     "name": "configChecksum",
                     "value": "{{inputs.parameters.configChecksum}}"
                   },
                   {
-                    "name": "checksumForSnapshotMigration",
-                    "value": "{{inputs.parameters.configChecksum}}"
+                    "name": "imageMigrationConsoleLocation",
+                    "value": "{{inputs.parameters.imageMigrationConsoleLocation}}"
+                  },
+                  {
+                    "name": "imageMigrationConsolePullPolicy",
+                    "value": "{{inputs.parameters.imageMigrationConsolePullPolicy}}"
+                  },
+                  {
+                    "name": "resourceName",
+                    "value": "{{inputs.parameters.dataSnapshotName}}"
+                  },
+                  {
+                    "name": "checksumField",
+                    "value": "checksumForSnapshotMigration"
                   }
                 ]
               },
-              "name": "patchDataSnapshotCompleted"
+              "name": "waitForCompletion"
             }
           ]
         ],
