@@ -128,6 +128,65 @@ class TestStatusCommand:
         assert 'test-wf' in output
         assert 'Succeeded' in output
 
+    def test_snapshot_migration_wait_node_reads_backfill_status(self, monkeypatch):
+        def fake_snapshot_migration_reader(name: str, namespace: str):
+            assert name == 'source-target-snap1-migration-0'
+            assert namespace == 'ma'
+            return {
+                'status': {
+                    'documentBackfill': {
+                        'phase': 'Running',
+                        'updatedAt': '2026-05-14T10:05:00Z',
+                        'summary': {
+                            'percentageCompleted': 50.0,
+                            'shardsTotal': 4,
+                            'shardsMigrated': 2,
+                            'shardsInProgress': 1,
+                            'shardsWaiting': 1,
+                        }
+                    }
+                }
+            }
+
+        monkeypatch.setattr(
+            'console_link.workflow.tree_utils._default_snapshot_migration_reader',
+            fake_snapshot_migration_reader
+        )
+        workflows = {
+            'test-wf': {
+                'metadata': {'name': 'test-wf'},
+                'status': {
+                    'phase': 'Running',
+                    'startedAt': '2026-05-14T10:00:00Z',
+                    'nodes': {
+                        'root': {'id': 'root', 'displayName': 'root', 'type': 'Steps',
+                                 'phase': 'Running', 'children': ['wait']},
+                        'wait': {
+                            'id': 'wait',
+                            'displayName': 'waitForSnapshotMigration',
+                            'type': 'Suspend',
+                            'phase': 'Running',
+                            'boundaryID': 'root',
+                            'inputs': {'parameters': [
+                                {'name': 'resourceName', 'value': 'source-target-snap1-migration-0'}
+                            ]}
+                        }
+                    }
+                }
+            }
+        }
+
+        service = FakeWorkflowService(workflows)
+        handler = StatusCommandHandler(service)
+        handler.data_fetcher = FakeDataFetcher(workflows, service)
+
+        output = capture_output(lambda: handler.handle_status_command(
+            'test-wf', 'https://argo', 'ma', False, False, False))
+
+        assert 'RFS: Running (50%, shards 2/4' in output
+        assert 'progress 1, waiting 1)' in output
+        assert 'updated 2026-05-14T10:05:00Z' in output
+
     def test_workflow_not_found(self):
         service = FakeWorkflowService({})
         handler = StatusCommandHandler(service)

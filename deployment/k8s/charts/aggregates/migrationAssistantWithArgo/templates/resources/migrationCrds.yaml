@@ -360,6 +360,40 @@ spec:
                   type: string
                 checksumForReplayer:
                   type: string
+                documentBackfill:
+                  type: object
+                  properties:
+                    phase:
+                      type: string
+                      enum: [Pending, Running, Paused, Completed, Failed, Unknown]
+                    updatedAt:
+                      type: string
+                    message:
+                      type: string
+                    summary:
+                      type: object
+                      properties:
+                        percentageCompleted:
+                          type: number
+                        etaMs:
+                          type: number
+                          nullable: true
+                        started:
+                          type: string
+                          nullable: true
+                        finished:
+                          type: string
+                          nullable: true
+                        shardsTotal:
+                          type: integer
+                        shardsMigrated:
+                          type: integer
+                        shardsInProgress:
+                          type: integer
+                        shardsWaiting:
+                          type: integer
+                      x-kubernetes-preserve-unknown-fields: true
+                  x-kubernetes-preserve-unknown-fields: true
               x-kubernetes-preserve-unknown-fields: true
 ---
 # TrafficReplay: represents a traffic replayer and its configuration.

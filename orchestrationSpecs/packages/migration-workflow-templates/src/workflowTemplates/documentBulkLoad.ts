@@ -93,10 +93,6 @@ function getRfsDoneCronJobName(sessionName: BaseExpression<string>) {
     return expr.concat(sessionName, expr.literal("-rfs-done"));
 }
 
-function getRfsStatusConfigMapName(sessionName: BaseExpression<string>) {
-    return expr.concat(sessionName, expr.literal("-rfs-status"));
-}
-
 // Label keys for the RFS completion CronJob.
 //   workflow-uid  — per-claim, rewritten on every workflow apply, used for INV-4 supersession.
 //   session       — stable for the lifetime of the SnapshotMigration; used as the drain
@@ -112,8 +108,7 @@ const RFS_MONITOR_CADENCE_LABEL = "migrations.opensearch.org/rfs-monitor-cadence
 //   WORKFLOW_UID, PARENT_WORKFLOW_NAME, PARENT_WORKFLOW_UID, CLAIMED_AT,
 //   SNAPSHOT_MIGRATION_NAME, CONFIG_CHECKSUM, CHECKSUM_FOR_REPLAYER,
 //   RFS_DEPLOYMENT_NAME, RFS_COORDINATOR_NAME, USES_DEDICATED_COORDINATOR,
-//   RFS_CRONJOB_NAME, RFS_STATUS_CONFIGMAP_NAME, STARTUP_GRACE_SECONDS,
-//   CONSOLE_CONFIG_BASE64.
+//   RFS_CRONJOB_NAME, STARTUP_GRACE_SECONDS, CONSOLE_CONFIG_BASE64.
 //
 // Phases (mutually exclusive per the design's decision tree):
 //   0. Supersession (INV-4): GET cronjob; exit 0 if labels.workflow-uid !=
@@ -207,16 +202,65 @@ delete_runtime_resources() {
     fi
 }
 
-write_status_configmap() {
-    summary="$1"
-    status_json_text="$2"
+make_backfill_status_patch() {
+    phase="$1"
+    message="$2"
+    status_json_text="\${3:-}"
     now="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-    configmap_yaml="$(kubectl create configmap "$RFS_STATUS_CONFIGMAP_NAME" \\
-        --from-literal=summary="$summary" \\
-        --from-literal=status.json="$status_json_text" \\
-        --from-literal=updatedAt="$now" \\
-        --dry-run=client -o yaml)"
-    printf '%s\n' "$configmap_yaml" | kubectl apply -f -
+
+    if [ -n "$status_json_text" ] && printf '%s' "$status_json_text" | jq -e 'type == "object"' >/dev/null 2>&1; then
+        jq -nc \\
+            --arg phase "$phase" \\
+            --arg updatedAt "$now" \\
+            --arg message "$message" \\
+            --argjson raw "$status_json_text" \\
+            '($raw // {}) as $r |
+             {status:{documentBackfill:{
+                phase:$phase,
+                updatedAt:$updatedAt,
+                message:$message,
+                summary:{
+                    percentageCompleted:($r.percentage_completed // 0),
+                    etaMs:$r.eta_ms,
+                    started:$r.started,
+                    finished:$r.finished,
+                    shardsTotal:($r.shard_total // 0),
+                    shardsMigrated:($r.shard_complete // 0),
+                    shardsInProgress:($r.shard_in_progress // 0),
+                    shardsWaiting:($r.shard_waiting // 0)
+                }
+             }}}'
+        return 0
+    fi
+
+    jq -nc \\
+        --arg phase "$phase" \\
+        --arg updatedAt "$now" \\
+        --arg message "$message" \\
+        '{status:{documentBackfill:{
+            phase:$phase,
+            updatedAt:$updatedAt,
+            message:$message,
+            summary:{
+                percentageCompleted:0,
+                etaMs:null,
+                started:null,
+                finished:null,
+                shardsTotal:0,
+                shardsMigrated:0,
+                shardsInProgress:0,
+                shardsWaiting:0
+            }
+        }}}'
+}
+
+patch_backfill_status() {
+    phase="$1"
+    message="$2"
+    status_json_text="\${3:-}"
+    patch_body="$(make_backfill_status_patch "$phase" "$message" "$status_json_text")"
+    kubectl patch snapshotmigration "$SNAPSHOT_MIGRATION_NAME" \\
+        --subresource=status --type=merge -p "$patch_body"
 }
 
 # Cadence ramp 1 -> 5. Owned solely by this script; atomic PATCH with
@@ -281,26 +325,30 @@ if [ -z "$sm_json" ] || ! runtime_resource_exists; then
 fi
 
 # 3. STATUS POLL + COMMIT (+ CLEANUP) (INV-6 a+b) ----------------------------
-status_json="$(console --config-file=/config/migration_services.yaml --json backfill status --deep-check 2>/dev/null || true)"
-status="$(echo "$status_json" | jq -r '.status // ""' 2>/dev/null || echo "")"
+status_error_file="/tmp/rfs-backfill-status-error.txt"
+status_json="$(console --config-file=/config/migration_services.yaml --json backfill status --deep-check 2>"$status_error_file" || true)"
+status_error="$(cat "$status_error_file" 2>/dev/null || true)"
+status="$(printf '%s' "$status_json" | jq -r '.status // ""' 2>/dev/null || echo "")"
 
 if [ -z "$status_json" ] || [ -z "$status" ]; then
-    write_status_configmap "Status check is not available yet" "\${status_json:-}"
+    status_message="$(printf '%s' "\${status_error:-\${status_json:-Status check is not available yet}}" | head -c 1024)"
+    patch_backfill_status "Unknown" "$status_message" ""
     maybe_bump_cadence
     exit 0
 fi
 
-summary="$(echo "$status_json" | jq -r '
+status_message="$(printf '%s' "$status_json" | jq -r '
     if .status == "Pending" then
         "Shards are initializing"
     else
-        "complete: \\(.percentage_completed // 0)%, shards: \\(.shard_complete // 0)/\\(.shard_total // 0)"
+        "Document backfill is " + (.status | tostring)
     end
 ')"
-write_status_configmap "$summary" "$status_json"
+patch_backfill_status "$status" "$status_message" "$status_json"
 
 if [ "$status" != "Completed" ]; then
-    echo "phase 3: still working ($summary)"
+    progress="$(printf '%s' "$status_json" | jq -r '"complete: \\(.percentage_completed // 0)%, shards: \\(.shard_complete // 0)/\\(.shard_total // 0)"')"
+    echo "phase 3: still working ($progress)"
     maybe_bump_cadence
     exit 0
 fi
@@ -313,7 +361,8 @@ echo "phase 3: backfill complete; committing and cleaning up"
 patch_body="$(jq -nc \\
     --arg cc "$CONFIG_CHECKSUM" \\
     --arg cr "$CHECKSUM_FOR_REPLAYER" \\
-    '{status:{phase:"Completed",configChecksum:$cc,checksumForReplayer:$cr}}')"
+    --argjson backfill "$(make_backfill_status_patch "$status" "$status_message" "$status_json" | jq -c '.status.documentBackfill')" \\
+    '{status:{phase:"Completed",configChecksum:$cc,checksumForReplayer:$cr,documentBackfill:$backfill}}')"
 kubectl patch snapshotmigration "$SNAPSHOT_MIGRATION_NAME" \\
     --subresource=status --type=merge -p "$patch_body"
 
@@ -335,7 +384,7 @@ const RFS_DONE_CRONJOB_SCRIPT_B64 = Buffer.from(RFS_DONE_CRONJOB_SCRIPT, "utf8")
 //   - on "AlreadyExists", PATCH only the workflow-uid label and jobTemplate
 //     (never spec.schedule or cadence-step), then force-delete prior-claim
 //     Jobs/Pods using the drain selector.
-//   - apply the status ConfigMap idempotently.
+//   - seed documentBackfill progress on the SnapshotMigration status.
 //   - read-back loop until labels and env converge.
 //
 // Template placeholders are filled at workflow build time by expr.fillTemplate.
@@ -343,7 +392,6 @@ const RFS_DONE_CRONJOB_SCRIPT_B64 = Buffer.from(RFS_DONE_CRONJOB_SCRIPT, "utf8")
 const APPLY_RFS_DONE_CRONJOB_SCRIPT = `set -eu
 
 CRONJOB_NAME="{{CRONJOB_NAME}}"
-STATUS_CONFIGMAP_NAME="{{STATUS_CONFIGMAP_NAME}}"
 SESSION_NAME="{{SESSION_NAME}}"
 WORKFLOW_NAME="{{WORKFLOW_NAME}}"
 WORKFLOW_UID="{{WORKFLOW_UID}}"
@@ -431,31 +479,8 @@ $(echo "$RFS_DONE_SCRIPT_B64" | base64 -d | sed 's/^/                  /')
                 - {name: RFS_COORDINATOR_NAME,       value: "\${RFS_COORDINATOR_NAME}"}
                 - {name: USES_DEDICATED_COORDINATOR, value: "\${USES_DEDICATED_COORDINATOR}"}
                 - {name: RFS_CRONJOB_NAME,           value: "\${CRONJOB_NAME}"}
-                - {name: RFS_STATUS_CONFIGMAP_NAME,  value: "\${STATUS_CONFIGMAP_NAME}"}
                 - {name: STARTUP_GRACE_SECONDS,      value: "\${STARTUP_GRACE_SECONDS}"}
                 - {name: CONSOLE_CONFIG_BASE64,      value: "\${CONSOLE_CONFIG_BASE64}"}
-YAML
-}
-
-render_status_configmap_yaml() {
-    cat <<YAML
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: \${STATUS_CONFIGMAP_NAME}
-  ownerReferences:
-    - apiVersion: migrations.opensearch.org/v1alpha1
-      kind: SnapshotMigration
-      name: \${SNAPSHOT_MIGRATION_NAME}
-      uid: \${SM_UID}
-      controller: false
-      blockOwnerDeletion: true
-  labels:
-    migrations.opensearch.org/from-snapshot-migration: "\${FROM_SNAPSHOT_MIGRATION_LABEL}"
-data:
-  summary: ""
-  status.json: ""
-  updatedAt: ""
 YAML
 }
 
@@ -488,8 +513,28 @@ else
     kubectl delete pods -l "$OLD_FILTER" --force --grace-period=0 --ignore-not-found || true
 fi
 
-# Apply the status ConfigMap idempotently.
-render_status_configmap_yaml | kubectl apply -f -
+# Seed the typed progress status so UI tooling has an authoritative CR status
+# field to read before the monitor's first scheduled poll.
+now="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+seed_status_patch="$(jq -nc \\
+    --arg updatedAt "$now" \\
+    '{status:{documentBackfill:{
+        phase:"Pending",
+        updatedAt:$updatedAt,
+        message:"Backfill monitor is installed",
+        summary:{
+            percentageCompleted:0,
+            etaMs:null,
+            started:null,
+            finished:null,
+            shardsTotal:0,
+            shardsMigrated:0,
+            shardsInProgress:0,
+            shardsWaiting:0
+        }
+    }}}')"
+kubectl patch snapshotmigration "$SNAPSHOT_MIGRATION_NAME" \\
+    --subresource=status --type=merge -p "$seed_status_patch"
 
 # Read-back loop until labels and env converge.
 deadline=$(( $(date +%s) + 60 ))
@@ -686,7 +731,7 @@ export const DocumentBulkLoad = WorkflowBuilder.create({
 
     .addParams(CommonWorkflowParameters)
 
-    // Apply (or update) the RFS-completion CronJob and its status ConfigMap.
+    // Apply (or update) the RFS-completion CronJob and seed CR status progress.
     // Janitor-first ordering (INV-8): apply the CronJob before SM reconcile
     // and runtime apply, so the safety net is in place before any work that
     // might need to be cleaned up.
@@ -708,7 +753,6 @@ export const DocumentBulkLoad = WorkflowBuilder.create({
             .addArgs([
                 expr.fillTemplate(APPLY_RFS_DONE_CRONJOB_SCRIPT, {
                     CRONJOB_NAME: getRfsDoneCronJobName(c.inputs.sessionName),
-                    STATUS_CONFIGMAP_NAME: getRfsStatusConfigMapName(c.inputs.sessionName),
                     SESSION_NAME: c.inputs.sessionName,
                     WORKFLOW_NAME: expr.getWorkflowValue("name"),
                     WORKFLOW_UID: expr.getWorkflowValue("uid"),

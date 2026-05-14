@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 CRD_GROUP = 'migrations.opensearch.org'
 CRD_VERSION = 'v1alpha1'
 APPROVAL_GATE_PLURAL = 'approvalgates'
+SNAPSHOT_MIGRATION_PLURAL = 'snapshotmigrations'
 
 
 @dataclass
@@ -66,6 +67,10 @@ def get_node_input_parameter(node: Dict[str, Any], param_name: str) -> Optional[
 
 def _approval_gate_name(node: Dict[str, Any]) -> Optional[str]:
     return get_node_input_parameter(node, 'resourceName') or get_node_input_parameter(node, 'name')
+
+
+def _snapshot_migration_name(node: Dict[str, Any]) -> Optional[str]:
+    return get_node_input_parameter(node, 'resourceName')
 
 
 def _iter_tree_nodes(tree_nodes: List[Dict[str, Any]]):
@@ -126,6 +131,58 @@ def overlay_approval_gate_status(tree_nodes: List[Dict[str, Any]], namespace: st
         node['approval_gate_phase'] = phase
         if phase.lower() == 'approved':
             node['phase'] = 'Succeeded'
+
+
+def _default_snapshot_migration_reader(name: str, namespace: str) -> Dict[str, Any]:
+    load_k8s_config()
+    return client.CustomObjectsApi().get_namespaced_custom_object(
+        group=CRD_GROUP,
+        version=CRD_VERSION,
+        namespace=namespace,
+        plural=SNAPSHOT_MIGRATION_PLURAL,
+        name=name,
+    )
+
+
+def _is_snapshot_migration_wait_node(node: Dict[str, Any]) -> bool:
+    return _normalize_attempt_suffix(node.get('display_name', '')) == 'waitForSnapshotMigration'
+
+
+def overlay_snapshot_migration_backfill_status(
+    tree_nodes: List[Dict[str, Any]],
+    namespace: str,
+    snapshot_migration_reader: Optional[Callable[[str, str], Dict[str, Any]]] = None
+) -> None:
+    """Attach SnapshotMigration.status.documentBackfill to RFS wait nodes."""
+    migration_names = {
+        name
+        for node in _iter_tree_nodes(tree_nodes)
+        if _is_snapshot_migration_wait_node(node)
+        for name in [_snapshot_migration_name(node)]
+        if name
+    }
+    if not namespace or not migration_names:
+        return
+
+    reader = snapshot_migration_reader or _default_snapshot_migration_reader
+    backfill_statuses: Dict[str, Dict[str, Any]] = {}
+    for migration_name in migration_names:
+        try:
+            snapshot_migration = reader(migration_name, namespace)
+        except Exception as e:
+            logger.debug("Could not fetch SnapshotMigration %s/%s: %s", namespace, migration_name, e)
+            continue
+
+        backfill_status = snapshot_migration.get('status', {}).get('documentBackfill')
+        if isinstance(backfill_status, dict):
+            backfill_statuses[migration_name] = backfill_status
+
+    for node in _iter_tree_nodes(tree_nodes):
+        if not _is_snapshot_migration_wait_node(node):
+            continue
+        migration_name = _snapshot_migration_name(node)
+        if migration_name in backfill_statuses:
+            node['snapshot_migration_backfill_status'] = backfill_statuses[migration_name]
 
 
 def build_nested_workflow_tree(workflow_data: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -361,7 +418,7 @@ def filter_tree_nodes(tree_nodes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
     def should_keep_by_type(node):
         # Keep leaf nodes (actual work) and approval gate nodes
-        return node['type'] in ["Pod", "Skipped"] or is_approval_node(node)
+        return node['type'] in ["Pod", "Skipped"] or is_approval_node(node) or _is_snapshot_migration_wait_node(node)
 
     def has_group_name(node):
         # Keep containers that have a groupName (meaningful grouping)
@@ -478,6 +535,53 @@ def get_node_phase(node: dict) -> str:
     return node['phase']
 
 
+def _format_number(value: Any) -> Optional[str]:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return f"{value:g}"
+    return str(value)
+
+
+def _format_snapshot_migration_backfill_status(status: Dict[str, Any]) -> Optional[str]:
+    summary = status.get('summary') if isinstance(status.get('summary'), dict) else {}
+    phase = status.get('phase') or status.get('status')
+    message = status.get('message')
+    updated_at = status.get('updatedAt')
+
+    details = []
+    percentage = _format_number(summary.get('percentageCompleted'))
+    if percentage is not None:
+        details.append(f"{percentage}%")
+
+    shards_total = _format_number(summary.get('shardsTotal'))
+    shards_migrated = _format_number(summary.get('shardsMigrated'))
+    if shards_total is not None:
+        details.append(f"shards {shards_migrated or '0'}/{shards_total}")
+
+    shards_in_progress = _format_number(summary.get('shardsInProgress'))
+    if shards_in_progress is not None:
+        details.append(f"in progress {shards_in_progress}")
+
+    shards_waiting = _format_number(summary.get('shardsWaiting'))
+    if shards_waiting is not None:
+        details.append(f"waiting {shards_waiting}")
+
+    parts = [str(phase)] if phase else []
+    if details:
+        parts.append(f"({', '.join(details)})")
+    elif message:
+        parts.append(str(message))
+
+    if not parts:
+        return None
+
+    rendered = f"RFS: {' '.join(parts)}"
+    if updated_at:
+        rendered += f" updated {updated_at}"
+    return rendered
+
+
 def get_step_rich_label(
     node: dict, status_output: Optional[Union[str, ArtifactRef]],
     show_approval_name: bool = True
@@ -548,6 +652,10 @@ def get_step_rich_label(
         node.get('denial_reason')
     )
     status_suffix = f': {status_output}' if status_output and isinstance(status_output, str) else ''
+    if backfill_status := node.get('snapshot_migration_backfill_status'):
+        rendered_backfill_status = _format_snapshot_migration_backfill_status(backfill_status)
+        if rendered_backfill_status:
+            status_suffix += f": {rendered_backfill_status}"
     from rich.markup import escape
     escaped_line = escape(full_unformatted_line + status_suffix)
     return f"[{color}]{symbol} {escaped_line} [/{color}]"

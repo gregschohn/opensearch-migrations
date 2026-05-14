@@ -6,8 +6,8 @@ Companion to [`rfsDoneCronJob.md`](./rfsDoneCronJob.md). Lists what to change, i
 
 This work goes in as a single PR with two commits to keep parity:
 
-- **C1 — orchestrationSpecs (TS) + RBAC chart.** New CronJob, new apply-step Argo template, removal of workflow-side polling and runtime cleanup, RBAC update.
-- **C2 — `MigrationConsole` (Python).** `workflow status` and `workflow manage` read the new `${sessionName}-rfs-status` `ConfigMap` for RFS wait nodes instead of re-running live `console backfill status` calls.
+- **C1 — orchestrationSpecs (TS) + RBAC chart + CRD schema.** New CronJob, new apply-step Argo template, typed `SnapshotMigration.status.documentBackfill`, removal of workflow-side polling and runtime cleanup, RBAC update.
+- **C2 — `MigrationConsole` (Python).** `workflow status` and `workflow manage` read `SnapshotMigration.status.documentBackfill` for RFS wait nodes instead of re-running live `console backfill status` calls.
 
 ## Pre-flight verification (done)
 
@@ -32,21 +32,26 @@ The script lives **inline** in the manifest builder (matching the pattern of `ge
 ### `orchestrationSpecs/packages/k8s-types/scripts/generate.ts`
 Add `JobTemplateSpec` to `additionalTypes`. Run `npm run -w @opensearch-migrations/k8s-types rebuild` to regenerate `src/index.ts` and pick up the friendly alias. Verify diff is alias-only.
 
+### `deployment/k8s/charts/aggregates/migrationAssistantWithArgo/templates/resources/migrationCrds.yaml`
+
+Add `SnapshotMigration.status.documentBackfill` with:
+- `phase`, `updatedAt`, and `message`.
+- Structured `summary` fields normalized from `console --json backfill status --deep-check`: `percentageCompleted`, `etaMs`, `started`, `finished`, `shardsTotal`, `shardsMigrated`, `shardsInProgress`, and `shardsWaiting`.
+
 ### `orchestrationSpecs/packages/migration-workflow-templates/src/workflowTemplates/documentBulkLoad.ts`
 
 **Add:**
-- `getRfsDoneCronJobName(sessionName)` and `getRfsStatusConfigMapName(sessionName)` name builders.
-- `RFS_DONE_CRONJOB_SCRIPT` constant — the bash script (phases 0/1/2/3 + `maybe_bump_cadence`). Uses `expr.fillTemplate` placeholders for `RFS_CRONJOB_NAME`, `SNAPSHOT_MIGRATION_NAME`, `RFS_STATUS_CONFIGMAP_NAME`, `RFS_DEPLOYMENT_NAME`, `RFS_COORDINATOR_NAME`, `USES_DEDICATED_COORDINATOR`. All other values (`WORKFLOW_UID`, `CONFIG_CHECKSUM`, `CHECKSUM_FOR_REPLAYER`, `CLAIMED_AT`, `STARTUP_GRACE_SECONDS`, `PARENT_WORKFLOW_NAME`, `PARENT_WORKFLOW_UID`) come from env at runtime.
+- `getRfsDoneCronJobName(sessionName)` name builder.
+- `RFS_DONE_CRONJOB_SCRIPT` constant — the bash script (phases 0/1/2/3 + `maybe_bump_cadence`). Uses `expr.fillTemplate` placeholders for `RFS_CRONJOB_NAME`, `SNAPSHOT_MIGRATION_NAME`, `RFS_DEPLOYMENT_NAME`, `RFS_COORDINATOR_NAME`, `USES_DEDICATED_COORDINATOR`. All other values (`WORKFLOW_UID`, `CONFIG_CHECKSUM`, `CHECKSUM_FOR_REPLAYER`, `CLAIMED_AT`, `STARTUP_GRACE_SECONDS`, `PARENT_WORKFLOW_NAME`, `PARENT_WORKFLOW_UID`) come from env at runtime.
 - `getRfsDoneCronJobManifest(args)` — returns `CronJob`. Sets:
   - `metadata.name`, `metadata.ownerReferences` (to the SM), `metadata.labels` (`rfs-monitor-workflow-uid`, `rfs-monitor-session`).
   - `spec.schedule: "*/1 * * * *"` (initial seed; the script ramps it).
   - `spec.concurrencyPolicy: "Forbid"`, `spec.successfulJobsHistoryLimit: 1`, `spec.failedJobsHistoryLimit: 3`.
   - `spec.jobTemplate` — labels (object + Pod template), env (the full list above), one `MigrationConsole`-image container running `["/bin/sh","-c", <SCRIPT>]`.
-- `getRfsStatusConfigMapManifest(args)` — returns `ConfigMap` (the seed shape; the CronJob script writes its data fields).
 - `applyRfsDoneCronJob` Argo template — a container template (`MigrationConsole` image) running the apply bash:
   - `kubectl create -f <cronjob.yaml>` ; on 409, `kubectl patch cronjob NAME --type=merge -p <patch>` then `kubectl delete jobs/pods -l 'rfs-monitor-session=<S>,rfs-monitor-workflow-uid!=<NEW>' --force --grace-period=0`.
   - Read-back loop: `kubectl get cronjob NAME -o json | jq` checking the assertions in the design doc's Workflow Logic step 3.
-  - `kubectl apply -f <statusConfigMap.yaml>` to ensure the status ConfigMap exists (idempotent).
+  - `kubectl patch snapshotmigration NAME --subresource=status --type=merge` to seed `status.documentBackfill`.
   - Wrapped in `addRetryParameters({limit:"5", retryPolicy:"Always", backoff:{duration:"2s", factor:"2", maxDuration:"30s"}})`.
 
 **Modify `setupAndRunBulkLoad`:**
@@ -88,11 +93,11 @@ Add `cronjobs` to the existing batch RBAC rule. Verbs: `create get list watch up
 
 ## C2 file changes (Python — separate commit, same PR)
 
-`migrationConsole/lib/console_link/console_link/workflow/commands/`:
+`migrationConsole/lib/console_link/console_link/workflow/`:
 
-- `manage.py` (or wherever the workflow status/manage helpers live): for any RFS wait node, read the `${sessionName}-rfs-status` `ConfigMap` instead of re-running `console backfill status --deep-check`. Render its `summary` and `updatedAt` fields.
+- `tree_utils.py`, `commands/status.py`, and TUI tree state helpers: for any RFS `waitForSnapshotMigration` node, read the named `SnapshotMigration` CR via the node's `resourceName` input and render `status.documentBackfill.summary` and `updatedAt`.
 
-The exact file list will be confirmed by grep at C2 time. C1 lands the ConfigMap writer; C2 makes the readers consume it.
+The exact file list will be confirmed by grep at C2 time. C1 lands the CR status writer; C2 makes the readers consume it.
 
 ## Build and verification
 
@@ -115,17 +120,17 @@ against the previous version. The diffs should match the design doc's Implementa
 1. Add `JobTemplateSpec` friendly alias in `k8s-types/scripts/generate.ts`. Rebuild `k8s-types`.
 2. Add name builders in `documentBulkLoad.ts`.
 3. Write `RFS_DONE_CRONJOB_SCRIPT` constant. `bash -n` it locally.
-4. Write `getRfsDoneCronJobManifest` and `getRfsStatusConfigMapManifest` builders.
+4. Write `getRfsDoneCronJobManifest`.
 5. Write `applyRfsDoneCronJob` Argo template.
 6. Modify `setupAndRunBulkLoad` ordering and step set.
 7. Modify `fullMigration.ts` to drop `patchSnapshotMigrationCompleted` on the RFS path.
 8. Run grep for callers of templates we want to delete; delete or report.
-9. RBAC chart change.
+9. CRD schema and RBAC chart changes.
 10. `type-check-all`, `test`, regenerate templates. Iterate on snapshot diffs.
 11. Commit C1.
 
 ## Out of scope for this PR
 
 - E2E integration tests for the cadence ramp (`*/1 → */5`). Snapshot tests cover the manifest correctness; runtime ramp behavior is hard to assert offline.
-- Any change to the `SnapshotMigration` CRD spec/status schema. Existing fields suffice.
+- Persisting raw diagnostic blobs in `SnapshotMigration.status`. The CR status keeps one normalized structured summary, not a second raw copy.
 - Any change to `MigrationConsole`'s container image to add packages — `kubectl` and `curl` are already present.

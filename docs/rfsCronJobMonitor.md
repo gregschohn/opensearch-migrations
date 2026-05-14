@@ -54,7 +54,6 @@ This design replaces steps 5 and 6 with the CronJob.
 | Coordinator `StatefulSet`/`Service` | `${sessionName}-rfs-coordinator` | applied idempotently |
 | Coordinator credentials `Secret` | `${sessionName}-rfs-coordinator-creds` | applied idempotently |
 | Completion CronJob (new) | `${sessionName}-rfs-done` | applied with try-create-then-patch+drain |
-| Status `ConfigMap` (new) | `${sessionName}-rfs-status` | written by CronJob; read by status/manage tooling |
 
 All carry `ownerReferences` to the `SnapshotMigration` with `controller: false, blockOwnerDeletion: true`.
 
@@ -73,7 +72,7 @@ The design rests on nine invariants. Each carries a one-line *why* tag identifyi
 | INV-3 | Names are deterministic by `workloadIdentityChecksum` (INV-9). At most one of each session resource exists at any time. All apply paths use UPSERT semantics: try-create-then-patch+drain for the CronJob; `kubectl apply` (or server-side apply) for runtime resources. | Removes resource-multiplicity races; lets two workflow runs share one session. |
 | INV-4 | Every Job pod carries `WORKFLOW_UID`, `CONFIG_CHECKSUM`, and `CHECKSUM_FOR_REPLAYER` in its env, snapshotted at the moment its parent workflow last applied the CronJob. The Job script's first action is `GET cronjob`; if `metadata.labels[workflow-uid] != env.WORKFLOW_UID`, the script is **superseded** and exits 0 with no mutations. The supersession check happens before any mutating call. | A pod from a prior claim, surviving past drain, must self-arrest before mutating. |
 | INV-5 | Any CronJob `DELETE` issued by a Job pod uses API-level `Preconditions{UID, ResourceVersion}` taken from the same GET that satisfied INV-4. Either UID-mismatch or ResourceVersion-advance returns 409, and the script exits 0. | Atomic ownership: at most one of {workflow-update, job-delete} commits. |
-| INV-6 | A Job execution's mutating actions are scoped to one of: *(a)* **commit** — patch `SM.status` with `phase=Completed` and the env's checksums; *(b)* **cleanup** — delete runtime resources, then atomically delete the CronJob, gated on `status.phase==Completed AND status.configChecksum==env.CONFIG_CHECKSUM`; *(c)* **orphan-self-delete** — atomic CronJob delete only, gated on the orphan predicate. **Commit and cleanup may run in the same execution.** (c) is mutually exclusive with (a) and (b) by construction. Status `ConfigMap` writes are not a mutating action. | Bounded per-run blast radius; cleanup gated on *my* commit (not just *some* commit) so a stale claim never tears down a future claim's work. |
+| INV-6 | A Job execution's mutating actions are scoped to one of: *(a)* **commit** — patch `SM.status` with `phase=Completed`, the env's checksums, and `documentBackfill`; *(b)* **cleanup** — delete runtime resources, then atomically delete the CronJob, gated on `status.phase==Completed AND status.configChecksum==env.CONFIG_CHECKSUM`; *(c)* **orphan-self-delete** — atomic CronJob delete only, gated on the orphan predicate. **Commit and cleanup may run in the same execution.** (c) is mutually exclusive with (a) and (b) by construction. Non-terminal progress patches are scoped to `SM.status.documentBackfill`. | Bounded per-run blast radius; cleanup gated on *my* commit (not just *some* commit) so a stale claim never tears down a future claim's work. |
 | INV-7 | All session resources carry `ownerReferences` to `SnapshotMigration` with `controller: false, blockOwnerDeletion: true`. | Deleting the SM cascades cleanup; no special path required. |
 | INV-8 | The CronJob is applied **before** SM reconciliation, runtime apply, or the wait step ("janitor first"). The apply step is `try-create → on 409, patch(jobTemplate=new) → force-delete jobs+pods whose `workflow-uid` label differs from the new UID (`--force --grace-period=0`)`. The CronJob is **never** suspended; the cron schedule continues firing throughout. After the apply step's read-back returns, the CronJob spec is the new template; any prior-claim Pod still alive is caught by INV-4 + INV-5 on its next iteration, and on K8s ≥1.21 with `BoundServiceAccountTokenVolume` (default), force-deleted Pods cannot mutate cluster state because the API server rejects every request signed with a deleted Pod's projected service-account token. | Replaces the whole template atomically and reaps prior-claim Pods, without a suspended state that could deadlock if the workflow dies mid-apply. |
 | INV-9 | `workloadIdentityChecksum` cannot change for a live SM (Impossible VAP). `configChecksum` may change pre-completion via Gated approval, but Lock-on-Complete VAP makes it immutable post-`status.phase==Completed`. | INV-3's at-most-one claim and INV-6's cleanup gate rest on these spec-immutability guarantees. |
@@ -86,7 +85,7 @@ The design rests on nine invariants. Each carries a one-line *why* tag identifyi
 | Reconcile SM (with Gated approval retry) | Yes, **after** CronJob | — |
 | Apply coordinator + RFS `Deployment` (idempotent `apply`) | Yes | — |
 | Poll RFS status | — | Yes, every period |
-| Update status `ConfigMap` for UI tooling | — | Yes |
+| Update `SM.status.documentBackfill` for UI tooling | Seeds `Pending` during CronJob apply | Yes |
 | Patch `SM.status` (RFS path) | **No** | **Yes** |
 | Patch `SM.status` (metadata-only path) | Yes | — |
 | Delete RFS runtime | **No** | **Yes**, when `status==env.CONFIG_CHECKSUM` |
@@ -95,7 +94,7 @@ The design rests on nine invariants. Each carries a one-line *why* tag identifyi
 
 ## CronJob Decision Logic
 
-Each Job pod runs once per schedule and exits. Branches are mutually exclusive: a run enters cleanup, or orphan-self-delete, or status-poll (which may include commit-then-cleanup). Status `ConfigMap` writes are not a phase and may accompany any branch.
+Each Job pod runs once per schedule and exits. Branches are mutually exclusive: a run enters cleanup, or orphan-self-delete, or status-poll (which may include commit-then-cleanup). Progress patches to `SM.status.documentBackfill` are not a phase and may accompany status-poll branches.
 
 ### Decision tree
 
@@ -116,7 +115,7 @@ flowchart TD
   H -->|yes| I[DELETE cronjob with preconditions]
   I --> Z6[exit 0<br/>orphan INV-6 c]
   F -->|no, runtime exists| J[phase 3:<br/>console backfill status --deep-check]
-  J --> K[write status ConfigMap]
+  J --> K[patch SM.status.documentBackfill]
   K --> L{status == Completed?}
   L -->|no| BUMP3[maybe_bump_cadence] --> Z7[exit 0<br/>still working]
   L -->|yes| M[PATCH SM.status:<br/>phase, configChecksum, checksumForReplayer]
@@ -189,11 +188,11 @@ on schedule:
   # ---- 3. STATUS POLL + COMMIT(+CLEANUP) PHASE — INV-6 (a) + (b) ----------
   status_json = console --json backfill status --deep-check  || true
   if status_json is unavailable:
-      write_status_configmap("Status check is not available yet", status_json)
+      patch_sm_status_document_backfill(phase="Unknown", message="Status check is not available yet")
       maybe_bump_cadence(cronjob, rv)
       exit 0
 
-  write_status_configmap(summary_from(status_json), status_json)
+  patch_sm_status_document_backfill(summary_from(status_json), status_json)
 
   if status_json.status != "Completed":
       maybe_bump_cadence(cronjob, rv)
@@ -270,7 +269,7 @@ for each RFS-enabled SnapshotMigration the workflow handles:
          CONFIG_CHECKSUM, CHECKSUM_FOR_REPLAYER,
          RFS_DEPLOYMENT_NAME, RFS_COORDINATOR_NAME,
          USES_DEDICATED_COORDINATOR, RFS_CRONJOB_NAME,
-         RFS_STATUS_CONFIGMAP_NAME, STARTUP_GRACE_SECONDS
+         STARTUP_GRACE_SECONDS
 
   2. Apply with try-create-then-patch+drain (INV-8). The CronJob is never
      suspended; the cron schedule keeps firing throughout the apply step.
@@ -371,7 +370,7 @@ sequenceDiagram
     Job->>API: GET CronJob (supersession check, INV-4)
     Job->>SM: GET SM (cleanup gate, INV-6)
     Job->>RFS: console backfill status --deep-check
-    Job->>API: Update status ConfigMap
+    Job->>SM: PATCH status.documentBackfill
   end
 
   Note over Job: status == Completed
@@ -494,7 +493,6 @@ If a fresh workflow B claimed the CronJob between Job1's commit and Job2's run, 
 | CronJob | `${sessionName}-rfs-done` | `SnapshotMigration` | Until last run's atomic self-delete (or SM cascade) |
 | RFS `Deployment` | `${sessionName}-rfs` | `SnapshotMigration` | Until CronJob's cleanup phase |
 | Coordinator (StatefulSet/Service/Secret) | `${sessionName}-rfs-coordinator` and `${sessionName}-rfs-coordinator-creds` | `SnapshotMigration` | Same |
-| Status `ConfigMap` | `${sessionName}-rfs-status` | `SnapshotMigration` | Same |
 
 Labels on the CronJob (and `spec.jobTemplate.metadata.labels`):
 
@@ -504,21 +502,28 @@ Labels on the CronJob (and `spec.jobTemplate.metadata.labels`):
 
 No `cleanup-pending` label is used; INV-5's atomic deletion preconditions cover that case.
 
-## Status ConfigMap
+## SnapshotMigration Backfill Status
 
-The CronJob persists the most recent `console backfill status --deep-check` summary so `workflow status` / `workflow manage` can render progress without a second polling path.
+The CronJob persists the most recent `console --json backfill status --deep-check` result on the parent `SnapshotMigration` so `workflow status` / `workflow manage` can render progress without a second polling path.
 
-```text
-name:   ${sessionName}-rfs-status
-owner:  SnapshotMigration
-labels: migrations.opensearch.org/from-snapshot-migration: <migrationLabel>
-data:
-  summary:    <human-readable one-line progress>
-  status.json: <raw console JSON or error text>
-  updatedAt:  <UTC timestamp>
+```yaml
+status:
+  documentBackfill:
+    phase: Pending|Running|Paused|Completed|Failed|Unknown
+    updatedAt: <UTC timestamp>
+    message: <short diagnostic message>
+    summary:
+      percentageCompleted: <number>
+      etaMs: <number|null>
+      started: <ISO timestamp|null>
+      finished: <ISO timestamp|null>
+      shardsTotal: <integer>
+      shardsMigrated: <integer>
+      shardsInProgress: <integer>
+      shardsWaiting: <integer>
 ```
 
-The CronJob is the only writer. `workflow status` and `workflow manage` read it for RFS wait nodes instead of rerunning live checks.
+The CronJob is the only writer after the workflow seeds the initial `Pending` value during CronJob apply. `workflow status` and `workflow manage` read it for RFS wait nodes instead of rerunning live checks.
 
 ## Workflow Wait
 
@@ -546,9 +551,10 @@ The CronJob's other verbs (`get`/`delete` on deployments, statefulsets, services
 ## Implementation Touch Points
 
 - `documentBulkLoad.ts`:
-  - Add `getRfsDoneCronJobName(sessionName)` and `getRfsStatusConfigMapName(sessionName)`.
+  - Add `getRfsDoneCronJobName(sessionName)`.
   - Add a CronJob manifest builder owned by `SnapshotMigration`, with both labels (`workflow-uid` per-claim and `rfs-monitor-session` stable) on the CronJob object and `spec.jobTemplate.metadata.labels`. Env vars per the workflow-logic list.
   - Add an `applyRfsDoneCronJob` Argo container template (image: `MigrationConsole`) that performs try-create-then-patch+drain (INV-8). Wrap in `retryStrategy: {limit: 5, retryPolicy: Always, backoff: {duration: 2s, factor: 2, maxDuration: 30s}}`.
+  - Patch `SM.status.documentBackfill` with one normalized structured summary when `console --json backfill status --deep-check` returns valid JSON.
   - Reorder `setupandrunbulkload`: apply CronJob → read-back → apply coordinator (idempotent) → apply RFS Deployment (idempotent) → wait on SM.
   - Remove the workflow-side `waitForCompletion` polling step (lines 393–424 in `runbulkload`), the `stopHistoricalBackfill` step (lines 425–430), and the `cleanupRfsCoordinator` step (lines 510–518 in `setupandrunbulkload`). Replace with `waitForSnapshotMigration`.
   - Do **not** add a workflow-side teardown of the CronJob on the happy path. Sole-arbiter rule.
@@ -562,9 +568,10 @@ The CronJob's other verbs (`get`/`delete` on deployments, statefulsets, services
 
 - `rfsCoordinatorCluster.ts`: remove workflow-side coordinator cleanup from the document-backfill path.
 
-- `MigrationConsole` workflow status/manage code: read the status ConfigMap for RFS wait nodes; avoid live RFS status reruns when the ConfigMap is present.
+- `MigrationConsole` workflow status/manage code: read `SnapshotMigration.status.documentBackfill` for RFS wait nodes; avoid live RFS status reruns when the CR status is present.
 
 - `deployment/k8s/charts/aggregates/migrationAssistantWithArgo/templates/resources/workflowRbac.yaml`: add `cronjobs` to the batch RBAC rule.
+- `deployment/k8s/charts/aggregates/migrationAssistantWithArgo/templates/resources/migrationCrds.yaml`: add typed `SnapshotMigration.status.documentBackfill` schema.
 
 ## Test Coverage
 
@@ -573,8 +580,8 @@ Organized by invariant.
 **INV-1, INV-2 (sole writer / sole deleter):**
 - RFS-enabled workflow path runs no `patchSnapshotMigrationCompleted` and no runtime delete.
 - Metadata-only path still runs the workflow-side `patchSnapshotMigrationCompleted`.
-- CronJob's `SM.status` patch is JSON-merge or strategic-merge over only `phase`/`configChecksum`/`checksumForReplayer`; never a full-status replacement.
-- CronJob owner-ref points to `SnapshotMigration`; same for RFS Deployment, coordinator, and status ConfigMap.
+- CronJob's `SM.status` patch is JSON-merge or strategic-merge over only `phase`/`configChecksum`/`checksumForReplayer` and `documentBackfill`; never a full-status replacement.
+- CronJob owner-ref points to `SnapshotMigration`; same for RFS Deployment and coordinator.
 
 **INV-3 (deterministic naming, UPSERT):**
 - CronJob name resolves from `sessionName = rfs-${workloadIdentityChecksum}`.
@@ -628,7 +635,7 @@ Organized by invariant.
 
 **RBAC and tooling:**
 - RBAC includes batch `cronjobs`.
-- Status/manage tooling renders cached `ConfigMap` summary for RFS wait nodes; does not reissue live `console backfill status` checks.
+- Status/manage tooling renders cached `SnapshotMigration.status.documentBackfill` summary for RFS wait nodes; does not reissue live `console backfill status` checks.
 
 ## Selected Defaults
 
