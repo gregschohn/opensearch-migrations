@@ -39,7 +39,12 @@ jobs:
       - id: get_data
         run: |
           echo "approvers=$(cat .github/CODEOWNERS | grep @ | tr -d '*\n ' | sed 's/@/,/g' | sed 's/,//1')" >> $GITHUB_OUTPUT
-          echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          version="$(tr -d '[:space:]' < VERSION)"
+          if [[ "$GITHUB_REF" == refs/tags/* && "${GITHUB_REF#refs/tags/}" != "$version" ]]; then
+            echo "Release tag '${GITHUB_REF#refs/tags/}' does not match VERSION '${version}'" >&2
+            exit 1
+          fi
+          echo "version=${version}" >> $GITHUB_OUTPUT
       - uses: trstringer/manual-approval@v1
         if: ${{ !github.event.act }}
         with:
