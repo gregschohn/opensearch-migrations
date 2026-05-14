@@ -18,6 +18,11 @@ class HelmCommandFailed(Exception):
 
 
 class K8sService:
+    # Wall-clock budget for delete_all_pvcs() to wait for PVCs to terminate.
+    # Sized to cover BYOS 'large' (24 RFS worker PVCs) and multi-broker Kafka
+    # on CDC pipelines.
+    PVC_DELETION_TIMEOUT_SECONDS: int = 300
+
     def __init__(self, namespace: str = "ma", kube_context: str = None) -> None:
         self.namespace = namespace
         self.kube_context = kube_context
@@ -240,10 +245,14 @@ class K8sService:
         ]
         self.run_command(command=command_list, ignore_errors=True)
 
-    def delete_all_pvcs(self) -> None:
-        """Delete all PersistentVolumeClaims in the namespace, waiting up to 300s
-        for terminations. 300s covers BYOS 'large' (24 RFS worker PVCs) and
-        multi-broker Kafka on CDC pipelines.
+    def delete_all_pvcs(self) -> List[str]:
+        """Delete all PersistentVolumeClaims in the namespace, waiting up to
+        PVC_DELETION_TIMEOUT_SECONDS for terminations.
+
+        Returns the names of PVCs that did NOT fully terminate within the
+        budget — empty list on full success. A non-empty return signals a
+        likely stuck finalizer (Strimzi, csi-provisioner, kafka-broker-pvc)
+        that a customer running the equivalent cleanup would also see.
         """
         logger.info(f"Removing all PVCs in '{self.namespace}' namespace")
         pvcs = self.k8s_client.list_namespaced_persistent_volume_claim(self.namespace).items
@@ -256,7 +265,7 @@ class K8sService:
             logger.debug(f"Deleted PVC: {pvc.metadata.name}")
 
         # Wait for PVCs to finish terminating
-        timeout_seconds = 300
+        timeout_seconds = self.PVC_DELETION_TIMEOUT_SECONDS
         poll_interval = 5  # check every 5 seconds
         start_time = time.time()
 
@@ -264,12 +273,11 @@ class K8sService:
             remaining_pvcs = self.k8s_client.list_namespaced_persistent_volume_claim(self.namespace).items
             if not remaining_pvcs:
                 logger.info("All PVCs have been deleted.")
-                break
+                return []
 
             elapsed = time.time() - start_time
             if elapsed > timeout_seconds:
-                raise TimeoutError(f"Timeout reached: Not all PVCs were deleted within {timeout_seconds} seconds. "
-                                   f"Remaining PVCs: {[pvc.metadata.name for pvc in remaining_pvcs]}")
+                return [pvc.metadata.name for pvc in remaining_pvcs]
 
             logger.info(f"Waiting for PVCs to be deleted. Remaining: {[pvc.metadata.name for pvc in remaining_pvcs]}")
             time.sleep(poll_interval)

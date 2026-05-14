@@ -23,7 +23,7 @@ def call(Map config = [:]) {
         def rc = sh(returnStatus: true,
                     script: "pipenv run app --delete-only --kube-context=${kubeContext}")
         if (rc == 2) {
-            unstable("teardownMaApp: 'ma' namespace still terminating after waits — infra teardown will remove residue (rc=2)")
+            unstable("teardownMaApp: residual cluster state (PVCs and/or 'ma' namespace) — infra teardown will remove residue (rc=2)")
         } else if (rc != 0) {
             unstable("teardownMaApp: 'pipenv run app --delete-only' exited ${rc} — continuing so downstream EKS/CFN cleanup still runs")
         }

@@ -235,10 +235,11 @@ class TestRunner:
         clearly separated. Every step is resilient — no single step aborts
         the ones that follow it.
 
-        Returns True when both 'kyverno-ma' and the main namespace are fully
-        deleted; False if either is still terminating after step 7's waits.
-        The CLI entrypoint translates False into a non-zero exit code so the
-        Jenkins post block surfaces the incomplete cleanup as UNSTABLE.
+        Returns True when cleanup is fully clean: 'kyverno-ma' and the main
+        namespace are both fully deleted, AND step 5 left no residual PVCs.
+        Returns False if any of those signal incomplete cleanup. The CLI
+        entrypoint translates False into a non-zero exit code so the Jenkins
+        post block surfaces the incomplete cleanup as UNSTABLE.
         Outer infra teardown (EKS/minikube delete) still handles any residue.
 
         Customer-parity sequence (steps 1-3):
@@ -253,10 +254,13 @@ class TestRunner:
         Test-scaffolding extras (steps 4-7):
 
           4. cleanup_clusters — source/target test cluster helm releases.
-          5. delete_all_pvcs — any non-Kafka residual PVCs (300s timeout).
+          5. delete_all_pvcs — any non-Kafka residual PVCs (timeout governed
+             by K8sService.PVC_DELETION_TIMEOUT_SECONDS).
+             Returns the names of any PVCs that didn't terminate; a non-empty
+             list signals a stuck finalizer and propagates to the bool return.
           6. delete_namespace — webhook cleanup + kubectl delete namespace.
           7. wait_for_namespace_deleted — warn-only. Raising here previously
-             aborted the Jenkins post block and leaked CFN stacks; the
+             aborted the Jenkins post block and left CFN stacks behind; the
              outer infra teardown (EKS/minikube delete) finishes the job.
 
         Re-raises HelmCommandFailed if step 3 fails. Namespace-delete
@@ -288,10 +292,21 @@ class TestRunner:
         self.cleanup_clusters()
 
         # 5. Residual PVCs.
+        residual_pvcs: List[str] = []
         try:
-            self.k8s_service.delete_all_pvcs()
+            residual_pvcs = self.k8s_service.delete_all_pvcs()
         except Exception as e:
-            logger.warning(f"delete_all_pvcs failed (continuing): {e}")
+            logger.warning(f"delete_all_pvcs raised unexpectedly (continuing): {e}")
+
+        if residual_pvcs:
+            logger.error(
+                "Residual PVCs after %ds — likely a stuck finalizer "
+                "(Strimzi/csi-provisioner/kafka-broker-pvc). A customer running "
+                "the equivalent cleanup would also see this and need manual "
+                "intervention. Residuals (%d): %s",
+                self.k8s_service.PVC_DELETION_TIMEOUT_SECONDS,
+                len(residual_pvcs), residual_pvcs,
+            )
 
         # 6. Namespace + webhooks.
         self.k8s_service.delete_namespace()
@@ -308,7 +323,7 @@ class TestRunner:
                 f"This may indicate webhook or finalizer issues (e.g. Kyverno)."
             ) from helm_uninstall_error
 
-        return ma_gone and kyverno_gone
+        return ma_gone and kyverno_gone and not residual_pvcs
 
     def copy_logs(self, destination: str = "./logs") -> None:
         self.k8s_service.copy_log_files(destination=destination)
