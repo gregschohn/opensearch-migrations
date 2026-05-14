@@ -509,21 +509,24 @@ public class SolrToOpenSearchEndToEndTest {
                 "dynamic_templates must be an array in OS mapping");
             assertThat("dynamic_templates must be non-empty (Solr default schema has *_s, *_i, *_dt, ...)",
                 dynamicTemplates.size(), greaterThan(0));
-            // Each entry should be a single-key object: { "<name>": { "match": "...", "mapping": { "type": "..." } } }
+            // Each entry is a single-key object:
+            //   { "<name>": { "path_match": "...", "match_mapping_type": "...", "mapping": { "type": "..." } } }
+            // path_match + match_mapping_type scopes the template to leaves only — see
+            // SolrSchemaConverter.buildDynamicTemplate for why plain `match` is unsafe.
             var foundStringSuffix = false;
             for (var template : dynamicTemplates) {
                 var entry = template.fields().next();
                 var spec = entry.getValue();
-                assertTrue(spec.has("match") || spec.has("match_mapping_type"),
-                    "Dynamic template '" + entry.getKey() + "' must have a match clause");
+                assertTrue(spec.has("path_match"),
+                    "Dynamic template '" + entry.getKey() + "' must have a path_match clause");
                 assertTrue(spec.path("mapping").has("type"),
                     "Dynamic template '" + entry.getKey() + "' must specify a mapping type");
-                if (spec.path("match").asText().equals("*_s")) {
+                if (spec.path("path_match").asText().equals("*_s")) {
                     foundStringSuffix = true;
                 }
             }
             assertTrue(foundStringSuffix,
-                "Expected a dynamic_template matching '*_s' (Solr default string suffix)");
+                "Expected a dynamic_template with path_match='*_s' (Solr default string suffix)");
         }
     }
 
