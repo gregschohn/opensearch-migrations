@@ -346,9 +346,10 @@ class IntegrationTestArgoService:
             raise ValueError(f"Failed to read ConfigMap '{configmap_name}': {e}")
 
     def _run_kubectl_command(self, kubectl_args: Dict[str, Any], print_output: bool = False) -> CommandResult:
-        # Short kubectl queries (get/describe/patch status) from the test
-        # framework — keep a tight 2-minute budget to fail fast on api-server
-        # stalls rather than hang the test.
+        # Direct kubectl get/describe/patch calls — typical responses are sub-second.
+        # A 120s timeout fails fast (CommandRunnerError) when the apiserver is
+        # unresponsive (pod evicted, kubelet↔apiserver broken, EKS auth
+        # refresh stuck) rather than hanging pytest until the outer pipeline times out.
         runner = CommandRunner("kubectl", kubectl_args, timeout=120.0)
         try:
             return runner.run(print_to_console=print_output)
