@@ -38,7 +38,7 @@ kyvernoPolicies:
 
 images:
   # Empty project image tags default to Chart.appVersion. Release packaging sets
-  # appVersion from VERSION; source/dev chart renders keep appVersion as "latest".
+  # appVersion from the release git tag; source/dev chart renders keep appVersion as "latest".
   captureProxy:
     repository: migrations/capture_proxy
     tag: ""
