@@ -21,9 +21,9 @@ import {
 
 import {CommonWorkflowParameters} from "./commonUtils/workflowParameters";
 import {makeRequiredImageParametersForKeys} from "./commonUtils/imageDefinitions";
-import {makeTargetParamDict} from "./commonUtils/clusterSettingManipulators";
+import {makeSourceParamDict, makeTargetParamDict} from "./commonUtils/clusterSettingManipulators";
 import {getHttpAuthSecretName} from "./commonUtils/clusterSettingManipulators";
-import {getTargetHttpAuthCreds} from "./commonUtils/basicCredsGetters";
+import {getSourceHttpAuthCreds, getTargetHttpAuthCreds} from "./commonUtils/basicCredsGetters";
 import {CONTAINER_TEMPLATE_RETRY_STRATEGY} from "./commonUtils/resourceRetryStrategy";
 import {
     getApprovalMap,
@@ -112,12 +112,16 @@ function makeSnapshotParamsDict(
 
 function makeSourceHostParamsDict(
     sourceVersion: BaseExpression<string>,
-    sourceEndpoint: BaseExpression<string>
+    sourceEndpoint: BaseExpression<string>,
+    sourceConfig: BaseExpression<Serialized<z.infer<typeof NAMED_SOURCE_CLUSTER_CONFIG_WITHOUT_SNAPSHOT_INFO>>>
 ) {
-    return expr.makeDict({
-        "sourceHost": sourceEndpoint,
-        "sourceVersion": sourceVersion
-    });
+    return expr.mergeDicts(
+        makeSourceParamDict(sourceConfig),
+        expr.makeDict({
+            "sourceHost": sourceEndpoint,
+            "sourceVersion": sourceVersion
+        })
+    );
 }
 
 function makeParamsDict(
@@ -125,7 +129,8 @@ function makeParamsDict(
     targetConfig: BaseExpression<Serialized<z.infer<typeof NAMED_TARGET_CLUSTER_CONFIG>>>,
     snapshotConfig: BaseExpression<Serialized<z.infer<typeof COMPLETE_SNAPSHOT_CONFIG>>>,
     options: BaseExpression<Serialized<z.infer<typeof ARGO_METADATA_OPTIONS>>>,
-    sourceEndpoint?: BaseExpression<string>
+    sourceEndpoint?: BaseExpression<string>,
+    sourceConfig?: BaseExpression<Serialized<z.infer<typeof NAMED_SOURCE_CLUSTER_CONFIG_WITHOUT_SNAPSHOT_INFO>>>
 ) {
     const targetAndOptions = expr.mergeDicts(
         makeTargetParamDict(targetConfig),
@@ -141,12 +146,12 @@ function makeParamsDict(
 
     // When sourceEndpoint is non-empty at runtime, add sourceHost param.
     // MetadataMigration CLI prioritizes --source-host over snapshot params.
-    if (sourceEndpoint) {
+    if (sourceEndpoint && sourceConfig) {
         return expr.mergeDicts(base,
             expr.ternary(
                 expr.isEmpty(sourceEndpoint),
                 expr.makeDict({}),
-                makeSourceHostParamsDict(sourceVersion, sourceEndpoint)
+                makeSourceHostParamsDict(sourceVersion, sourceEndpoint, sourceConfig)
             )
         );
     }
@@ -188,6 +193,8 @@ export const MetadataMigration = WorkflowBuilder.create({
         .addRequiredInput("snapshotConfig", typeToken<z.infer<typeof COMPLETE_SNAPSHOT_CONFIG>>())
         .addRequiredInput("metadataMigrationConfig", typeToken<z.infer<typeof ARGO_METADATA_OPTIONS>>())
         .addOptionalInput("sourceEndpoint", c => expr.literal(""))
+        .addOptionalInput("sourceConfig", c =>
+            expr.empty<z.infer<typeof NAMED_SOURCE_CLUSTER_CONFIG_WITHOUT_SNAPSHOT_INFO>>())
         .addInputsFromRecord(makeRequiredImageParametersForKeys(["MigrationConsole"]))
         .addRequiredInput("sourceK8sLabel", typeToken<string>())
         .addRequiredInput("targetK8sLabel", typeToken<string>())
@@ -226,6 +233,7 @@ export const MetadataMigration = WorkflowBuilder.create({
                 expr.dig(expr.deserializeRecord(b.inputs.metadataMigrationConfig), ["jvmArgs"], "")
             )
             .addEnvVarsFromRecord(getTargetHttpAuthCreds(getHttpAuthSecretName(b.inputs.targetConfig)))
+            .addEnvVarsFromRecord(getSourceHttpAuthCreds(getHttpAuthSecretName(b.inputs.sourceConfig)))
             .addResources(DEFAULT_RESOURCES.JAVA_MIGRATION_CONSOLE_CLI)
             .addCommand(["/root/metadataMigration/bin/MetadataMigration"])
             .addArgs([
@@ -233,7 +241,7 @@ export const MetadataMigration = WorkflowBuilder.create({
                 expr.literal("---INLINE-JSON"),
                 expr.asString(expr.serialize(
                     makeParamsDict(b.inputs.sourceVersion, b.inputs.targetConfig, b.inputs.snapshotConfig, b.inputs.metadataMigrationConfig,
-                        b.inputs.sourceEndpoint
+                        b.inputs.sourceEndpoint, b.inputs.sourceConfig
                     )
                 ))
             ])
@@ -280,6 +288,8 @@ export const MetadataMigration = WorkflowBuilder.create({
     .addTemplate("migrateMetaData", t => t
         .addRequiredInput("metadataMigrationConfig", typeToken<z.infer<typeof ARGO_METADATA_OPTIONS>>())
         .addOptionalInput("sourceEndpoint", c => expr.literal(""))
+        .addOptionalInput("sourceConfig", c =>
+            expr.empty<z.infer<typeof NAMED_SOURCE_CLUSTER_CONFIG_WITHOUT_SNAPSHOT_INFO>>())
         .addInputsFromRecord(COMMON_METADATA_PARAMETERS)
         .addInputsFromRecord(
             getApprovalMap(t.inputs.workflowParameters.approvalConfigMapName, typeToken<{}>()))
@@ -303,6 +313,7 @@ export const MetadataMigration = WorkflowBuilder.create({
             .addStep("evaluateMetadata", INTERNAL, "runMetadata", c =>
                 c.register({
                     ...selectInputsForRegister(b, c),
+                    sourceConfig: b.inputs.sourceConfig,
                     commandMode: "evaluate",
                     sourceK8sLabel: b.inputs.sourceLabel,
                     targetK8sLabel: expr.jsonPathStrict(b.inputs.targetConfig, "label"),
@@ -340,6 +351,7 @@ export const MetadataMigration = WorkflowBuilder.create({
             .addStep("migrateMetadata", INTERNAL, "runMetadata", c =>
                 c.register({
                     ...selectInputsForRegister(b, c),
+                    sourceConfig: b.inputs.sourceConfig,
                     commandMode: "migrate",
                     sourceK8sLabel: b.inputs.sourceLabel,
                     targetK8sLabel: expr.jsonPathStrict(b.inputs.targetConfig, "label"),
