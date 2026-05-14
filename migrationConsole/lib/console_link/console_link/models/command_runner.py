@@ -13,6 +13,43 @@ logger = logging.getLogger(__name__)
 FlagOnlyArgument = None
 
 
+class _IdleWatchdog:
+    """Re-armable idle-timeout watchdog for a subprocess streaming pipeline.
+
+    `arm()` (re)starts a Timer that SIGKILLs the process if no further `arm()`
+    call lands within `timeout` seconds. `fired` reports whether the Timer
+    actually killed the process. `timeout=None` makes every method a no-op.
+    """
+
+    def __init__(self, process: "subprocess.Popen[str]", timeout: Optional[float]):
+        self._process = process
+        self._timeout = timeout
+        self._timer: Optional[threading.Timer] = None
+        self.fired = False
+
+    def arm(self) -> None:
+        if self._timeout is None:
+            return
+        if self._timer is not None:
+            self._timer.cancel()
+        self._timer = threading.Timer(self._timeout, self._on_timeout)
+        self._timer.daemon = True
+        self._timer.start()
+
+    def cancel(self) -> None:
+        if self._timer is not None:
+            self._timer.cancel()
+            self._timer = None
+
+    def _on_timeout(self) -> None:
+        self.fired = True
+        try:
+            self._process.kill()
+        except ProcessLookupError:
+            # Child already exited between readline() EOF and timer firing.
+            pass
+
+
 class CommandRunner:
     """Run an external command with optional bounded wall-clock / idle timeouts.
 
@@ -85,7 +122,12 @@ class CommandRunner:
                 logger.debug(log_message_err)
 
     def _run_as_synchronous_process(self, print_to_console: bool, print_on_error: bool) -> CommandResult:
-        run_kwargs = dict(stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+        run_kwargs: Dict[str, Any] = {
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "text": True,
+            "check": True,
+        }
         if self.timeout is not None:
             run_kwargs["timeout"] = self.timeout
         try:
@@ -109,80 +151,61 @@ class CommandRunner:
             raise CommandRunnerError(e.returncode, self.sanitized_command(), e.stdout, e.stderr)
 
     def _run_as_streaming_process(self, print_to_console: bool = True) -> CommandResult:
-        process: Optional[subprocess.Popen] = None
-        idle_timer_holder: List[Optional[threading.Timer]] = [None]
-        timed_out = {"value": False}
         start_time = time.monotonic()
+        idle_watchdog: Optional[_IdleWatchdog] = None
         try:
-            # Start process with pipes for real-time output
             process = subprocess.Popen(
                 self.command,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                bufsize=1,  # Line buffered
-                universal_newlines=True
+                bufsize=1,
+                universal_newlines=True,
             )
-
-            # Idle-timeout semantics: arm a Timer that SIGKILLs the child if
-            # it produces no output for self.timeout seconds. Re-arm on every
-            # line received, so a command that is making visible progress
+            # Idle-timeout: SIGKILL the child after self.timeout seconds of no
+            # output. Re-armed on every line so a command making visible progress
             # (helm install --wait, buildx build, etc.) is never killed.
-            def _kill_on_idle_timeout(proc: subprocess.Popen) -> None:
-                timed_out["value"] = True
-                try:
-                    proc.kill()
-                except ProcessLookupError:
-                    # Child already exited between readline() returning EOF
-                    # and this handler firing.  Nothing to kill.
-                    pass
+            idle_watchdog = _IdleWatchdog(process, self.timeout)
+            idle_watchdog.arm()
 
-            def _arm_idle_timer() -> None:
-                if self.timeout is None:
-                    return
-                existing = idle_timer_holder[0]
-                if existing is not None:
-                    existing.cancel()
-                timer = threading.Timer(self.timeout, _kill_on_idle_timeout, args=(process,))
-                timer.daemon = True
-                idle_timer_holder[0] = timer
-                timer.start()
-
-            _arm_idle_timer()
-
-            # Read output line by line as it comes
-            if process.stdout:
-                for line in iter(process.stdout.readline, ''):
-                    if line:
-                        _arm_idle_timer()  # progress observed — reset the idle clock
-                        if print_to_console:
-                            sys.stdout.write(line)
-                            sys.stdout.flush()
-                        logger.debug(f"STDOUT: {line.rstrip()}")
-
-            # Wait for process to complete
+            self._stream_output_to_console(process, idle_watchdog, print_to_console)
             return_code = process.wait()
-
-            if timed_out["value"]:
-                elapsed = time.monotonic() - start_time
-                logger.error(
-                    f"Command idle-timed-out after {self.timeout}s of no output "
-                    f"(ran for {elapsed:.1f}s): {' '.join(self.sanitized_command())}"
-                )
-                raise CommandRunnerError(-1, self.sanitized_command(), None,
-                                         f"idle-timed-out after {self.timeout}s of silence")
-            if return_code == 0:
-                return CommandResult(success=True, value="Command executed successfully")
-            raise CommandRunnerError(return_code, self.sanitized_command())
-
+            return self._build_streaming_result(return_code, idle_watchdog, start_time)
         except CommandRunnerError:
             raise
         except Exception as e:
             logger.error(f"Streaming command failed: {e}")
             raise CommandRunnerError(-1, self.sanitized_command(), None, str(e))
         finally:
-            if idle_timer_holder[0] is not None:
-                idle_timer_holder[0].cancel()
+            if idle_watchdog is not None:
+                idle_watchdog.cancel()
+
+    def _stream_output_to_console(self, process: "subprocess.Popen[str]",
+                                  watchdog: "_IdleWatchdog", print_to_console: bool) -> None:
+        if not process.stdout:
+            return
+        for line in iter(process.stdout.readline, ''):
+            if not line:
+                continue
+            watchdog.arm()  # progress observed — reset the idle clock
+            if print_to_console:
+                sys.stdout.write(line)
+                sys.stdout.flush()
+            logger.debug(f"STDOUT: {line.rstrip()}")
+
+    def _build_streaming_result(self, return_code: int, watchdog: "_IdleWatchdog",
+                                start_time: float) -> CommandResult:
+        if watchdog.fired:
+            elapsed = time.monotonic() - start_time
+            logger.error(
+                f"Command idle-timed-out after {self.timeout}s of no output "
+                f"(ran for {elapsed:.1f}s): {' '.join(self.sanitized_command())}"
+            )
+            raise CommandRunnerError(-1, self.sanitized_command(), None,
+                                     f"idle-timed-out after {self.timeout}s of silence")
+        if return_code == 0:
+            return CommandResult(success=True, value="Command executed successfully")
+        raise CommandRunnerError(return_code, self.sanitized_command())
 
     def _run_as_detached_process(self, log_file: str) -> CommandResult:
         try:
