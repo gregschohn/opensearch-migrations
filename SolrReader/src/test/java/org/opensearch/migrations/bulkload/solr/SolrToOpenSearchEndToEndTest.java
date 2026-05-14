@@ -198,9 +198,26 @@ public class SolrToOpenSearchEndToEndTest {
     }
 
     /**
-     * E2E: Solr fields with dots in their names (e.g. {@code category.name}) migrate
-     * with their declared types, {@code _source} preserves the original keys, and
-     * queries against the original dotted path resolve to the migrated docs.
+     * E2E: Solr fields whose names contain '.' migrate with their declared types,
+     * {@code _source} preserves the original dotted keys verbatim, and queries
+     * against the original dotted path resolve.
+     *
+     * <p>SOURCE — Solr 8 collection with five explicitly declared dotted-name fields,
+     * one document.
+     * <pre>{@code
+     *   schema:
+     *     category.name      string  (→ Solr "string"  → OS keyword)
+     *     category.id        pint    (→ Solr "pint"    → OS integer)
+     *     metric.cpu.percent pfloat  (→ Solr "pfloat"  → OS float)
+     *     event.created      pdate   (→ Solr "pdate"   → OS date)
+     *     is.active          boolean (→ Solr "boolean" → OS boolean)
+     *   doc1: {category.name:"books", category.id:7, metric.cpu.percent:42.5,
+     *          event.created:"2024-01-15T10:30:00Z", is.active:true}
+     * }</pre>
+     *
+     * <p>TARGET — OpenSearch 2.19 index "test_collection" with the dotted keys
+     * round-tripped verbatim in {@code _source}, the declared types reflected in
+     * {@code _field_caps}, and queries on the dotted path returning doc1.
      */
     @ParameterizedTest(name = "dotted field names: {0} → {1}")
     @MethodSource("solr8ToOpenSearch")
@@ -215,125 +232,85 @@ public class SolrToOpenSearchEndToEndTest {
             solr.start();
             target.start();
 
+            // ---- SOURCE: Solr collection with explicit dotted-name fields + 1 doc ----
             createSolrCollection(solr, COLLECTION_NAME);
+            addSolrSchemaFields(solr, COLLECTION_NAME, "["
+                + "{\"name\":\"category.name\",       \"type\":\"string\",  \"stored\":true, \"indexed\":true, \"docValues\":true},"
+                + "{\"name\":\"category.id\",         \"type\":\"pint\",    \"stored\":true, \"indexed\":true, \"docValues\":true},"
+                + "{\"name\":\"metric.cpu.percent\",  \"type\":\"pfloat\",  \"stored\":true, \"indexed\":true, \"docValues\":true},"
+                + "{\"name\":\"event.created\",       \"type\":\"pdate\",   \"stored\":true, \"indexed\":true, \"docValues\":true},"
+                + "{\"name\":\"is.active\",           \"type\":\"boolean\", \"stored\":true, \"docValues\":true}"
+                + "]");
+            indexSolrDocs(solr, COLLECTION_NAME, "[{"
+                + "\"id\":\"doc1\","
+                + "\"category.name\":\"books\","
+                + "\"category.id\":7,"
+                + "\"metric.cpu.percent\":42.5,"
+                + "\"event.created\":\"2024-01-15T10:30:00Z\","
+                + "\"is.active\":true"
+                + "}]");
 
-            // Solr permits flat field names with '.'. Declare a few of them with mixed
-            // types so we can verify both the mapping and the round-tripped values.
-            var schemaUpdate = "{"
-                + "\"add-field\": ["
-                + "  {\"name\":\"category.name\",       \"type\":\"string\",  \"stored\":true,  \"indexed\":true,  \"docValues\":true},"
-                + "  {\"name\":\"category.id\",         \"type\":\"pint\",    \"stored\":true,  \"indexed\":true,  \"docValues\":true},"
-                + "  {\"name\":\"metric.cpu.percent\",  \"type\":\"pfloat\",  \"stored\":true,  \"indexed\":true,  \"docValues\":true},"
-                + "  {\"name\":\"event.created\",       \"type\":\"pdate\",   \"stored\":true,  \"indexed\":true,  \"docValues\":true},"
-                + "  {\"name\":\"is.active\",           \"type\":\"boolean\", \"stored\":true,  \"docValues\":true}"
-                + "]}";
-            solr.execInContainer(
-                "curl", "-s", "-H", "Content-Type: application/json",
-                "http://localhost:8983/solr/" + COLLECTION_NAME + "/schema",
-                "-d", schemaUpdate
-            );
+            // ---- MIGRATE: backup → pipeline → OpenSearch ----
+            runPipelineMigration(solr, target, COLLECTION_NAME, solrVersion);
 
-            var doc = "[{"
-                + "\"id\": \"doc1\","
-                + "\"category.name\": \"books\","
-                + "\"category.id\": 7,"
-                + "\"metric.cpu.percent\": 42.5,"
-                + "\"event.created\": \"2024-01-15T10:30:00Z\","
-                + "\"is.active\": true"
-                + "}]";
-            solr.execInContainer(
-                "curl", "-s", "-H", "Content-Type: application/json",
-                "http://localhost:8983/solr/" + COLLECTION_NAME + "/update?commit=true",
-                "-d", doc
-            );
-
-            var schema = fetchSolrSchema(solr, COLLECTION_NAME);
-            var backupDir = createAndCopyBackup(solr, COLLECTION_NAME);
-
-            var source = new SolrBackupSource(backupDir, COLLECTION_NAME, schema);
-            var targetClient = createOpenSearchClient(target);
-            var sink = new OpenSearchDocumentSink(
-                targetClient, null, false, DocumentExceptionAllowlist.empty(), null
-            );
-            new DocumentMigrationPipeline(source, sink, 100, Long.MAX_VALUE)
-                .migrateAll().collectList().block();
-
+            // ---- TARGET: assert metadata (declared types) and document content ----
             var restClient = createRestClient(target);
             var ctx = DocumentMigrationTestContext.factory().noOtelTracking();
             restClient.get("_refresh", ctx.createUnboundRequestContext());
 
-            // --- Verify field_caps reports the original dotted field names with the right types ---
-            var capsResp = restClient.get(
-                COLLECTION_NAME + "/_field_caps?fields=category.name,category.id,metric.cpu.percent,event.created,is.active",
-                ctx.createUnboundRequestContext()
-            );
-            var fields = MAPPER.readTree(capsResp.body).path("fields");
-            log.atInfo().setMessage("OpenSearch field_caps for dotted fields: {}").addArgument(fields).log();
+            // Metadata: each declared dotted field is reachable by its full dotted path
+            // and reports the OpenSearch type that the converter should derive from Solr.
+            assertTargetFieldType(restClient, ctx, COLLECTION_NAME, "category.name",       "keyword");
+            assertTargetFieldType(restClient, ctx, COLLECTION_NAME, "category.id",         "integer");
+            assertTargetFieldType(restClient, ctx, COLLECTION_NAME, "metric.cpu.percent",  "float");
+            assertTargetFieldType(restClient, ctx, COLLECTION_NAME, "event.created",       "date");
+            assertTargetFieldType(restClient, ctx, COLLECTION_NAME, "is.active",           "boolean");
 
-            assertThat("category.name → keyword",
-                fields.path("category.name").path("keyword").path("type").asText(), equalTo("keyword"));
-            assertThat("category.id → integer",
-                fields.path("category.id").path("integer").path("type").asText(), equalTo("integer"));
-            assertThat("metric.cpu.percent → float",
-                fields.path("metric.cpu.percent").path("float").path("type").asText(), equalTo("float"));
-            assertThat("event.created → date",
-                fields.path("event.created").path("date").path("type").asText(), equalTo("date"));
-            assertThat("is.active → boolean",
-                fields.path("is.active").path("boolean").path("type").asText(), equalTo("boolean"));
+            // Document content: _source keeps every dotted key verbatim, with the value as written.
+            var src = fetchTargetSource(restClient, ctx, COLLECTION_NAME, "doc1");
+            assertThat("_source.category.name",
+                src.path("category.name").asText(),                    equalTo("books"));
+            assertThat("_source.category.id",
+                src.path("category.id").asInt(),                       equalTo(7));
+            assertThat("_source.metric.cpu.percent",
+                (double) src.path("metric.cpu.percent").floatValue(),  closeTo(42.5, 0.01));
+            assertThat("_source.is.active",
+                src.path("is.active").asBoolean(),                     equalTo(true));
 
-            // --- Verify _source preserves the dotted keys verbatim ---
-            var searchResp = restClient.get(
-                COLLECTION_NAME + "/_search?q=id:doc1&size=1", ctx.createUnboundRequestContext()
-            );
-            var hits = MAPPER.readTree(searchResp.body).path("hits").path("hits");
-            assertThat("Should find doc1", hits.size(), equalTo(1));
-            var src = hits.get(0).path("_source");
-            log.atInfo().setMessage("Migrated dotted-field doc _source: {}").addArgument(src).log();
-
-            assertThat("_source keeps category.name as-is",
-                src.path("category.name").asText(), equalTo("books"));
-            assertThat("_source keeps category.id as-is",
-                src.path("category.id").asInt(), equalTo(7));
-            assertThat("_source keeps metric.cpu.percent as-is",
-                (double) src.path("metric.cpu.percent").floatValue(), closeTo(42.5, 0.01));
-            assertThat("_source keeps is.active as-is",
-                src.path("is.active").asBoolean(), equalTo(true));
-
-            // --- Verify queries against the original dotted path resolve to this doc ---
-            // Solr customers query like q=category.name:books — the same path must work in OS.
-            var qByDottedKeyword = restClient.get(
-                COLLECTION_NAME + "/_search?q=category.name:books&size=10",
-                ctx.createUnboundRequestContext()
-            );
-            var keywordHits = MAPPER.readTree(qByDottedKeyword.body).path("hits").path("hits");
-            assertThat("category.name:books should match doc1", keywordHits.size(), equalTo(1));
-            assertThat(keywordHits.get(0).path("_id").asText(), equalTo("doc1"));
-
-            // Numeric range query on a dotted-name int field.
-            var qByDottedInt = restClient.get(
-                COLLECTION_NAME + "/_search?q=category.id:7&size=10",
-                ctx.createUnboundRequestContext()
-            );
-            var intHits = MAPPER.readTree(qByDottedInt.body).path("hits").path("hits");
-            assertThat("category.id:7 should match doc1", intHits.size(), equalTo(1));
-
-            // Three-segment dotted field name still resolves as a query path.
-            var qByThreeSegmentFloat = restClient.get(
-                COLLECTION_NAME + "/_search?q=metric.cpu.percent:42.5&size=10",
-                ctx.createUnboundRequestContext()
-            );
-            var floatHits = MAPPER.readTree(qByThreeSegmentFloat.body).path("hits").path("hits");
-            assertThat("query on metric.cpu.percent should match doc1",
-                floatHits.size(), equalTo(1));
+            // Queries by the original dotted path resolve back to doc1 — including a
+            // three-segment field name. This is what Solr customers actually issue.
+            assertQueryReturnsId(restClient, ctx, COLLECTION_NAME, "category.name:books",        "doc1");
+            assertQueryReturnsId(restClient, ctx, COLLECTION_NAME, "category.id:7",              "doc1");
+            assertQueryReturnsId(restClient, ctx, COLLECTION_NAME, "metric.cpu.percent:42.5",    "doc1");
         }
     }
 
     /**
      * E2E regression: a dotted-name field whose top-level segment also matches a
-     * Solr dynamic-field pattern (e.g. {@code attr_thing.withdot} under {@code attr_*}).
-     * Without {@code path_match} + {@code match_mapping_type}, the dynamic template
-     * fires on the synthesized parent object and the bulk write fails with
-     * {@code mapper_parsing_exception}, silently dropping the doc.
+     * Solr {@code dynamicField} pattern. Before the fix, the converter emitted
+     * dynamic templates with plain {@code match}, which fired on the synthesized
+     * parent object on write and failed bulk indexing with
+     * {@code mapper_parsing_exception} — silently dropping the doc.
+     *
+     * <p>SOURCE — Solr 8 collection (default schema's dynamic fields) with one doc
+     * that exercises each of the six default dynamic-field patterns using a dotted
+     * leaf so the parent segment also prefix-matches the pattern.
+     * <pre>{@code
+     *   dynamic fields (default Solr 8 schema):
+     *     attr_*  text_general,  *_s string,  *_i pint,  *_b boolean,  *_f pfloat,  *_dt pdate
+     *   dyn-dot-1: {
+     *     attr_thing.withdot:"vip",       // attr_*  + dotted leaf
+     *     label.tag_s:"alpha",            // *_s     + dotted leaf
+     *     counter.value_i:17,             // *_i     + dotted leaf
+     *     flag.is.set_b:true,             // *_b     + dotted leaf (3 segments)
+     *     price.unit_f:9.99,              // *_f     + dotted leaf
+     *     event.created_dt:"2024-06-15T12:00:00Z"  // *_dt + dotted leaf
+     *   }
+     * }</pre>
+     *
+     * <p>TARGET — OpenSearch 2.19 index "test_collection" with the doc successfully
+     * indexed (no bulk failure), each dotted leaf typed by its dynamic template,
+     * and dotted-path queries returning the doc.
      */
     @ParameterizedTest(name = "dynamic-field + dotted name: {0} → {1}")
     @MethodSource("solr8ToOpenSearch")
@@ -348,86 +325,45 @@ public class SolrToOpenSearchEndToEndTest {
             solr.start();
             target.start();
 
+            // ---- SOURCE: Solr collection (default dynamicFields) + 1 doc with dotted leaves ----
             createSolrCollection(solr, COLLECTION_NAME);
-
-            // Solr default schema already has attr_* (text_general) and *_s, *_i, *_b, *_f, *_dt
-            // dynamic fields. Index a doc that uses each of those patterns with a
-            // dotted leaf name so the parent segment also prefix-matches the pattern.
-            var doc = "[{"
+            indexSolrDocs(solr, COLLECTION_NAME, "[{"
                 + "\"id\":\"dyn-dot-1\","
-                + "\"attr_thing.withdot\":\"vip\","        // attr_*  (text_general) + dotted leaf
-                + "\"label.tag_s\":\"alpha\","             // *_s     (string)        + dotted leaf
-                + "\"counter.value_i\":17,"                // *_i     (pint)          + dotted leaf
-                + "\"flag.is.set_b\":true,"                // *_b     (boolean)       + dotted leaf (3 segments)
-                + "\"price.unit_f\":9.99,"                 // *_f     (pfloat)        + dotted leaf
-                + "\"event.created_dt\":\"2024-06-15T12:00:00Z\""  // *_dt (pdate)    + dotted leaf
-                + "}]";
-            solr.execInContainer("curl", "-s", "-H", "Content-Type: application/json",
-                "http://localhost:8983/solr/" + COLLECTION_NAME + "/update?commit=true",
-                "-d", doc);
+                + "\"attr_thing.withdot\":\"vip\","
+                + "\"label.tag_s\":\"alpha\","
+                + "\"counter.value_i\":17,"
+                + "\"flag.is.set_b\":true,"
+                + "\"price.unit_f\":9.99,"
+                + "\"event.created_dt\":\"2024-06-15T12:00:00Z\""
+                + "}]");
 
-            var schema = fetchSolrSchema(solr, COLLECTION_NAME);
-            var backupDir = createAndCopyBackup(solr, COLLECTION_NAME);
+            // ---- MIGRATE: backup → pipeline → OpenSearch ----
+            runPipelineMigration(solr, target, COLLECTION_NAME, solrVersion);
 
-            var source = new SolrBackupSource(backupDir, COLLECTION_NAME, schema);
-            var targetClient = createOpenSearchClient(target);
-            var sink = new OpenSearchDocumentSink(
-                targetClient, null, false, DocumentExceptionAllowlist.empty(), null
-            );
-            new DocumentMigrationPipeline(source, sink, 100, Long.MAX_VALUE)
-                .migrateAll().collectList().block();
-
+            // ---- TARGET: assert metadata (per-template types) and document content ----
             var restClient = createRestClient(target);
             var ctx = DocumentMigrationTestContext.factory().noOtelTracking();
             restClient.get("_refresh", ctx.createUnboundRequestContext());
 
-            // The migrated doc must exist — bulk would have failed if dynamic templates
-            // had collided with the dotted parent segment.
-            var searchResp = restClient.get(
-                COLLECTION_NAME + "/_search?q=id:dyn-dot-1&size=1",
-                ctx.createUnboundRequestContext()
-            );
-            var hits = MAPPER.readTree(searchResp.body).path("hits").path("hits");
-            assertThat("dyn-dot-1 should be present", hits.size(), equalTo(1));
+            // The doc must exist — pre-fix, bulk would have failed with mapper_parsing_exception.
+            var src = fetchTargetSource(restClient, ctx, COLLECTION_NAME, "dyn-dot-1");
+            assertThat("_source.attr_thing.withdot", src.path("attr_thing.withdot").asText(),         equalTo("vip"));
+            assertThat("_source.label.tag_s",        src.path("label.tag_s").asText(),                equalTo("alpha"));
+            assertThat("_source.counter.value_i",    src.path("counter.value_i").asInt(),             equalTo(17));
+            assertThat("_source.flag.is.set_b",      src.path("flag.is.set_b").asBoolean(),           equalTo(true));
+            assertThat("_source.price.unit_f",       (double) src.path("price.unit_f").floatValue(),  closeTo(9.99, 0.01));
 
-            var src = hits.get(0).path("_source");
-            log.atInfo().setMessage("Migrated dynamic+dotted _source: {}").addArgument(src).log();
-            assertThat(src.path("attr_thing.withdot").asText(), equalTo("vip"));
-            assertThat(src.path("label.tag_s").asText(), equalTo("alpha"));
-            assertThat(src.path("counter.value_i").asInt(), equalTo(17));
-            assertThat(src.path("flag.is.set_b").asBoolean(), equalTo(true));
-            assertThat((double) src.path("price.unit_f").floatValue(), closeTo(9.99, 0.01));
+            // Each dotted leaf got the type its matching dynamic template prescribes —
+            // proves path_match + match_mapping_type targeted only the leaf, not the parent.
+            assertTargetFieldType(restClient, ctx, COLLECTION_NAME, "attr_thing.withdot",  "text");      // attr_* template
+            assertTargetFieldType(restClient, ctx, COLLECTION_NAME, "label.tag_s",         "keyword");   // *_s    template
+            assertTargetFieldType(restClient, ctx, COLLECTION_NAME, "counter.value_i",     "integer");   // *_i    template
+            assertTargetFieldType(restClient, ctx, COLLECTION_NAME, "flag.is.set_b",       "boolean");   // *_b    template
+            assertTargetFieldType(restClient, ctx, COLLECTION_NAME, "price.unit_f",        "float");     // *_f    template
+            assertTargetFieldType(restClient, ctx, COLLECTION_NAME, "event.created_dt",    "date");      // *_dt   template
 
-            // Verify dynamic templates produced the right *typed* mapping for the dotted
-            // leaves — proving the path_match + match_mapping_type pair worked.
-            var capsResp = restClient.get(
-                COLLECTION_NAME + "/_field_caps?fields="
-                    + "attr_thing.withdot,label.tag_s,counter.value_i,flag.is.set_b,price.unit_f,event.created_dt",
-                ctx.createUnboundRequestContext()
-            );
-            var fields = MAPPER.readTree(capsResp.body).path("fields");
-            log.atInfo().setMessage("OpenSearch field_caps for dynamic+dotted fields: {}")
-                .addArgument(fields).log();
-
-            assertThat("attr_thing.withdot → text (attr_* template)",
-                fields.path("attr_thing.withdot").path("text").path("type").asText(), equalTo("text"));
-            assertThat("label.tag_s → keyword (*_s template)",
-                fields.path("label.tag_s").path("keyword").path("type").asText(), equalTo("keyword"));
-            assertThat("counter.value_i → integer (*_i template)",
-                fields.path("counter.value_i").path("integer").path("type").asText(), equalTo("integer"));
-            assertThat("flag.is.set_b → boolean (*_b template)",
-                fields.path("flag.is.set_b").path("boolean").path("type").asText(), equalTo("boolean"));
-            assertThat("price.unit_f → float (*_f template)",
-                fields.path("price.unit_f").path("float").path("type").asText(), equalTo("float"));
-            assertThat("event.created_dt → date (*_dt template)",
-                fields.path("event.created_dt").path("date").path("type").asText(), equalTo("date"));
-
-            // And queries by the original dotted path resolve to the doc.
-            var qHits = MAPPER.readTree(restClient.get(
-                COLLECTION_NAME + "/_search?q=counter.value_i:17&size=10",
-                ctx.createUnboundRequestContext()
-            ).body).path("hits").path("hits");
-            assertThat("query counter.value_i:17 matches dyn-dot-1", qHits.size(), equalTo(1));
+            // Query by the original dotted path resolves to the doc.
+            assertQueryReturnsId(restClient, ctx, COLLECTION_NAME, "counter.value_i:17", "dyn-dot-1");
         }
     }
 
@@ -1127,6 +1063,78 @@ public class SolrToOpenSearchEndToEndTest {
     }
 
     // --- Helpers ---
+
+    /** POST a JSON document array to a Solr collection's /update endpoint with commit. */
+    private static void indexSolrDocs(SolrClusterContainer solr, String collection, String jsonDocsArray)
+        throws Exception {
+        solr.execInContainer(
+            "curl", "-s", "-H", "Content-Type: application/json",
+            "http://localhost:8983/solr/" + collection + "/update?commit=true",
+            "-d", jsonDocsArray
+        );
+    }
+
+    /** POST {@code {"add-field":[...]}} to a Solr collection's Schema API. */
+    private static void addSolrSchemaFields(
+        SolrClusterContainer solr, String collection, String addFieldArrayJson
+    ) throws Exception {
+        solr.execInContainer(
+            "curl", "-s", "-H", "Content-Type: application/json",
+            "http://localhost:8983/solr/" + collection + "/schema",
+            "-d", "{\"add-field\":" + addFieldArrayJson + "}"
+        );
+    }
+
+    /** Snapshot the Solr collection, copy locally, and run the in-process pipeline to OpenSearch. */
+    private void runPipelineMigration(
+        SolrClusterContainer solr, SearchClusterContainer target,
+        String collection, SolrClusterContainer.SolrVersion solrVersion
+    ) throws Exception {
+        var schema = fetchSolrSchema(solr, collection);
+        var backupDir = createAndCopyBackup(solr, collection);
+        var source = new SolrBackupSource(backupDir, collection, schema, solrVersion.major());
+        var sink = new OpenSearchDocumentSink(
+            createOpenSearchClient(target), null, false, DocumentExceptionAllowlist.empty(), null
+        );
+        new DocumentMigrationPipeline(source, sink, 100, Long.MAX_VALUE).migrateAll().collectList().block();
+    }
+
+    /** Assert that {@code _field_caps} reports {@code field} on the target index with the given OS type. */
+    private static void assertTargetFieldType(
+        RestClient restClient, DocumentMigrationTestContext ctx,
+        String index, String field, String expectedType
+    ) throws Exception {
+        var resp = restClient.get(index + "/_field_caps?fields=" + field, ctx.createUnboundRequestContext());
+        var typeNode = MAPPER.readTree(resp.body)
+            .path("fields").path(field).path(expectedType).path("type");
+        assertThat(field + " → " + expectedType, typeNode.asText(), equalTo(expectedType));
+    }
+
+    /** Fetch the {@code _source} of a target doc by id. Asserts the doc exists. */
+    private static JsonNode fetchTargetSource(
+        RestClient restClient, DocumentMigrationTestContext ctx, String index, String id
+    ) throws Exception {
+        var resp = restClient.get(index + "/_search?q=id:" + id + "&size=1", ctx.createUnboundRequestContext());
+        var hits = MAPPER.readTree(resp.body).path("hits").path("hits");
+        assertThat("Should find " + id, hits.size(), equalTo(1));
+        var src = hits.get(0).path("_source");
+        log.atInfo().setMessage("Migrated _source for {}: {}").addArgument(id).addArgument(src).log();
+        return src;
+    }
+
+    /** Run a Lucene query string against the target and assert exactly one hit with the expected id. */
+    private static void assertQueryReturnsId(
+        RestClient restClient, DocumentMigrationTestContext ctx,
+        String index, String luceneQuery, String expectedId
+    ) throws Exception {
+        var resp = restClient.get(
+            index + "/_search?q=" + luceneQuery + "&size=10", ctx.createUnboundRequestContext()
+        );
+        var hits = MAPPER.readTree(resp.body).path("hits").path("hits");
+        assertThat("query " + luceneQuery + " should return one hit", hits.size(), equalTo(1));
+        assertThat("query " + luceneQuery + " should return id=" + expectedId,
+            hits.get(0).path("_id").asText(), equalTo(expectedId));
+    }
 
     /**
      * Polls /solr/admin/collections?action=CLUSTERSTATUS until the collection has the
