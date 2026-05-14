@@ -81,16 +81,13 @@ functionName(jobName: jobNameOverride ?: null)
 | Cover File | Vars Function | Override Parameter |
 |------------|---------------|-------------------|
 | cleanupDeploymentCover.groovy | cleanupDeployment | JOB_NAME_OVERRIDE |
+| dockerComposeE2ETestCover.groovy | dockerComposeE2ETest | JOB_NAME_OVERRIDE |
 | eksAOSSSearchIntegTestCover.groovy | eksAOSSIntegPipeline | JOB_NAME_OVERRIDE |
 | eksAOSSTimeSeriesIntegTestCover.groovy | eksAOSSIntegPipeline | JOB_NAME_OVERRIDE |
 | eksAOSSVectorIntegTestCover.groovy | eksAOSSIntegPipeline | JOB_NAME_OVERRIDE |
 | eksBYOSIntegTestCover.groovy | eksBYOSIntegPipeline | JOB_NAME_OVERRIDE |
-| eksCdcAossCdcOnlyIntegTestCover.groovy | eksCdcAossIntegPipeline | JOB_NAME_OVERRIDE |
 | eksCdcAossFullE2eIntegTestCover.groovy | eksCdcAossIntegPipeline | JOB_NAME_OVERRIDE |
-| eksCdcBulkGenerateDataIntegTestCover.groovy | eksCdcIntegPipeline | JOB_NAME_OVERRIDE |
-| eksCdcIntegTestCover.groovy | eksCdcIntegPipeline | JOB_NAME_OVERRIDE |
-| eksCdcMixedOpsIntegTestCover.groovy | eksCdcIntegPipeline | JOB_NAME_OVERRIDE |
-| eksCdcSimpleBulkE2eIntegTestCover.groovy | eksCdcIntegPipeline | JOB_NAME_OVERRIDE |
+| eksCdcFullE2eIntegTestCover.groovy | eksCdcIntegPipeline | JOB_NAME_OVERRIDE |
 | eksCreateVPCSolutionsCFNTestCover.groovy | eksSolutionsCFNTest | JOB_NAME_OVERRIDE |
 | eksImportVPCSolutionsCFNTestCover.groovy | eksSolutionsCFNTest | JOB_NAME_OVERRIDE |
 | eksIntegTestCover.groovy | eksIntegPipeline | JOB_NAME_OVERRIDE |
@@ -102,7 +99,6 @@ functionName(jobName: jobNameOverride ?: null)
 | rfsDefaultE2ETestCover.groovy | rfsDefaultE2ETest | JOB_NAME_OVERRIDE |
 | solr8xK8sLocalTestCover.groovy | solr8xK8sLocalTest | JOB_NAME_OVERRIDE |
 | solutionsCFNTestCover.groovy | solutionsCFNTest | JOB_NAME_OVERRIDE |
-| trafficReplayDefaultE2ETestCover.groovy | trafficReplayDefaultE2ETest | JOB_NAME_OVERRIDE |
 
 ### GitHub Actions Integration
 

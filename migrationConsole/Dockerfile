@@ -38,7 +38,7 @@ RUN ARCH=$(cat /arch.env) && \
     curl --retry 5 --retry-delay 5 --retry-connrefused -fSL "https://get.helm.sh/helm-v${HELM_VERSION}-linux-${ARCH}.tar.gz" | tar -xz && \
     mv linux-${ARCH}/helm /k8s/bin/
 
-# Install stern - used by 'workflow output -f' for multi-pod log tailing
+# Install stern - used by 'workflow log -f' for multi-pod log tailing
 RUN ARCH=$(cat /arch.env) && \
     curl --retry 5 --retry-delay 5 --retry-connrefused -fSL \
         "https://github.com/stern/stern/releases/download/v${STERN_VERSION}/stern_${STERN_VERSION}_linux_${ARCH}.tar.gz" | tar -xz && \
@@ -141,6 +141,7 @@ RUN echo '. /.venv/bin/activate' >> /etc/profile.d/venv.sh && \
     echo 'eval "$(register-python-argcomplete cluster_tools)"' >> ~/.bashrc && \
     echo 'console completion bash 2> /dev/null > /usr/share/bash-completion/completions/console' >> ~/.bashrc && \
     echo 'workflow util completions bash > /usr/share/bash-completion/completions/workflow' >> ~/.bashrc && \
+    echo '. /usr/share/bash-completion/completions/workflow' >> ~/.bashrc && \
     echo 'PS1="(\\t) \\[\\e[92m\\]migration-console \\[\\e[0m\\](\\w) -> "'>> ~/.bashrc
 
 # Set ENV to control startup script in /bin/sh mode

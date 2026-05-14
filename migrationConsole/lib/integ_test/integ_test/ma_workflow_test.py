@@ -10,8 +10,12 @@ logger = logging.getLogger(__name__)
 
 
 def _run_workflow_reset(namespace: str = "ma"):
-    """Run 'workflow reset --all --include-proxies' to delete all migration CRDs."""
-    cmd = ["workflow", "reset", "--all", "--include-proxies", "--namespace", namespace]
+    """Run 'workflow reset --all --include-proxies --delete-storage' to delete all migration CRDs.
+
+    The --delete-storage flag ensures Kafka PVCs are cleaned up between consecutive
+    test runs (e.g. --test-ids=0031,0040), preventing cluster ID conflicts.
+    """
+    cmd = ["workflow", "reset", "--all", "--include-proxies", "--delete-storage", "--namespace", namespace]
     logger.info("Running workflow reset: %s", " ".join(cmd))
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
@@ -38,15 +42,15 @@ def setup_and_teardown(request, keep_workflows, test_case: MATestBase):
     #-----Teardown-----
     logger.info("Performing teardown...")
     if test_case.workflow_name:
-        phase_result = test_case.argo_service.is_workflow_completed(workflow_name=test_case.workflow_name)
-        if not phase_result.success:
+        status_result = test_case.argo_service.get_workflow_status(workflow_name=test_case.workflow_name)
+        if status_result.value.get("phase", "") not in ("Succeeded", "Failed", "Error", "Stopped", "Terminated"):
             test_case.argo_service.stop_workflow(workflow_name=test_case.workflow_name)
             test_case.argo_service.wait_for_ending_phase(workflow_name=test_case.workflow_name)
         # Print workflow details and save diagnostics if test failed
         if request.node.rep_call and request.node.rep_call.failed:
             logger.info(f"Test failed - printing workflow details for {test_case.workflow_name}")
             test_case.argo_service.print_workflow_details(workflow_name=test_case.workflow_name)
-            test_case.argo_service.save_namespace_diagnostics("./logs")
+            test_case.argo_service.save_namespace_diagnostics("./logs", workflow_name=test_case.workflow_name)
         if not keep_workflows:
             test_case.argo_service.delete_workflow(workflow_name=test_case.workflow_name)
     # Reset all migration CRDs before test-specific cleanup

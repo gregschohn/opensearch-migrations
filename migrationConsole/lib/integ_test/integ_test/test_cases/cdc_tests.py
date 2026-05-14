@@ -4,7 +4,7 @@ from .cdc_base import (
     MATestBase, MigrationType, MATestUserArguments,
     CDC_SOURCE_TARGET_COMBINATIONS, REPLAYER_LABEL_SELECTOR,
     wait_for_pod_ready, wait_for_replayer_consuming,
-    make_proxy_cluster, cleanup_cdc_resources,
+    make_proxy_cluster,
 )
 
 logger = logging.getLogger(__name__)
@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 CDC_NUM_DOCS = 10
 
 
-class Test0030CdcOnlyLiveTraffic(MATestBase):
+class Test0031CdcOnlyLiveTraffic(MATestBase):
     """CDC-only test: proxy captures from start, no snapshot migration.
 
     Validates the capture-proxy → Kafka → replayer pipeline in isolation.
@@ -27,7 +27,7 @@ class Test0030CdcOnlyLiveTraffic(MATestBase):
             migrations_required=[MigrationType.CAPTURE_AND_REPLAY],
             allow_source_target_combinations=CDC_SOURCE_TARGET_COMBINATIONS,
         )
-        self.cdc_index = f"cdc0030-captureproxy-{self.unique_id}"
+        self.cdc_index = f"cdc0031-captureproxy-{self.unique_id}"
 
     def prepare_workflow_parameters(self, keep_workflows: bool = False):
         super().prepare_workflow_parameters(keep_workflows=keep_workflows)
@@ -73,6 +73,3 @@ class Test0030CdcOnlyLiveTraffic(MATestBase):
 
     def test_after(self):
         pass
-
-    def cleanup(self):
-        cleanup_cdc_resources(self.argo_service.namespace)

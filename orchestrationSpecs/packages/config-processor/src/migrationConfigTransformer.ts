@@ -541,8 +541,7 @@ export class MigrationConfigTransformer extends StreamSchemaTransformer<
             return {
                 name: proxyName,
                 kafkaConfig: buildKafkaClientConfig(proxy.kafka ?? "default", kafkaClusters, topic),
-                sourceEndpoint: sourceCluster.endpoint ?? "",
-                sourceAllowInsecure: sourceCluster.allowInsecure ?? false,
+                sourceConfig: { ...sourceCluster, label: proxy.source },
                 proxyConfig: proxy.proxyConfig
             };
         });
@@ -730,6 +729,7 @@ export class MigrationConfigTransformer extends StreamSchemaTransformer<
 
             return {
                 name: [replayer.fromProxy, replayer.toTarget, name].join('-'),
+                sourceLabel: proxy.source,
                 fromProxy: replayer.fromProxy,
                 kafkaClusterName: proxy.kafka ?? "default",
                 kafkaConfig: buildKafkaClientConfig(proxy.kafka ?? "default", kafkaClusters, topic),

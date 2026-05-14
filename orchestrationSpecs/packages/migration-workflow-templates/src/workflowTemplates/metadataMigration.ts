@@ -24,11 +24,39 @@ import {makeRequiredImageParametersForKeys} from "./commonUtils/imageDefinitions
 import {makeTargetParamDict} from "./commonUtils/clusterSettingManipulators";
 import {getHttpAuthSecretName} from "./commonUtils/clusterSettingManipulators";
 import {getTargetHttpAuthCreds} from "./commonUtils/basicCredsGetters";
+import {CONTAINER_TEMPLATE_RETRY_STRATEGY} from "./commonUtils/resourceRetryStrategy";
 import {
     getApprovalMap,
     getSourceTargetPathAndSnapshotAndMigrationIndex
 } from "./commonUtils/configContextPathConstructors";
 import {ResourceManagement} from "./resourceManagement";
+
+const METADATA_OUTPUT_PATH = "/tmp/outputs/metadata-output.log";
+
+function makeMetadataOutputS3Key(
+    crdName: BaseExpression<string>,
+    crdUid: BaseExpression<string>,
+    resourceCreationTimestamp: BaseExpression<string>,
+    taskK8sLabel: BaseExpression<string>,
+    workflowCreationTimestamp: BaseExpression<string>,
+    workflowUid: BaseExpression<string>
+) {
+    return expr.concat(
+        expr.literal("migration-outputs/snapshotmigration/"),
+        crdName,
+        expr.literal("/"),
+        resourceCreationTimestamp,
+        expr.literal("_"),
+        crdUid,
+        expr.literal("/"),
+        taskK8sLabel,
+        expr.literal("/"),
+        workflowCreationTimestamp,
+        expr.literal("_"),
+        workflowUid,
+        expr.literal(".log")
+    );
+}
 
 const COMMON_METADATA_PARAMETERS = {
     snapshotConfig: defineRequiredParam<z.infer<typeof COMPLETE_SNAPSHOT_CONFIG>>({
@@ -40,6 +68,8 @@ const COMMON_METADATA_PARAMETERS = {
     migrationLabel: defineRequiredParam<string>(),
     crdName: defineRequiredParam<string>(),
     crdUid: defineRequiredParam<string>(),
+    resourceCreationTimestamp: defineRequiredParam<string>(),
+    configChecksum: defineRequiredParam<string>(),
     ...makeRequiredImageParametersForKeys(["MigrationConsole"])
 };
 
@@ -104,7 +134,10 @@ function makeParamsDict(
 
     const snapshotParams = makeSnapshotParamsDict(sourceVersion, snapshotConfig);
 
-    const base = expr.mergeDicts(targetAndOptions, snapshotParams);
+    const base = expr.mergeDicts(
+        expr.mergeDicts(targetAndOptions, snapshotParams),
+        expr.makeDict({"outputFile": expr.literal(METADATA_OUTPUT_PATH)})
+    );
 
     // When sourceEndpoint is non-empty at runtime, add sourceHost param.
     // MetadataMigration CLI prioritizes --source-host over snapshot params.
@@ -160,6 +193,11 @@ export const MetadataMigration = WorkflowBuilder.create({
         .addRequiredInput("targetK8sLabel", typeToken<string>())
         .addRequiredInput("snapshotK8sLabel", typeToken<string>())
         .addRequiredInput("fromSnapshotMigrationK8sLabel", typeToken<string>())
+        .addRequiredInput("crdName", typeToken<string>())
+        .addRequiredInput("crdUid", typeToken<string>())
+        .addRequiredInput("resourceCreationTimestamp", typeToken<string>())
+        .addOptionalInput("workflowCreationTimestamp", c => expr.getWorkflowValue("creationTimestamp"))
+        .addOptionalInput("workflowUid", c => expr.getWorkflowValue("uid"))
         .addOptionalInput("taskK8sLabel", c => expr.ternary(
             expr.equals(c.inputParameters.commandMode, expr.literal("evaluate")),
             expr.literal("metadataEvaluate"),
@@ -199,6 +237,16 @@ export const MetadataMigration = WorkflowBuilder.create({
                     )
                 ))
             ])
+            .addArtifactOutput("metadataOutput", METADATA_OUTPUT_PATH, {
+                s3Key: makeMetadataOutputS3Key(
+                    b.inputs.crdName,
+                    b.inputs.crdUid,
+                    b.inputs.resourceCreationTimestamp,
+                    b.inputs.taskK8sLabel,
+                    b.inputs.workflowCreationTimestamp,
+                    b.inputs.workflowUid
+                )
+            })
             .addPodMetadata(({inputs}) => ({
                 labels: {
                     'migrations.opensearch.org/source': inputs.sourceK8sLabel,
@@ -209,6 +257,7 @@ export const MetadataMigration = WorkflowBuilder.create({
                 }
             }))
         )
+        .addRetryParameters(CONTAINER_TEMPLATE_RETRY_STRATEGY)
     )
 
 
@@ -234,16 +283,19 @@ export const MetadataMigration = WorkflowBuilder.create({
         .addInputsFromRecord(COMMON_METADATA_PARAMETERS)
         .addInputsFromRecord(
             getApprovalMap(t.inputs.workflowParameters.approvalConfigMapName, typeToken<{}>()))
+        .addOptionalInput("workflowCreationTimestamp", c => expr.getWorkflowValue("creationTimestamp"))
+        .addOptionalInput("workflowUid", c => expr.getWorkflowValue("uid"))
         .addOptionalInput("skipEvaluateApproval", c =>
             makeApprovalCheck(c.inputParameters, c.inputParameters.skipApprovalMap, "evaluateMetadata"))
         .addOptionalInput("skipMigrateApproval", c =>
             makeApprovalCheck(c.inputParameters, c.inputParameters.skipApprovalMap, "migrateMetadata"))
-        .addOptionalInput("approvalNamePrefix", c =>
+        .addOptionalInput("approvalNameSuffix", c =>
             expr.concat(
-                c.inputParameters.sourceLabel, expr.literal("."),
-                expr.jsonPathStrict(c.inputParameters.targetConfig, "label"), expr.literal("."),
-                expr.jsonPathStrict(c.inputParameters.snapshotConfig, "label"), expr.literal("."),
-                c.inputParameters.migrationLabel, expr.literal(".")
+                expr.literal("."),
+                c.inputParameters.sourceLabel, expr.literal("-"),
+                expr.jsonPathStrict(c.inputParameters.targetConfig, "label"), expr.literal("-"),
+                expr.jsonPathStrict(c.inputParameters.snapshotConfig, "label"), expr.literal("-"),
+                c.inputParameters.migrationLabel
             )
         )
 
@@ -255,12 +307,33 @@ export const MetadataMigration = WorkflowBuilder.create({
                     sourceK8sLabel: b.inputs.sourceLabel,
                     targetK8sLabel: expr.jsonPathStrict(b.inputs.targetConfig, "label"),
                     snapshotK8sLabel: expr.jsonPathStrict(b.inputs.snapshotConfig, "label"),
-                    fromSnapshotMigrationK8sLabel: b.inputs.migrationLabel
+                    fromSnapshotMigrationK8sLabel: b.inputs.migrationLabel,
+                    crdName: b.inputs.crdName,
+                    crdUid: b.inputs.crdUid,
+                    resourceCreationTimestamp: b.inputs.resourceCreationTimestamp,
+                    workflowCreationTimestamp: b.inputs.workflowCreationTimestamp,
+                    workflowUid: b.inputs.workflowUid
+                })
+            )
+            .addStep("patchMetadataEvaluateOutput", ResourceManagement, "patchSnapshotMigrationOutputEvaluate", c =>
+                c.register({
+                    resourceName: b.inputs.crdName,
+                    artifactName: expr.literal("metadataOutput"),
+                    s3Key: makeMetadataOutputS3Key(
+                        b.inputs.crdName,
+                        b.inputs.crdUid,
+                        b.inputs.resourceCreationTimestamp,
+                        expr.literal("metadataEvaluate"),
+                        b.inputs.workflowCreationTimestamp,
+                        b.inputs.workflowUid
+                    ),
+                    resourceUid: b.inputs.crdUid,
+                    configChecksum: b.inputs.configChecksum
                 })
             )
             .addStep("approveEvaluate", INTERNAL, "approveEvaluate", c =>
                 c.register({
-                    "name": expr.concat(b.inputs.approvalNamePrefix, expr.literal("evaluatemetadata"))
+                    "name": expr.concat(expr.literal("evaluatemetadata"), b.inputs.approvalNameSuffix)
                 }),
                 {when: expr.not(b.inputs.skipEvaluateApproval)}
             )
@@ -271,12 +344,33 @@ export const MetadataMigration = WorkflowBuilder.create({
                     sourceK8sLabel: b.inputs.sourceLabel,
                     targetK8sLabel: expr.jsonPathStrict(b.inputs.targetConfig, "label"),
                     snapshotK8sLabel: expr.jsonPathStrict(b.inputs.snapshotConfig, "label"),
-                    fromSnapshotMigrationK8sLabel: b.inputs.migrationLabel
+                    fromSnapshotMigrationK8sLabel: b.inputs.migrationLabel,
+                    crdName: b.inputs.crdName,
+                    crdUid: b.inputs.crdUid,
+                    resourceCreationTimestamp: b.inputs.resourceCreationTimestamp,
+                    workflowCreationTimestamp: b.inputs.workflowCreationTimestamp,
+                    workflowUid: b.inputs.workflowUid
+                })
+            )
+            .addStep("patchMetadataMigrateOutput", ResourceManagement, "patchSnapshotMigrationOutputMigrate", c =>
+                c.register({
+                    resourceName: b.inputs.crdName,
+                    artifactName: expr.literal("metadataOutput"),
+                    s3Key: makeMetadataOutputS3Key(
+                        b.inputs.crdName,
+                        b.inputs.crdUid,
+                        b.inputs.resourceCreationTimestamp,
+                        expr.literal("metadataMigrate"),
+                        b.inputs.workflowCreationTimestamp,
+                        b.inputs.workflowUid
+                    ),
+                    resourceUid: b.inputs.crdUid,
+                    configChecksum: b.inputs.configChecksum
                 })
             )
             .addStep("approveMigrate", INTERNAL, "approveMigrate", c =>
                 c.register({
-                    "name": expr.concat(b.inputs.approvalNamePrefix, expr.literal("migratemetadata"))
+                    "name": expr.concat(expr.literal("migratemetadata"), b.inputs.approvalNameSuffix)
                 }),
                 {when: expr.not(b.inputs.skipMigrateApproval)}
             )

@@ -17,7 +17,7 @@ from typing import List, Optional, Tuple
 logging.basicConfig(format='%(asctime)s [%(levelname)s] %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-VALID_SOURCE_VERSIONS = ["ES_1.5", "ES_2.4", "ES_5.6", "ES_6.8", "ES_7.10", "OS_1.3", "SOLR_8.11"]
+VALID_SOURCE_VERSIONS = ["ES_1.5", "ES_2.4", "ES_5.6", "ES_6.8", "ES_7.10", "ES_8.19", "OS_1.3", "SOLR_8.11"]
 VALID_TARGET_VERSIONS = ["OS_1.3", "OS_2.19", "OS_2.x", "OS_3.1"]
 MA_RELEASE_NAME = "ma"
 
@@ -227,12 +227,31 @@ class TestRunner:
         helm_uninstall_error = None
         self.k8s_service.cleanup_ack_dashboard_crs()
         self.k8s_service.cleanup_strimzi_crs()
+        # Run 'workflow reset --all --include-proxies --delete-storage' inside the
+        # migration-console pod BEFORE helm uninstall so the CLI can find and delete
+        # Kafka PVCs while the pod and Strimzi operator are still alive. Without this
+        # step, Kafka PVCs leak between consecutive test runs and cause cluster-ID
+        # conflicts on redeployment.
+        try:
+            self.k8s_service.exec_migration_console_cmd(
+                ["/bin/bash", "-lc",
+                 "workflow reset --all --include-proxies --delete-storage"],
+                unbuffered=False,
+            )
+        except Exception as e:
+            logger.warning(f"workflow reset --delete-storage failed (continuing): {e}")
         try:
             self.k8s_service.helm_uninstall(release_name=MA_RELEASE_NAME)
         except Exception as e:
             logger.error(f"Helm uninstall of '{MA_RELEASE_NAME}' release failed: {e}")
             helm_uninstall_error = e
         self.cleanup_clusters()
+        # Belt-and-suspenders: nuke any remaining PVCs before namespace deletion so a
+        # stuck PVC finalizer doesn't block namespace teardown.
+        try:
+            self.k8s_service.delete_all_pvcs()
+        except Exception as e:
+            logger.warning(f"delete_all_pvcs failed (continuing): {e}")
         self.k8s_service.delete_namespace()
         # Assert both namespaces are actually gone
         self.k8s_service.wait_for_namespace_deleted("kyverno-ma", timeout_seconds=60)

@@ -5,10 +5,36 @@ import subprocess
 from ..cluster_version import ClusterVersion, is_incoming_version_supported
 from ..operations_library_factory import get_operations_library_by_version
 
-from console_link.models.argo_service import ArgoService
 from console_link.middleware.clusters import cat_indices, connection_check, clear_indices, ConnectionResult
 
+from ..integration_test_argo_service import IntegrationTestArgoService
+
 logger = logging.getLogger(__name__)
+
+# Maps wildcard ClusterVersion (e.g. ES_7.x) to the concrete template name that exists in clusterWorkflows.yaml.
+# When minor_version is 'x', we pick the canonical representative minor version for that major.
+_WILDCARD_TEMPLATE_MAP = {
+    ("elasticsearch", 1): 5,
+    ("elasticsearch", 2): 4,
+    ("elasticsearch", 5): 6,
+    ("elasticsearch", 6): 8,
+    ("elasticsearch", 7): 10,
+    ("elasticsearch", 8): 19,
+    ("opensearch", 1): 3,
+    ("opensearch", 2): 19,
+    ("opensearch", 3): 1,
+}
+
+
+def get_template_name(version: ClusterVersion) -> str:
+    minor = version.minor_version
+    if minor == 'x':
+        minor = _WILDCARD_TEMPLATE_MAP.get((version.full_cluster_type, version.major_version))
+        if minor is None:
+            raise ValueError(f"No template mapping for wildcard version {version}. "
+                             f"Add an entry to _WILDCARD_TEMPLATE_MAP.")
+    return f"{version.full_cluster_type}-{version.major_version}-{minor}-single-node"
+
 
 MigrationType = Enum("MigrationType", ["METADATA", "BACKFILL", "CAPTURE_AND_REPLAY"])
 
@@ -53,7 +79,7 @@ class MATestBase:
             None if self.is_aoss
             else ClusterVersion(version_str=user_args.target_version)
         )
-        self.argo_service = ArgoService()
+        self.argo_service = IntegrationTestArgoService()
         self.workflow_name = None
         self.source_cluster = None
         self.target_cluster = None
@@ -69,14 +95,8 @@ class MATestBase:
             if not supported_combo:
                 raise ClusterVersionCombinationUnsupported(self.source_version, self.target_version)
 
-        self.source_argo_cluster_template = (f"{self.source_version.full_cluster_type}-"
-                                             f"{self.source_version.major_version}-"
-                                             f"{self.source_version.minor_version}-single-node")
-        self.target_argo_cluster_template = None if self.is_aoss else (
-            f"{self.target_version.full_cluster_type}-"
-            f"{self.target_version.major_version}-"
-            f"{self.target_version.minor_version}-single-node"
-        )
+        self.source_argo_cluster_template = get_template_name(self.source_version)
+        self.target_argo_cluster_template = None if self.is_aoss else get_template_name(self.target_version)
 
         self.parameters = {}
         self.image_registry_prefix = user_args.image_registry_prefix
@@ -212,8 +232,10 @@ class MATestBase:
             raise ValueError("Workflow name is not available, workflow may not have been started")
         if not self.imported_clusters:
             self.argo_service.wait_for_suspend(workflow_name=self.workflow_name, timeout_seconds=1000)
-            self.source_cluster = self.argo_service.get_source_cluster_from_workflow(workflow_name=self.workflow_name)
-            self.target_cluster = self.argo_service.get_target_cluster_from_workflow(workflow_name=self.workflow_name)
+            self.source_cluster = self.argo_service.get_cluster_config_from_workflow(
+                workflow_name=self.workflow_name, cluster_type="source")
+            self.target_cluster = self.argo_service.get_cluster_config_from_workflow(
+                workflow_name=self.workflow_name, cluster_type="target")
 
     def prepare_clusters(self):
         pass
@@ -238,8 +260,8 @@ class MATestBase:
         pass
 
     def display_final_cluster_state(self):
-        source_response = cat_indices(cluster=self.source_cluster, refresh=True).decode("utf-8")
-        target_response = cat_indices(cluster=self.target_cluster, refresh=True).decode("utf-8")
+        source_response = cat_indices(cluster=self.source_cluster, refresh=True)
+        target_response = cat_indices(cluster=self.target_cluster, refresh=True)
         logger.info("Printing document counts for source and target clusters:")
         print("SOURCE CLUSTER")
         print(source_response)
