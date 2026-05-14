@@ -379,11 +379,13 @@ charts:
           - name: RESOURCE_STATE_CHECK_INTERVAL
             value: "1s"
           # Widen argoexec's internal retry so a single kubectl apply/patch
-          # rides out a ~90s dependency pod (webhook, admission controller)
-          # restart without the resource step giving up. Steps=7 Duration=2s
-          # with factor=1.6 jitter=0.5 yields ~86s cumulative backoff.
+          # rides out a dependency pod (webhook, admission controller) restart
+          # of ~80-130s without the resource step giving up. Steps=8 yields
+          # 7 sleeps between 8 attempts (k8s wait.ExponentialBackoff semantics):
+          #   2 + 3.2 + 5.12 + 8.19 + 13.11 + 20.98 + 33.56 ≈ 86s nominal
+          # With factor=1.6 jitter=0.5, expected ~108s avg, ~129s worst-case.
           - name: EXECUTOR_RETRY_BACKOFF_STEPS
-            value: "7"
+            value: "8"
           - name: EXECUTOR_RETRY_BACKOFF_DURATION
             value: "2s"
       server:
