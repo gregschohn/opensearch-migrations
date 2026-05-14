@@ -13,6 +13,7 @@ import {
     getZodKeys,
     NAMED_KAFKA_CLIENT_CONFIG,
     NAMED_KAFKA_CLUSTER_CONFIG,
+    NAMED_SOURCE_CLUSTER_CONFIG_WITHOUT_SNAPSHOT_INFO,
     NAMED_TARGET_CLUSTER_CONFIG,
     PER_SOURCE_CREATE_SNAPSHOTS_CONFIG,
     SNAPSHOT_MIGRATION_CONFIG,
@@ -377,6 +378,8 @@ kubectl delete approvalgates.migrations.opensearch.org \\
         .addRequiredInput("sourceVersion", typeToken<string>())
         .addRequiredInput("sourceLabel", typeToken<string>())
         .addRequiredInput("targetConfig", typeToken<z.infer<typeof NAMED_TARGET_CLUSTER_CONFIG>>())
+        .addOptionalInput("sourceConfig", c =>
+            expr.empty<z.infer<typeof NAMED_SOURCE_CLUSTER_CONFIG_WITHOUT_SNAPSHOT_INFO>>())
         .addRequiredInput("snapshotConfig", typeToken<z.infer<typeof COMPLETE_SNAPSHOT_CONFIG>>())
         .addRequiredInput("migrationLabel", typeToken<string>())
         .addRequiredInput("crdName", typeToken<string>())
@@ -505,6 +508,13 @@ kubectl delete approvalgates.migrations.opensearch.org \\
                         sourceVersion: expr.get(snapshotMigrationConfig, "sourceVersion"),
                         sourceLabel: expr.get(snapshotMigrationConfig, "sourceLabel"),
                         targetConfig: expr.serialize(expr.get(snapshotMigrationConfig, "targetConfig")),
+                        sourceConfig: expr.serialize(expr.makeDict({
+                            label: expr.get(snapshotMigrationConfig, "sourceLabel"),
+                            version: expr.get(snapshotMigrationConfig, "sourceVersion"),
+                            endpoint: expr.dig(snapshotMigrationConfig, ["sourceEndpoint"], ""),
+                            allowInsecure: expr.dig(snapshotMigrationConfig, ["sourceAllowInsecure"], false),
+                            authConfig: expr.dig(snapshotMigrationConfig, ["sourceAuth"], expr.makeDict({}))
+                        })),
                         snapshotConfig: expr.serialize(expr.makeDict({
                             snapshotName: resolvedSnapshotName,
                             label: expr.get(snapshotRepoConfig, "label"),

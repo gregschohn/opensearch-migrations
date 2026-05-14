@@ -60,10 +60,9 @@ function makeParamsDict(
     rfsCoordinatorConfig: BaseExpression<Serialized<z.infer<typeof NAMED_TARGET_CLUSTER_CONFIG>>>,
     snapshotConfig: BaseExpression<Serialized<z.infer<typeof COMPLETE_SNAPSHOT_CONFIG>>>,
     options: BaseExpression<Serialized<z.infer<typeof ARGO_RFS_OPTIONS>>>,
-    sessionName: BaseExpression<string>,
-    sourceEndpoint?: BaseExpression<string>
+    sessionName: BaseExpression<string>
 ) {
-    const base = expr.mergeDicts(
+    return expr.mergeDicts(
         expr.mergeDicts(
             expr.mergeDicts(
                 makeTargetParamDict(targetConfig),
@@ -84,18 +83,6 @@ function makeParamsDict(
                 true)
         )
     );
-
-    // Pass sourceHost for Solr backup migrations (RFS detects Solr from sourceVersion)
-    if (sourceEndpoint) {
-        return expr.mergeDicts(base,
-            expr.ternary(
-                expr.isEmpty(sourceEndpoint),
-                expr.makeDict({}),
-                expr.makeDict({ sourceHost: sourceEndpoint })
-            )
-        );
-    }
-    return base;
 }
 
 function getRfsDeploymentName(sessionName: BaseExpression<string>) {
@@ -903,8 +890,7 @@ export const DocumentBulkLoad = WorkflowBuilder.create({
                             b.inputs.rfsCoordinatorConfig,
                             b.inputs.snapshotConfig,
                             b.inputs.documentBackfillConfig,
-                            b.inputs.sessionName,
-                            b.inputs.sourceEndpoint)
+                            b.inputs.sessionName)
                     )),
                     resources: expr.serialize(expr.jsonPathStrict(b.inputs.documentBackfillConfig, "resources")),
                     crdName: b.inputs.crdName,
