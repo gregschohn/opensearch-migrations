@@ -139,7 +139,7 @@ def test_command_runner_handles_no_output_on_error(capsys, mocker):
 
 # --- Timeout behaviour -------------------------------------------------------
 # The default is opt-in (timeout=None). Callers that are reachable from tests
-# (argo_service._run_argo_command, execute_api_call) set explicit timeouts.
+# (e.g. ArgoService._run_kubectl_command, execute_api_call) set explicit timeouts.
 
 def test_command_runner_default_timeout_is_none():
     # Opt-in default: no timeout unless the caller asks for one.
