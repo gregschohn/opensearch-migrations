@@ -80,7 +80,7 @@ jobs:
         uses: helm/kind-action@v1.14.0
         with:
           cluster_name: generate-workflow-schema
-          node_image: kindest/node:v1.33.1
+          node_image: kindest/node:v1.35.0
 
       - name: Build migration console image to local registry
         run: |
