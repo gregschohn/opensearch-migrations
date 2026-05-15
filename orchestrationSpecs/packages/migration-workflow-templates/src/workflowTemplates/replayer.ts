@@ -10,12 +10,14 @@ import {
     expr,
     IMAGE_PULL_POLICY,
     INTERNAL, makeDirectTypeProxy, makeStringTypeProxy,
+    InputParamsToExpressions,
     selectInputsForRegister, Serialized,
     typeToken,
     WorkflowBuilder
 } from "@opensearch-migrations/argo-workflow-builders";
 import {OwnerReference} from "@opensearch-migrations/k8s-types";
 import {
+    getTransformsPresence,
     setupLog4jConfigForContainer,
     setupTestCredsForContainer,
     setupTransformsForContainerForMode,
@@ -155,6 +157,7 @@ function getReplayerDeploymentManifest
     loggingConfigMap: BaseExpression<string>,
     jvmArgs: BaseExpression<string>,
     transformsImage: BaseExpression<string>,
+    transformsImagePullPolicy: BaseExpression<IMAGE_PULL_POLICY>,
     transformsConfigMap: BaseExpression<string>,
     transformsVolumeMode: TransformVolumeMode,
 
@@ -214,10 +217,10 @@ function getReplayerDeploymentManifest
         ]
     };
     const finalContainerDefinition =
-        setupTransformsForContainerForMode(args.transformsVolumeMode, args.transformsImage, args.transformsConfigMap,
+        setupTransformsForContainerForMode(args.transformsVolumeMode, args.transformsImage, args.transformsImagePullPolicy, args.transformsConfigMap,
             setupTestCredsForContainer(args.useLocalStack,
                 setupLog4jConfigForContainer(args.useCustomLogging, args.loggingConfigMap,
-                {container: baseContainerDefinition, volumes: [
+                    {container: baseContainerDefinition, volumes: [
                     {
                         name: "kafka-auth-config",
                         configMap: {name: makeStringTypeProxy(args.kafkaAuthConfigMapName)}
@@ -293,6 +296,7 @@ const createDeploymentInputs = {
     jvmArgs: defineRequiredParam<string>(),
     loggingConfigurationOverrideConfigMap: defineRequiredParam<string>(),
     transformsImage: defineRequiredParam<string>(),
+    transformsImagePullPolicy: defineRequiredParam<IMAGE_PULL_POLICY>(),
     transformsConfigMap: defineRequiredParam<string>(),
     basicAuthSecretName: defineRequiredParam<string>(),
     sourceK8sLabel: defineRequiredParam<string>(),
@@ -302,128 +306,82 @@ const createDeploymentInputs = {
     resources: defineRequiredParam<ResourceRequirementsType>()
 };
 
+const replayerBaseBuilder = WorkflowBuilder.create({
+    k8sResourceName: "replayer",
+    serviceAccountName: "argo-workflow-executor",
+}).addParams(CommonWorkflowParameters);
 
-export const Replayer = WorkflowBuilder.create({
-  k8sResourceName: "replayer",
-  serviceAccountName: "argo-workflow-executor",
-})
+type CreateDeploymentInputExpressions = InputParamsToExpressions<typeof createDeploymentInputs>;
 
-  .addParams(CommonWorkflowParameters)
-
-  .addTemplate("createDeploymentWithImageTransforms", (t) =>
-    t
-      .addInputsFromRecord(createDeploymentInputs)
-      .addResourceTask(b => b
-        .setDefinition({
-          action: "apply",
-          setOwnerReference: false,
-          successCondition: "status.readyReplicas > 0",
-          manifest: getReplayerDeploymentManifest({
-            podReplicas: expr.deserializeRecord(b.inputs.podReplicas),
-            useCustomLogging: expr.not(expr.isEmpty(b.inputs.loggingConfigurationOverrideConfigMap)),
-            useLocalStack: expr.deserializeRecord(b.inputs.useLocalStack),
-            loggingConfigMap: b.inputs.loggingConfigurationOverrideConfigMap,
-            jvmArgs: b.inputs.jvmArgs,
-            transformsImage: b.inputs.transformsImage,
-            transformsConfigMap: b.inputs.transformsConfigMap,
-            transformsVolumeMode: "image",
-            basicAuthSecretName: b.inputs.basicAuthSecretName,
-            name: b.inputs.name,
-            replayerImageName: b.inputs.imageTrafficReplayerLocation,
-            replayerImagePullPolicy: b.inputs.imageTrafficReplayerPullPolicy,
+function makeReplayerDeploymentDefinition(
+    inputs: CreateDeploymentInputExpressions,
+    transformsVolumeMode: TransformVolumeMode
+) {
+    return {
+        action: "apply" as const,
+        setOwnerReference: false,
+        successCondition: "status.readyReplicas > 0",
+        manifest: getReplayerDeploymentManifest({
+            podReplicas: expr.deserializeRecord(inputs.podReplicas),
+            useCustomLogging: expr.not(expr.isEmpty(inputs.loggingConfigurationOverrideConfigMap)),
+            useLocalStack: expr.deserializeRecord(inputs.useLocalStack),
+            loggingConfigMap: inputs.loggingConfigurationOverrideConfigMap,
+            jvmArgs: inputs.jvmArgs,
+            transformsImage: inputs.transformsImage,
+            transformsImagePullPolicy: inputs.transformsImagePullPolicy,
+            transformsConfigMap: inputs.transformsConfigMap,
+            transformsVolumeMode,
+            basicAuthSecretName: inputs.basicAuthSecretName,
+            name: inputs.name,
+            replayerImageName: inputs.imageTrafficReplayerLocation,
+            replayerImagePullPolicy: inputs.imageTrafficReplayerPullPolicy,
             workflowName: expr.getWorkflowValue("name"),
-            jsonConfig: expr.toBase64(b.inputs.jsonConfig),
-            resources: expr.deserializeRecord(b.inputs.resources),
-            kafkaAuthConfigMapName: b.inputs.kafkaAuthConfigMapName,
-            kafkaAuthType: b.inputs.kafkaAuthType,
-            kafkaSecretName: b.inputs.kafkaSecretName,
-            kafkaCaSecretName: b.inputs.kafkaCaSecretName,
-            ownerUid: b.inputs.ownerUid,
-            sourceK8sLabel: b.inputs.sourceK8sLabel,
-            targetK8sLabel: b.inputs.targetK8sLabel,
-            taskK8sLabel: b.inputs.taskK8sLabel,
-          })
-        }))
-      .addRetryParameters(K8S_RESOURCE_RETRY_STRATEGY)
-  )
-  .addTemplate("createDeploymentWithConfigMapTransforms", (t) =>
-    t
-      .addInputsFromRecord(createDeploymentInputs)
-      .addResourceTask(b => b
-        .setDefinition({
-          action: "apply",
-          setOwnerReference: false,
-          successCondition: "status.readyReplicas > 0",
-          manifest: getReplayerDeploymentManifest({
-            podReplicas: expr.deserializeRecord(b.inputs.podReplicas),
-            useCustomLogging: expr.not(expr.isEmpty(b.inputs.loggingConfigurationOverrideConfigMap)),
-            useLocalStack: expr.deserializeRecord(b.inputs.useLocalStack),
-            loggingConfigMap: b.inputs.loggingConfigurationOverrideConfigMap,
-            jvmArgs: b.inputs.jvmArgs,
-            transformsImage: b.inputs.transformsImage,
-            transformsConfigMap: b.inputs.transformsConfigMap,
-            transformsVolumeMode: "configMap",
-            basicAuthSecretName: b.inputs.basicAuthSecretName,
-            name: b.inputs.name,
-            replayerImageName: b.inputs.imageTrafficReplayerLocation,
-            replayerImagePullPolicy: b.inputs.imageTrafficReplayerPullPolicy,
-            workflowName: expr.getWorkflowValue("name"),
-            jsonConfig: expr.toBase64(b.inputs.jsonConfig),
-            resources: expr.deserializeRecord(b.inputs.resources),
-            kafkaAuthConfigMapName: b.inputs.kafkaAuthConfigMapName,
-            kafkaAuthType: b.inputs.kafkaAuthType,
-            kafkaSecretName: b.inputs.kafkaSecretName,
-            kafkaCaSecretName: b.inputs.kafkaCaSecretName,
-            ownerUid: b.inputs.ownerUid,
-            sourceK8sLabel: b.inputs.sourceK8sLabel,
-            targetK8sLabel: b.inputs.targetK8sLabel,
-            taskK8sLabel: b.inputs.taskK8sLabel,
-          })
-        }))
-      .addRetryParameters(K8S_RESOURCE_RETRY_STRATEGY)
-  )
-  .addTemplate("createDeploymentNoTransforms", (t) =>
-    t
-      .addInputsFromRecord(createDeploymentInputs)
-        .addResourceTask(b => b
-            .setDefinition({
-                action: "apply",
-                setOwnerReference: false,
-                successCondition: "status.readyReplicas > 0",
-                manifest: getReplayerDeploymentManifest({
-                    podReplicas: expr.deserializeRecord(b.inputs.podReplicas),
-                    useCustomLogging: expr.not(expr.isEmpty(b.inputs.loggingConfigurationOverrideConfigMap)),
-                    useLocalStack: expr.deserializeRecord(b.inputs.useLocalStack),
-                    loggingConfigMap: b.inputs.loggingConfigurationOverrideConfigMap,
-                    jvmArgs: b.inputs.jvmArgs,
-                    transformsImage: b.inputs.transformsImage,
-                    transformsConfigMap: b.inputs.transformsConfigMap,
-                    transformsVolumeMode: "emptyDir",
-                    basicAuthSecretName: b.inputs.basicAuthSecretName,
-                    name: b.inputs.name,
-                    replayerImageName: b.inputs.imageTrafficReplayerLocation,
-                    replayerImagePullPolicy: b.inputs.imageTrafficReplayerPullPolicy,
-                    workflowName: expr.getWorkflowValue("name"),
-                    jsonConfig: expr.toBase64(b.inputs.jsonConfig),
-                    resources: expr.deserializeRecord(b.inputs.resources),
-                    kafkaAuthConfigMapName: b.inputs.kafkaAuthConfigMapName,
-                    kafkaAuthType: b.inputs.kafkaAuthType,
-                    kafkaSecretName: b.inputs.kafkaSecretName,
-                    kafkaCaSecretName: b.inputs.kafkaCaSecretName,
-                    ownerUid: b.inputs.ownerUid,
-                    sourceK8sLabel: b.inputs.sourceK8sLabel,
-                    targetK8sLabel: b.inputs.targetK8sLabel,
-                    taskK8sLabel: b.inputs.taskK8sLabel,
-                })
-            }))
-        .addRetryParameters(K8S_RESOURCE_RETRY_STRATEGY)
-  )
+            jsonConfig: expr.toBase64(inputs.jsonConfig),
+            resources: expr.deserializeRecord(inputs.resources),
+            kafkaAuthConfigMapName: inputs.kafkaAuthConfigMapName,
+            kafkaAuthType: inputs.kafkaAuthType,
+            kafkaSecretName: inputs.kafkaSecretName,
+            kafkaCaSecretName: inputs.kafkaCaSecretName,
+            ownerUid: inputs.ownerUid,
+            sourceK8sLabel: inputs.sourceK8sLabel,
+            targetK8sLabel: inputs.targetK8sLabel,
+            taskK8sLabel: inputs.taskK8sLabel,
+        })
+    };
+}
+
+function addReplayerTransformDeploymentTemplates(builder: typeof replayerBaseBuilder) {
+    return builder
+        .addTemplate("createDeploymentWithImageTransforms", (t) =>
+            t
+                .addInputsFromRecord(createDeploymentInputs)
+                .addResourceTask(b => b
+                    .setDefinition(makeReplayerDeploymentDefinition(b.inputs, "image")))
+                .addRetryParameters(K8S_RESOURCE_RETRY_STRATEGY)
+        )
+        .addTemplate("createDeploymentWithConfigMapTransforms", (t) =>
+            t
+                .addInputsFromRecord(createDeploymentInputs)
+                .addResourceTask(b => b
+                    .setDefinition(makeReplayerDeploymentDefinition(b.inputs, "configMap")))
+                .addRetryParameters(K8S_RESOURCE_RETRY_STRATEGY)
+        )
+        .addTemplate("createDeploymentNoTransforms", (t) =>
+            t
+                .addInputsFromRecord(createDeploymentInputs)
+                .addResourceTask(b => b
+                    .setDefinition(makeReplayerDeploymentDefinition(b.inputs, "emptyDir")))
+                .addRetryParameters(K8S_RESOURCE_RETRY_STRATEGY)
+        );
+}
+
+export const Replayer = addReplayerTransformDeploymentTemplates(replayerBaseBuilder)
   .addTemplate("createDeployment", (t) =>
     t
       .addInputsFromRecord(createDeploymentInputs)
       .addSteps(b => {
-        const hasImage = expr.not(expr.isEmpty(b.inputs.transformsImage));
-        const hasConfigMap = expr.not(expr.isEmpty(b.inputs.transformsConfigMap));
+        const {hasImage, hasConfigMapOnly, hasNone} =
+            getTransformsPresence(b.inputs.transformsImage, b.inputs.transformsConfigMap);
 
         return b
           .addStep("withImageTransforms", INTERNAL, "createDeploymentWithImageTransforms", c =>
@@ -432,11 +390,11 @@ export const Replayer = WorkflowBuilder.create({
           )
           .addStep("withConfigMapTransforms", INTERNAL, "createDeploymentWithConfigMapTransforms", c =>
               c.register({...selectInputsForRegister(b, c), taskK8sLabel: b.inputs.taskK8sLabel}),
-              {when: {templateExp: expr.and(expr.not(hasImage), hasConfigMap)}}
+              {when: {templateExp: hasConfigMapOnly}}
           )
           .addStep("withoutTransforms", INTERNAL, "createDeploymentNoTransforms", c =>
               c.register({...selectInputsForRegister(b, c), taskK8sLabel: b.inputs.taskK8sLabel}),
-              {when: {templateExp: expr.and(expr.not(hasImage), expr.not(hasConfigMap))}}
+              {when: {templateExp: hasNone}}
           );
       })
   )
@@ -532,6 +490,10 @@ export const Replayer = WorkflowBuilder.create({
                 expr.deserializeRecord(b.inputs.replayerOptions),
                 ["transformsImage"],
                 "",
+              ),
+              transformsImagePullPolicy: expr.get(
+                expr.deserializeRecord(b.inputs.replayerOptions),
+                "transformsImagePullPolicy",
               ),
               transformsConfigMap: expr.dig(
                 expr.deserializeRecord(b.inputs.replayerOptions),

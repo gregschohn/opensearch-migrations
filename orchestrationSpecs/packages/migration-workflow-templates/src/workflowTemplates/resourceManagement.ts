@@ -312,6 +312,7 @@ function makeSnapshotMigrationManifest(
             metadataMigrationTransformerConfig: makeYamlJsonLiteralProxy(expr.dig(config, ["metadataMigrationConfig", "transformerConfig"], expr.literal(""))),
             metadataMigrationTransformerConfigFile: makeStringTypeProxy(expr.dig(config, ["metadataMigrationConfig", "transformerConfigFile"], expr.literal(""))),
             metadataMigrationTransformsImage: makeYamlJsonLiteralProxy(expr.dig(config, ["metadataMigrationConfig", "transformsImage"], expr.literal(""))),
+            metadataMigrationTransformsImagePullPolicy: makeStringTypeProxy(expr.dig(config, ["metadataMigrationConfig", "transformsImagePullPolicy"], expr.literal("IfNotPresent"))),
             metadataMigrationTransformsConfigMap: makeYamlJsonLiteralProxy(expr.dig(config, ["metadataMigrationConfig", "transformsConfigMap"], expr.literal(""))),
             documentBackfillPodReplicas: makeDirectTypeProxy(expr.dig(config, ["documentBackfillConfig", "podReplicas"], 1)),
             documentBackfillJvmArgs: makeStringTypeProxy(expr.dig(config, ["documentBackfillConfig", "jvmArgs"], expr.literal(""))),
@@ -326,6 +327,7 @@ function makeSnapshotMigrationManifest(
             documentBackfillDocTransformerConfig: makeYamlJsonLiteralProxy(expr.dig(config, ["documentBackfillConfig", "docTransformerConfig"], expr.literal(""))),
             documentBackfillDocTransformerConfigFile: makeStringTypeProxy(expr.dig(config, ["documentBackfillConfig", "docTransformerConfigFile"], expr.literal(""))),
             documentBackfillTransformsImage: makeYamlJsonLiteralProxy(expr.dig(config, ["documentBackfillConfig", "transformsImage"], expr.literal(""))),
+            documentBackfillTransformsImagePullPolicy: makeStringTypeProxy(expr.dig(config, ["documentBackfillConfig", "transformsImagePullPolicy"], expr.literal("IfNotPresent"))),
             documentBackfillTransformsConfigMap: makeYamlJsonLiteralProxy(expr.dig(config, ["documentBackfillConfig", "transformsConfigMap"], expr.literal(""))),
             documentBackfillDocumentsPerBulkRequest: makeDirectTypeProxy(expr.dig(config, ["documentBackfillConfig", "documentsPerBulkRequest"], 0x7fffffff)),
             documentBackfillDocumentsSizePerBulkRequest: makeDirectTypeProxy(expr.dig(config, ["documentBackfillConfig", "documentsSizePerBulkRequest"], 10 * 1024 * 1024)),
@@ -361,6 +363,7 @@ function makeTrafficReplayManifest(
         podReplicas: expr.dig(opts, ["podReplicas"], 1),
         resources: expr.get(opts, "resources"),
         transformsImage: expr.dig(opts, ["transformsImage"], expr.literal("")),
+        transformsImagePullPolicy: expr.dig(opts, ["transformsImagePullPolicy"], expr.literal("IfNotPresent")),
         transformsConfigMap: expr.dig(opts, ["transformsConfigMap"], expr.literal("")),
     });
     return {

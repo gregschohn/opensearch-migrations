@@ -156,17 +156,21 @@ export const OPTIONAL_HTTP_ENDPOINT_PATTERN = `^(?:https?:\\/\\/${HOSTNAME_PATTE
 
 export const GENERIC_JSON_OBJECT = z.record(z.string(), z.any());
 export const K8S_NAMING_PATTERN = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/;
+export const K8S_IMAGE_PULL_POLICY = z.enum(["Always", "Never", "IfNotPresent"]);
 
 export const TRANSFORMS_IMAGE_SOURCE = z.object({
-    image: z.string()
+    image: z.string().min(1)
         .describe("OCI image reference (preferably with digest) whose root contains transform files. " +
-            "The workflow mounts the image at /transforms/. Build with deployment/k8s/package-transforms.sh.")
-});
+            "The workflow mounts the image at /transforms/. Build with deployment/k8s/package-transforms.sh."),
+    pullPolicy: K8S_IMAGE_PULL_POLICY.default("IfNotPresent").optional()
+        .describe("Kubernetes image pull policy for the transforms image. Use 'Always' for mutable tags like 'latest'; " +
+            "leave as 'IfNotPresent' for immutable tags or digests.")
+}).strict();
 
 export const TRANSFORMS_CONFIGMAP_SOURCE = z.object({
-    configMap: z.string()
+    configMap: z.string().min(1)
         .describe("Name of a pre-existing Kubernetes ConfigMap. Each key becomes a file in /transforms/.")
-});
+}).strict();
 
 export const TRANSFORMS_SOURCE = z.union([
     TRANSFORMS_IMAGE_SOURCE,
@@ -537,7 +541,7 @@ export const USER_REPLAYER_WORKFLOW_OPTIONS = z.object({
     podReplicas: z.number().default(1).optional()
         .describe("Number of replayer pod replicas in the Kubernetes Deployment. Each replica independently consumes from Kafka and replays traffic to the target."),
     useLocalStack: z.boolean().default(false).optional()
-        .describe("Mount local test AWS credentials for LocalStack-backed tuple S3 output. This is a workflow-only testing option and is not passed to the replayer process."),
+        .describe("[Internal] Mount local test AWS credentials for LocalStack-backed tuple S3 output. Workflow-only testing hook; not passed to the replayer process and not intended for production use."),
     resources: z.preprocess((v) => deepmerge(DEFAULT_RESOURCES.REPLAYER, (v ?? {})), RESOURCE_REQUIREMENTS)
         .describe("Kubernetes resource limits and requests for the replayer container. " +
             "Partial overrides are deep-merged with the built-in defaults. " +
@@ -546,7 +550,7 @@ export const USER_REPLAYER_WORKFLOW_OPTIONS = z.object({
 }).describe("Kubernetes deployment-level options for the traffic replayer.");
 
 export const USER_REPLAYER_PROCESS_OPTIONS = z.object({
-    transformsSource: z.string().optional()
+    transformsSource: z.string().regex(K8S_NAMING_PATTERN).optional()
         .describe("Key into top-level transformsSources. Mounts /transforms/ into the replayer pod.")
         .changeRestriction('impossible'),
     kafkaTrafficEnableMSKAuth: z.boolean().default(false).optional()
@@ -717,7 +721,7 @@ export const USER_METADATA_WORKFLOW_OPTIONS = z.object({
 }).describe("Workflow-level options for metadata migration, controlling JVM settings and approval gates.");
 
 export const USER_METADATA_PROCESS_OPTIONS = z.object({
-    transformsSource: z.string().optional()
+    transformsSource: z.string().regex(K8S_NAMING_PATTERN).optional()
         .describe("Key into top-level transformsSources. Mounts /transforms/ into the metadata migration pod.")
         .checksumFor('snapshot', 'replayer')
         .changeRestriction('impossible'),
@@ -814,7 +818,7 @@ export const USER_RFS_WORKFLOW_OPTIONS = z.object({
 }).describe("Kubernetes deployment-level options for the Reindex From Snapshot (RFS) document backfill.");
 
 export const USER_RFS_PROCESS_OPTIONS = z.object({
-    transformsSource: z.string().optional()
+    transformsSource: z.string().regex(K8S_NAMING_PATTERN).optional()
         .describe("Key into top-level transformsSources. Mounts /transforms/ into the RFS pod.")
         .checksumFor('replayer')
         .changeRestriction('impossible'),

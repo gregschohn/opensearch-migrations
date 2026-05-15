@@ -89,6 +89,12 @@ function makeOptionalDefaultedFieldsRequired<T extends z.ZodTypeAny>(schema: T):
     return schema;
 }
 
+const TRANSFORMS_RESOLVED_FIELDS = {
+    transformsImage: z.string().default("").optional(),
+    transformsImagePullPolicy: z.enum(["Always", "Never", "IfNotPresent"]).default("IfNotPresent"),
+    transformsConfigMap: z.string().default("").optional(),
+} as const;
+
 export const NAMED_KAFKA_CLUSTER_CONFIG = z.object({
     name: z.string(),
     version: z.string(),
@@ -138,15 +144,13 @@ export const ARGO_METADATA_OPTIONS = makeOptionalDefaultedFieldsRequired(
         skipMigrateApproval: true,
         transformsSource: true,
         metadataTransforms: true,
-    }).extend({
-        transformsImage: z.string().default("").optional(),
-        transformsConfigMap: z.string().default("").optional(),
-    })
+    }).extend(TRANSFORMS_RESOLVED_FIELDS)
 );
 export const ARGO_METADATA_WORKFLOW_OPTION_KEYS = getZodKeys(ARGO_METADATA_OPTIONS.pick({
     jvmArgs: true,
     loggingConfigurationOverrideConfigMap: true,
     transformsImage: true,
+    transformsImagePullPolicy: true,
     transformsConfigMap: true,
 }));
 
@@ -163,10 +167,7 @@ export const ARGO_RFS_OPTIONS = makeOptionalDefaultedFieldsRequired(
         skipApproval: true,
         transformsSource: true,
         documentTransforms: true,
-    }).extend({
-        transformsImage: z.string().default("").optional(),
-        transformsConfigMap: z.string().default("").optional(),
-    })
+    }).extend(TRANSFORMS_RESOLVED_FIELDS)
 );
 export const ARGO_RFS_WORKFLOW_OPTION_KEYS = getZodKeys(ARGO_RFS_OPTIONS.pick({
     podReplicas: true,
@@ -175,6 +176,7 @@ export const ARGO_RFS_WORKFLOW_OPTION_KEYS = getZodKeys(ARGO_RFS_OPTIONS.pick({
     useTargetClusterForWorkCoordination: true,
     resources: true,
     transformsImage: true,
+    transformsImagePullPolicy: true,
     transformsConfigMap: true,
 }));
 
@@ -194,10 +196,7 @@ export const ARGO_REPLAYER_OPTIONS = makeOptionalDefaultedFieldsRequired(
         transformsSource: true,
         requestTransforms: true,
         tupleTransforms: true,
-    }).extend({
-        transformsImage: z.string().default("").optional(),
-        transformsConfigMap: z.string().default("").optional(),
-    })
+    }).extend(TRANSFORMS_RESOLVED_FIELDS)
 );
 export const ARGO_REPLAYER_WORKFLOW_OPTION_KEYS = getZodKeys(ARGO_REPLAYER_OPTIONS.pick({
     jvmArgs: true,
@@ -206,6 +205,7 @@ export const ARGO_REPLAYER_WORKFLOW_OPTION_KEYS = getZodKeys(ARGO_REPLAYER_OPTIO
     useLocalStack: true,
     resources: true,
     transformsImage: true,
+    transformsImagePullPolicy: true,
     transformsConfigMap: true,
 }));
 
