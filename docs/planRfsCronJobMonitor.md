@@ -1,6 +1,6 @@
 # Implementation Plan — RFS Completion CronJob
 
-Companion to [`rfsDoneCronJob.md`](./rfsDoneCronJob.md). Lists what to change, in what order, on the `cronJobRfsChecks` branch.
+Companion to [`rfsCronJobMonitor.md`](./rfsCronJobMonitor.md). Lists what to change, in what order, on the `cronJobRfsChecks` branch.
 
 ## Two-commit structure
 

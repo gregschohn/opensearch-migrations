@@ -475,12 +475,10 @@ def filter_tree_nodes(tree_nodes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
     def should_keep_by_type(node):
         # Keep leaf nodes (actual work) and approval gate nodes
-        return (
-            node['type'] in ["Pod", "Skipped"]
-            or is_approval_node(node)
-            or _is_snapshot_migration_wait_node(node)
-            or _is_data_snapshot_wait_node(node)
-        )
+        return (node['type'] in ["Pod", "Skipped"] or
+                is_approval_node(node) or
+                _is_snapshot_migration_wait_node(node) or
+                _is_data_snapshot_wait_node(node))
 
     def has_group_name(node):
         # Keep containers that have a groupName (meaningful grouping)
