@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -eu
 
-SNAPSHOT_MONITOR_CADENCE_LABEL="${SNAPSHOT_MONITOR_CADENCE_LABEL}"
 SNAPSHOT_MONITOR_WORKFLOW_UID_LABEL="${SNAPSHOT_MONITOR_WORKFLOW_UID_LABEL}"
 K8S_API_SERVER="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT_HTTPS:-443}"
 K8S_SA_TOKEN_FILE="/var/run/secrets/kubernetes.io/serviceaccount/token"
@@ -59,28 +58,6 @@ delete_cronjob_with_preconditions() {
     fi
     echo "preconditioned cronjob delete returned non-zero (likely 409: superseded or RV advanced)"
     return 1
-}
-
-maybe_bump_cadence() {
-    raw_step="$(echo "$cronjob_json" | jq -r --arg k "$SNAPSHOT_MONITOR_CADENCE_LABEL" '.metadata.labels[$k] // "1"')"
-    case "$raw_step" in
-        1|2|3|4|5) current="$raw_step" ;;
-        *)         current=1 ;;
-    esac
-    if [ "$current" -ge 5 ]; then return 0; fi
-    desired=$((current + 1))
-    body="$(jq -nc \
-        --arg label "$SNAPSHOT_MONITOR_CADENCE_LABEL" \
-        --arg desired "$desired" \
-        --arg sched "*/$desired * * * *" \
-        --arg rv "$cj_rv" \
-        '{metadata:{resourceVersion:$rv,labels:{($label):$desired}},spec:{schedule:$sched}}')"
-    if k8s_api PATCH "/apis/batch/v1/namespaces/$cj_namespace/cronjobs/$SNAPSHOT_CRONJOB_NAME" \
-        "application/merge-patch+json" "$body" >/dev/null 2>&1; then
-        echo "cadence: $current -> $desired"
-    else
-        echo "cadence patch failed (resourceVersion mismatch: concurrent reclaim); ignoring"
-    fi
 }
 
 parent_workflow_running() {
@@ -161,13 +138,11 @@ ds_json="$(kubectl get datasnapshot "$DATASNAPSHOT_NAME" -o json 2>/dev/null || 
 if [ -z "$ds_json" ]; then
     if parent_workflow_running; then
         echo "datasnapshot $DATASNAPSHOT_NAME not found yet; parent workflow still running"
-        maybe_bump_cadence
         exit 0
     fi
     elapsed=$(( $(date -u +%s) - CLAIMED_AT ))
     if [ "$elapsed" -le "$STARTUP_GRACE_SECONDS" ]; then
         echo "datasnapshot $DATASNAPSHOT_NAME not found; within startup grace"
-        maybe_bump_cadence
         exit 0
     fi
     echo "datasnapshot $DATASNAPSHOT_NAME missing and parent workflow is gone; self-deleting"
@@ -219,7 +194,6 @@ esac
 
 if [ -z "$status" ] && [ -z "$SNAPSHOT_DEEP_OUTPUT" ]; then
     patch_snapshot_status "Running" "Unknown" "Snapshot status check is not available yet"
-    maybe_bump_cadence
     exit 0
 fi
 
@@ -242,5 +216,4 @@ if [ -z "$message" ]; then
 fi
 
 patch_snapshot_status "Running" "Running" "$message"
-maybe_bump_cadence
 exit 0

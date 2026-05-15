@@ -19,7 +19,6 @@ set -eu
 : "${WORKFLOW_SCRIPTS_ROOT:?}"
 : "${SNAPSHOT_MONITOR_WORKFLOW_UID_LABEL:?}"
 : "${SNAPSHOT_MONITOR_SESSION_LABEL:?}"
-: "${SNAPSHOT_MONITOR_CADENCE_LABEL:?}"
 
 : "${STARTUP_GRACE_SECONDS:=600}"
 CLAIMED_AT="$(date -u +%s)"
@@ -91,7 +90,6 @@ spec:
                 - {name: CONSOLE_CONFIG_BASE64,    value: "${CONSOLE_CONFIG_BASE64}"}
                 - {name: WORKFLOW_SCRIPTS_ROOT,    value: "${WORKFLOW_SCRIPTS_ROOT}"}
                 - {name: SNAPSHOT_MONITOR_WORKFLOW_UID_LABEL, value: "${SNAPSHOT_MONITOR_WORKFLOW_UID_LABEL}"}
-                - {name: SNAPSHOT_MONITOR_CADENCE_LABEL,      value: "${SNAPSHOT_MONITOR_CADENCE_LABEL}"}
 YAML
 }
 
@@ -105,14 +103,14 @@ else
         echo "create failed unexpectedly: $create_out" >&2
         exit 1
     fi
-    echo "exists - patching jobTemplate and draining prior claim"
+    echo "exists - patching schedule/jobTemplate and draining prior claim"
 
     patch_payload="$(render_cronjob_yaml \
         | kubectl create --dry-run=client -f - -o json \
         | jq -c --arg uidkey "$WORKFLOW_UID_LABEL" \
             '{
                 metadata:{labels:{($uidkey):.metadata.labels[$uidkey]}},
-                spec:{jobTemplate:.spec.jobTemplate}
+                spec:{schedule:.spec.schedule,jobTemplate:.spec.jobTemplate}
             }')"
     kubectl patch cronjob "$CRONJOB_NAME" --type=merge -p "$patch_payload"
 

@@ -145,10 +145,6 @@
             {
               "name": "RFS_MONITOR_SESSION_LABEL",
               "value": "migrations.opensearch.org/rfs-monitor-session"
-            },
-            {
-              "name": "RFS_MONITOR_CADENCE_LABEL",
-              "value": "migrations.opensearch.org/rfs-monitor-cadence-step"
             }
           ],
           "image": "{{inputs.parameters.imageMigrationConsoleLocation}}",

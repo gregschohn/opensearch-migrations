@@ -21,7 +21,6 @@ set -eu
 : "${WORKFLOW_SCRIPTS_ROOT:?}"
 : "${RFS_MONITOR_WORKFLOW_UID_LABEL:?}"
 : "${RFS_MONITOR_SESSION_LABEL:?}"
-: "${RFS_MONITOR_CADENCE_LABEL:?}"
 
 : "${STARTUP_GRACE_SECONDS:=600}"
 CLAIMED_AT="$(date -u +%s)"
@@ -94,13 +93,11 @@ spec:
                 - {name: CONSOLE_CONFIG_BASE64,      value: "${CONSOLE_CONFIG_BASE64}"}
                 - {name: WORKFLOW_SCRIPTS_ROOT,      value: "${WORKFLOW_SCRIPTS_ROOT}"}
                 - {name: RFS_MONITOR_WORKFLOW_UID_LABEL, value: "${RFS_MONITOR_WORKFLOW_UID_LABEL}"}
-                - {name: RFS_MONITOR_CADENCE_LABEL,      value: "${RFS_MONITOR_CADENCE_LABEL}"}
 YAML
 }
 
-# Try-create. On 201, skip drain. On 409 (AlreadyExists), patch only the
-# workflow-uid label and jobTemplate (never spec.schedule or cadence-step,
-# both owned by the script), then drain prior-claim Jobs/Pods.
+# Try-create. On 201, skip drain. On 409 (AlreadyExists), patch the
+# workflow-uid label, fixed schedule, and jobTemplate, then drain prior-claim Jobs/Pods.
 echo "applying CronJob $CRONJOB_NAME"
 create_out="$(render_cronjob_yaml | kubectl create -f - 2>&1 || true)"
 if echo "$create_out" | grep -q "created"; then
@@ -118,7 +115,7 @@ else
         | jq -c --arg uidkey "$WORKFLOW_UID_LABEL" \
             '{
                 metadata:{labels:{($uidkey):.metadata.labels[$uidkey]}},
-                spec:{jobTemplate:.spec.jobTemplate}
+                spec:{schedule:.spec.schedule,jobTemplate:.spec.jobTemplate}
             }')"
     kubectl patch cronjob "$CRONJOB_NAME" --type=merge -p "$patch_payload"
 

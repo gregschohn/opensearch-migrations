@@ -255,10 +255,6 @@
             {
               "name": "SNAPSHOT_MONITOR_SESSION_LABEL",
               "value": "migrations.opensearch.org/snapshot-monitor-session"
-            },
-            {
-              "name": "SNAPSHOT_MONITOR_CADENCE_LABEL",
-              "value": "migrations.opensearch.org/snapshot-monitor-cadence-step"
             }
           ],
           "image": "{{inputs.parameters.imageMigrationConsoleLocation}}",

@@ -98,10 +98,8 @@ function getRfsDoneCronJobName(sessionName: BaseExpression<string>) {
 // Label keys for the RFS completion CronJob.
 // workflow-uid: per-claim label rewritten on every workflow apply for supersession checks.
 // session: stable for the SnapshotMigration lifetime and used as the drain selector.
-// cadence-step: mirrors the */N schedule value and is only owned by the CronJob script.
 const RFS_MONITOR_WORKFLOW_UID_LABEL = "migrations.opensearch.org/rfs-monitor-workflow-uid";
 const RFS_MONITOR_SESSION_LABEL = "migrations.opensearch.org/rfs-monitor-session";
-const RFS_MONITOR_CADENCE_LABEL = "migrations.opensearch.org/rfs-monitor-cadence-step";
 
 const startHistoricalBackfillInputs = {
     sessionName: defineRequiredParam<string>(),
@@ -298,8 +296,7 @@ const documentBulkLoadBaseBuilder = WorkflowBuilder.create({
                 CONSOLE_CONFIG_BASE64: expr.toBase64(expr.asString(c.inputs.consoleConfigContents)),
                 WORKFLOW_SCRIPTS_ROOT: t.inputs.workflowParameters.workflowScriptsRoot,
                 RFS_MONITOR_WORKFLOW_UID_LABEL: expr.literal(RFS_MONITOR_WORKFLOW_UID_LABEL),
-                RFS_MONITOR_SESSION_LABEL: expr.literal(RFS_MONITOR_SESSION_LABEL),
-                RFS_MONITOR_CADENCE_LABEL: expr.literal(RFS_MONITOR_CADENCE_LABEL)
+                RFS_MONITOR_SESSION_LABEL: expr.literal(RFS_MONITOR_SESSION_LABEL)
             })
             .addArgs([expr.concat(
                 expr.literal("exec "),

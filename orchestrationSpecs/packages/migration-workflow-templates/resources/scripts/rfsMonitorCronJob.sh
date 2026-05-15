@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -eu
 
-RFS_MONITOR_CADENCE_LABEL="${RFS_MONITOR_CADENCE_LABEL}"
 RFS_MONITOR_WORKFLOW_UID_LABEL="${RFS_MONITOR_WORKFLOW_UID_LABEL}"
 K8S_API_SERVER="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT_HTTPS:-443}"
 K8S_SA_TOKEN_FILE="/var/run/secrets/kubernetes.io/serviceaccount/token"
@@ -138,30 +137,6 @@ patch_backfill_status() {
         --subresource=status --type=merge -p "$patch_body"
 }
 
-# Cadence ramp 1 -> 5. Owned solely by this script; atomic PATCH with
-# resourceVersion precondition.
-maybe_bump_cadence() {
-    raw_step="$(echo "$cronjob_json" | jq -r --arg k "$RFS_MONITOR_CADENCE_LABEL" '.metadata.labels[$k] // "1"')"
-    case "$raw_step" in
-        1|2|3|4|5) current="$raw_step" ;;
-        *)         current=1 ;;
-    esac
-    if [ "$current" -ge 5 ]; then return 0; fi
-    desired=$((current + 1))
-    body="$(jq -nc \
-        --arg label   "$RFS_MONITOR_CADENCE_LABEL" \
-        --arg desired "$desired" \
-        --arg sched   "*/$desired * * * *" \
-        --arg rv      "$cj_rv" \
-        '{metadata:{resourceVersion:$rv,labels:{($label):$desired}},spec:{schedule:$sched}}')"
-    if k8s_api PATCH "/apis/batch/v1/namespaces/$cj_namespace/cronjobs/$RFS_CRONJOB_NAME" \
-        "application/merge-patch+json" "$body" >/dev/null 2>&1; then
-        echo "cadence: $current -> $desired"
-    else
-        echo "cadence patch failed (resourceVersion mismatch: concurrent reclaim); ignoring"
-    fi
-}
-
 parent_workflow_running() {
     phase="$(kubectl get workflow "$PARENT_WORKFLOW_NAME" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
     [ "$phase" = "Running" ] || [ "$phase" = "Pending" ]
@@ -185,13 +160,11 @@ fi
 if [ -z "$sm_json" ] || ! runtime_resource_exists; then
     if parent_workflow_running; then
         echo "phase 2: parent workflow still running; waiting"
-        maybe_bump_cadence
         exit 0
     fi
     elapsed=$(( $(date -u +%s) - CLAIMED_AT ))
     if [ "$elapsed" -le "$STARTUP_GRACE_SECONDS" ]; then
         echo "phase 2: within startup grace ($elapsed of $STARTUP_GRACE_SECONDS s)"
-        maybe_bump_cadence
         exit 0
     fi
     echo "phase 2: orphaned (sm or runtime missing, parent gone, grace expired); self-deleting"
@@ -208,7 +181,6 @@ status="$(printf '%s' "$status_json" | jq -r '.status // ""' 2>/dev/null || echo
 if [ -z "$status_json" ] || [ -z "$status" ]; then
     status_message="$(printf '%s' "${status_error:-${status_json:-Status check is not available yet}}" | head -c 1024)"
     patch_backfill_status "Unknown" "$status_message" ""
-    maybe_bump_cadence
     exit 0
 fi
 
@@ -224,7 +196,6 @@ patch_backfill_status "$status" "$status_message" "$status_json"
 if [ "$status" != "Completed" ]; then
     progress="$(printf '%s' "$status_json" | jq -r '"complete: \(.percentage_completed // 0)%, shards: \(.shard_complete // 0)/\(.shard_total // 0)"')"
     echo "phase 3: still working ($progress)"
-    maybe_bump_cadence
     exit 0
 fi
 

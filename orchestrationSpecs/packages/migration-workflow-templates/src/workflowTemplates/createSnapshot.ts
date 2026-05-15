@@ -33,7 +33,6 @@ function getSnapshotDoneCronJobName(dataSnapshotName: BaseExpression<string>) {
 
 const SNAPSHOT_MONITOR_WORKFLOW_UID_LABEL = "migrations.opensearch.org/snapshot-monitor-workflow-uid";
 const SNAPSHOT_MONITOR_SESSION_LABEL = "migrations.opensearch.org/snapshot-monitor-session";
-const SNAPSHOT_MONITOR_CADENCE_LABEL = "migrations.opensearch.org/snapshot-monitor-cadence-step";
 
 export function makeSourceParamDict(sourceConfig: BaseExpression<Serialized<z.infer<typeof CLUSTER_CONFIG>>>) {
     return makeClusterParamDict("source", sourceConfig);
@@ -156,8 +155,7 @@ export const CreateSnapshot = WorkflowBuilder.create({
                 CONSOLE_CONFIG_BASE64: expr.toBase64(expr.asString(b.inputs.configContents)),
                 WORKFLOW_SCRIPTS_ROOT: t.inputs.workflowParameters.workflowScriptsRoot,
                 SNAPSHOT_MONITOR_WORKFLOW_UID_LABEL: expr.literal(SNAPSHOT_MONITOR_WORKFLOW_UID_LABEL),
-                SNAPSHOT_MONITOR_SESSION_LABEL: expr.literal(SNAPSHOT_MONITOR_SESSION_LABEL),
-                SNAPSHOT_MONITOR_CADENCE_LABEL: expr.literal(SNAPSHOT_MONITOR_CADENCE_LABEL)
+                SNAPSHOT_MONITOR_SESSION_LABEL: expr.literal(SNAPSHOT_MONITOR_SESSION_LABEL)
             })
             .addArgs([expr.concat(
                 expr.literal("exec "),
