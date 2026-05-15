@@ -22,6 +22,10 @@
         {
           "name": "approvalConfigMapName",
           "value": "approval-config"
+        },
+        {
+          "name": "workflowScriptsRoot",
+          "value": "/root/workflows/.workflowScripts"
         }
       ]
     },
@@ -135,7 +139,16 @@
           ]
         },
         "container": {
-          "env": [],
+          "env": [
+            {
+              "name": "WORKFLOW_NAME",
+              "value": "{{workflow.name}}"
+            },
+            {
+              "name": "WORKFLOW_UID",
+              "value": "{{workflow.uid}}"
+            }
+          ],
           "image": "{{inputs.parameters.imageMigrationConsoleLocation}}",
           "imagePullPolicy": "{{inputs.parameters.imageMigrationConsolePullPolicy}}",
           "resources": {
@@ -153,12 +166,21 @@
             "-lc"
           ],
           "args": [
-            "\nselector='migrations.opensearch.org/workflow={{workflow.name}}'\npatch='{\"metadata\":{\"ownerReferences\":[{\"apiVersion\":\"argoproj.io/v1alpha1\",\"kind\":\"Workflow\",\"name\":\"{{workflow.name}}\",\"uid\":\"{{workflow.uid}}\"}]}}'\nkubectl get approvalgates.migrations.opensearch.org -l \"$selector\" -o name \\\n  | xargs -r -n 1 kubectl patch --type merge -p \"$patch\" \\\n  || echo \"WARN: failed to patch one or more approvalgate ownerReferences\" >&2\n"
+            "{{='exec '+workflow.parameters.workflowScriptsRoot+'/addApprovalGateOwnerReferences.sh'}}"
           ]
         },
         "metadata": {
           "annotations": {
             "karpenter.sh/do-not-disrupt": "true"
+          }
+        },
+        "retryStrategy": {
+          "limit": "3",
+          "retryPolicy": "OnError",
+          "backoff": {
+            "duration": "10",
+            "factor": "2",
+            "cap": "60"
           }
         },
         "outputs": {
@@ -262,7 +284,12 @@
           ]
         },
         "container": {
-          "env": [],
+          "env": [
+            {
+              "name": "WORKFLOW_NAME",
+              "value": "{{workflow.name}}"
+            }
+          ],
           "image": "{{inputs.parameters.imageMigrationConsoleLocation}}",
           "imagePullPolicy": "{{inputs.parameters.imageMigrationConsolePullPolicy}}",
           "resources": {
@@ -280,12 +307,21 @@
             "-lc"
           ],
           "args": [
-            "\nkubectl delete approvalgates.migrations.opensearch.org \\\n  -l \"migrations.opensearch.org/workflow={{workflow.name}}\" \\\n  --ignore-not-found || true\n"
+            "{{='exec '+workflow.parameters.workflowScriptsRoot+'/cleanupApprovalGates.sh'}}"
           ]
         },
         "metadata": {
           "annotations": {
             "karpenter.sh/do-not-disrupt": "true"
+          }
+        },
+        "retryStrategy": {
+          "limit": "3",
+          "retryPolicy": "OnError",
+          "backoff": {
+            "duration": "10",
+            "factor": "2",
+            "cap": "60"
           }
         },
         "outputs": {
@@ -798,6 +834,14 @@
                   {
                     "name": "semaphoreKey",
                     "value": "{{=fromJSON(inputs.parameters.snapshotItemConfig)['semaphoreKey']}}"
+                  },
+                  {
+                    "name": "dataSnapshotName",
+                    "value": "{{inputs.parameters.resourceName}}"
+                  },
+                  {
+                    "name": "dataSnapshotUid",
+                    "value": "{{=fromJSON(inputs.parameters.snapshotItemConfig)['resourceUid']}}"
                   }
                 ]
               },
@@ -922,7 +966,7 @@
                   },
                   {
                     "name": "snapshotItemConfig",
-                    "value": "{{=toJSON(sprig.dict(\"label\", item['label'], \"snapshotPrefix\", item['snapshotPrefix'], \"config\", fromJSON(item['config']), \"repo\", fromJSON(item['repo']), \"semaphoreConfigMapName\", item['semaphoreConfigMapName'], \"semaphoreKey\", item['semaphoreKey'], \"dependsOnProxySetups\", fromJSON(toJSON(item))['dependsOnProxySetups'], \"configChecksum\", item['configChecksum']))}}"
+                    "value": "{{=toJSON(sprig.dict(\"label\", item['label'], \"snapshotPrefix\", item['snapshotPrefix'], \"config\", fromJSON(item['config']), \"repo\", fromJSON(item['repo']), \"semaphoreConfigMapName\", item['semaphoreConfigMapName'], \"semaphoreKey\", item['semaphoreKey'], \"dependsOnProxySetups\", fromJSON(toJSON(item))['dependsOnProxySetups'], \"configChecksum\", item['configChecksum'], \"resourceUid\", item['resourceUid']))}}"
                   },
                   {
                     "name": "sourceConfig",
@@ -960,6 +1004,10 @@
               "name": "targetConfig"
             },
             {
+              "name": "sourceConfig",
+              "value": ""
+            },
+            {
               "name": "snapshotConfig"
             },
             {
@@ -976,6 +1024,12 @@
             },
             {
               "name": "configChecksum"
+            },
+            {
+              "name": "checksumForReplayer"
+            },
+            {
+              "name": "workloadIdentityChecksum"
             },
             {
               "name": "groupName_view"
@@ -1032,15 +1086,6 @@
         "steps": [
           [
             {
-              "template": "donothing",
-              "arguments": {
-                "parameters": []
-              },
-              "name": "idGenerator"
-            }
-          ],
-          [
-            {
               "templateRef": {
                 "template": "migratemetadata",
                 "name": "metadata-migration"
@@ -1055,6 +1100,10 @@
                   {
                     "name": "sourceEndpoint",
                     "value": "{{inputs.parameters.sourceEndpoint}}"
+                  },
+                  {
+                    "name": "sourceConfig",
+                    "value": "{{inputs.parameters.sourceConfig}}"
                   },
                   {
                     "name": "snapshotConfig",
@@ -1143,8 +1192,12 @@
                     "value": "{{inputs.parameters.crdName}}"
                   },
                   {
-                    "name": "sourceEndpoint",
-                    "value": "{{inputs.parameters.sourceEndpoint}}"
+                    "name": "configChecksum",
+                    "value": "{{inputs.parameters.configChecksum}}"
+                  },
+                  {
+                    "name": "checksumForReplayer",
+                    "value": "{{inputs.parameters.checksumForReplayer}}"
                   },
                   {
                     "name": "imageReindexFromSnapshotLocation",
@@ -1172,7 +1225,7 @@
                   },
                   {
                     "name": "sessionName",
-                    "value": "{{steps.idGenerator.id}}"
+                    "value": "{{='rfs-'+inputs.parameters.workloadIdentityChecksum}}"
                   },
                   {
                     "name": "crdUid",
@@ -1406,6 +1459,10 @@
                     "value": "{{=toJSON(fromJSON(inputs.parameters.snapshotMigrationConfig)['targetConfig'])}}"
                   },
                   {
+                    "name": "sourceConfig",
+                    "value": "{{=toJSON(sprig.dict(\"label\", fromJSON(inputs.parameters.snapshotMigrationConfig)['sourceLabel'], \"version\", fromJSON(inputs.parameters.snapshotMigrationConfig)['sourceVersion'], \"endpoint\", sprig.dig('sourceEndpoint', '', fromJSON(inputs.parameters.snapshotMigrationConfig)), \"allowInsecure\", sprig.dig('sourceAllowInsecure', false, fromJSON(inputs.parameters.snapshotMigrationConfig)), \"authConfig\", sprig.dig('sourceAuth', sprig.dict(), fromJSON(inputs.parameters.snapshotMigrationConfig))))}}"
+                  },
+                  {
                     "name": "snapshotConfig",
                     "value": "{{=toJSON(sprig.dict(\"snapshotName\", (('externalSnapshotName' in fromJSON(inputs.parameters.snapshotMigrationConfig)['snapshotNameResolution']) ? (fromJSON(inputs.parameters.snapshotMigrationConfig)['snapshotNameResolution']['externalSnapshotName']) : (steps.readSnapshotName.outputs.parameters.snapshotName)), \"label\", fromJSON(inputs.parameters.snapshotMigrationConfig)['snapshotConfig']['label'], \"repoConfig\", fromJSON(inputs.parameters.snapshotMigrationConfig)['snapshotConfig']['repoConfig']))}}"
                   },
@@ -1430,6 +1487,14 @@
                     "value": "{{steps.reconcileSnapshotMigrationResource.outputs.parameters.resourceCreationTimestamp}}"
                   },
                   {
+                    "name": "workloadIdentityChecksum",
+                    "value": "{{=fromJSON(inputs.parameters.snapshotMigrationConfig)['workloadIdentityChecksum']}}"
+                  },
+                  {
+                    "name": "checksumForReplayer",
+                    "value": "{{=sprig.dig('checksumForReplayer', '', fromJSON(inputs.parameters.snapshotMigrationConfig))}}"
+                  },
+                  {
                     "name": "sourceEndpoint",
                     "value": "{{=sprig.dig('sourceEndpoint', '', fromJSON(inputs.parameters.snapshotMigrationConfig))}}"
                   }
@@ -1444,7 +1509,7 @@
                 "template": "patchsnapshotmigrationcompleted",
                 "name": "resource-management"
               },
-              "when": "{{=true && !(steps.reconcileSnapshotMigrationResource.outputs.parameters.currentConfigChecksum == inputs.parameters.configChecksum)}}",
+              "when": "{{=true && !(steps.reconcileSnapshotMigrationResource.outputs.parameters.currentConfigChecksum == inputs.parameters.configChecksum) && !('documentBackfillConfig' in fromJSON(inputs.parameters.snapshotMigrationConfig))}}",
               "arguments": {
                 "parameters": [
                   {
@@ -1497,6 +1562,9 @@
             },
             {
               "name": "replayerOptions"
+            },
+            {
+              "name": "useLocalStack"
             },
             {
               "name": "name"
@@ -1718,6 +1786,10 @@
                   {
                     "name": "replayerOptions",
                     "value": "{{inputs.parameters.replayerOptions}}"
+                  },
+                  {
+                    "name": "useLocalStack",
+                    "value": "{{inputs.parameters.useLocalStack}}"
                   },
                   {
                     "name": "imageTrafficReplayerLocation",
@@ -2232,6 +2304,10 @@
                   {
                     "name": "replayerOptions",
                     "value": "{{=item['replayerConfig']}}"
+                  },
+                  {
+                    "name": "useLocalStack",
+                    "value": "{{=sprig.dig('useLocalStack', false, fromJSON(item['replayerConfig']))}}"
                   },
                   {
                     "name": "groupName_view",

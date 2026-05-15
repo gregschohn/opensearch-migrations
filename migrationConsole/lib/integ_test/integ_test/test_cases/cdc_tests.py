@@ -1,4 +1,5 @@
 import logging
+import uuid
 
 from .cdc_base import (
     MATestBase, MigrationType, MATestUserArguments,
@@ -12,7 +13,7 @@ logger = logging.getLogger(__name__)
 CDC_NUM_DOCS = 10
 
 
-class Test0030CdcOnlyLiveTraffic(MATestBase):
+class Test0031CdcOnlyLiveTraffic(MATestBase):
     """CDC-only test: proxy captures from start, no snapshot migration.
 
     Validates the capture-proxy → Kafka → replayer pipeline in isolation.
@@ -27,7 +28,7 @@ class Test0030CdcOnlyLiveTraffic(MATestBase):
             migrations_required=[MigrationType.CAPTURE_AND_REPLAY],
             allow_source_target_combinations=CDC_SOURCE_TARGET_COMBINATIONS,
         )
-        self.cdc_index = f"cdc0030-captureproxy-{self.unique_id}"
+        self.cdc_index = f"cdc0031-captureproxy-{self.unique_id}-{uuid.uuid4().hex[:4]}"
 
     def prepare_workflow_parameters(self, keep_workflows: bool = False):
         super().prepare_workflow_parameters(keep_workflows=keep_workflows)
@@ -70,6 +71,3 @@ class Test0030CdcOnlyLiveTraffic(MATestBase):
             expected_index_details={self.cdc_index: {"count": CDC_NUM_DOCS}},
             max_attempts=120, delay=10.0,
         )
-
-    def test_after(self):
-        pass

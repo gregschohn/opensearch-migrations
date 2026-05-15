@@ -1,8 +1,6 @@
 import logging
-from ..cluster_version import (
-    ElasticsearchV1_X, ElasticsearchV2_X, ElasticsearchV5_X, ElasticsearchV6_X, ElasticsearchV7_X,
-    OpensearchV1_X, OpensearchV2_X, OpensearchV3_X
-)
+import uuid
+from ..cluster_version import RFS_MIGRATION_COMBINATIONS
 from .ma_argo_test_base import MATestBase, MigrationType, MATestUserArguments
 
 logger = logging.getLogger(__name__)
@@ -11,34 +9,17 @@ logger = logging.getLogger(__name__)
 # This test case is subject to removal, as its value looks limited
 class Test0001SingleDocumentBackfill(MATestBase):
     def __init__(self, user_args: MATestUserArguments):
-        allow_combinations = [
-            (ElasticsearchV1_X, OpensearchV1_X),
-            (ElasticsearchV1_X, OpensearchV2_X),
-            (ElasticsearchV1_X, OpensearchV3_X),
-            (ElasticsearchV2_X, OpensearchV1_X),
-            (ElasticsearchV2_X, OpensearchV2_X),
-            (ElasticsearchV2_X, OpensearchV3_X),
-            (ElasticsearchV5_X, OpensearchV1_X),
-            (ElasticsearchV5_X, OpensearchV2_X),
-            (ElasticsearchV5_X, OpensearchV3_X),
-            (ElasticsearchV6_X, OpensearchV1_X),
-            (ElasticsearchV6_X, OpensearchV2_X),
-            (ElasticsearchV6_X, OpensearchV3_X),
-            (ElasticsearchV7_X, OpensearchV1_X),
-            (ElasticsearchV7_X, OpensearchV2_X),
-            (ElasticsearchV7_X, OpensearchV3_X),
-        ]
         migrations_required = [MigrationType.BACKFILL]
         description = "Performs backfill migration for a single document (target cluster as coordinator)."
         super().__init__(user_args=user_args,
                          description=description,
                          migrations_required=migrations_required,
-                         allow_source_target_combinations=allow_combinations)
+                         allow_source_target_combinations=RFS_MIGRATION_COMBINATIONS)
         # Use an index name containing the work-coordinator separator ('__') to pin the fix
         # for opensearch-project/opensearch-migrations#2880 — prior to that fix, any index
         # whose name contained '__' was silently unmigratable because the work-item id
         # parser split on the first two occurrences of the separator.
-        self.index_name = f"test__0001__{self.unique_id}"
+        self.index_name = f"test__0001__{self.unique_id}-{uuid.uuid4().hex[:4]}"
         self.doc_id = "test_0001_doc"
         self.doc_type = "sample_type"
         self.source_cluster = None
@@ -70,30 +51,13 @@ class Test0001SingleDocumentBackfill(MATestBase):
 
 class Test0002SingleDocumentBackfillWithRfsCoordinatorCluster(MATestBase):
     def __init__(self, user_args: MATestUserArguments):
-        allow_combinations = [
-            (ElasticsearchV1_X, OpensearchV1_X),
-            (ElasticsearchV1_X, OpensearchV2_X),
-            (ElasticsearchV1_X, OpensearchV3_X),
-            (ElasticsearchV2_X, OpensearchV1_X),
-            (ElasticsearchV2_X, OpensearchV2_X),
-            (ElasticsearchV2_X, OpensearchV3_X),
-            (ElasticsearchV5_X, OpensearchV1_X),
-            (ElasticsearchV5_X, OpensearchV2_X),
-            (ElasticsearchV5_X, OpensearchV3_X),
-            (ElasticsearchV6_X, OpensearchV1_X),
-            (ElasticsearchV6_X, OpensearchV2_X),
-            (ElasticsearchV6_X, OpensearchV3_X),
-            (ElasticsearchV7_X, OpensearchV1_X),
-            (ElasticsearchV7_X, OpensearchV2_X),
-            (ElasticsearchV7_X, OpensearchV3_X),
-        ]
         migrations_required = [MigrationType.BACKFILL]
         description = "Performs backfill migration for a single document (default coordinator)."
         super().__init__(user_args=user_args,
                          description=description,
                          migrations_required=migrations_required,
-                         allow_source_target_combinations=allow_combinations)
-        self.index_name = f"test_0002_{self.unique_id}"
+                         allow_source_target_combinations=RFS_MIGRATION_COMBINATIONS)
+        self.index_name = f"test_0002_{self.unique_id}-{uuid.uuid4().hex[:4]}"
         self.doc_id = "test_0002_doc"
         self.doc_type = "sample_type"
         self.source_cluster = None

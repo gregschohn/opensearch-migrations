@@ -4,8 +4,9 @@ def call(Map config = [:]) {
     def targetVersion = config.targetVersion ?: ""
     def testIds = config.testIds ?: ""
 
-    def allSourceVersions = ['ES_1.5', 'ES_2.4', 'ES_5.6', 'ES_6.8', 'ES_7.10', 'SOLR_8.11']
-    def allTargetVersions = ['OS_1.3', 'OS_2.19', 'OS_3.1']
+    def versions = migrationVersions()
+    def allSourceVersions = versions.sourceVersions
+    def allTargetVersions = versions.targetVersions
 
     pipeline {
         agent { label config.workerAgent ?: 'Jenkins-Default-Agent-X64-C5xlarge-Single-Host' }
@@ -28,7 +29,7 @@ def call(Map config = [:]) {
         }
 
         options {
-            timeout(time: 4, unit: 'HOURS')
+            timeout(time: 6, unit: 'HOURS')
             buildDiscarder(logRotator(daysToKeepStr: '30'))
             skipDefaultCheckout(true)
         }
@@ -119,7 +120,7 @@ def call(Map config = [:]) {
 
             stage('Perform Python E2E Tests') {
                 steps {
-                    timeout(time: 3, unit: 'HOURS') {
+                    timeout(time: 5, unit: 'HOURS') {
                         dir('libraries/testAutomation') {
                             script {
                                 def sourceVer = sourceVersion ?: params.SOURCE_VERSION

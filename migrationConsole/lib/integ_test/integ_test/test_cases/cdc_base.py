@@ -1,6 +1,6 @@
 """CDC test base: shared constants, K8s helpers, and proxy utilities.
 
-Test IDs 0030-0039 are reserved for CDC variants.
+Test IDs 0031-0039 are reserved for CDC variants.
 """
 import logging
 import subprocess
@@ -10,10 +10,7 @@ from kubernetes import client, config as k8s_config, watch
 
 from console_link.models.cluster import Cluster
 
-from ..cluster_version import (
-    ElasticsearchV7_X,
-    OpensearchV1_X, OpensearchV2_X, OpensearchV3_X,
-)
+from ..cluster_version import CDC_MIGRATION_COMBINATIONS
 from .ma_argo_test_base import MATestBase, MigrationType, MATestUserArguments  # noqa: F401 (re-exported)
 
 logger = logging.getLogger(__name__)
@@ -23,11 +20,7 @@ PROXY_DEPLOYMENT_NAME = "capture-proxy"
 REPLAYER_LABEL_SELECTOR = "app=replayer"
 PROXY_LABEL_SELECTOR = "migrations/proxy=capture-proxy"
 PROXY_ENDPOINT = "https://capture-proxy:9201"
-CDC_SOURCE_TARGET_COMBINATIONS = [
-    (ElasticsearchV7_X, OpensearchV1_X),
-    (ElasticsearchV7_X, OpensearchV2_X),
-    (ElasticsearchV7_X, OpensearchV3_X),
-]
+CDC_SOURCE_TARGET_COMBINATIONS = CDC_MIGRATION_COMBINATIONS
 
 
 # --- Shared helpers ---
@@ -92,7 +85,7 @@ def wait_for_replayer_consuming(namespace: str, timeout_seconds: int = 120, inte
     while time.time() - start < timeout_seconds:
         try:
             result = subprocess.run(
-                ["kubectl", "logs", "-l", REPLAYER_LABEL_SELECTOR, "-n", namespace, "--tail=5"],
+                ["kubectl", "logs", "-l", REPLAYER_LABEL_SELECTOR, "-n", namespace, "--tail=100"],
                 capture_output=True, text=True, timeout=15
             )
             for line in result.stdout.split("\n"):
@@ -102,10 +95,31 @@ def wait_for_replayer_consuming(namespace: str, timeout_seconds: int = 120, inte
         except Exception as e:
             logger.debug("Replayer log check failed: %s", e)
         time.sleep(interval)
+    log_replayer_diagnostics(namespace)
     raise TimeoutError(
         f"Replayer did not join Kafka consumer group within {timeout_seconds}s. "
         f"CDC docs sent after this point will not be replayed to target."
     )
+
+
+def log_replayer_diagnostics(namespace: str):
+    """Log replayer pod state and recent logs before a CDC wait times out."""
+    commands = [
+        ["get", "pods", "-l", REPLAYER_LABEL_SELECTOR, "-n", namespace, "-o", "wide"],
+        ["describe", "pods", "-l", REPLAYER_LABEL_SELECTOR, "-n", namespace],
+        ["logs", "-l", REPLAYER_LABEL_SELECTOR, "-n", namespace, "--tail=200"],
+        ["logs", "-l", REPLAYER_LABEL_SELECTOR, "-n", namespace, "--previous", "--tail=200"],
+    ]
+    for args in commands:
+        try:
+            result = subprocess.run(["kubectl", *args], capture_output=True, text=True, timeout=30)
+            command = "kubectl " + " ".join(args)
+            if result.stdout.strip():
+                logger.info("%s stdout:\n%s", command, result.stdout.strip())
+            if result.stderr.strip():
+                logger.info("%s stderr:\n%s", command, result.stderr.strip())
+        except Exception as e:
+            logger.info("Failed to collect replayer diagnostics for kubectl %s: %s", " ".join(args), e)
 
 
 def make_proxy_cluster(source_cluster):

@@ -6,7 +6,7 @@
 #   0006       Benchmark backfill (OpenSearch Benchmark)
 #   0010-0019  Snapshot-only tests (BYOS / externally managed snapshots)
 #   0021-0029  AOSS collection tests (search, time-series, vector)
-#   0030-0039  CDC tests (capture proxy + replayer + live traffic)
+#   0031-0039  CDC tests (capture proxy + replayer + live traffic)
 #   0040-0049  CDC full E2E tests (capture proxy + replayer + backfill + generate-data)
 #
 import json
@@ -27,6 +27,7 @@ from .test_cases.cdc_tests import *
 from .test_cases.cdc_generate_data_tests import *
 from .test_cases.cdc_mixed_operations_tests import *
 from .test_cases.cdc_simple_bulk_e2e_tests import *
+from .test_cases.mountable_transform_tests import *
 from .test_cases.cdc_aoss_tests import *
 from .test_cases.aoss_collection_tests import *
 from .test_cases.solr_tests import *
@@ -69,6 +70,10 @@ def pytest_addoption(parser):
                      help="Speedup factor for traffic replayer (default: 20)")
     parser.addoption("--observed_packet_timeout", type=int, default=30,
                      help="Observed packet connection timeout for traffic replayer (default: 30)")
+    parser.addoption("--transform_image_basic", action="store", default="",
+                     help="Digest-pinned transform image containing the basic transform fixture bank")
+    parser.addoption("--transform_image_sequence", action="store", default="",
+                     help="Digest-pinned transform image containing the sequence transform fixture bank")
 
 
 def pytest_configure(config):
@@ -101,11 +106,15 @@ def pytest_generate_tests(metafunc):
         image_registry_prefix = metafunc.config.getoption("image_registry_prefix")
         speedup_factor = metafunc.config.getoption("speedup_factor")
         observed_packet_timeout = metafunc.config.getoption("observed_packet_timeout")
+        transform_image_basic = metafunc.config.getoption("transform_image_basic")
+        transform_image_sequence = metafunc.config.getoption("transform_image_sequence")
         user_args = MATestUserArguments(source_version=source_version, target_version=target_version,
                                         target_type=target_type, unique_id=unique_id, reuse_clusters=reuse_clusters,
                                         image_registry_prefix=image_registry_prefix,
                                         speedup_factor=speedup_factor,
-                                        observed_packet_timeout=observed_packet_timeout)
+                                        observed_packet_timeout=observed_packet_timeout,
+                                        transform_image_basic=transform_image_basic,
+                                        transform_image_sequence=transform_image_sequence)
         test_cases_param = _generate_test_cases(user_args=user_args, test_ids_list=test_ids_list)
         metafunc.config.test_summary["expected"] = len(test_cases_param)
         if not test_cases_param and not test_ids_list:
@@ -178,17 +187,11 @@ def pytest_runtest_makereport(item, call):
 
 
 def pytest_sessionfinish(session, exitstatus):
-    # If no compatible tests were found, record it in the report as a skip (not a failure).
-    # Version pairs with zero compatible tests (e.g. OS_1.3 → OS_2.19) are expected —
-    # the outer test_runner.py uses the expected==0 field to handle this gracefully.
-    error = session.config.test_summary.get("error")
-    if error:
-        session.config.collected_data.append({
-            "name": "test_compatibility_check",
-            "description": error,
-            "result": "skipped",
-            "duration": 0.0,
-        })
+    # Version pairs with zero compatible tests (expected==0) surface via
+    # summary.expected only — the outer test_runner.py treats that as
+    # non-failure. We intentionally do NOT synthesise a pseudo-test entry
+    # here; it would appear as a new column in the cross-version matrix.
+    _ = session.config.test_summary.get("error")
 
     # Write test report file at end of test session
     unique_id = session.config.getoption("unique_id")
