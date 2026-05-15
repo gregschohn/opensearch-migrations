@@ -15,6 +15,7 @@ is packed into a single test that exercises:
   - Full doc-count equivalence + sampled document retrieval on the target
 """
 import logging
+import uuid
 
 import requests
 
@@ -52,7 +53,7 @@ class TestSolr0001SingleDocumentBackfill(MATestBase):
             allow_source_target_combinations=SOLR_ALLOW_COMBINATIONS,
         )
         # Normalize unique_id — Solr collection names cannot contain '-'.
-        self._suffix = self.unique_id.replace("-", "_").lower()
+        self._suffix = f"{self.unique_id}-{uuid.uuid4().hex[:4]}".replace("-", "_").lower()
 
         # Pre-existing 'dummy' collection (created by the cluster template at startup).
         self.dummy_collection = "dummy"
