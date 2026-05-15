@@ -39,7 +39,7 @@ import {MetadataMigration} from "./metadataMigration";
 import {CreateOrGetSnapshot} from "./createOrGetSnapshot";
 import {ResourceManagement} from "./resourceManagement";
 
-import {CommonWorkflowParameters} from "./commonUtils/workflowParameters";
+import {CommonWorkflowParameters, workflowScriptPath} from "./commonUtils/workflowParameters";
 import {ImageParameters, LogicalOciImages, makeRequiredImageParametersForKeys} from "./commonUtils/imageDefinitions";
 import {SetupKafka} from "./setupKafka";
 import {SetupCapture} from "./setupCapture";
@@ -107,16 +107,12 @@ export const FullMigration = WorkflowBuilder.create({
             .addImageInfo(b.inputs.imageMigrationConsoleLocation, b.inputs.imageMigrationConsolePullPolicy)
             .addResources(DEFAULT_RESOURCES.SHELL_MIGRATION_CONSOLE_CLI)
             .addCommand(["/bin/bash", "-lc"])
-            .addArgs([`
-set -euo pipefail
-
-selector='migrations.opensearch.org/workflow={{workflow.name}}'
-patch='{"metadata":{"ownerReferences":[{"apiVersion":"argoproj.io/v1alpha1","kind":"Workflow","name":"{{workflow.name}}","uid":"{{workflow.uid}}"}]}}'
-
-kubectl get approvalgates.migrations.opensearch.org -l "$selector" -o name \\
-  | xargs -r -n 1 kubectl patch --type merge -p "$patch" \\
-  || { echo "ERROR: failed to patch one or more approvalgate ownerReferences" >&2; exit 1; }
-`])
+            .addEnvVar("WORKFLOW_NAME", expr.getWorkflowValue("name"))
+            .addEnvVar("WORKFLOW_UID", expr.getWorkflowValue("uid"))
+            .addArgs([expr.concat(
+                expr.literal("exec "),
+                workflowScriptPath(t.inputs.workflowParameters.workflowScriptsRoot, "addApprovalGateOwnerReferences.sh")
+            )])
         )
         .addRetryParameters(CONTAINER_TEMPLATE_RETRY_STRATEGY)
     )
@@ -128,11 +124,11 @@ kubectl get approvalgates.migrations.opensearch.org -l "$selector" -o name \\
             .addImageInfo(b.inputs.imageMigrationConsoleLocation, b.inputs.imageMigrationConsolePullPolicy)
             .addResources(DEFAULT_RESOURCES.SHELL_MIGRATION_CONSOLE_CLI)
             .addCommand(["/bin/bash", "-lc"])
-            .addArgs([`
-kubectl delete approvalgates.migrations.opensearch.org \\
-  -l "migrations.opensearch.org/workflow={{workflow.name}}" \\
-  --ignore-not-found
-`])
+            .addEnvVar("WORKFLOW_NAME", expr.getWorkflowValue("name"))
+            .addArgs([expr.concat(
+                expr.literal("exec "),
+                workflowScriptPath(t.inputs.workflowParameters.workflowScriptsRoot, "cleanupApprovalGates.sh")
+            )])
         )
         .addRetryParameters(CONTAINER_TEMPLATE_RETRY_STRATEGY)
     )

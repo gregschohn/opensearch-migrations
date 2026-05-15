@@ -22,6 +22,10 @@
         {
           "name": "approvalConfigMapName",
           "value": "approval-config"
+        },
+        {
+          "name": "workflowScriptsRoot",
+          "value": "/root/workflows/.workflowScripts"
         }
       ]
     },
@@ -135,7 +139,16 @@
           ]
         },
         "container": {
-          "env": [],
+          "env": [
+            {
+              "name": "WORKFLOW_NAME",
+              "value": "{{workflow.name}}"
+            },
+            {
+              "name": "WORKFLOW_UID",
+              "value": "{{workflow.uid}}"
+            }
+          ],
           "image": "{{inputs.parameters.imageMigrationConsoleLocation}}",
           "imagePullPolicy": "{{inputs.parameters.imageMigrationConsolePullPolicy}}",
           "resources": {
@@ -153,7 +166,7 @@
             "-lc"
           ],
           "args": [
-            "\nset -euo pipefail\n\nselector='migrations.opensearch.org/workflow={{workflow.name}}'\npatch='{\"metadata\":{\"ownerReferences\":[{\"apiVersion\":\"argoproj.io/v1alpha1\",\"kind\":\"Workflow\",\"name\":\"{{workflow.name}}\",\"uid\":\"{{workflow.uid}}\"}]}}'\n\nkubectl get approvalgates.migrations.opensearch.org -l \"$selector\" -o name \\\n  | xargs -r -n 1 kubectl patch --type merge -p \"$patch\" \\\n  || { echo \"ERROR: failed to patch one or more approvalgate ownerReferences\" >&2; exit 1; }\n"
+            "{{='exec '+workflow.parameters.workflowScriptsRoot+'/addApprovalGateOwnerReferences.sh'}}"
           ]
         },
         "metadata": {
@@ -271,7 +284,12 @@
           ]
         },
         "container": {
-          "env": [],
+          "env": [
+            {
+              "name": "WORKFLOW_NAME",
+              "value": "{{workflow.name}}"
+            }
+          ],
           "image": "{{inputs.parameters.imageMigrationConsoleLocation}}",
           "imagePullPolicy": "{{inputs.parameters.imageMigrationConsolePullPolicy}}",
           "resources": {
@@ -289,7 +307,7 @@
             "-lc"
           ],
           "args": [
-            "\nkubectl delete approvalgates.migrations.opensearch.org \\\n  -l \"migrations.opensearch.org/workflow={{workflow.name}}\" \\\n  --ignore-not-found\n"
+            "{{='exec '+workflow.parameters.workflowScriptsRoot+'/cleanupApprovalGates.sh'}}"
           ]
         },
         "metadata": {
