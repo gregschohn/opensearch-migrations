@@ -226,8 +226,8 @@ exports[`test schemas matches expected argo schema matches expected 1`] = `
                     },
                     "version": {
                       "type": "string",
-                      "pattern": "^(?:ES [125678]|OS [123]|SOLR [89])(?:\\\\.[0-9]+)+$",
-                      "description": "Cluster version string in '<ENGINE> <VERSION>' format. Supported engines: 'ES' (Elasticsearch) versions 1, 2, 5, 6, 7, 8; 'OS' (OpenSearch) versions 1, 2, 3; 'SOLR' (Apache Solr) versions 8, 9. Examples: 'ES 7.10.2', 'OS 2.11.0', 'SOLR 9.7.0'."
+                      "pattern": "^(?:ES [125678]|OS [123]|SOLR [6789])(?:\\\\.[0-9]+)+$",
+                      "description": "Cluster version string in '<ENGINE> <VERSION>' format. Supported engines: 'ES' (Elasticsearch) versions 1, 2, 5, 6, 7, 8; 'OS' (OpenSearch) versions 1, 2, 3; 'SOLR' (Apache Solr) versions 6, 7, 8, 9. Examples: 'ES 7.10.2', 'OS 2.11.0', 'SOLR 9.7.0', 'SOLR 6.6.6'."
                     },
                     "snapshotInfo": {
                       "type": "object",
@@ -1020,8 +1020,8 @@ exports[`test schemas matches expected argo schema matches expected 1`] = `
                     },
                     "version": {
                       "type": "string",
-                      "pattern": "^(?:ES [125678]|OS [123]|SOLR [89])(?:\\\\.[0-9]+)+$",
-                      "description": "Cluster version string in '<ENGINE> <VERSION>' format. Supported engines: 'ES' (Elasticsearch) versions 1, 2, 5, 6, 7, 8; 'OS' (OpenSearch) versions 1, 2, 3; 'SOLR' (Apache Solr) versions 8, 9. Examples: 'ES 7.10.2', 'OS 2.11.0', 'SOLR 9.7.0'."
+                      "pattern": "^(?:ES [125678]|OS [123]|SOLR [6789])(?:\\\\.[0-9]+)+$",
+                      "description": "Cluster version string in '<ENGINE> <VERSION>' format. Supported engines: 'ES' (Elasticsearch) versions 1, 2, 5, 6, 7, 8; 'OS' (OpenSearch) versions 1, 2, 3; 'SOLR' (Apache Solr) versions 6, 7, 8, 9. Examples: 'ES 7.10.2', 'OS 2.11.0', 'SOLR 9.7.0', 'SOLR 6.6.6'."
                     },
                     "label": {
                       "type": "string"
@@ -1184,6 +1184,15 @@ exports[`test schemas matches expected argo schema matches expected 1`] = `
                     "transformsImage": {
                       "type": "string",
                       "default": ""
+                    },
+                    "transformsImagePullPolicy": {
+                      "type": "string",
+                      "enum": [
+                        "Always",
+                        "Never",
+                        "IfNotPresent"
+                      ],
+                      "default": "IfNotPresent"
                     },
                     "transformsConfigMap": {
                       "type": "string",
@@ -1367,6 +1376,15 @@ exports[`test schemas matches expected argo schema matches expected 1`] = `
                     "transformsImage": {
                       "type": "string",
                       "default": ""
+                    },
+                    "transformsImagePullPolicy": {
+                      "type": "string",
+                      "enum": [
+                        "Always",
+                        "Never",
+                        "IfNotPresent"
+                      ],
+                      "default": "IfNotPresent"
                     },
                     "transformsConfigMap": {
                       "type": "string",
@@ -1927,6 +1945,15 @@ exports[`test schemas matches expected argo schema matches expected 1`] = `
                       "type": "string",
                       "default": ""
                     },
+                    "transformsImagePullPolicy": {
+                      "type": "string",
+                      "enum": [
+                        "Always",
+                        "Never",
+                        "IfNotPresent"
+                      ],
+                      "default": "IfNotPresent"
+                    },
                     "transformsConfigMap": {
                       "type": "string",
                       "default": ""
@@ -2233,24 +2260,38 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
             "properties": {
               "image": {
                 "type": "string",
+                "minLength": 1,
                 "description": "OCI image reference (preferably with digest) whose root contains transform files. The workflow mounts the image at /transforms/. Build with deployment/k8s/package-transforms.sh."
+              },
+              "pullPolicy": {
+                "type": "string",
+                "enum": [
+                  "Always",
+                  "Never",
+                  "IfNotPresent"
+                ],
+                "default": "IfNotPresent",
+                "description": "Kubernetes image pull policy for the transforms image. Use 'Always' for mutable tags like 'latest'; leave as 'IfNotPresent' for immutable tags or digests."
               }
             },
             "required": [
               "image"
-            ]
+            ],
+            "additionalProperties": false
           },
           {
             "type": "object",
             "properties": {
               "configMap": {
                 "type": "string",
+                "minLength": 1,
                 "description": "Name of a pre-existing Kubernetes ConfigMap. Each key becomes a file in /transforms/."
               }
             },
             "required": [
               "configMap"
-            ]
+            ],
+            "additionalProperties": false
           }
         ],
         "description": "Source for user-defined transform files. Exactly one of 'image' or 'configMap'."
@@ -2355,8 +2396,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
           },
           "version": {
             "type": "string",
-            "pattern": "^(?:ES [125678]|OS [123]|SOLR [89])(?:\\\\.[0-9]+)+$",
-            "description": "Cluster version string in '<ENGINE> <VERSION>' format. Supported engines: 'ES' (Elasticsearch) versions 1, 2, 5, 6, 7, 8; 'OS' (OpenSearch) versions 1, 2, 3; 'SOLR' (Apache Solr) versions 8, 9. Examples: 'ES 7.10.2', 'OS 2.11.0', 'SOLR 9.7.0'."
+            "pattern": "^(?:ES [125678]|OS [123]|SOLR [6789])(?:\\\\.[0-9]+)+$",
+            "description": "Cluster version string in '<ENGINE> <VERSION>' format. Supported engines: 'ES' (Elasticsearch) versions 1, 2, 5, 6, 7, 8; 'OS' (OpenSearch) versions 1, 2, 3; 'SOLR' (Apache Solr) versions 6, 7, 8, 9. Examples: 'ES 7.10.2', 'OS 2.11.0', 'SOLR 9.7.0', 'SOLR 6.6.6'."
           },
           "snapshotInfo": {
             "type": "object",
@@ -2660,6 +2701,7 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                       },
                       "transformsSource": {
                         "type": "string",
+                        "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$",
                         "description": "Key into top-level transformsSources. Mounts /transforms/ into the metadata migration pod.",
                         "checksumFor": [
                           "snapshot",
@@ -2887,6 +2929,7 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                       },
                       "transformsSource": {
                         "type": "string",
+                        "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$",
                         "description": "Key into top-level transformsSources. Mounts /transforms/ into the RFS pod.",
                         "checksumFor": [
                           "replayer"
@@ -3496,7 +3539,7 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                   "useLocalStack": {
                     "type": "boolean",
                     "default": false,
-                    "description": "Mount local test AWS credentials for LocalStack-backed tuple S3 output. This is a workflow-only testing option and is not passed to the replayer process."
+                    "description": "[Internal] Mount local test AWS credentials for LocalStack-backed tuple S3 output. Workflow-only testing hook; not passed to the replayer process and not intended for production use."
                   },
                   "resources": {
                     "type": "object",
@@ -3561,6 +3604,7 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                   },
                   "transformsSource": {
                     "type": "string",
+                    "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$",
                     "description": "Key into top-level transformsSources. Mounts /transforms/ into the replayer pod.",
                     "changeRestriction": "impossible"
                   },

@@ -197,6 +197,7 @@ describe('MigrationConfigTransformer validation', () => {
         const snapshotMigration = result.snapshotMigrations[0];
         expect(snapshotMigration.metadataMigrationConfig).toMatchObject({
             transformsImage: "example.com/transforms@sha256:abc123",
+            transformsImagePullPolicy: "IfNotPresent",
             transformsConfigMap: ""
         });
         expect(JSON.parse(snapshotMigration.metadataMigrationConfig!.transformerConfig!)).toEqual([
@@ -209,6 +210,7 @@ describe('MigrationConfigTransformer validation', () => {
         ]);
         expect(snapshotMigration.documentBackfillConfig).toMatchObject({
             transformsImage: "example.com/transforms@sha256:abc123",
+            transformsImagePullPolicy: "IfNotPresent",
             transformsConfigMap: ""
         });
         expect(JSON.parse(snapshotMigration.documentBackfillConfig!.docTransformerConfig!)).toEqual([
@@ -223,6 +225,7 @@ describe('MigrationConfigTransformer validation', () => {
         const replayerConfig = result.trafficReplays[0].replayerConfig;
         expect(replayerConfig).toMatchObject({
             transformsImage: "example.com/transforms@sha256:abc123",
+            transformsImagePullPolicy: "IfNotPresent",
             transformsConfigMap: ""
         });
         expect(JSON.parse(replayerConfig.transformerConfig!)).toEqual([

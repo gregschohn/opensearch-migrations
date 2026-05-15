@@ -1200,10 +1200,6 @@
                     "value": "{{inputs.parameters.checksumForReplayer}}"
                   },
                   {
-                    "name": "sourceEndpoint",
-                    "value": "{{inputs.parameters.sourceEndpoint}}"
-                  },
-                  {
                     "name": "imageReindexFromSnapshotLocation",
                     "value": "{{inputs.parameters.imageReindexFromSnapshotLocation}}"
                   },
