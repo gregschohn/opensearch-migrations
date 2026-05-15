@@ -571,6 +571,34 @@ def _handle_resource_show(ctx, namespace: str, resource_name_arg: str, task: Opt
     _show_current_resource_outputs(ctx, resource_name, output_name, refs, clean)
 
 
+def _list_all_show_targets_or_exit(ctx, namespace: str) -> None:
+    try:
+        load_k8s_config()
+        _list_show_targets(namespace, None)
+    except Exception as e:
+        click.echo(f"Error listing workflow outputs: {e}", err=True)
+        ctx.exit(1)
+
+
+def _handle_show_without_resource(ctx, list_resources: bool, all_resources: bool,
+                                  history: bool, run_selector: Optional[str],
+                                  clean: bool, namespace: str) -> None:
+    if all_resources and list_resources:
+        _exit_with_help(ctx, "Error: specify only one of --list or --all.")
+        return
+    if all_resources and (history or run_selector):
+        _exit_with_help(ctx, "Error: --all shows current artifacts and cannot be used with --history or --run.")
+        return
+    if all_resources:
+        if _load_k8s_config_or_exit(ctx):
+            _show_all_current_outputs(ctx, namespace, clean=clean)
+        return
+    if list_resources:
+        _list_all_show_targets_or_exit(ctx, namespace)
+        return
+    click.echo(ctx.get_help())
+
+
 @click.command(name="show")
 @click.option('--list', 'list_resources', is_flag=True, default=False,
               help='List available migration resources and exit')
@@ -602,26 +630,9 @@ def show_command(ctx, list_resources, all_resources, history, run_selector, clea
       workflow show migratemetadata snapshotmigration.migration-0
     """
     if resource_name is None:
-        if all_resources and list_resources:
-            _exit_with_help(ctx, "Error: specify only one of --list or --all.")
-            return
-        if all_resources and (history or run_selector):
-            _exit_with_help(ctx, "Error: --all shows current artifacts and cannot be used with --history or --run.")
-            return
-        if all_resources:
-            if not _load_k8s_config_or_exit(ctx):
-                return
-            _show_all_current_outputs(ctx, namespace, clean=clean)
-            return
-        if list_resources:
-            try:
-                load_k8s_config()
-                _list_show_targets(namespace, None)
-            except Exception as e:
-                click.echo(f"Error listing workflow outputs: {e}", err=True)
-                ctx.exit(1)
-            return
-        click.echo(ctx.get_help())
+        _handle_show_without_resource(
+            ctx, list_resources, all_resources, history, run_selector, clean, namespace
+        )
         return
 
     if all_resources:

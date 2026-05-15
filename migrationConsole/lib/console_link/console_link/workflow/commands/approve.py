@@ -554,12 +554,13 @@ def _complete_names(category):
         # Offer display names (without the .vapretry suffix) for tab completion.
         for gate in gates:
             display_name = _display_name(gate)
-            if (
-                not display_name.startswith(incomplete)
-                or display_name in selected_names
-                or gate.name in selected_names
-                or display_name in offered_names
-            ):
+            skip_gate = any((
+                not display_name.startswith(incomplete),
+                display_name in selected_names,
+                gate.name in selected_names,
+                display_name in offered_names,
+            ))
+            if skip_gate:
                 continue
             completions.append(CompletionItem(display_name))
             offered_names.add(display_name)
