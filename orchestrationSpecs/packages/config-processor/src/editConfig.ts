@@ -1,18 +1,26 @@
 import {
     CLUSTER_CONFIG,
+    CLUSTER_VERSION_STRING,
     CAPTURE_CONFIG,
+    FieldMeta,
+    HTTP_ENDPOINT_PATTERN,
     HTTP_AUTH_BASIC,
     HTTP_AUTH_MTLS,
     HTTP_AUTH_SIGV4,
+    K8S_NAMING_PATTERN,
     KAFKA_CLUSTER_CONFIG,
     KAFKA_CLUSTERS_MAP,
     NORMALIZED_PARAMETERIZED_MIGRATION_CONFIG,
+    OPTIONAL_HTTP_ENDPOINT_PATTERN,
+    OVERALL_MIGRATION_CONFIG,
     REPLAYER_CONFIG,
     SOURCE_CLUSTER_CONFIG,
     SOURCE_CLUSTERS_MAP,
     TARGET_CLUSTER_CONFIG,
     TARGET_CLUSTERS_MAP,
     TRAFFIC_CONFIG,
+    UiHint,
+    UiTextFormat,
 } from "@opensearch-migrations/schemas";
 import {z} from "zod";
 import {stringify} from "yaml";
@@ -37,6 +45,19 @@ export interface EditDiagnostic {
     path?: string[];
 }
 
+export interface EditNodeValidation {
+    pattern?: string;
+    message?: string;
+}
+
+export type EditInputHint = UiHint & {
+    options?: {
+        label: string;
+        value: string;
+        description?: string;
+    }[];
+};
+
 export interface EditNode {
     id: string;
     path: string[];
@@ -55,6 +76,8 @@ export interface EditNode {
         gated?: number;
         blocked?: number;
     };
+    inputHint?: EditInputHint;
+    validation?: EditNodeValidation;
     diagnostics?: EditDiagnostic[];
     variants?: {
         label: string;
@@ -82,6 +105,7 @@ export interface EditStateV1 {
     validation: {
         valid: boolean;
         errors: string[];
+        diagnostics?: EditDiagnostic[];
     };
 }
 
@@ -97,6 +121,14 @@ export interface EditApplyResultV1 {
 }
 
 type StatusCounts = NonNullable<EditNode["statusCounts"]>;
+type EditOption = NonNullable<EditInputHint["options"]>[number];
+
+interface EditContext {
+    sourceOptions: EditOption[];
+    targetOptions: EditOption[];
+    kafkaOptions: EditOption[];
+    proxyOptions: EditOption[];
+}
 
 const STATUS_RANK: Record<EditNodeStatus, number> = {
     blocked: 6,
@@ -120,9 +152,129 @@ const CAPTURE_DESCRIPTION = descriptionOf(CAPTURE_CONFIG);
 const REPLAYER_DESCRIPTION = descriptionOf(REPLAYER_CONFIG);
 const SNAPSHOT_MIGRATION_DESCRIPTION = descriptionOf(NORMALIZED_PARAMETERIZED_MIGRATION_CONFIG);
 const AUTH_DESCRIPTION = "Authentication configuration for connecting to the cluster. Supports HTTP Basic (Kubernetes Secret), AWS SigV4, or mutual TLS.";
+const VERSION_INPUT_HINT = uiHintOf(CLUSTER_VERSION_STRING) ?? {
+    kind: "text" as const,
+    format: "cluster-version" as const,
+    pattern: "^(?:ES [125678]|OS [123]|SOLR [6789])(?:\\.[0-9]+)+$",
+    message: "Use '<ENGINE> <VERSION>', such as 'ES 7.10.2', 'OS 2.11.0', or 'SOLR 9.7.0'.",
+};
+const K8S_NAME_INPUT_HINT: EditInputHint = {
+    kind: "text",
+    format: "k8s-name",
+    pattern: K8S_NAMING_PATTERN.source,
+    message: "Use a valid Kubernetes DNS name: lowercase letters, numbers, '-' or '.', starting and ending with an alphanumeric character.",
+};
+const SOURCE_ENDPOINT_HINT = uiHintAt(CLUSTER_CONFIG, ["endpoint"]) ?? textHint(OPTIONAL_HTTP_ENDPOINT_PATTERN, "Leave empty or use an http:// or https:// endpoint with an optional port and trailing slash.", "optional-http-endpoint");
+const TARGET_ENDPOINT_HINT = uiHintAt(TARGET_CLUSTER_CONFIG, ["endpoint"]) ?? textHint(HTTP_ENDPOINT_PATTERN, "Use an http:// or https:// endpoint with an optional port and trailing slash.", "http-endpoint");
+const BASIC_SECRET_NAME_HINT = uiHintAt(HTTP_AUTH_BASIC, ["basic", "secretName"]) ?? K8S_NAME_INPUT_HINT;
+const CAPTURE_SOURCE_HINT = uiHintAt(CAPTURE_CONFIG, ["source"]);
+const CAPTURE_KAFKA_HINT = uiHintAt(CAPTURE_CONFIG, ["kafka"]);
+const CAPTURE_KAFKA_TOPIC_HINT = uiHintAt(CAPTURE_CONFIG, ["kafkaTopic"]) ?? K8S_NAME_INPUT_HINT;
+const REPLAYER_PROXY_HINT = uiHintAt(REPLAYER_CONFIG, ["fromProxy"]);
+const REPLAYER_TARGET_HINT = uiHintAt(REPLAYER_CONFIG, ["toTarget"]);
+const SNAPSHOT_SOURCE_HINT = uiHintAt(NORMALIZED_PARAMETERIZED_MIGRATION_CONFIG, ["fromSource"]);
+const SNAPSHOT_TARGET_HINT = uiHintAt(NORMALIZED_PARAMETERIZED_MIGRATION_CONFIG, ["toTarget"]);
+const KAFKA_RECORD_HINT = uiHintOf(KAFKA_CLUSTERS_MAP);
+const SOURCE_RECORD_HINT = uiHintOf(SOURCE_CLUSTERS_MAP);
+const TARGET_RECORD_HINT = uiHintOf(TARGET_CLUSTERS_MAP);
+const TRAFFIC_PROXIES_RECORD_HINT = uiHintAt(TRAFFIC_CONFIG, ["proxies"]);
+const TRAFFIC_REPLAYERS_RECORD_HINT = uiHintAt(TRAFFIC_CONFIG, ["replayers"]);
+const SNAPSHOT_MIGRATION_ARRAY_HINT = uiHintAt(OVERALL_MIGRATION_CONFIG, ["snapshotMigrationConfigs"]) ?? {
+    kind: "array" as const,
+    addLabel: "snapshot migration",
+};
 
 function descriptionOf(schema: {description?: string}): string | undefined {
     return schema.description;
+}
+
+function unwrapSchema(schema: any): any {
+    if (schema && typeof schema.unwrap === "function") {
+        return unwrapSchema(schema.unwrap());
+    }
+    if (schema && typeof schema.removeDefault === "function") {
+        return unwrapSchema(schema.removeDefault());
+    }
+    return schema;
+}
+
+function uiHintOf(schema: any): EditInputHint | undefined {
+    const direct = schema?.meta?.() as FieldMeta | undefined;
+    const unwrapped = unwrapSchema(schema);
+    const inner = unwrapped === schema ? undefined : unwrapped?.meta?.() as FieldMeta | undefined;
+    const hint = direct?.uiHint ?? inner?.uiHint;
+    return hint ? {...hint} as EditInputHint : undefined;
+}
+
+function uiHintAt(schema: any, path: string[]): EditInputHint | undefined {
+    let current = schema;
+    for (const part of path) {
+        const unwrapped = unwrapSchema(current);
+        current = unwrapped?.shape?.[part];
+        if (!current) {
+            return undefined;
+        }
+    }
+    return uiHintOf(current);
+}
+
+function textHint(pattern: string, message: string, format?: UiTextFormat): EditInputHint {
+    return {
+        kind: "text",
+        format,
+        pattern,
+        message,
+    };
+}
+
+function validationFromHint(inputHint?: EditInputHint): EditNodeValidation | undefined {
+    if (!inputHint) {
+        return undefined;
+    }
+    if (inputHint.kind === "text" && inputHint.pattern) {
+        return {
+            pattern: inputHint.pattern,
+            message: inputHint.message,
+        };
+    }
+    return undefined;
+}
+
+function optionsFromRecord(record: Record<string, unknown> | undefined): EditOption[] {
+    return Object.keys(record ?? {})
+        .sort((a, b) => a.localeCompare(b))
+        .map(name => ({label: name, value: name}));
+}
+
+function buildEditContext(config: any): EditContext {
+    return {
+        sourceOptions: optionsFromRecord(config?.sourceClusters),
+        targetOptions: optionsFromRecord(config?.targetClusters),
+        kafkaOptions: optionsFromRecord(config?.kafkaClusterConfiguration),
+        proxyOptions: optionsFromRecord(config?.traffic?.proxies),
+    };
+}
+
+function referenceHint(baseHint: EditInputHint | undefined, options: EditInputHint["options"]): EditInputHint | undefined {
+    if (!baseHint) {
+        return undefined;
+    }
+    return {
+        ...baseHint,
+        options,
+    };
+}
+
+function recordKeyHint(recordHint: EditInputHint | undefined): EditInputHint | undefined {
+    if (!recordHint || recordHint.kind !== "record") {
+        return undefined;
+    }
+    return {
+        kind: "text",
+        format: recordHint.keyFormat ?? "text",
+        pattern: recordHint.keyPattern,
+        message: recordHint.message,
+    };
 }
 
 function emptyCounts(): StatusCounts {
@@ -218,6 +370,90 @@ function finalizeNode(node: EditNode): EditNode {
     return node;
 }
 
+function stripBadge(label: string): string {
+    return label.replace(/^\[[^\]]+\]\s*/, "");
+}
+
+function refreshNodeBadge(node: EditNode): void {
+    node.label = `${badge(node.status ?? "ok", node.statusCounts ?? {})} ${stripBadge(node.label)}`;
+}
+
+function samePath(left: unknown[] = [], right: unknown[] = []): boolean {
+    return left.length === right.length && left.every((part, index) => String(part) === String(right[index]));
+}
+
+function pathStartsWith(path: string[], prefix: string[]): boolean {
+    return prefix.length <= path.length && prefix.every((part, index) => part === path[index]);
+}
+
+function findPathAncestors(nodes: EditNode[], path: string[]): EditNode[] {
+    const ancestors: EditNode[] = [];
+    const stack = [...nodes];
+    while (stack.length) {
+        const node = stack.pop()!;
+        if (pathStartsWith(path, node.path)) {
+            ancestors.push(node);
+            stack.push(...(node.children ?? []));
+        }
+    }
+    ancestors.sort((left, right) => left.path.length - right.path.length);
+    return ancestors;
+}
+
+function addDiagnosticIfNew(node: EditNode, diagnostic: EditDiagnostic): boolean {
+    const existing = node.diagnostics ?? [];
+    const isDuplicate = existing.some(item =>
+        item.message === diagnostic.message && samePath(item.path, diagnostic.path)
+    );
+    if (isDuplicate) {
+        return false;
+    }
+    node.diagnostics = [...existing, diagnostic];
+    return true;
+}
+
+function isMissingRequiredValue(node: EditNode): boolean {
+    return node.required === true && (node.value === undefined || node.value === null || node.value === "");
+}
+
+function severityForDiagnosticNode(diagnostic: EditDiagnostic, target: EditNode): EditDiagnostic["severity"] {
+    if (diagnostic.severity === "error" && (
+        isMissingRequiredValue(target) || Boolean(target.statusCounts?.required)
+    )) {
+        return "required";
+    }
+    return diagnostic.severity;
+}
+
+function applyValidationDiagnostics(nodes: EditNode[], diagnostics: EditDiagnostic[]): void {
+    for (const diagnostic of diagnostics) {
+        const path = diagnostic.path ?? [];
+        const ancestors = findPathAncestors(nodes, path);
+        if (!ancestors.length) {
+            continue;
+        }
+        const target = ancestors[ancestors.length - 1];
+        const severity = severityForDiagnosticNode(diagnostic, target);
+        const adjustedDiagnostic = {...diagnostic, severity};
+        if (!addDiagnosticIfNew(target, adjustedDiagnostic)) {
+            continue;
+        }
+        const alreadyRepresentedRequired = (
+            diagnostic.severity === "error"
+            && severity === "required"
+            && Boolean(target.statusCounts?.required)
+        );
+        for (const node of ancestors) {
+            node.statusCounts = node.statusCounts ?? emptyCounts();
+            if (!alreadyRepresentedRequired) {
+                addCount(node.statusCounts, severity);
+            }
+            node.status = highestStatus(node.status ?? "ok", severity);
+            refreshNodeBadge(node);
+        }
+    }
+}
+
 function highestStatus(a: EditNodeStatus, b: EditNodeStatus): EditNodeStatus {
     return STATUS_RANK[a] >= STATUS_RANK[b] ? a : b;
 }
@@ -227,21 +463,36 @@ function scalarNode(
     key: string,
     value: unknown,
     description: string,
-    required = false
+    required = false,
+    inputHint?: EditInputHint
 ): EditNode {
+    const validation = validationFromHint(inputHint);
     const missing = required && (value === undefined || value === null || value === "");
-    const diagnostics: EditDiagnostic[] = missing
-        ? [{severity: "required", message: `${key} is required.`, path}]
-        : [];
+    const present = value !== undefined && value !== null && value !== "";
+    const patternMismatch = !missing && present && validation?.pattern
+        ? !(new RegExp(validation.pattern).test(String(value)))
+        : false;
+    const diagnostics: EditDiagnostic[] = [];
+    if (missing) {
+        diagnostics.push({severity: "required", message: `${key} is required.`, path});
+    } else if (patternMismatch) {
+        diagnostics.push({
+            severity: "error",
+            message: validation?.message ?? `${key} does not match the expected format.`,
+            path,
+        });
+    }
     return finalizeNode({
         id: `edit:${path.join(".")}`,
         path,
-        label: `${key}: ${value === undefined || value === null || value === "" ? "<required>" : String(value)}`,
+        label: `${key}: ${value === undefined || value === null || value === "" ? (required ? "<required>" : "<unset>") : String(value)}`,
         value,
         valueKind: typeof value === "boolean" ? "boolean" : "scalar",
         description,
         required,
-        status: missing ? "required" : "ok",
+        inputHint,
+        validation,
+        status: missing ? "required" : patternMismatch ? "error" : "ok",
         diagnostics,
     });
 }
@@ -283,7 +534,8 @@ function authChildren(path: string[], variant: ReturnType<typeof authVariant>, a
                 "secretName",
                 authConfig?.basic?.secretName,
                 "Name of a Kubernetes Secret containing 'username' and 'password' keys for HTTP Basic authentication.",
-                true
+                true,
+                BASIC_SECRET_NAME_HINT
             ),
         ];
     }
@@ -296,7 +548,7 @@ function authChildren(path: string[], variant: ReturnType<typeof authVariant>, a
     if (variant === "mtls") {
         return [
             scalarNode([...path, "mtls", "caCert"], "caCert", authConfig?.mtls?.caCert, "PEM-encoded CA certificate or path to CA certificate file for verifying the server's TLS certificate.", true),
-            scalarNode([...path, "mtls", "clientSecretName"], "clientSecretName", authConfig?.mtls?.clientSecretName, "Name of a Kubernetes TLS Secret containing the client certificate and private key for mutual TLS authentication.", true),
+            scalarNode([...path, "mtls", "clientSecretName"], "clientSecretName", authConfig?.mtls?.clientSecretName, "Name of a Kubernetes TLS Secret containing the client certificate and private key for mutual TLS authentication.", true, K8S_NAME_INPUT_HINT),
         ];
     }
     return [];
@@ -404,19 +656,20 @@ function kafkaGroupNode(config: Record<string, any> | undefined): EditNode {
     const children = Object.entries(config ?? {})
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([name, value]) => kafkaClusterNode(name, value));
-    children.push(addRow(path, "Kafka cluster", "Create a Kafka cluster configuration in pending workflow YAML."));
+    children.push(addRow(path, "Kafka cluster", "Create a Kafka cluster configuration in pending workflow YAML.", true, recordKeyHint(KAFKA_RECORD_HINT)));
     return finalizeNode({
         id: `edit:${path.join(".")}`,
         path,
         label: "Kafka Clusters",
         valueKind: "record",
         description: KAFKA_CLUSTERS_DESCRIPTION,
+        inputHint: KAFKA_RECORD_HINT,
         status: "ok",
         children,
     });
 }
 
-function captureProxyNode(name: string, value: any): EditNode {
+function captureProxyNode(name: string, value: any, ctx: EditContext): EditNode {
     const rootPath = ["traffic", "proxies", name];
     return finalizeNode({
         id: `edit:${rootPath.join(".")}`,
@@ -426,14 +679,14 @@ function captureProxyNode(name: string, value: any): EditNode {
         description: CAPTURE_DESCRIPTION,
         status: "ok",
         children: [
-            scalarNode([...rootPath, "source"], "source", value?.source, "Name of the source cluster this proxy sits in front of. Must match a key in sourceClusters.", true),
-            scalarNode([...rootPath, "kafka"], "kafka", value?.kafka ?? "default", "Label of the Kafka cluster to use for captured traffic. Must match a key in kafkaClusterConfiguration."),
-            scalarNode([...rootPath, "kafkaTopic"], "kafkaTopic", value?.kafkaTopic ?? "", "Kafka topic name for captured traffic. If empty, defaults to the proxy name."),
+            scalarNode([...rootPath, "source"], "source", value?.source, "Name of the source cluster this proxy sits in front of. Must match a key in sourceClusters.", true, referenceHint(CAPTURE_SOURCE_HINT, ctx.sourceOptions)),
+            scalarNode([...rootPath, "kafka"], "kafka", value?.kafka ?? "default", "Label of the Kafka cluster to use for captured traffic. Must match a key in kafkaClusterConfiguration.", false, referenceHint(CAPTURE_KAFKA_HINT, ctx.kafkaOptions)),
+            scalarNode([...rootPath, "kafkaTopic"], "kafkaTopic", value?.kafkaTopic ?? "", "Kafka topic name for captured traffic. If empty, defaults to the proxy name.", false, CAPTURE_KAFKA_TOPIC_HINT),
         ],
     });
 }
 
-function trafficReplayNode(name: string, value: any): EditNode {
+function trafficReplayNode(name: string, value: any, ctx: EditContext): EditNode {
     const rootPath = ["traffic", "replayers", name];
     return finalizeNode({
         id: `edit:${rootPath.join(".")}`,
@@ -443,22 +696,22 @@ function trafficReplayNode(name: string, value: any): EditNode {
         description: REPLAYER_DESCRIPTION,
         status: "ok",
         children: [
-            scalarNode([...rootPath, "fromProxy"], "fromProxy", value?.fromProxy, "Name of the capture proxy to replay traffic from. Must match a key in traffic.proxies.", true),
-            scalarNode([...rootPath, "toTarget"], "toTarget", value?.toTarget, "Name of the target cluster to replay traffic to. Must match a key in targetClusters.", true),
+            scalarNode([...rootPath, "fromProxy"], "fromProxy", value?.fromProxy, "Name of the capture proxy to replay traffic from. Must match a key in traffic.proxies.", true, referenceHint(REPLAYER_PROXY_HINT, ctx.proxyOptions)),
+            scalarNode([...rootPath, "toTarget"], "toTarget", value?.toTarget, "Name of the target cluster to replay traffic to. Must match a key in targetClusters.", true, referenceHint(REPLAYER_TARGET_HINT, ctx.targetOptions)),
         ],
     });
 }
 
-function trafficGroupNode(traffic: any): EditNode {
+function trafficGroupNode(traffic: any, ctx: EditContext): EditNode {
     const proxyChildren = Object.entries(traffic?.proxies ?? {})
         .sort(([a], [b]) => a.localeCompare(b))
-        .map(([name, value]) => captureProxyNode(name, value));
-    proxyChildren.push(addRow(["traffic", "proxies"], "capture proxy", "Create a capture proxy configuration in pending workflow YAML."));
+        .map(([name, value]) => captureProxyNode(name, value, ctx));
+    proxyChildren.push(addRow(["traffic", "proxies"], "capture proxy", "Create a capture proxy configuration in pending workflow YAML.", true, recordKeyHint(TRAFFIC_PROXIES_RECORD_HINT)));
 
     const replayChildren = Object.entries(traffic?.replayers ?? {})
         .sort(([a], [b]) => a.localeCompare(b))
-        .map(([name, value]) => trafficReplayNode(name, value));
-    replayChildren.push(addRow(["traffic", "replayers"], "traffic replay", "Create a traffic replay configuration in pending workflow YAML."));
+        .map(([name, value]) => trafficReplayNode(name, value, ctx));
+    replayChildren.push(addRow(["traffic", "replayers"], "traffic replay", "Create a traffic replay configuration in pending workflow YAML.", true, recordKeyHint(TRAFFIC_REPLAYERS_RECORD_HINT)));
 
     return finalizeNode({
         id: "edit:traffic",
@@ -474,6 +727,7 @@ function trafficGroupNode(traffic: any): EditNode {
                 label: "Capture",
                 valueKind: "record",
                 description: "Capture proxies that receive source traffic and write it to Kafka.",
+                inputHint: TRAFFIC_PROXIES_RECORD_HINT,
                 status: "ok",
                 children: proxyChildren,
             }),
@@ -483,6 +737,7 @@ function trafficGroupNode(traffic: any): EditNode {
                 label: "Replay",
                 valueKind: "record",
                 description: "Traffic replayers that consume captured traffic and replay it to targets.",
+                inputHint: TRAFFIC_REPLAYERS_RECORD_HINT,
                 status: "ok",
                 children: replayChildren,
             }),
@@ -490,7 +745,7 @@ function trafficGroupNode(traffic: any): EditNode {
     });
 }
 
-function snapshotMigrationNode(index: number, value: any): EditNode {
+function snapshotMigrationNode(index: number, value: any, ctx: EditContext): EditNode {
     const rootPath = ["snapshotMigrationConfigs", String(index)];
     const fromSource = value?.fromSource ?? "";
     const toTarget = value?.toTarget ?? "";
@@ -502,15 +757,15 @@ function snapshotMigrationNode(index: number, value: any): EditNode {
         description: SNAPSHOT_MIGRATION_DESCRIPTION,
         status: "ok",
         children: [
-            scalarNode([...rootPath, "fromSource"], "fromSource", fromSource, "Label of the source cluster to migrate from. Must match a key in sourceClusters.", true),
-            scalarNode([...rootPath, "toTarget"], "toTarget", toTarget, "Label of the target cluster to migrate to. Must match a key in targetClusters.", true),
+            scalarNode([...rootPath, "fromSource"], "fromSource", fromSource, "Label of the source cluster to migrate from. Must match a key in sourceClusters.", true, referenceHint(SNAPSHOT_SOURCE_HINT, ctx.sourceOptions)),
+            scalarNode([...rootPath, "toTarget"], "toTarget", toTarget, "Label of the target cluster to migrate to. Must match a key in targetClusters.", true, referenceHint(SNAPSHOT_TARGET_HINT, ctx.targetOptions)),
         ],
     });
 }
 
-function snapshotMigrationGroupNode(configs: any[] | undefined): EditNode {
+function snapshotMigrationGroupNode(configs: any[] | undefined, ctx: EditContext): EditNode {
     const path = ["snapshotMigrationConfigs"];
-    const children = (configs ?? []).map((value, index) => snapshotMigrationNode(index, value));
+    const children = (configs ?? []).map((value, index) => snapshotMigrationNode(index, value, ctx));
     children.push(addRow(path, "snapshot migration", "Create a snapshot migration configuration in pending workflow YAML.", false));
     return finalizeNode({
         id: `edit:${path.join(".")}`,
@@ -518,6 +773,7 @@ function snapshotMigrationGroupNode(configs: any[] | undefined): EditNode {
         label: "Snapshot Migrations",
         valueKind: "array",
         description: "List of snapshot-based migration configurations.",
+        inputHint: SNAPSHOT_MIGRATION_ARRAY_HINT,
         status: "ok",
         children,
     });
@@ -529,11 +785,12 @@ function clusterNode(kind: "source" | "target", name: string, value: any): EditN
         scalarNode([...rootPath, "endpoint"], "endpoint", value?.endpoint, kind === "target"
             ? "HTTP(S) endpoint URL for the target cluster (e.g. 'https://target-cluster:9200/'). Required for target clusters."
             : "HTTP(S) endpoint URL for the cluster (e.g. 'https://my-cluster:9200/'). Leave empty if the cluster is not directly accessible or will be accessed through a proxy.",
-        kind === "target"),
+        kind === "target",
+        kind === "target" ? TARGET_ENDPOINT_HINT : SOURCE_ENDPOINT_HINT),
         booleanNode([...rootPath, "allowInsecure"], "allowInsecure", value?.allowInsecure, "When true, disables TLS certificate verification when connecting to the cluster. Use only for development or self-signed certificates."),
     ];
     if (kind === "source") {
-        children.push(scalarNode([...rootPath, "version"], "version", value?.version, "Cluster version string in '<ENGINE> <VERSION>' format. Examples: 'ES 7.10.2', 'OS 2.11.0'.", true));
+        children.push(scalarNode([...rootPath, "version"], "version", value?.version, "Cluster version string in '<ENGINE> <VERSION>' format. Examples: 'ES 7.10.2', 'OS 2.11.0'.", true, VERSION_INPUT_HINT));
     }
     children.push(authNode([...rootPath, "authConfig"], value?.authConfig));
     if (kind === "source") {
@@ -552,13 +809,21 @@ function clusterNode(kind: "source" | "target", name: string, value: any): EditN
     });
 }
 
-function addRow(path: string[], label: string, description: string, requiresName = true): EditNode {
+function addRow(
+    path: string[],
+    label: string,
+    description: string,
+    requiresName = true,
+    inputHint?: EditInputHint
+): EditNode {
     return finalizeNode({
         id: `edit:${path.join(".")}:add`,
         path,
         label: `+ Add ${label}`,
         valueKind: "command",
         description,
+        inputHint,
+        validation: validationFromHint(inputHint),
         command: {requiresName},
         status: "ok",
     });
@@ -571,7 +836,9 @@ function clusterGroupNode(kind: "source" | "target", config: Record<string, any>
         .map(([name, value]) => clusterNode(kind, name, value));
     children.push(addRow(path, `${kind} cluster`, kind === "source"
         ? "Create a new source cluster entry in pending workflow YAML."
-        : "Create a new target cluster entry in pending workflow YAML."));
+        : "Create a new target cluster entry in pending workflow YAML.",
+        true,
+        recordKeyHint(kind === "source" ? SOURCE_RECORD_HINT : TARGET_RECORD_HINT)));
 
     return finalizeNode({
         id: `edit:${path.join(".")}`,
@@ -579,9 +846,29 @@ function clusterGroupNode(kind: "source" | "target", config: Record<string, any>
         label: kind === "source" ? "Source Clusters" : "Target Clusters",
         valueKind: "record",
         description: kind === "source" ? SOURCE_CLUSTERS_DESCRIPTION : TARGET_CLUSTERS_DESCRIPTION,
+        inputHint: kind === "source" ? SOURCE_RECORD_HINT : TARGET_RECORD_HINT,
         status: "ok",
         children,
     });
+}
+
+function diagnosticPath(path: PropertyKey[]): string[] {
+    return path.map(part => String(part));
+}
+
+function messageSeverity(message: string): EditDiagnostic["severity"] {
+    const lower = message.toLowerCase();
+    if (lower.includes("required") || lower.includes("received undefined")) {
+        return "required";
+    }
+    return "error";
+}
+
+function zodIssueSeverity(issue: z.core.$ZodIssue): EditDiagnostic["severity"] {
+    if (issue.code === "invalid_type" && (issue as any).input === undefined) {
+        return "required";
+    }
+    return messageSeverity(issue.message);
 }
 
 function validationForConfig(config: unknown): EditStateV1["validation"] {
@@ -590,16 +877,46 @@ function validationForConfig(config: unknown): EditStateV1["validation"] {
         return {valid: true, errors: []};
     } catch (error) {
         if (error instanceof InputValidationError) {
-            return {valid: false, errors: [formatInputValidationError(error)]};
+            return {
+                valid: false,
+                errors: [formatInputValidationError(error)],
+                diagnostics: error.errors.map(item => ({
+                    severity: messageSeverity(item.message),
+                    message: item.message,
+                    path: diagnosticPath(item.path),
+                })),
+            };
         }
         if (error instanceof z.ZodError) {
-            return {valid: false, errors: error.issues.map(issue => `${issue.path.join(".")}: ${issue.message}`)};
+            return {
+                valid: false,
+                errors: error.issues.map(issue => `${issue.path.join(".")}: ${issue.message}`),
+                diagnostics: error.issues.map(issue => ({
+                    severity: zodIssueSeverity(issue),
+                    message: issue.message,
+                    path: diagnosticPath(issue.path),
+                })),
+            };
         }
-        return {valid: false, errors: [String(error)]};
+        return {
+            valid: false,
+            errors: [String(error)],
+            diagnostics: [{severity: "error", message: String(error), path: []}],
+        };
     }
 }
 
 export function buildEditStateFromObject(config: any): EditStateV1 {
+    const ctx = buildEditContext(config);
+    const nodes = [
+        clusterGroupNode("source", config?.sourceClusters),
+        clusterGroupNode("target", config?.targetClusters),
+        kafkaGroupNode(config?.kafkaClusterConfiguration),
+        trafficGroupNode(config?.traffic, ctx),
+        snapshotMigrationGroupNode(config?.snapshotMigrationConfigs, ctx),
+    ];
+    const validation = validationForConfig(config);
+    applyValidationDiagnostics(nodes, validation.diagnostics ?? []);
     return {
         formatVersion: 1,
         provenance: {
@@ -607,17 +924,11 @@ export function buildEditStateFromObject(config: any): EditStateV1 {
             lossy: false,
             warnings: [],
         },
-        nodes: [
-            clusterGroupNode("source", config?.sourceClusters),
-            clusterGroupNode("target", config?.targetClusters),
-            kafkaGroupNode(config?.kafkaClusterConfiguration),
-            trafficGroupNode(config?.traffic),
-            snapshotMigrationGroupNode(config?.snapshotMigrationConfigs),
-        ],
+        nodes,
         pendingSubmitChanges: [],
         submittedRolloutChanges: [],
         policyPreview: [],
-        validation: validationForConfig(config),
+        validation,
     };
 }
 
