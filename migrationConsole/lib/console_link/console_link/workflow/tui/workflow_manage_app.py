@@ -16,6 +16,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Footer, Header, Static, Tree
 
 from .choice_select_modal import ChoiceSelectModal
+from .config_edit_exit_modal import ConfigEditExitModal
 from .confirm_modal import ConfirmModal
 from .container_select_modal import ContainerSelectModal
 from .config_edit_tree import (
@@ -57,6 +58,9 @@ PATCH_OUTPUT_STEPS = {
     "patchMetadataEvaluateOutput": ("snapshotmigrations", "metadataEvaluate"),
     "patchMetadataMigrateOutput": ("snapshotmigrations", "metadataMigrate"),
 }
+ENABLE_MOUSE_SEQUENCES = "\x1b[?1000h\x1b[?1003h\x1b[?1015h\x1b[?1006h"
+DISABLE_MOUSE_SEQUENCES = "\x1b[?1000l\x1b[?1003l\x1b[?1015l\x1b[?1006l\x1b[?1016l"
+DISABLE_MOUSE_PIXELS_SEQUENCE = "\x1b[?1016l"
 
 
 class WorkflowTreeApp(App):
@@ -100,6 +104,9 @@ class WorkflowTreeApp(App):
         self._edit_dirty = False
         self._edit_value_mode = EDIT_MODE_ALL
         self._edit_status_mode = EDIT_MODE_ALL
+        self._edit_show_optional = True
+        self._edit_show_expert = False
+        self._after_config_edit_save: Optional[str] = None
         self._resource_value_mode = EDIT_MODE_ALL
         self._resource_change_summary = {'pending': 0, 'to_submit': 0, 'resources': 0}
         self._last_resource_sections = None
@@ -109,6 +116,8 @@ class WorkflowTreeApp(App):
         self._edit_validation_generation = 0
         self._edit_validation_timer: Optional[Any] = None
         self._edit_validation_delay = 0.4
+        self._mouse_input_enabled = True
+        self._mouse_pixels_was_enabled = False
 
         # State Containers (Managers)
         self._pods = PodNameManager(self, pod_scraper, name, namespace)
@@ -143,6 +152,7 @@ class WorkflowTreeApp(App):
 
     def on_unmount(self) -> None:
         self.is_exiting = True
+        self._set_mouse_input_enabled(True, notify=False, update_bindings=False)
         try:
             self._workflow_waiter.reset()
         except Exception:
@@ -568,16 +578,19 @@ class WorkflowTreeApp(App):
             dirty = "dirty" if self._edit_dirty else "clean"
             value_mode = EDIT_MODE_LABELS.get(self._edit_value_mode, self._edit_value_mode)
             status_mode = EDIT_MODE_LABELS.get(self._edit_status_mode, self._edit_status_mode)
+            optional_state = "optional on" if self._edit_show_optional else "optional off"
+            expert_state = "expert on" if self._edit_show_expert else "expert off"
             if node:
                 status = node.get("status", "ok")
                 status_bar.update(
                     f"Config edit: [bold cyan]{status}[/]  [{dirty}]  "
-                    f"Values: {value_mode}  Status: {status_mode}  Ctrl+s saves, Esc exits"
+                    f"Values: {value_mode}  Status: {status_mode}  "
+                    f"{optional_state}, {expert_state}  s/Ctrl+s saves, Esc exits"
                 )
             else:
                 status_bar.update(
                     f"Config edit: [{dirty}]  Values: {value_mode}  "
-                    f"Status: {status_mode}  Ctrl+s saves, Esc exits"
+                    f"Status: {status_mode}  {optional_state}, {expert_state}  s/Ctrl+s saves, Esc exits"
                 )
             return
         if self._resource_view:
@@ -620,6 +633,11 @@ class WorkflowTreeApp(App):
         self.bind("ctrl+p", "command_palette", show=False)
         self.bind("r", "manual_refresh", description="Refresh")
         self.bind("q", "quit", description="Quit")
+        self.bind(
+            "m",
+            "toggle_mouse_input",
+            description="Mouse Off" if self._mouse_input_enabled else "Mouse On",
+        )
 
         if self._edit_mode:
             node = selected_edit_node(self.tree_root_widget)
@@ -629,6 +647,14 @@ class WorkflowTreeApp(App):
             self.bind("?", "show_config_edit_help", description="Help")
             self.bind("v", "cycle_config_value_mode", description="Value Mode")
             self.bind("t", "cycle_config_status_mode", description="Status Mode")
+            if self._edit_show_optional:
+                self.bind("o", "hide_config_optional_fields", description="Hide Optional")
+            else:
+                self.bind("O", "show_config_optional_fields", description="Show Optional")
+            if self._edit_show_expert:
+                self.bind("x", "hide_config_expert_fields", description="Hide Expert")
+            else:
+                self.bind("X", "show_config_expert_fields", description="Show Expert")
             self.bind("i", "edit_selected_config_node", show=False)
             self._bindings.bind(
                 "left",
@@ -688,6 +714,58 @@ class WorkflowTreeApp(App):
             self.bind("a", "approve_step", description="Approve")
         elif self._collect_managed_output_refs():
             self.bind("o", "view_output", description=DESC_SHOW_OUTPUT)
+
+    def action_toggle_mouse_input(self) -> None:
+        """Temporarily release or restore terminal mouse reporting."""
+        self._set_mouse_input_enabled(not self._mouse_input_enabled)
+
+    def _set_mouse_input_enabled(
+        self,
+        enabled: bool,
+        notify: bool = True,
+        update_bindings: bool = True,
+    ) -> None:
+        if enabled == self._mouse_input_enabled:
+            return
+        driver = getattr(self, "_driver", None)
+        if driver is not None:
+            if not enabled:
+                self.capture_mouse(None)
+                self._mouse_pixels_was_enabled = bool(getattr(driver, "_mouse_pixels", False))
+                self._write_mouse_reporting(driver, enabled=False)
+            else:
+                self._write_mouse_reporting(driver, enabled=True)
+                if self._mouse_pixels_was_enabled and hasattr(driver, "_enable_mouse_pixels"):
+                    driver._enable_mouse_pixels()
+                self._mouse_pixels_was_enabled = False
+
+        self._mouse_input_enabled = enabled
+        if notify:
+            if enabled:
+                self.notify("Mouse handling restored")
+            else:
+                self.notify("Mouse handling disabled; drag to select text, press m to restore")
+        if update_bindings:
+            self._update_dynamic_bindings()
+
+    @staticmethod
+    def _write_mouse_reporting(driver, enabled: bool) -> None:
+        method_name = "_enable_mouse_support" if enabled else "_disable_mouse_support"
+        method = getattr(driver, method_name, None)
+        if callable(method):
+            method()
+            if not enabled and callable(getattr(driver, "write", None)):
+                driver.write(DISABLE_MOUSE_PIXELS_SEQUENCE)
+                flush = getattr(driver, "flush", None)
+                if callable(flush):
+                    flush()
+            return
+        write = getattr(driver, "write", None)
+        if callable(write):
+            write(ENABLE_MOUSE_SEQUENCES if enabled else DISABLE_MOUSE_SEQUENCES)
+            flush = getattr(driver, "flush", None)
+            if callable(flush):
+                flush()
 
     def action_activate_selected_node(self) -> None:
         node = self.current_node_data
@@ -787,11 +865,15 @@ class WorkflowTreeApp(App):
         self._edit_dirty = False
         self._edit_value_mode = EDIT_MODE_ALL
         self._edit_status_mode = EDIT_MODE_ALL
+        self._edit_show_optional = True
+        self._edit_show_expert = False
         render_edit_state(
             self.tree_root_widget,
             edit_state,
             self._edit_value_mode,
             self._edit_status_mode,
+            self._edit_show_optional,
+            self._edit_show_expert,
         )
         help_panel = self.query_one("#edit-help", Static)
         help_panel.display = True
@@ -805,13 +887,12 @@ class WorkflowTreeApp(App):
             return
         if self._edit_dirty:
             self.push_screen(
-                ConfirmModal(
-                    "Discard unsaved config edits and leave the editor?",
-                    confirm_label="Discard",
-                    cancel_label="Return",
-                    default_confirm=False,
+                ConfigEditExitModal(
+                    "Leave config edit mode?",
+                    self._config_edit_exit_status_message(),
+                    default_action=self._default_config_edit_exit_action(),
                 ),
-                lambda confirmed: self._discard_config_edit() if confirmed else None,
+                lambda action: self._handle_config_edit_exit_choice(action, quit_after=False),
             )
             return
         self._discard_config_edit()
@@ -820,16 +901,42 @@ class WorkflowTreeApp(App):
         """Quit the app, confirming first if a config edit draft is dirty."""
         if self._edit_mode and self._edit_dirty:
             self.push_screen(
-                ConfirmModal(
-                    "Discard unsaved config edits and quit?",
-                    confirm_label="Discard and quit",
-                    cancel_label="Return",
-                    default_confirm=False,
+                ConfigEditExitModal(
+                    "Quit manage with unsaved config edits?",
+                    self._config_edit_exit_status_message(),
+                    default_action=self._default_config_edit_exit_action(),
+                    save_label="Save and quit",
+                    discard_label="Discard and quit",
                 ),
-                lambda confirmed: self.exit() if confirmed else None,
+                lambda action: self._handle_config_edit_exit_choice(action, quit_after=True),
             )
             return
         self.exit()
+
+    def _config_edit_exit_status_message(self) -> str:
+        validation = (self._edit_state or {}).get("validation") or {}
+        diagnostics = validation.get("diagnostics") or []
+        errors = validation.get("errors") or []
+        if validation.get("valid") is False or diagnostics or errors:
+            count = len(diagnostics) or len(errors) or 1
+            return f"Validation still reports {count} issue{'s' if count != 1 else ''}. You can save anyway, discard, or return."
+        return "No validation errors are currently reported. You can save, discard, or return."
+
+    def _default_config_edit_exit_action(self) -> str:
+        validation = (self._edit_state or {}).get("validation") or {}
+        if validation.get("valid") is False or validation.get("diagnostics") or validation.get("errors"):
+            return "return"
+        return "save"
+
+    def _handle_config_edit_exit_choice(self, action: Optional[str], quit_after: bool = False) -> None:
+        if action == "discard":
+            if quit_after:
+                self.exit()
+            else:
+                self._discard_config_edit()
+        elif action == "save":
+            self._after_config_edit_save = "quit" if quit_after else "exit"
+            self.action_save_config_edit()
 
     def _discard_config_edit(self) -> None:
         """Discard the current edit session and restore the live resource tree."""
@@ -839,6 +946,9 @@ class WorkflowTreeApp(App):
         self._edit_dirty = False
         self._edit_value_mode = EDIT_MODE_ALL
         self._edit_status_mode = EDIT_MODE_ALL
+        self._edit_show_optional = True
+        self._edit_show_expert = False
+        self._after_config_edit_save = None
         self._cancel_config_edit_validation()
         self.current_run_id = None
         self._expand_changed_resources_on_next_render = True
@@ -862,12 +972,22 @@ class WorkflowTreeApp(App):
             self.call_from_thread(self._handle_config_edit_saved, message)
         except Exception as e:
             logger.exception("Failed to save config edit draft")
-            self.call_from_thread(self.notify, f"Save failed: {e}", severity="error")
+            self.call_from_thread(self._handle_config_edit_save_failed, e)
 
     def _handle_config_edit_saved(self, message: str) -> None:
+        after_save = self._after_config_edit_save
+        self._after_config_edit_save = None
         self._edit_dirty = False
         self.update_pod_status()
         self.notify(message or "Configuration saved")
+        if after_save == "exit":
+            self._discard_config_edit()
+        elif after_save == "quit":
+            self.exit()
+
+    def _handle_config_edit_save_failed(self, error: Exception) -> None:
+        self._after_config_edit_save = None
+        self.notify(f"Save failed: {error}", severity="error")
 
     def action_show_config_edit_help(self) -> None:
         node = selected_edit_node(self.tree_root_widget)
@@ -885,6 +1005,22 @@ class WorkflowTreeApp(App):
 
     def action_cycle_config_status_mode(self) -> None:
         self._edit_status_mode = self._next_edit_mode(self._edit_status_mode)
+        self._rerender_config_edit_state()
+
+    def action_show_config_optional_fields(self) -> None:
+        self._edit_show_optional = True
+        self._rerender_config_edit_state()
+
+    def action_hide_config_optional_fields(self) -> None:
+        self._edit_show_optional = False
+        self._rerender_config_edit_state()
+
+    def action_show_config_expert_fields(self) -> None:
+        self._edit_show_expert = True
+        self._rerender_config_edit_state()
+
+    def action_hide_config_expert_fields(self) -> None:
+        self._edit_show_expert = False
         self._rerender_config_edit_state()
 
     @staticmethod
@@ -907,6 +1043,8 @@ class WorkflowTreeApp(App):
             self._edit_state,
             self._edit_value_mode,
             self._edit_status_mode,
+            self._edit_show_optional,
+            self._edit_show_expert,
         )
         if selected_id:
             self.call_after_refresh(lambda: self._restore_config_edit_selection(selected_id))
@@ -1059,12 +1197,30 @@ class WorkflowTreeApp(App):
     def _handle_scalar_config_value(self, node: Dict, value: Optional[Any]) -> None:
         if value is None:
             return
+        try:
+            value = self._coerce_config_scalar_value(node, value)
+        except ValueError as e:
+            self.notify(str(e), severity="error")
+            return
         self._cancel_config_edit_validation()
         self._apply_config_edit_operation({
             "op": "set",
             "path": node.get("path"),
             "value": value,
         }, selected_id=node.get("id"))
+
+    @staticmethod
+    def _coerce_config_scalar_value(node: Dict, value: Any) -> Any:
+        if node.get("valueType") != "number":
+            return value
+        text = str(value).strip()
+        if not text:
+            return value
+        try:
+            return float(text) if any(part in text.lower() for part in (".", "e")) else int(text)
+        except ValueError as e:
+            path = ".".join(str(part) for part in node.get("path", [])) or "value"
+            raise ValueError(f"{path} must be a number.") from e
 
     def _schedule_scalar_config_validation(
         self,
@@ -1094,10 +1250,15 @@ class WorkflowTreeApp(App):
     ) -> None:
         if generation != self._edit_validation_generation or self._edit_draft_yaml is None:
             return
+        try:
+            operation_value = self._coerce_config_scalar_value(node, value)
+        except ValueError as e:
+            modal.set_remote_validation(str(e), "error")
+            return
         operation = {
             "op": "set",
             "path": node.get("path"),
-            "value": value,
+            "value": operation_value,
         }
         raw_yaml = self._edit_draft_yaml or ""
         self.run_worker(
@@ -1301,6 +1462,8 @@ class WorkflowTreeApp(App):
             edit_state,
             self._edit_value_mode,
             self._edit_status_mode,
+            self._edit_show_optional,
+            self._edit_show_expert,
         )
         if selected_id:
             self.call_after_refresh(lambda: self._restore_config_edit_selection(selected_id))
@@ -1312,6 +1475,7 @@ class WorkflowTreeApp(App):
         self._select_tree_node_by_id(selected_id)
         self._update_edit_help()
         self.update_pod_status()
+        self._update_dynamic_bindings()
 
     def _select_tree_node_by_id(self, selected_id: str) -> None:
         stack = list(self.tree_root_widget.root.children)

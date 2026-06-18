@@ -1,4 +1,5 @@
 import {applyEditOperationToObject, buildEditStateFromObject, EditNode} from "../src/editConfig";
+import {USER_PROXY_PROCESS_OPTION_KEYS, USER_PROXY_WORKFLOW_OPTION_KEYS} from "@opensearch-migrations/schemas";
 import {parse} from "yaml";
 import {spawnSync} from "child_process";
 import path from "path";
@@ -399,6 +400,85 @@ describe("editConfig state", () => {
         });
     });
 
+    it("renders missing capture proxy options as visible required fields", () => {
+        const state = buildEditStateFromObject({
+            sourceClusters: {source: {endpoint: "", version: "ES 7.10.2"}},
+            targetClusters: {},
+            kafkaClusterConfiguration: {
+                default: {autoCreate: {}},
+            },
+            traffic: {
+                proxies: {
+                    cap: {source: "source"},
+                },
+                replayers: {},
+            },
+            snapshotMigrationConfigs: [],
+        });
+
+        const captureGroup = findNode(state.nodes, "edit:traffic.proxies");
+        const proxy = findNode(state.nodes, "edit:traffic.proxies.cap");
+        const proxyConfig = findNode(state.nodes, "edit:traffic.proxies.cap.proxyConfig");
+        const listenPort = findNode(state.nodes, "edit:traffic.proxies.cap.proxyConfig.listenPort");
+        const kafkaTopic = findNode(state.nodes, "edit:traffic.proxies.cap.kafkaTopic");
+        const podReplicas = findNode(state.nodes, "edit:traffic.proxies.cap.proxyConfig.podReplicas");
+        const serviceType = findNode(state.nodes, "edit:traffic.proxies.cap.proxyConfig.serviceType");
+        const tls = findNode(state.nodes, "edit:traffic.proxies.cap.proxyConfig.tls");
+        const setHeader = findNode(state.nodes, "edit:traffic.proxies.cap.proxyConfig.setHeader");
+        const addProxy = findNode(state.nodes, "edit:traffic.proxies:add");
+
+        const expectedOptionKeys = [
+            ...USER_PROXY_WORKFLOW_OPTION_KEYS,
+            ...USER_PROXY_PROCESS_OPTION_KEYS,
+        ].map(String);
+        for (const key of expectedOptionKeys) {
+            expect(findNode(state.nodes, `edit:traffic.proxies.cap.proxyConfig.${key}`)).toBeDefined();
+        }
+        expect(proxy?.status).toBe("required");
+        expect(proxy?.label).toContain("[REQ 1]");
+        expect(proxyConfig?.status).toBe("required");
+        expect(proxyConfig?.label).toContain("[REQ 1]");
+        expect(proxyConfig?.required).toBe(true);
+        expect(proxyConfig?.presence).toBe("required");
+        expect(listenPort?.status).toBe("required");
+        expect(listenPort?.presence).toBe("required");
+        expect(listenPort?.valueType).toBe("number");
+        expect(listenPort?.label).toContain("listenPort: <required>");
+        expect(podReplicas).toMatchObject({status: "ok", presence: "optional", expert: false, valueType: "number"});
+        expect(serviceType).toMatchObject({status: "ok", presence: "optional", expert: true});
+        expect(tls).toMatchObject({presence: "optional", valueKind: "object"});
+        expect(setHeader).toMatchObject({presence: "optional", valueKind: "array"});
+        expect(kafkaTopic?.status).toBe("ok");
+        expect(kafkaTopic?.label).toContain("kafkaTopic: <unset>");
+        expect(captureGroup?.label).toContain("[REQ 1]");
+        expect(addProxy?.status).toBe("ok");
+        expect(addProxy?.label).toContain("[OK] + Add capture proxy");
+    });
+
+    it("does not require replay config when traffic capture is configured alone", () => {
+        const state = buildEditStateFromObject({
+            sourceClusters: {source: {endpoint: "", version: "ES 7.10.2"}},
+            targetClusters: {},
+            traffic: {
+                proxies: {
+                    cap: {source: "source", proxyConfig: {listenPort: 9201}},
+                },
+            },
+            snapshotMigrationConfigs: [],
+        });
+
+        const traffic = findNode(state.nodes, "edit:traffic");
+        const replayGroup = findNode(state.nodes, "edit:traffic.replayers");
+        const addReplay = findNode(state.nodes, "edit:traffic.replayers:add");
+
+        expect(state.validation.valid).toBe(true);
+        expect(traffic?.status).toBe("ok");
+        expect(traffic?.label).not.toContain("[REQ");
+        expect(replayGroup?.status).toBe("ok");
+        expect(replayGroup?.label).not.toContain("[REQ");
+        expect(addReplay?.status).toBe("ok");
+    });
+
     it("adds/removes nested traffic resources and switches Kafka mode", () => {
         const config = {
             sourceClusters: {},
@@ -438,6 +518,7 @@ describe("editConfig state", () => {
 
         expect(existingKafka.yaml).toContain("existing: {}");
         expect(addedProxy.yaml).toContain("capture:");
+        expect(addedProxy.yaml).toContain("proxyConfig: {}");
         expect(addedS3Source.yaml).toContain("archive:");
         expect(addedReplayer.yaml).toContain("fromCapturedTraffic: \"\"");
         expect(removedProxy.yaml).not.toContain("capture:");

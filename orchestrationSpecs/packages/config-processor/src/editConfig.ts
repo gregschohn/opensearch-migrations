@@ -22,6 +22,11 @@ import {
     TRAFFIC_CONFIG,
     UiHint,
     UiTextFormat,
+    USER_PROXY_OPTIONS,
+    USER_PROXY_PROCESS_OPTION_KEYS,
+    USER_PROXY_WORKFLOW_OPTION_KEYS,
+    getDescription,
+    unwrapSchema as unwrapSchemaWithPipes,
 } from "@opensearch-migrations/schemas";
 import {z} from "zod";
 import {stringify} from "yaml";
@@ -64,7 +69,10 @@ export interface EditNode {
     path: string[];
     label: string;
     value?: unknown;
+    valueType?: "string" | "number" | "boolean";
     valueKind: EditNodeValueKind;
+    presence?: "required" | "optional";
+    expert?: boolean;
     description?: string;
     descriptionShort?: string;
     required?: boolean;
@@ -188,18 +196,12 @@ const SNAPSHOT_MIGRATION_ARRAY_HINT = uiHintAt(OVERALL_MIGRATION_CONFIG, ["snaps
     addLabel: "snapshot migration",
 };
 
-function descriptionOf(schema: {description?: string}): string | undefined {
-    return schema.description;
+function descriptionOf(schema: any): string | undefined {
+    return getDescription(schema) ?? schema?.description;
 }
 
 function unwrapSchema(schema: any): any {
-    if (schema && typeof schema.unwrap === "function") {
-        return unwrapSchema(schema.unwrap());
-    }
-    if (schema && typeof schema.removeDefault === "function") {
-        return unwrapSchema(schema.removeDefault());
-    }
-    return schema;
+    return schema ? unwrapSchemaWithPipes(schema) : schema;
 }
 
 function uiHintOf(schema: any): EditInputHint | undefined {
@@ -240,6 +242,57 @@ function validationFromHint(inputHint?: EditInputHint): EditNodeValidation | und
             pattern: inputHint.pattern,
             message: inputHint.message,
         };
+    }
+    return undefined;
+}
+
+function isRequiredSchema(schema: any): boolean {
+    const parsed = schema?.safeParse?.(undefined);
+    return parsed ? !parsed.success : false;
+}
+
+function defaultValueForSchema(schema: any): unknown {
+    const parsed = schema?.safeParse?.(undefined);
+    return parsed?.success ? parsed.data : undefined;
+}
+
+function schemaDescription(schema: any): string {
+    return descriptionOf(schema) ?? descriptionOf(unwrapSchema(schema)) ?? "";
+}
+
+function isExpertDescription(description: string): boolean {
+    return /^\s*\[Expert\]/i.test(description) || /^\s*Expert\b/i.test(description);
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+    return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function schemaConstructorName(schema: any): string {
+    return String(unwrapSchema(schema)?.constructor?.name ?? "");
+}
+
+function schemaScalarType(schema: any): EditNode["valueType"] | undefined {
+    const name = schemaConstructorName(schema);
+    if (name === "ZodNumber") {
+        return "number";
+    }
+    if (name === "ZodBoolean") {
+        return "boolean";
+    }
+    if (name === "ZodString" || name === "ZodEnum" || name === "ZodLiteral") {
+        return "string";
+    }
+    return undefined;
+}
+
+function schemaContainerKind(schema: any): "array" | "object" | undefined {
+    const name = schemaConstructorName(schema);
+    if (name === "ZodArray") {
+        return "array";
+    }
+    if (name === "ZodObject" || name === "ZodRecord" || name === "ZodUnion" || name === "ZodDiscriminatedUnion") {
+        return "object";
     }
     return undefined;
 }
@@ -406,6 +459,9 @@ function findPathAncestors(nodes: EditNode[], path: string[]): EditNode[] {
     const stack = [...nodes];
     while (stack.length) {
         const node = stack.pop()!;
+        if (node.valueKind === "command") {
+            continue;
+        }
         if (pathStartsWith(path, node.path)) {
             ancestors.push(node);
             stack.push(...(node.children ?? []));
@@ -453,11 +509,7 @@ function applyValidationDiagnostics(nodes: EditNode[], diagnostics: EditDiagnost
         if (!addDiagnosticIfNew(target, adjustedDiagnostic)) {
             continue;
         }
-        const alreadyRepresentedRequired = (
-            diagnostic.severity === "error"
-            && severity === "required"
-            && Boolean(target.statusCounts?.required)
-        );
+        const alreadyRepresentedRequired = severity === "required" && Boolean(target.statusCounts?.required);
         for (const node of ancestors) {
             node.statusCounts = node.statusCounts ?? emptyCounts();
             if (!alreadyRepresentedRequired) {
@@ -479,7 +531,10 @@ function scalarNode(
     value: unknown,
     description: string,
     required = false,
-    inputHint?: EditInputHint
+    inputHint?: EditInputHint,
+    valueType?: EditNode["valueType"],
+    expert = false,
+    presence: EditNode["presence"] = required ? "required" : "optional"
 ): EditNode {
     const validation = validationFromHint(inputHint);
     const missing = required && (value === undefined || value === null || value === "");
@@ -502,7 +557,10 @@ function scalarNode(
         path,
         label: `${key}: ${value === undefined || value === null || value === "" ? (required ? "<required>" : "<unset>") : String(value)}`,
         value,
+        valueType: valueType ?? (typeof value === "number" ? "number" : "string"),
         valueKind: typeof value === "boolean" ? "boolean" : "scalar",
+        presence,
+        expert,
         description,
         required,
         inputHint,
@@ -512,13 +570,23 @@ function scalarNode(
     });
 }
 
-function booleanNode(path: string[], key: string, value: unknown, description: string): EditNode {
+function booleanNode(
+    path: string[],
+    key: string,
+    value: unknown,
+    description: string,
+    expert = false,
+    presence: EditNode["presence"] = "optional"
+): EditNode {
     return finalizeNode({
         id: `edit:${path.join(".")}`,
         path,
         label: `${key}: ${value === true ? "true" : "false"}`,
         value: value === true,
+        valueType: "boolean",
         valueKind: "boolean",
+        presence,
+        expert,
         description,
         status: "ok",
     });
@@ -580,6 +648,7 @@ function authNode(path: string[], authConfig: unknown): EditNode {
         label: `authConfig: < ${variant} >`,
         value: variant,
         valueKind: "union",
+        presence: "optional",
         description: AUTH_DESCRIPTION,
         descriptionShort: AUTH_DESCRIPTION,
         status: variant === "unknown" ? "error" : "ok",
@@ -604,6 +673,7 @@ function snapshotInfoNode(path: string[], snapshotInfo: unknown): EditNode {
         label: `snapshotInfo: repos ${repos}, snapshots ${snapshots}`,
         value: snapshotInfo,
         valueKind: "object",
+        presence: "optional",
         description: "Snapshot repository and snapshot configurations for this source cluster. Required if any snapshot-based migrations reference this source.",
         status: "ok",
     });
@@ -684,6 +754,134 @@ function kafkaGroupNode(config: Record<string, any> | undefined): EditNode {
     });
 }
 
+function objectChildrenFromValue(path: string[], value: unknown): EditNode[] {
+    if (!isPlainObject(value)) {
+        return [];
+    }
+    return Object.entries(value)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, childValue]) => genericDisplayNode([...path, key], key, childValue, "optional", false, ""));
+}
+
+function genericDisplayNode(
+    path: string[],
+    key: string,
+    value: unknown,
+    presence: EditNode["presence"],
+    expert: boolean,
+    description: string,
+): EditNode {
+    if (typeof value === "boolean") {
+        return booleanNode(path, key, value, description, expert, presence);
+    }
+    if (typeof value === "number") {
+        return scalarNode(path, key, value, description, false, undefined, "number", expert, presence);
+    }
+    if (typeof value === "string" || value === undefined || value === null) {
+        return scalarNode(path, key, value ?? "", description, false, undefined, "string", expert, presence);
+    }
+    if (Array.isArray(value)) {
+        return finalizeNode({
+            id: `edit:${path.join(".")}`,
+            path,
+            label: `${key}: ${value.length ? `${value.length} item${value.length === 1 ? "" : "s"}` : "[]"}`,
+            value,
+            valueKind: "array",
+            presence,
+            expert,
+            description,
+            status: "ok",
+        });
+    }
+    return finalizeNode({
+        id: `edit:${path.join(".")}`,
+        path,
+        label: key,
+        value,
+        valueKind: "object",
+        presence,
+        expert,
+        description,
+        status: "ok",
+        children: objectChildrenFromValue(path, value),
+    });
+}
+
+function schemaFieldNode(rootPath: string[], key: string, schema: any, config: Record<string, unknown>): EditNode {
+    const path = [...rootPath, key];
+    const description = schemaDescription(schema);
+    const required = isRequiredSchema(schema);
+    const presence: EditNode["presence"] = required ? "required" : "optional";
+    const expert = isExpertDescription(description);
+    const hasValue = Object.hasOwn(config, key);
+    const value = hasValue ? config[key] : defaultValueForSchema(schema);
+    const inputHint = uiHintOf(schema);
+    const scalarType = schemaScalarType(schema);
+
+    if (scalarType === "boolean") {
+        return booleanNode(path, key, value === true, description, expert, presence);
+    }
+    if (scalarType === "number") {
+        return scalarNode(path, key, value, description, required, inputHint, "number", expert, presence);
+    }
+    if (scalarType === "string") {
+        return scalarNode(path, key, value ?? "", description, required, inputHint, "string", expert, presence);
+    }
+    if (value === undefined || value === null) {
+        const containerKind = schemaContainerKind(schema);
+        if (containerKind) {
+            return finalizeNode({
+                id: `edit:${path.join(".")}`,
+                path,
+                label: `${key}: <unset>`,
+                value,
+                valueKind: containerKind,
+                presence,
+                expert,
+                description,
+                status: "ok",
+            });
+        }
+        return scalarNode(path, key, "", description, required, inputHint, "string", expert, presence);
+    }
+    return genericDisplayNode(path, key, value, presence, expert, description);
+}
+
+function captureProxyConfigNode(rootPath: string[], value: any): EditNode {
+    const proxyConfig = isPlainObject(value) ? value : {};
+    const schemaShape = unwrapSchema(USER_PROXY_OPTIONS).shape ?? {};
+    const orderedKeys = [
+        ...USER_PROXY_WORKFLOW_OPTION_KEYS,
+        ...USER_PROXY_PROCESS_OPTION_KEYS,
+    ].map(String);
+    const knownKeys = new Set(orderedKeys);
+    const children = orderedKeys
+        .filter(key => schemaShape[key])
+        .map(key => schemaFieldNode(rootPath, key, schemaShape[key], proxyConfig));
+    const extraChildren = Object.keys(proxyConfig)
+        .filter(key => !knownKeys.has(key))
+        .sort((a, b) => a.localeCompare(b))
+        .map(key => genericDisplayNode(
+            [...rootPath, key],
+            key,
+            proxyConfig[key],
+            "optional",
+            false,
+            "Custom capture proxy option not described by the current schema.",
+        ));
+    return finalizeNode({
+        id: `edit:${rootPath.join(".")}`,
+        path: rootPath,
+        label: "proxyConfig",
+        valueKind: "object",
+        presence: "required",
+        required: true,
+        description: "Process-level and deployment-level configuration options for the capture proxy.",
+        status: "ok",
+        children: [...children, ...extraChildren],
+    });
+}
+
 function captureProxyNode(name: string, value: any, ctx: EditContext): EditNode {
     const rootPath = ["traffic", "proxies", name];
     return finalizeNode({
@@ -697,6 +895,7 @@ function captureProxyNode(name: string, value: any, ctx: EditContext): EditNode 
             scalarNode([...rootPath, "source"], "source", value?.source, "Name of the source cluster this proxy sits in front of. Must match a key in sourceClusters.", true, referenceHint(CAPTURE_SOURCE_HINT, ctx.sourceOptions)),
             scalarNode([...rootPath, "kafka"], "kafka", value?.kafka ?? "default", "Label of the Kafka cluster to use for captured traffic. Must match a key in kafkaClusterConfiguration.", false, referenceHint(CAPTURE_KAFKA_HINT, ctx.kafkaOptions)),
             scalarNode([...rootPath, "kafkaTopic"], "kafkaTopic", value?.kafkaTopic ?? "", "Kafka topic name for captured traffic. If empty, defaults to the proxy name.", false, CAPTURE_KAFKA_TOPIC_HINT),
+            captureProxyConfigNode([...rootPath, "proxyConfig"], value?.proxyConfig),
         ],
     });
 }
@@ -1102,7 +1301,7 @@ function defaultConfigForPath(path: string[]): Record<string, unknown> {
         return {autoCreate: {}};
     }
     if (key === "traffic.proxies") {
-        return {source: ""};
+        return {source: "", proxyConfig: {}};
     }
     if (key === "traffic.s3Sources") {
         return {s3Uri: "", awsRegion: "", sourceLabel: ""};

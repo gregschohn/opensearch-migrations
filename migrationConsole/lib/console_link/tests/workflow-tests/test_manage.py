@@ -9,10 +9,16 @@ from unittest.mock import MagicMock, patch
 from console_link.workflow.tree_utils import APPROVAL_TEMPLATE_NAME
 from console_link.workflow.resource_tree import ResourceGroup, ResourceNode, ResourceSection, _build_tree_from_raw
 from console_link.workflow.tui.workflow_manage_app import (
+    DISABLE_MOUSE_PIXELS_SEQUENCE,
+    DISABLE_MOUSE_SEQUENCES,
+    ENABLE_MOUSE_SEQUENCES,
     WorkflowTreeApp,
-    copy_to_clipboard, PHASE_SUCCEEDED, PHASE_RUNNING
+    copy_to_clipboard,
+    PHASE_SUCCEEDED,
+    PHASE_RUNNING,
 )
 from console_link.workflow.tui.choice_select_modal import ChoiceSelectModal
+from console_link.workflow.tui.config_edit_exit_modal import ConfigEditExitModal
 from console_link.workflow.tui.confirm_modal import ConfirmModal
 from console_link.workflow.tui.text_input_modal import TextInputModal
 from console_link.workflow.tui.manage_injections import (
@@ -306,6 +312,75 @@ def edit_state_with_editable_source_fields():
     }
 
 
+def edit_state_with_field_visibility():
+    return {
+        "formatVersion": 1,
+        "provenance": {"source": "pending-yaml", "lossy": False, "warnings": []},
+        "nodes": [
+            {
+                "id": "edit:sourceClusters",
+                "path": ["sourceClusters"],
+                "label": "[REQ 1] Source Clusters",
+                "valueKind": "record",
+                "description": "Source Elasticsearch or OpenSearch clusters to migrate from.",
+                "status": "required",
+                "statusCounts": {"required": 1},
+                "children": [
+                    {
+                        "id": "edit:sourceClusters.legacy",
+                        "path": ["sourceClusters", "legacy"],
+                        "label": "[REQ 1] source: legacy",
+                        "valueKind": "object",
+                        "description": "Connection and snapshot configuration for a source cluster.",
+                        "status": "required",
+                        "statusCounts": {"required": 1},
+                        "children": [
+                            {
+                                "id": "edit:sourceClusters.legacy.endpoint",
+                                "path": ["sourceClusters", "legacy", "endpoint"],
+                                "label": "[REQ] endpoint: <required>",
+                                "valueKind": "scalar",
+                                "description": "Required endpoint.",
+                                "required": True,
+                                "presence": "required",
+                                "status": "required",
+                                "statusCounts": {"required": 1},
+                            },
+                            {
+                                "id": "edit:sourceClusters.legacy.allowInsecure",
+                                "path": ["sourceClusters", "legacy", "allowInsecure"],
+                                "label": "[OK] allowInsecure: false",
+                                "value": False,
+                                "valueKind": "boolean",
+                                "description": "Optional TLS verification toggle.",
+                                "presence": "optional",
+                                "status": "ok",
+                                "statusCounts": {},
+                            },
+                            {
+                                "id": "edit:sourceClusters.legacy.serviceType",
+                                "path": ["sourceClusters", "legacy", "serviceType"],
+                                "label": "[OK] serviceType: LoadBalancer",
+                                "value": "LoadBalancer",
+                                "valueKind": "scalar",
+                                "description": "Expert setting for exposure.",
+                                "presence": "optional",
+                                "expert": True,
+                                "status": "ok",
+                                "statusCounts": {},
+                            },
+                        ],
+                    }
+                ],
+            }
+        ],
+        "pendingSubmitChanges": [],
+        "submittedRolloutChanges": [],
+        "policyPreview": [],
+        "validation": {"valid": False, "errors": ["endpoint is required"]},
+    }
+
+
 def resource_sections_for_manage_tests():
     return [
         ResourceSection(
@@ -486,6 +561,121 @@ async def test_resource_view_renders_resources_without_workflow():
                 lambda: "Values: Deployed" in str(app.query_one("#pod-status").content),
             )
             mock_waiter.trigger.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_manage_toggles_mouse_reporting_for_text_selection(mock_workflow_with_two_pods):
+    """The manage UI can temporarily release terminal mouse handling for text selection."""
+
+    argo_service = MagicMock(spec=ArgoService(None, None))
+    argo_service.get_workflow.return_value = ({"success": True}, mock_workflow_with_two_pods)
+
+    pod_scraper = MagicMock(spec=PodScraperInterface(None, None, None))
+    pod_scraper.fetch_pods_metadata.return_value = []
+
+    app = WorkflowTreeApp(
+        namespace="default",
+        name="test-wf",
+        argo_service=argo_service,
+        pod_scraper=pod_scraper,
+        workflow_waiter=FAILING_WAITER,
+        refresh_interval=100.0,
+    )
+
+    async with app.run_test() as pilot:
+        tree = app.query_one("#workflow-tree")
+        tree.focus()
+        assert await wait_until(pilot, lambda: len(tree.root.children) > 0, timeout=5.0)
+
+        disable_mouse = MagicMock()
+        enable_mouse = MagicMock()
+        enable_mouse_pixels = MagicMock()
+        setattr(app._driver, "_mouse_pixels", True)
+
+        with patch.object(app._driver, "_disable_mouse_support", disable_mouse, create=True), \
+                patch.object(app._driver, "_enable_mouse_support", enable_mouse, create=True), \
+                patch.object(app._driver, "_enable_mouse_pixels", enable_mouse_pixels, create=True):
+            assert binding_descriptions(app, "m") == ["Mouse Off"]
+
+            await pilot.press("m")
+            assert await wait_until(
+                pilot,
+                lambda: app._mouse_input_enabled is False
+                and binding_descriptions(app, "m") == ["Mouse On"],
+            )
+            disable_mouse.assert_called_once()
+            enable_mouse.assert_not_called()
+
+            await pilot.press("m")
+            assert await wait_until(
+                pilot,
+                lambda: app._mouse_input_enabled is True
+                and binding_descriptions(app, "m") == ["Mouse Off"],
+            )
+            enable_mouse.assert_called_once()
+            enable_mouse_pixels.assert_called_once()
+
+
+def test_mouse_reporting_falls_back_to_raw_escape_sequences():
+    """Mouse reporting can be toggled even when a driver has no private helper methods."""
+
+    class FakeDriver:
+        def __init__(self):
+            self.writes = []
+            self.flushes = 0
+
+        def write(self, value):
+            self.writes.append(value)
+
+        def flush(self):
+            self.flushes += 1
+
+    driver = FakeDriver()
+    WorkflowTreeApp._write_mouse_reporting(driver, enabled=False)
+    WorkflowTreeApp._write_mouse_reporting(driver, enabled=True)
+
+    assert driver.writes == [DISABLE_MOUSE_SEQUENCES, ENABLE_MOUSE_SEQUENCES]
+    assert driver.flushes == 2
+
+
+def test_mouse_reporting_private_disable_also_releases_pixel_mode():
+    """Pixel mouse reporting is disabled explicitly when a driver helper omits that mode."""
+
+    class FakeDriver:
+        def __init__(self):
+            self.disable_mouse = MagicMock()
+            self.writes = []
+            self.flushes = 0
+
+        def _disable_mouse_support(self):
+            self.disable_mouse()
+
+        def write(self, value):
+            self.writes.append(value)
+
+        def flush(self):
+            self.flushes += 1
+
+    driver = FakeDriver()
+    WorkflowTreeApp._write_mouse_reporting(driver, enabled=False)
+
+    driver.disable_mouse.assert_called_once()
+    assert driver.writes == [DISABLE_MOUSE_PIXELS_SEQUENCE]
+    assert driver.flushes == 1
+
+
+def test_config_scalar_value_coercion_handles_number_nodes():
+    number_node = {
+        "path": ["traffic", "proxies", "cap", "proxyConfig", "listenPort"],
+        "valueType": "number",
+    }
+
+    assert WorkflowTreeApp._coerce_config_scalar_value(number_node, "9201") == 9201
+    assert WorkflowTreeApp._coerce_config_scalar_value(number_node, "1.5") == 1.5
+    assert WorkflowTreeApp._coerce_config_scalar_value({"valueType": "string"}, "9201") == "9201"
+
+    with pytest.raises(ValueError, match="traffic.proxies.cap.proxyConfig.listenPort must be a number"):
+        WorkflowTreeApp._coerce_config_scalar_value(number_node, "not-a-number")
 
 
 @pytest.mark.asyncio
@@ -798,11 +988,12 @@ async def test_resource_view_edit_mode_applies_variant_and_saves(mock_workflow_w
 
 @pytest.mark.asyncio
 async def test_resource_view_edit_mode_confirms_discard_on_escape(mock_workflow_with_two_pods):
-    """Esc should confirm before discarding dirty config edit drafts."""
+    """Esc and q should offer return, save, or discard for dirty config edit drafts."""
 
     class FakeConfigEditService:
         def __init__(self):
             self.apply_calls = []
+            self.saved_yaml = []
 
         def load_edit_session(self):
             return {
@@ -816,6 +1007,10 @@ async def test_resource_view_edit_mode_confirms_discard_on_escape(mock_workflow_
                 "raw_yaml": "updated-yaml",
                 "edit_state": edit_state_with_sigv4_auth(),
             }
+
+        def save_raw_yaml(self, raw_yaml):
+            self.saved_yaml.append(raw_yaml)
+            return "Configuration saved"
 
     service = FakeConfigEditService()
     argo_service = ArgoService(
@@ -858,14 +1053,15 @@ async def test_resource_view_edit_mode_confirms_discard_on_escape(mock_workflow_
             assert app._edit_dirty is True
 
             await pilot.press("escape")
-            assert await wait_until(pilot, lambda: isinstance(app.screen, ConfirmModal))
+            assert await wait_until(pilot, lambda: isinstance(app.screen, ConfigEditExitModal))
+            assert "Validation still reports" in str(app.screen.query_one("#status").content)
             await pilot.press("enter")
             assert await wait_until(pilot, lambda: get_clean_text_label(tree.root) == "Workflow Config Edit")
             assert app._edit_mode is True
             assert app._edit_dirty is True
 
             await pilot.press("q")
-            assert await wait_until(pilot, lambda: isinstance(app.screen, ConfirmModal))
+            assert await wait_until(pilot, lambda: isinstance(app.screen, ConfigEditExitModal))
             await pilot.press("enter")
             assert await wait_until(pilot, lambda: get_clean_text_label(tree.root) == "Workflow Config Edit")
             assert app._edit_mode is True
@@ -873,14 +1069,85 @@ async def test_resource_view_edit_mode_confirms_discard_on_escape(mock_workflow_
 
             with patch.object(app, "exit") as exit_mock:
                 await pilot.press("q")
-                assert await wait_until(pilot, lambda: isinstance(app.screen, ConfirmModal))
-                await pilot.press("y")
+                assert await wait_until(pilot, lambda: isinstance(app.screen, ConfigEditExitModal))
+                await pilot.press("d")
                 await pilot.pause()
                 exit_mock.assert_called_once()
 
             await pilot.press("escape")
-            assert await wait_until(pilot, lambda: isinstance(app.screen, ConfirmModal))
-            await pilot.press("y")
+            assert await wait_until(pilot, lambda: isinstance(app.screen, ConfigEditExitModal))
+            await pilot.press("d")
+            assert await wait_until(pilot, lambda: get_clean_text_label(tree.root) == "Migration Status")
+            assert app._edit_mode is False
+
+
+@pytest.mark.asyncio
+async def test_resource_view_edit_mode_dirty_exit_defaults_to_save_when_valid(mock_workflow_with_two_pods):
+    """Dirty edit exit defaults to save when validation has no outstanding issues."""
+
+    class FakeConfigEditService:
+        def __init__(self):
+            self.apply_calls = []
+            self.saved_yaml = []
+
+        def load_edit_session(self):
+            return {
+                "raw_yaml": "initial-yaml",
+                "edit_state": edit_state_with_editable_source_fields(),
+            }
+
+        def apply_operation(self, raw_yaml, operation):
+            self.apply_calls.append((raw_yaml, operation))
+            return {
+                "raw_yaml": "updated-yaml",
+                "edit_state": edit_state_with_editable_source_fields(),
+            }
+
+        def save_raw_yaml(self, raw_yaml):
+            self.saved_yaml.append(raw_yaml)
+            return "Configuration saved"
+
+    service = FakeConfigEditService()
+    argo_service = ArgoService(
+        get_workflow=lambda name, namespace: ({"success": True}, mock_workflow_with_two_pods),
+        approve_step=MagicMock(),
+    )
+    pod_scraper = MagicMock(spec=PodScraperInterface(None, None, None))
+    pod_scraper.fetch_pods_metadata.return_value = []
+
+    app = WorkflowTreeApp(
+        namespace="default",
+        name="test-wf",
+        argo_service=argo_service,
+        pod_scraper=pod_scraper,
+        workflow_waiter=FAILING_WAITER,
+        refresh_interval=100.0,
+        resource_view=True,
+        config_edit_service=service,
+    )
+
+    with patch("console_link.workflow.resource_tree.build_resource_tree",
+               return_value=resource_sections_for_manage_tests()):
+        async with app.run_test() as pilot:
+            tree = app.query_one("#workflow-tree")
+            tree.focus()
+            assert await wait_until(pilot, lambda: len(tree.root.children) > 0, timeout=5.0)
+
+            await pilot.press("e")
+            assert await wait_until(pilot, lambda: get_clean_text_label(tree.root) == "Workflow Config Edit")
+
+            app._select_tree_node_by_id("edit:sourceClusters.legacy.allowInsecure")
+            app._update_dynamic_bindings()
+            await pilot.pause()
+            await pilot.press("enter")
+            assert await wait_until(pilot, lambda: app._edit_dirty is True)
+
+            await pilot.press("escape")
+            assert await wait_until(pilot, lambda: isinstance(app.screen, ConfigEditExitModal))
+            assert "No validation errors" in str(app.screen.query_one("#status").content)
+            await pilot.press("enter")
+
+            assert await wait_until(pilot, lambda: service.saved_yaml == ["updated-yaml"])
             assert await wait_until(pilot, lambda: get_clean_text_label(tree.root) == "Migration Status")
             assert app._edit_mode is False
 
@@ -953,6 +1220,81 @@ async def test_resource_view_edit_mode_colors_and_data_modes(mock_workflow_with_
             assert "endpoint: https://old.example.com:9200" in get_clean_text_label(tree.cursor_node)
             assert "green" in get_label_style(tree.cursor_node)
             assert "Status: Deployed" in str(app.query_one("#pod-status").content)
+
+
+@pytest.mark.asyncio
+async def test_resource_view_edit_mode_optional_and_expert_visibility(mock_workflow_with_two_pods):
+    """Edit mode can hide optional rows, keep required rows, and reveal expert rows independently."""
+
+    class FakeConfigEditService:
+        def load_edit_session(self):
+            return {
+                "raw_yaml": "initial-yaml",
+                "edit_state": edit_state_with_field_visibility(),
+            }
+
+    argo_service = ArgoService(
+        get_workflow=lambda name, namespace: ({"success": True}, mock_workflow_with_two_pods),
+        approve_step=MagicMock(),
+    )
+    pod_scraper = MagicMock(spec=PodScraperInterface(None, None, None))
+    pod_scraper.fetch_pods_metadata.return_value = []
+
+    app = WorkflowTreeApp(
+        namespace="default",
+        name="test-wf",
+        argo_service=argo_service,
+        pod_scraper=pod_scraper,
+        workflow_waiter=FAILING_WAITER,
+        refresh_interval=100.0,
+        resource_view=True,
+        config_edit_service=FakeConfigEditService(),
+    )
+
+    with patch("console_link.workflow.resource_tree.build_resource_tree",
+               return_value=resource_sections_for_manage_tests()):
+        async with app.run_test() as pilot:
+            tree = app.query_one("#workflow-tree")
+            tree.focus()
+            assert await wait_until(pilot, lambda: len(tree.root.children) > 0, timeout=5.0)
+
+            await pilot.press("e")
+            assert await wait_until(pilot, lambda: get_clean_text_label(tree.root) == "Workflow Config Edit")
+
+            assert find_tree_node_by_id(tree.root, "edit:sourceClusters.legacy.endpoint") is not None
+            assert find_tree_node_by_id(tree.root, "edit:sourceClusters.legacy.allowInsecure") is not None
+            assert find_tree_node_by_id(tree.root, "edit:sourceClusters.legacy.serviceType") is None
+            assert binding_descriptions(app, "o") == ["Hide Optional"]
+            assert binding_descriptions(app, "X") == ["Show Expert"]
+
+            await pilot.press("o")
+            assert await wait_until(
+                pilot,
+                lambda: find_tree_node_by_id(tree.root, "edit:sourceClusters.legacy.allowInsecure") is None,
+            )
+            assert find_tree_node_by_id(tree.root, "edit:sourceClusters.legacy.endpoint") is not None
+            assert "optional off" in str(app.query_one("#pod-status").content)
+            assert binding_descriptions(app, "O") == ["Show Optional"]
+
+            await pilot.press("X")
+            assert await wait_until(
+                pilot,
+                lambda: find_tree_node_by_id(tree.root, "edit:sourceClusters.legacy.serviceType") is not None,
+            )
+            assert find_tree_node_by_id(tree.root, "edit:sourceClusters.legacy.allowInsecure") is None
+            assert "expert on" in str(app.query_one("#pod-status").content)
+            assert binding_descriptions(app, "x") == ["Hide Expert"]
+
+            await pilot.press("O")
+            assert await wait_until(
+                pilot,
+                lambda: find_tree_node_by_id(tree.root, "edit:sourceClusters.legacy.allowInsecure") is not None,
+            )
+            await pilot.press("x")
+            assert await wait_until(
+                pilot,
+                lambda: find_tree_node_by_id(tree.root, "edit:sourceClusters.legacy.serviceType") is None,
+            )
 
 
 @pytest.mark.asyncio
