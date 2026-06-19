@@ -48,6 +48,7 @@ import {
     Checkpoint,
     ComponentId,
     ObservedComponent,
+    Response,
     ScenarioSpec,
     SubjectStateAtMutation,
     Violation,
@@ -67,6 +68,7 @@ import {
     resolvePoisonPill,
 } from "./poisonPills";
 import { writeCoverageOverview } from "./coverageOverview";
+import { generateTransitionTree, TransitionTree } from "./transitionTreeGenerator";
 
 // ── Types shared by the CLI entrypoint and its testable core ─────────
 
@@ -122,6 +124,8 @@ export interface LiveRunnerDeps {
      * only needed when running safe/gated/impossible cases.
      */
     mutatorRegistry?: MutatorRegistry;
+    /** Generated user-config transition tree used to validate mutator metadata. */
+    transitionTree?: TransitionTree;
     /**
      * Validate mutated user configs against the public workflow config
      * schema before submitting them. Enabled by the CLI; unit tests
@@ -1916,6 +1920,33 @@ export interface RunFromSpecOptions {
     progress?: (message: string) => void;
 }
 
+export interface ListCasesFromSpecOptions {
+    specPath: string;
+    /** Optional exact expanded-case name to list. */
+    caseName?: string;
+    /** Optional mutator registry for tests or custom callers. */
+    mutatorRegistry?: MutatorRegistry;
+    /** Extra mutators to register alongside the built-ins. */
+    extraMutators?: readonly Mutator[];
+    /** When true, built-in mutators are not registered. */
+    omitBuiltinMutators?: boolean;
+}
+
+export interface ExpandedCaseSummary {
+    caseName: string;
+    subject: ComponentId;
+    mutatorName: string;
+    declaredChangeClass: string;
+    fieldChangeClass: string;
+    effectiveChangeReason?: string;
+    dependencyPattern: string;
+    response: Response | null;
+    subjectStateAtMutation: SubjectStateAtMutation;
+    changedPaths: readonly string[];
+    expectedRerunComponents: readonly ComponentId[];
+    poisonPillName?: string;
+}
+
 /**
  * Top-level entrypoint. The CLI below wraps this with argv parsing; the
  * function itself is exported so in-process callers (and tests that
@@ -1976,18 +2007,7 @@ export async function runFromSpec(opts: RunFromSpecOptions): Promise<string[]> {
     }
     for (const a of opts.extraActors ?? []) actorRegistry.register(a);
 
-    // Build a mutator registry by layering built-ins under any caller
-    // overrides, unless the caller supplied a pre-built registry.
-    const mutatorRegistry =
-        opts.mutatorRegistry ??
-        (() => {
-            const reg = new MutatorRegistry();
-            if (!opts.omitBuiltinMutators) {
-                for (const m of builtinMutators()) reg.register(m);
-            }
-            for (const m of opts.extraMutators ?? []) reg.register(m);
-            return reg;
-        })();
+    const mutatorRegistry = buildMutatorRegistry(opts);
 
     const sharedDeps: LiveRunnerDeps = {
         workflowCli,
@@ -2001,6 +2021,7 @@ export async function runFromSpec(opts: RunFromSpecOptions): Promise<string[]> {
         baselineConfigPath: loaded.resolvedBaseConfigPath,
         outputDir: opts.outputDir,
         mutatorRegistry,
+        transitionTree: generateTransitionTree(),
         validateMutatedConfig: true,
         waitForInnerWorkflowCompletion: true,
         progress: opts.progress,
@@ -2021,6 +2042,23 @@ export async function runFromSpec(opts: RunFromSpecOptions): Promise<string[]> {
     });
 }
 
+/**
+ * Read-only expansion path for developers. It exercises the same spec
+ * loading, mutator registry, and transition-tree validation that a live
+ * run uses, but it never creates workflow clients or touches a cluster.
+ */
+export function listCasesFromSpec(opts: ListCasesFromSpecOptions): ExpandedCaseSummary[] {
+    const loaded = loadScenarioSpec(opts.specPath);
+    const mutatorRegistry = buildMutatorRegistry(opts);
+    const cases = selectExpandedCases(
+        expandCases(loaded.spec, mutatorRegistry, {
+            transitionTree: generateTransitionTree(),
+        }),
+        opts.caseName,
+    );
+    return cases.map(summariseExpandedCase);
+}
+
 export interface RunExpandedCasesOptions {
     /** Optional exact expanded-case name to run. */
     caseName?: string;
@@ -2039,7 +2077,9 @@ export async function runExpandedCases(
     opts: RunExpandedCasesOptions = {},
 ): Promise<string[]> {
     const cases = selectExpandedCases(
-        expandCases(deps.spec, mutatorRegistry),
+        expandCases(deps.spec, mutatorRegistry, {
+            transitionTree: deps.transitionTree,
+        }),
         opts.caseName,
     );
     const out: string[] = [];
@@ -2060,6 +2100,38 @@ function selectExpandedCases(
     throw new Error(
         `case '${caseName}' did not match any expanded case. Available cases:\n  ${available}`,
     );
+}
+
+function summariseExpandedCase(expanded: ExpandedTestCase): ExpandedCaseSummary {
+    return {
+        caseName: expanded.caseName,
+        subject: expanded.subject,
+        mutatorName: expanded.mutator.name,
+        declaredChangeClass: expanded.mutator.changeClass,
+        fieldChangeClass: expanded.mutator.fieldChangeClass ?? expanded.mutator.changeClass,
+        effectiveChangeReason: expanded.mutator.effectiveChangeReason,
+        dependencyPattern: expanded.mutator.dependencyPattern,
+        response: expanded.response,
+        subjectStateAtMutation: expanded.subjectStateAtMutation,
+        changedPaths: [...expanded.changedPaths],
+        expectedRerunComponents: [...expanded.expectedRerunComponents],
+        poisonPillName: expanded.poisonPillName,
+    };
+}
+
+function buildMutatorRegistry(
+    opts: Pick<
+        RunFromSpecOptions | ListCasesFromSpecOptions,
+        "mutatorRegistry" | "omitBuiltinMutators" | "extraMutators"
+    >,
+): MutatorRegistry {
+    if (opts.mutatorRegistry) return opts.mutatorRegistry;
+    const reg = new MutatorRegistry();
+    if (!opts.omitBuiltinMutators) {
+        for (const m of builtinMutators()) reg.register(m);
+    }
+    for (const m of opts.extraMutators ?? []) reg.register(m);
+    return reg;
 }
 
 export async function runExpandedCase(
@@ -2152,7 +2224,7 @@ async function main(): Promise<void> {
     const args = process.argv.slice(2);
     if (args.length < 1) {
         console.error(
-            "Usage: e2e-run <spec-path> [--namespace ma] [--output-dir ./snapshots] [--local] [--noop-only] [--case <expanded-case-name>] [--phase-timeout-seconds 600]",
+            "Usage: e2e-run <spec-path> [--namespace ma] [--output-dir ./snapshots] [--local] [--noop-only] [--list-cases] [--json] [--case <expanded-case-name>] [--phase-timeout-seconds 600]",
         );
         process.exit(2);
     }
@@ -2162,12 +2234,33 @@ async function main(): Promise<void> {
     const cliMode = args.includes("--local") ? "local" : "kubectl-exec";
     const noopOnly = args.includes("--noop-only");
     const caseName = takeFlag(args, "--case");
+    const listCases = args.includes("--list-cases");
+    const jsonOutput = args.includes("--json");
 
     try {
         const phaseCompletionTimeoutSeconds = parsePositiveIntFlag(
             takeFlag(args, "--phase-timeout-seconds"),
             "--phase-timeout-seconds",
         );
+        if (listCases) {
+            if (noopOnly) {
+                throw new Error("--list-cases cannot be combined with --noop-only");
+            }
+            const cases = listCasesFromSpec({ specPath, caseName });
+            if (jsonOutput) {
+                console.log(
+                    JSON.stringify(
+                        { specPath: path.resolve(specPath), caseCount: cases.length, cases },
+                        null,
+                        2,
+                    ),
+                );
+            } else {
+                for (const c of cases) console.log(formatExpandedCaseSummary(c));
+                console.log(`${cases.length} expanded case(s)`);
+            }
+            return;
+        }
         const out = await runFromSpec({
             specPath,
             namespace,
@@ -2201,6 +2294,16 @@ async function main(): Promise<void> {
         console.error((e as Error).message);
         process.exit(1);
     }
+}
+
+function formatExpandedCaseSummary(c: ExpandedCaseSummary): string {
+    const response = c.response ?? "none";
+    const poison = c.poisonPillName ? ` poisonPill=${c.poisonPillName}` : "";
+    return (
+        `${c.caseName} | ${c.declaredChangeClass}/${c.fieldChangeClass} | ` +
+        `${c.dependencyPattern} | subjectState=${c.subjectStateAtMutation} | ` +
+        `response=${response} | mutator=${c.mutatorName}${poison}`
+    );
 }
 
 function takeFlag(args: string[], flag: string): string | undefined {

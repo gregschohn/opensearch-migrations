@@ -16,6 +16,7 @@ export * from "./fixtures/builtinMutators";
 export * from "./matrixExpander";
 export * from "./poisonPills";
 export * from "./coverageOverview";
+export * from "./transitionTreeGenerator";
 export {
     runNoopCase,
     runSafeCase,

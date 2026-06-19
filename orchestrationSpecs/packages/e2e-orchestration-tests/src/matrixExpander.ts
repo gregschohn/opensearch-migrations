@@ -14,6 +14,10 @@ import {
     SubjectStateAtMutation,
 } from "./types";
 import { Mutator, MutatorRegistry } from "./fixtures/mutators";
+import {
+    TransitionTree,
+    validateMutatorAgainstTransitionTree,
+} from "./transitionTreeGenerator";
 
 export interface ExpandedTestCase {
     caseName: string;
@@ -39,6 +43,10 @@ export interface ExpandedTestCase {
     poisonPillName?: string;
 }
 
+export interface ExpandCasesOptions {
+    transitionTree?: TransitionTree;
+}
+
 /**
  * Expand the spec's matrix into concrete test cases. Each selector
  * is matched against the registry; each matching mutator produces one
@@ -50,6 +58,7 @@ export interface ExpandedTestCase {
 export function expandCases(
     spec: ScenarioSpec,
     mutatorRegistry: MutatorRegistry,
+    opts: ExpandCasesOptions = {},
 ): ExpandedTestCase[] {
     const subject = spec.matrix.subject as ComponentId;
     const selectors: MatrixSelector[] = spec.matrix.select ?? [
@@ -72,6 +81,7 @@ export function expandCases(
                 );
             }
             for (const mutator of matches) {
+                validateMutatorTransitionMetadata(mutator, opts.transitionTree);
                 for (const subjectStateAtMutation of subjectStates) {
                     if (subjectStateAtMutation === "in-progress") {
                         validatePoisonPillSelection(spec, sel, subject);
@@ -107,6 +117,19 @@ export function expandCases(
     }
 
     return cases;
+}
+
+function validateMutatorTransitionMetadata(
+    mutator: Mutator,
+    transitionTree: TransitionTree | undefined,
+): void {
+    if (!transitionTree) return;
+    const errors = validateMutatorAgainstTransitionTree(mutator, transitionTree);
+    if (errors.length === 0) return;
+    throw new Error(
+        `mutator '${mutator.name}' does not match the generated transition tree:\n` +
+        errors.map((e) => `  - ${e.message}`).join("\n"),
+    );
 }
 
 function subjectStatesForSelector(sel: MatrixSelector): SubjectStateAtMutation[] {

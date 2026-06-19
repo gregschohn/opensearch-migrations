@@ -1,6 +1,15 @@
 import { ComponentId, ScenarioSpec } from "../src/types";
 import { MutatorRegistry } from "../src/fixtures/mutators";
 import { expandCases } from "../src/matrixExpander";
+import { generateTransitionTree } from "../src/transitionTreeGenerator";
+import { z } from "zod";
+
+function restricted<T extends z.ZodTypeAny>(
+    schema: T,
+    changeRestriction: "gated" | "impossible",
+): T {
+    return schema.meta({ ...(schema.meta() ?? {}), changeRestriction }) as T;
+}
 
 function fakeSpec(overrides: Partial<ScenarioSpec> = {}): ScenarioSpec {
     return {
@@ -97,6 +106,29 @@ describe("expandCases", () => {
         const emptyReg = new MutatorRegistry();
         expect(() => expandCases(fakeSpec(), emptyReg)).toThrow(
             /matched zero mutators/,
+        );
+    });
+
+    it("fails expansion when mutator changed-path metadata disagrees with the transition tree", () => {
+        const tree = generateTransitionTree(
+            z.object({
+                traffic: z.object({
+                    proxies: z.record(
+                        z.string(),
+                        z.object({
+                            proxyConfig: z.object({
+                                numThreads: restricted(z.number(), "gated"),
+                            }),
+                        }),
+                    ),
+                }),
+            }),
+        );
+
+        expect(() =>
+            expandCases(fakeSpec(), registryWithSafeMutator(), { transitionTree: tree }),
+        ).toThrow(
+            /mutator 'proxy-numThreads' does not match the generated transition tree/,
         );
     });
 

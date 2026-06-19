@@ -10,6 +10,7 @@
   "scripts": {
     "type-check": "tsc --noEmit",
     "test": "jest --config ./jest.config.js",
+    "generate-transition-trees": "tsx src/generateTransitionTrees.ts",
     "run": "tsx src/e2e-run.ts"
   },
   "dependencies": {

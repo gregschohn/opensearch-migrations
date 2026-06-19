@@ -372,6 +372,8 @@ Current branch status:
 - `[x]` Expanded in-progress case names include the poison pill to make completed vs in-progress coverage distinct on disk.
 - `[x]` Built-in mutators now include a DataSnapshot safe `maxSnapshotRateMbPerNode` change and SnapshotMigration `maxConnections` coverage. `maxConnections` is recorded as a gated field-level change; completed-subject impossible cases report the effective class as impossible because lock-on-complete seals the resource.
 - `[x]` Expanded gated/impossible case names include the response so multiple response variants from one spec do not overwrite each other.
+- `[x]` Expansion validates every mutator `changedPaths` entry against the generated user-config transition tree. A field-level class mismatch fails before the runner touches Kubernetes.
+- `[x]` `--list-cases` prints expanded cases without touching Kubernetes; add `--json` for detailed machine-readable output.
 
 Expand cases with straightforward nested-loop code; it does not need a complex topology resolver.
 
@@ -413,6 +415,7 @@ Exit criteria:
 - `[x]` Mutated configs validate against `OVERALL_MIGRATION_CONFIG`.
 - `[x]` The CLI runner executes all expanded safe cases by default.
 - `[x]` Optional exact-case selection exists via `--case <expanded-case-name>` for focused live validation.
+- `[x]` `--list-cases` prints the expanded cases for a spec without submitting workflows.
 
 ### 7a. Poison-Pill State Control And Coverage Overview `[~]`
 
@@ -437,7 +440,18 @@ Exit criteria:
 - A SnapshotMigration case can hold `snapshotmigration:source-target-snap1-migration-0` in-progress, mutate a selected field, apply the restore step, and report the observed subject phase before mutation.
 - `coverage-summary.md` is enough to see which subject/state/field-class/effective-class combinations ran without opening the detail snapshots.
 
-### 8. Transition Tree Generator `[ ]`
+### 8. Transition Tree Generator `[~]`
+
+Current branch status:
+
+- `[x]` `transitionTreeGenerator.ts` walks `OVERALL_MIGRATION_CONFIG`, reads `schema.meta().changeRestriction`, defaults missing metadata to `safe`, preserves arrays as `[]`, and preserves record keys as `{key}`.
+- `[x]` Generated output is deterministic and checked in at `packages/e2e-orchestration-tests/transitionTrees/userConfigFields.json`.
+- `[x]` `npm run -w @opensearch-migrations/e2e-orchestration-tests generate-transition-trees` regenerates the committed tree.
+- `[x]` Unit tests cover deterministic ordering, inherited restrictions, record/array path resolution, built-in mutator validation, and class-mismatch diagnostics.
+- `[x]` A committed-file regression test fails if `userConfigFields.json` drifts from the generator.
+- `[x]` Matrix expansion validates mutator field metadata against the generated tree before live execution.
+- `[ ]` Generator metadata is intentionally minimal today (`sourceSchema`, deterministic `generatedAt`); package version stamping can be added if it becomes useful.
+- `[ ]` `transitionTreeMapper.ts` is still pending for component materiality mapping beyond mutator-declared expected rerun sets.
 
 Implement a Zod schema walker over `OVERALL_MIGRATION_CONFIG`.
 
@@ -471,9 +485,9 @@ Then implement `transitionTreeMapper.ts` separately to map changed user-config p
 
 Exit criteria:
 
-- Generator output is deterministic across two runs.
-- Unit tests cover explicit `gated`, explicit `impossible`, and default `safe`.
-- A mutator whose `fieldChangeClass` disagrees with generated tree data fails at expansion time. A different effective `changeClass` is allowed only when the case records an `effectiveChangeReason`, such as completed-subject lock-on-complete.
+- `[x]` Generator output is deterministic across two runs.
+- `[x]` Unit tests cover explicit `gated`, explicit `impossible`, inherited restrictions, and default `safe`.
+- `[x]` A mutator whose `fieldChangeClass` disagrees with generated tree data fails at expansion time. A different effective `changeClass` is allowed only when the case records an `effectiveChangeReason`, such as completed-subject lock-on-complete.
 
 ### 9. Phase Completion Predicate `[~]`
 
@@ -636,7 +650,6 @@ The next delegatable work should start by stabilizing the live safe case, then a
 
 - Split `compare-indices` into `target-index-snapshot` observer and `index-parity` checker.
 - Add contradiction diagnostics that name both the changed user-config path and the affected CRD component.
-- Add a developer mode that runs a single expanded case by exact case name.
-- Add a dry-run command that expands specs and prints planned cases without touching Kubernetes.
-- Add a regeneration check for transition trees in CI.
+- Add component-level materiality mapping from generated transition-tree data instead of relying only on mutator-declared expected rerun sets.
+- Add a transition-tree regeneration check to CI; unit coverage already checks the committed tree against the generator.
 - Document observed CRD phase values once the first live run is available.

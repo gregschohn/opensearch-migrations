@@ -1,0 +1,2110 @@
+{
+  "sourceSchema": "OVERALL_MIGRATION_CONFIG",
+  "generatedAt": "not-recorded",
+  "fields": [
+    {
+      "path": "kafkaClusterConfiguration",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "kafkaClusterConfiguration.{key}",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "kafkaClusterConfiguration.{key}.autoCreate",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "kafkaClusterConfiguration.{key}.autoCreate.auth",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "kafkaClusterConfiguration.{key}.autoCreate.auth.type",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "kafkaClusterConfiguration.{key}.autoCreate.clusterSpecOverrides",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "kafkaClusterConfiguration.{key}.autoCreate.clusterSpecOverrides.{key}",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "kafkaClusterConfiguration.{key}.autoCreate.nodePoolSpecOverrides",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "kafkaClusterConfiguration.{key}.autoCreate.nodePoolSpecOverrides.{key}",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "kafkaClusterConfiguration.{key}.autoCreate.topicSpecOverrides",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "kafkaClusterConfiguration.{key}.autoCreate.topicSpecOverrides.{key}",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "kafkaClusterConfiguration.{key}.existing",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "kafkaClusterConfiguration.{key}.existing.auth",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "kafkaClusterConfiguration.{key}.existing.auth.caSecretName",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "kafkaClusterConfiguration.{key}.existing.auth.kafkaUserName",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "kafkaClusterConfiguration.{key}.existing.auth.secretName",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "kafkaClusterConfiguration.{key}.existing.auth.type",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "kafkaClusterConfiguration.{key}.existing.enableMSKAuth",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "kafkaClusterConfiguration.{key}.existing.kafkaConnection",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "kafkaClusterConfiguration.{key}.existing.kafkaTopic",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "skipApprovals",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[]",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].fromSource",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[]",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.allowedDocExceptionTypes",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.allowedDocExceptionTypes.[]",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.allowLooseVersionMatching",
+      "changeClass": "impossible",
+      "explicit": true,
+      "checksumFor": [
+        "replayer"
+      ]
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.coordinatorRetryInitialDelayMs",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.coordinatorRetryMaxDelayMs",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.coordinatorRetryMaxRetries",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.docTransformerConfig",
+      "changeClass": "impossible",
+      "explicit": true,
+      "checksumFor": [
+        "replayer"
+      ]
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.docTransformerConfigBase64",
+      "changeClass": "impossible",
+      "explicit": true,
+      "checksumFor": [
+        "replayer"
+      ]
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.docTransformerConfigFile",
+      "changeClass": "impossible",
+      "explicit": true,
+      "checksumFor": [
+        "replayer"
+      ]
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentsPerBulkRequest",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentsSizePerBulkRequest",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms",
+      "changeClass": "impossible",
+      "explicit": true,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms",
+      "checksumFor": [
+        "replayer"
+      ]
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms.[]",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms.[].context",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms.[].context.valueDirectories",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms.[].context.valueDirectories.[]",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms.[].context.valueDirectories.[].configMap",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms.[].context.valueDirectories.[].image",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms.[].context.valueDirectories.[].path",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms.[].context.valueDirectories.[].pullPolicy",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms.[].context.values",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms.[].context.values.{key}",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms.[].context.values.{key}.fromFile",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms.[].context.values.{key}.fromFile.configMap",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms.[].context.values.{key}.fromFile.image",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms.[].context.values.{key}.fromFile.path",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms.[].context.values.{key}.fromFile.pullPolicy",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms.[].context.values.{key}.value",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms.[].entryPoint",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms.[].entryPoint.javascript",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms.[].entryPoint.javascriptFile",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms.[].entryPoint.javascriptFile.configMap",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms.[].entryPoint.javascriptFile.image",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms.[].entryPoint.javascriptFile.path",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms.[].entryPoint.javascriptFile.pullPolicy",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms.[].entryPoint.python",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms.[].entryPoint.pythonFile",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms.[].entryPoint.pythonFile.configMap",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms.[].entryPoint.pythonFile.image",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms.[].entryPoint.pythonFile.path",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms.[].entryPoint.pythonFile.pullPolicy",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms.[].transformName",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.documentTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.emitDocType",
+      "changeClass": "impossible",
+      "explicit": true,
+      "checksumFor": [
+        "replayer"
+      ]
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.enableSourcelessMigrations",
+      "changeClass": "impossible",
+      "explicit": true,
+      "checksumFor": [
+        "replayer"
+      ]
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.indexAllowlist",
+      "changeClass": "impossible",
+      "explicit": true,
+      "checksumFor": [
+        "replayer"
+      ]
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.indexAllowlist.[]",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.indexAllowlist"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.initialLeaseDuration",
+      "changeClass": "gated",
+      "explicit": true
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.jvmArgs",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.loggingConfigurationOverrideConfigMap",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.maxConnections",
+      "changeClass": "gated",
+      "explicit": true
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.maxShardSizeBytes",
+      "changeClass": "gated",
+      "explicit": true
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.otelMetricsCollectorEndpoint",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.otelTraceCollectorEndpoint",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.podReplicas",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.positionGapStopword",
+      "changeClass": "impossible",
+      "explicit": true,
+      "checksumFor": [
+        "replayer"
+      ]
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.resources",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.resources.limits",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.resources.limits.cpu",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.resources.limits.ephemeral-storage",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.resources.limits.memory",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.resources.requests",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.resources.requests.cpu",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.resources.requests.ephemeral-storage",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.resources.requests.memory",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.serverGeneratedIds",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.skipApproval",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.useRecoverySource",
+      "changeClass": "impossible",
+      "explicit": true,
+      "checksumFor": [
+        "replayer"
+      ]
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].documentBackfillConfig.useTargetClusterForWorkCoordination",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].label",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.allowLooseVersionMatching",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.clusterAwarenessAttributes",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.componentTemplateAllowlist",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.componentTemplateAllowlist.[]",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.enableSourcelessMigrations",
+      "changeClass": "impossible",
+      "explicit": true
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.indexAllowlist",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.indexAllowlist.[]",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.indexTemplateAllowlist",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.indexTemplateAllowlist.[]",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.jvmArgs",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.loggingConfigurationOverrideConfigMap",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms",
+      "changeClass": "impossible",
+      "explicit": true,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms",
+      "checksumFor": [
+        "replayer",
+        "snapshot"
+      ]
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms.[]",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms.[].context",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms.[].context.valueDirectories",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms.[].context.valueDirectories.[]",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms.[].context.valueDirectories.[].configMap",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms.[].context.valueDirectories.[].image",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms.[].context.valueDirectories.[].path",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms.[].context.valueDirectories.[].pullPolicy",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms.[].context.values",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms.[].context.values.{key}",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms.[].context.values.{key}.fromFile",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms.[].context.values.{key}.fromFile.configMap",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms.[].context.values.{key}.fromFile.image",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms.[].context.values.{key}.fromFile.path",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms.[].context.values.{key}.fromFile.pullPolicy",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms.[].context.values.{key}.value",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms.[].entryPoint",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms.[].entryPoint.javascript",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms.[].entryPoint.javascriptFile",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms.[].entryPoint.javascriptFile.configMap",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms.[].entryPoint.javascriptFile.image",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms.[].entryPoint.javascriptFile.path",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms.[].entryPoint.javascriptFile.pullPolicy",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms.[].entryPoint.python",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms.[].entryPoint.pythonFile",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms.[].entryPoint.pythonFile.configMap",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms.[].entryPoint.pythonFile.image",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms.[].entryPoint.pythonFile.path",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms.[].entryPoint.pythonFile.pullPolicy",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms.[].transformName",
+      "changeClass": "impossible",
+      "explicit": false,
+      "inheritedFrom": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.metadataTransforms"
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.otelMetricsCollectorEndpoint",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.otelTraceCollectorEndpoint",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.output",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.skipEvaluateApproval",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.skipMigrateApproval",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.transformerConfig",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.transformerConfigBase64",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.transformerConfigFile",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].perSnapshotConfig.{key}.[].metadataMigrationConfig.useRecoverySource",
+      "changeClass": "impossible",
+      "explicit": true
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].skipApprovals",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "snapshotMigrationConfigs.[].toTarget",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "sourceClusters",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "sourceClusters.{key}",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "sourceClusters.{key}.allowInsecure",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "sourceClusters.{key}.authConfig",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "sourceClusters.{key}.authConfig.basic",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "sourceClusters.{key}.authConfig.basic.secretName",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "sourceClusters.{key}.authConfig.mtls",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "sourceClusters.{key}.authConfig.mtls.caCert",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "sourceClusters.{key}.authConfig.mtls.clientSecretName",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "sourceClusters.{key}.authConfig.sigv4",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "sourceClusters.{key}.authConfig.sigv4.region",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "sourceClusters.{key}.authConfig.sigv4.service",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "sourceClusters.{key}.endpoint",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "sourceClusters.{key}.snapshotInfo",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "sourceClusters.{key}.snapshotInfo.repos",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "sourceClusters.{key}.snapshotInfo.repos.{key}",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "sourceClusters.{key}.snapshotInfo.repos.{key}.awsRegion",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "sourceClusters.{key}.snapshotInfo.repos.{key}.endpoint",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "sourceClusters.{key}.snapshotInfo.repos.{key}.s3RepoPathUri",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "sourceClusters.{key}.snapshotInfo.repos.{key}.s3RoleArn",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "sourceClusters.{key}.snapshotInfo.serializeSnapshotCreation",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "sourceClusters.{key}.snapshotInfo.snapshots",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "sourceClusters.{key}.snapshotInfo.snapshots.{key}",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "sourceClusters.{key}.snapshotInfo.snapshots.{key}.config",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "sourceClusters.{key}.snapshotInfo.snapshots.{key}.config.createSnapshotConfig",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "sourceClusters.{key}.snapshotInfo.snapshots.{key}.config.createSnapshotConfig.compressionEnabled",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "sourceClusters.{key}.snapshotInfo.snapshots.{key}.config.createSnapshotConfig.includeGlobalState",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "sourceClusters.{key}.snapshotInfo.snapshots.{key}.config.createSnapshotConfig.indexAllowlist",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "sourceClusters.{key}.snapshotInfo.snapshots.{key}.config.createSnapshotConfig.indexAllowlist.[]",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "sourceClusters.{key}.snapshotInfo.snapshots.{key}.config.createSnapshotConfig.jvmArgs",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "sourceClusters.{key}.snapshotInfo.snapshots.{key}.config.createSnapshotConfig.loggingConfigurationOverrideConfigMap",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "sourceClusters.{key}.snapshotInfo.snapshots.{key}.config.createSnapshotConfig.maxSnapshotRateMbPerNode",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "sourceClusters.{key}.snapshotInfo.snapshots.{key}.config.createSnapshotConfig.otelMetricsCollectorEndpoint",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "sourceClusters.{key}.snapshotInfo.snapshots.{key}.config.createSnapshotConfig.otelTraceCollectorEndpoint",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "sourceClusters.{key}.snapshotInfo.snapshots.{key}.config.createSnapshotConfig.snapshotPrefix",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "sourceClusters.{key}.snapshotInfo.snapshots.{key}.config.externallyManagedSnapshotName",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "sourceClusters.{key}.snapshotInfo.snapshots.{key}.repoName",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "sourceClusters.{key}.version",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "targetClusters",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "targetClusters.{key}",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "targetClusters.{key}.allowInsecure",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "targetClusters.{key}.authConfig",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "targetClusters.{key}.authConfig.basic",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "targetClusters.{key}.authConfig.basic.secretName",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "targetClusters.{key}.authConfig.mtls",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "targetClusters.{key}.authConfig.mtls.caCert",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "targetClusters.{key}.authConfig.mtls.clientSecretName",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "targetClusters.{key}.authConfig.sigv4",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "targetClusters.{key}.authConfig.sigv4.region",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "targetClusters.{key}.authConfig.sigv4.service",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "targetClusters.{key}.endpoint",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.proxies",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.proxies.{key}",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.proxies.{key}.kafka",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.proxies.{key}.kafkaTopic",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.destinationConnectionPoolSize",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.destinationConnectionPoolTimeout",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.enableMSKAuth",
+      "changeClass": "gated",
+      "explicit": true
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.internetFacing",
+      "changeClass": "impossible",
+      "explicit": true
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.kafkaClientId",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.listenPort",
+      "changeClass": "impossible",
+      "explicit": true,
+      "checksumFor": [
+        "snapshot",
+        "replayer"
+      ]
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.loggingConfigurationOverrideConfigMap",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.maxTrafficBufferSize",
+      "changeClass": "gated",
+      "explicit": true
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.noCapture",
+      "changeClass": "gated",
+      "explicit": true,
+      "checksumFor": [
+        "snapshot",
+        "replayer"
+      ]
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.numThreads",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.otelMetricsCollectorEndpoint",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.otelTraceCollectorEndpoint",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.podReplicas",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.resources",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.resources.limits",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.resources.limits.cpu",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.resources.limits.ephemeral-storage",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.resources.limits.memory",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.resources.requests",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.resources.requests.cpu",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.resources.requests.ephemeral-storage",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.resources.requests.memory",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.serviceType",
+      "changeClass": "impossible",
+      "explicit": true
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.setHeader",
+      "changeClass": "gated",
+      "explicit": true,
+      "checksumFor": [
+        "snapshot",
+        "replayer"
+      ]
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.setHeader.[]",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.proxies.{key}.proxyConfig.setHeader"
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.suppressCaptureForHeaderMatch",
+      "changeClass": "gated",
+      "explicit": true,
+      "checksumFor": [
+        "snapshot",
+        "replayer"
+      ]
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.suppressCaptureForHeaderMatch.[]",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.proxies.{key}.proxyConfig.suppressCaptureForHeaderMatch"
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.suppressCaptureForMethod",
+      "changeClass": "gated",
+      "explicit": true,
+      "checksumFor": [
+        "snapshot",
+        "replayer"
+      ]
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.suppressCaptureForUriPath",
+      "changeClass": "gated",
+      "explicit": true,
+      "checksumFor": [
+        "snapshot",
+        "replayer"
+      ]
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.suppressMethodAndPath",
+      "changeClass": "gated",
+      "explicit": true,
+      "checksumFor": [
+        "snapshot",
+        "replayer"
+      ]
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.tls",
+      "changeClass": "gated",
+      "explicit": true,
+      "inheritedFrom": "traffic.proxies.{key}.proxyConfig.tls"
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.tls.clientAuth",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.proxies.{key}.proxyConfig.tls"
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.tls.clientAuth.required",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.proxies.{key}.proxyConfig.tls"
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.tls.clientAuth.trustedClientCaFile",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.proxies.{key}.proxyConfig.tls"
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.tls.clientAuth.trustedClientCaFile.configMap",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.proxies.{key}.proxyConfig.tls"
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.tls.clientAuth.trustedClientCaFile.image",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.proxies.{key}.proxyConfig.tls"
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.tls.clientAuth.trustedClientCaFile.path",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.proxies.{key}.proxyConfig.tls"
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.tls.clientAuth.trustedClientCaFile.pullPolicy",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.proxies.{key}.proxyConfig.tls"
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.tls.clientAuth.trustedClientCaPem",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.proxies.{key}.proxyConfig.tls"
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.tls.commonName",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.proxies.{key}.proxyConfig.tls"
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.tls.dnsNames",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.proxies.{key}.proxyConfig.tls"
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.tls.dnsNames.[]",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.proxies.{key}.proxyConfig.tls"
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.tls.duration",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.proxies.{key}.proxyConfig.tls"
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.tls.issuerRef",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.proxies.{key}.proxyConfig.tls"
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.tls.issuerRef.group",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.proxies.{key}.proxyConfig.tls"
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.tls.issuerRef.kind",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.proxies.{key}.proxyConfig.tls"
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.tls.issuerRef.name",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.proxies.{key}.proxyConfig.tls"
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.tls.mode",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.proxies.{key}.proxyConfig.tls"
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.tls.renewBefore",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.proxies.{key}.proxyConfig.tls"
+    },
+    {
+      "path": "traffic.proxies.{key}.proxyConfig.tls.secretName",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.proxies.{key}.proxyConfig.tls"
+    },
+    {
+      "path": "traffic.proxies.{key}.source",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.replayers",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.replayers.{key}",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.replayers.{key}.dependsOnSnapshotMigrations",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.replayers.{key}.dependsOnSnapshotMigrations.[]",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.replayers.{key}.dependsOnSnapshotMigrations.[].snapshot",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.replayers.{key}.dependsOnSnapshotMigrations.[].source",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.replayers.{key}.fromCapturedTraffic",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.jvmArgs",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.kafkaTrafficEnableMSKAuth",
+      "changeClass": "impossible",
+      "explicit": true
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.kafkaTrafficPropertyFile",
+      "changeClass": "impossible",
+      "explicit": true
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.loggingConfigurationOverrideConfigMap",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.lookaheadTimeSeconds",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.maxConcurrentRequests",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.nonRetryableDocExceptionTypes",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.nonRetryableDocExceptionTypes.[]",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.numClientThreads",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.observedPacketConnectionTimeout",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.otelMetricsCollectorEndpoint",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.otelTraceCollectorEndpoint",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.podReplicas",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.quiescentPeriodMs",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.removeAuthHeader",
+      "changeClass": "gated",
+      "explicit": true
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.requestTransforms",
+      "changeClass": "gated",
+      "explicit": true,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.requestTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.requestTransforms.[]",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.requestTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.requestTransforms.[].context",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.requestTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.requestTransforms.[].context.valueDirectories",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.requestTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.requestTransforms.[].context.valueDirectories.[]",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.requestTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.requestTransforms.[].context.valueDirectories.[].configMap",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.requestTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.requestTransforms.[].context.valueDirectories.[].image",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.requestTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.requestTransforms.[].context.valueDirectories.[].path",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.requestTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.requestTransforms.[].context.valueDirectories.[].pullPolicy",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.requestTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.requestTransforms.[].context.values",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.requestTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.requestTransforms.[].context.values.{key}",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.requestTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.requestTransforms.[].context.values.{key}.fromFile",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.requestTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.requestTransforms.[].context.values.{key}.fromFile.configMap",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.requestTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.requestTransforms.[].context.values.{key}.fromFile.image",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.requestTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.requestTransforms.[].context.values.{key}.fromFile.path",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.requestTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.requestTransforms.[].context.values.{key}.fromFile.pullPolicy",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.requestTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.requestTransforms.[].context.values.{key}.value",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.requestTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.requestTransforms.[].entryPoint",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.requestTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.requestTransforms.[].entryPoint.javascript",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.requestTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.requestTransforms.[].entryPoint.javascriptFile",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.requestTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.requestTransforms.[].entryPoint.javascriptFile.configMap",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.requestTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.requestTransforms.[].entryPoint.javascriptFile.image",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.requestTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.requestTransforms.[].entryPoint.javascriptFile.path",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.requestTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.requestTransforms.[].entryPoint.javascriptFile.pullPolicy",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.requestTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.requestTransforms.[].entryPoint.python",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.requestTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.requestTransforms.[].entryPoint.pythonFile",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.requestTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.requestTransforms.[].entryPoint.pythonFile.configMap",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.requestTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.requestTransforms.[].entryPoint.pythonFile.image",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.requestTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.requestTransforms.[].entryPoint.pythonFile.path",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.requestTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.requestTransforms.[].entryPoint.pythonFile.pullPolicy",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.requestTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.requestTransforms.[].transformName",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.requestTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.resources",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.resources.limits",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.resources.limits.cpu",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.resources.limits.ephemeral-storage",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.resources.limits.memory",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.resources.requests",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.resources.requests.cpu",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.resources.requests.ephemeral-storage",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.resources.requests.memory",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.speedupFactor",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.targetServerResponseTimeoutSeconds",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.transformerConfig",
+      "changeClass": "gated",
+      "explicit": true
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.transformerConfigEncoded",
+      "changeClass": "gated",
+      "explicit": true
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.transformerConfigFile",
+      "changeClass": "gated",
+      "explicit": true
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.tupleMaxBufferSeconds",
+      "changeClass": "gated",
+      "explicit": true
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.tupleMaxFileSizeMb",
+      "changeClass": "gated",
+      "explicit": true
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.tupleMaxPerFile",
+      "changeClass": "gated",
+      "explicit": true
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.tupleS3Bucket",
+      "changeClass": "gated",
+      "explicit": true
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.tupleS3Endpoint",
+      "changeClass": "gated",
+      "explicit": true
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.tupleS3Prefix",
+      "changeClass": "gated",
+      "explicit": true
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.tupleS3Region",
+      "changeClass": "gated",
+      "explicit": true
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.tupleTransformerConfig",
+      "changeClass": "gated",
+      "explicit": true
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.tupleTransformerConfigBase64",
+      "changeClass": "gated",
+      "explicit": true
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.tupleTransformerConfigFile",
+      "changeClass": "gated",
+      "explicit": true
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.tupleTransforms",
+      "changeClass": "gated",
+      "explicit": true,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.tupleTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.tupleTransforms.[]",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.tupleTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.tupleTransforms.[].context",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.tupleTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.tupleTransforms.[].context.valueDirectories",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.tupleTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.tupleTransforms.[].context.valueDirectories.[]",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.tupleTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.tupleTransforms.[].context.valueDirectories.[].configMap",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.tupleTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.tupleTransforms.[].context.valueDirectories.[].image",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.tupleTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.tupleTransforms.[].context.valueDirectories.[].path",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.tupleTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.tupleTransforms.[].context.valueDirectories.[].pullPolicy",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.tupleTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.tupleTransforms.[].context.values",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.tupleTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.tupleTransforms.[].context.values.{key}",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.tupleTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.tupleTransforms.[].context.values.{key}.fromFile",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.tupleTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.tupleTransforms.[].context.values.{key}.fromFile.configMap",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.tupleTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.tupleTransforms.[].context.values.{key}.fromFile.image",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.tupleTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.tupleTransforms.[].context.values.{key}.fromFile.path",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.tupleTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.tupleTransforms.[].context.values.{key}.fromFile.pullPolicy",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.tupleTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.tupleTransforms.[].context.values.{key}.value",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.tupleTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.tupleTransforms.[].entryPoint",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.tupleTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.tupleTransforms.[].entryPoint.javascript",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.tupleTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.tupleTransforms.[].entryPoint.javascriptFile",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.tupleTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.tupleTransforms.[].entryPoint.javascriptFile.configMap",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.tupleTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.tupleTransforms.[].entryPoint.javascriptFile.image",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.tupleTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.tupleTransforms.[].entryPoint.javascriptFile.path",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.tupleTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.tupleTransforms.[].entryPoint.javascriptFile.pullPolicy",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.tupleTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.tupleTransforms.[].entryPoint.python",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.tupleTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.tupleTransforms.[].entryPoint.pythonFile",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.tupleTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.tupleTransforms.[].entryPoint.pythonFile.configMap",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.tupleTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.tupleTransforms.[].entryPoint.pythonFile.image",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.tupleTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.tupleTransforms.[].entryPoint.pythonFile.path",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.tupleTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.tupleTransforms.[].entryPoint.pythonFile.pullPolicy",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.tupleTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.tupleTransforms.[].transformName",
+      "changeClass": "gated",
+      "explicit": false,
+      "inheritedFrom": "traffic.replayers.{key}.replayerConfig.tupleTransforms"
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.useLocalStack",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.replayers.{key}.replayerConfig.userAgent",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.replayers.{key}.toTarget",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.s3Sources",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.s3Sources.{key}",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.s3Sources.{key}.awsRegion",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.s3Sources.{key}.endpoint",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.s3Sources.{key}.kafka",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.s3Sources.{key}.kafkaTopic",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.s3Sources.{key}.s3Uri",
+      "changeClass": "safe",
+      "explicit": false
+    },
+    {
+      "path": "traffic.s3Sources.{key}.sourceLabel",
+      "changeClass": "safe",
+      "explicit": false
+    }
+  ]
+}

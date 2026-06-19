@@ -14,7 +14,10 @@ def intermediateRegistry = new Registry(intermediateUrl.toString(), localContain
 // ECR pull-through cache: auto-derived from ECR_PULL_THROUGH_ENDPOINT env var in root build.gradle.
 // Can be overridden with: ./gradlew buildImagesToRegistry -PpullThroughCacheEndpoint=123456789.dkr.ecr.us-east-1.amazonaws.com
 def ptcEndpoint = rootProject.findProperty('pullThroughCacheEndpoint')?.toString() ?: ''
+def ptcContainerEndpoint = rootProject.findProperty('pullThroughCacheContainerEndpoint')?.toString() ?: ptcEndpoint
 def ptc = new PullThroughCacheHelper(ptcEndpoint)
+def ptcContainer = new PullThroughCacheHelper(ptcContainerEndpoint)
+def buildKitBaseImage = { String imageRef -> ptcContainer.rewrite(imageRef) }
 
 def publishStyle = (rootProject.findProperty("publishStyle") ?: "paths").toString()
 def publishedRepoByImageName = [
@@ -80,8 +83,8 @@ def buildKitProjects = [
                 imageName:  "elasticsearch_test_console",
                 imageTag:   "latest",
                 buildArgs: [
-                        BUILDER_IMAGE: ptc.rewrite("docker.io/library/amazonlinux:2023"),
-                        RUNTIME_IMAGE: ptc.rewrite("docker.io/library/amazonlinux:2023"),
+                        BUILDER_IMAGE: buildKitBaseImage("docker.io/library/amazonlinux:2023"),
+                        RUNTIME_IMAGE: buildKitBaseImage("docker.io/library/amazonlinux:2023"),
                 ]
         ],
         [
@@ -90,7 +93,7 @@ def buildKitProjects = [
                 imageName:  "reindex_from_snapshot",
                 imageTag:   "latest",
                 buildArgs: [
-                        BASE_IMAGE: ptc.rewrite("docker.io/library/amazoncorretto:21-al2023-headless"),
+                        BASE_IMAGE: buildKitBaseImage("docker.io/library/amazoncorretto:21-al2023-headless"),
                 ],
                 requiredDependencies: [
                         ":DocumentsFromSnapshotMigration:copyDockerRuntimeJars",
@@ -103,7 +106,9 @@ def buildKitProjects = [
                 imageName:  "migration_console_base",
                 buildArgs: [
                         BASE_IMAGE: RegistryImageBuildUtils.resolveBaseImageForContainer(
-                                intermediateRegistry, "migrations", "elasticsearch_test_console", "latest")
+                                intermediateRegistry, "migrations", "elasticsearch_test_console", "latest"),
+                        TOOLS_IMAGE: rootProject.findProperty("migrationConsoleToolsImage")?.toString()
+                                ?: buildKitBaseImage("docker.io/library/amazonlinux:2023")
                 ],
                 requiredDependencies: [
                         ":migrationConsole:syncDockerBuildContext",
@@ -159,9 +164,9 @@ def customESEntries = [
                 imageTag:   "1.5.2",
                 buildArgs: [
                         CORRETTO_VERSION: "8",
-                        BASE_IMAGE: ptc.rewrite("docker.io/library/amazoncorretto:8-alpine"),
-                        DOWNLOADER_IMAGE: ptc.rewrite("docker.io/library/amazonlinux:2023"),
-                        CONFIG_BUILDER_IMAGE: ptc.rewrite("docker.io/library/amazonlinux:2023"),
+                        BASE_IMAGE: buildKitBaseImage("docker.io/library/amazoncorretto:8-alpine"),
+                        DOWNLOADER_IMAGE: buildKitBaseImage("docker.io/library/amazonlinux:2023"),
+                        CONFIG_BUILDER_IMAGE: buildKitBaseImage("docker.io/library/amazonlinux:2023"),
                         JAVA_HOME_PATH: "/usr/lib/jvm/java-8-amazon-corretto",
                         ES_VERSION: "1.5.2",
                         TARBALL_URL: "https://download.elastic.co/elasticsearch/elasticsearch/elasticsearch-1.5.2.tar.gz"
@@ -174,9 +179,9 @@ def customESEntries = [
                 imageTag:   "2.4.6",
                 buildArgs: [
                         CORRETTO_VERSION: "8",
-                        BASE_IMAGE: ptc.rewrite("docker.io/library/amazoncorretto:8-alpine"),
-                        DOWNLOADER_IMAGE: ptc.rewrite("docker.io/library/amazonlinux:2023"),
-                        CONFIG_BUILDER_IMAGE: ptc.rewrite("docker.io/library/amazonlinux:2023"),
+                        BASE_IMAGE: buildKitBaseImage("docker.io/library/amazoncorretto:8-alpine"),
+                        DOWNLOADER_IMAGE: buildKitBaseImage("docker.io/library/amazonlinux:2023"),
+                        CONFIG_BUILDER_IMAGE: buildKitBaseImage("docker.io/library/amazonlinux:2023"),
                         JAVA_HOME_PATH: "/usr/lib/jvm/java-8-amazon-corretto",
                         ES_VERSION: "2.4.6",
                         TARBALL_URL: "https://download.elastic.co/elasticsearch/release/org/elasticsearch/distribution/tar/elasticsearch/2.4.6/elasticsearch-2.4.6.tar.gz"
@@ -189,9 +194,9 @@ def customESEntries = [
                 imageTag:   "5.6.16",
                 buildArgs: [
                         CORRETTO_VERSION: "8",
-                        BASE_IMAGE: ptc.rewrite("docker.io/library/amazoncorretto:8-alpine"),
-                        DOWNLOADER_IMAGE: ptc.rewrite("docker.io/library/amazonlinux:2023"),
-                        CONFIG_BUILDER_IMAGE: ptc.rewrite("docker.io/library/amazonlinux:2023"),
+                        BASE_IMAGE: buildKitBaseImage("docker.io/library/amazoncorretto:8-alpine"),
+                        DOWNLOADER_IMAGE: buildKitBaseImage("docker.io/library/amazonlinux:2023"),
+                        CONFIG_BUILDER_IMAGE: buildKitBaseImage("docker.io/library/amazonlinux:2023"),
                         JAVA_HOME_PATH: "/usr/lib/jvm/java-8-amazon-corretto",
                         ES_VERSION: "5.6.16",
                         TARBALL_URL: "https://artifacts.elastic.co/downloads/elasticsearch/elasticsearch-5.6.16.tar.gz"
@@ -204,9 +209,9 @@ def customESEntries = [
                 imageTag:   "6.8.23",
                 buildArgs: [
                         CORRETTO_VERSION: "11",
-                        BASE_IMAGE: ptc.rewrite("docker.io/library/amazoncorretto:11-al2023-headless"),
-                        DOWNLOADER_IMAGE: ptc.rewrite("docker.io/library/amazonlinux:2023"),
-                        CONFIG_BUILDER_IMAGE: ptc.rewrite("docker.io/library/amazonlinux:2023"),
+                        BASE_IMAGE: buildKitBaseImage("docker.io/library/amazoncorretto:11-al2023-headless"),
+                        DOWNLOADER_IMAGE: buildKitBaseImage("docker.io/library/amazonlinux:2023"),
+                        CONFIG_BUILDER_IMAGE: buildKitBaseImage("docker.io/library/amazonlinux:2023"),
                         JAVA_HOME_PATH: "/usr/lib/jvm/java-11-amazon-corretto",
                         ES_VERSION: "6.8.23",
                         TARBALL_URL: "https://artifacts.elastic.co/downloads/elasticsearch/elasticsearch-6.8.23.tar.gz"
@@ -219,9 +224,9 @@ def customESEntries = [
                 imageTag:   "7.10.2",
                 buildArgs: [
                         CORRETTO_VERSION: "11",
-                        BASE_IMAGE: ptc.rewrite("docker.io/library/amazoncorretto:11-al2023-headless"),
-                        DOWNLOADER_IMAGE: ptc.rewrite("docker.io/library/amazonlinux:2023"),
-                        CONFIG_BUILDER_IMAGE: ptc.rewrite("docker.io/library/amazonlinux:2023"),
+                        BASE_IMAGE: buildKitBaseImage("docker.io/library/amazoncorretto:11-al2023-headless"),
+                        DOWNLOADER_IMAGE: buildKitBaseImage("docker.io/library/amazonlinux:2023"),
+                        CONFIG_BUILDER_IMAGE: buildKitBaseImage("docker.io/library/amazonlinux:2023"),
                         JAVA_HOME_PATH: "/usr/lib/jvm/java-11-amazon-corretto",
                         ES_VERSION: "7.10.2",
                         TARBALL_URL: "https://artifacts.elastic.co/downloads/elasticsearch/elasticsearch-7.10.2-linux-ARCH.tar.gz"
@@ -234,9 +239,9 @@ def customESEntries = [
                 imageTag:   "8.19.14",
                 buildArgs: [
                         CORRETTO_VERSION: "17",
-                        BASE_IMAGE: ptc.rewrite("docker.io/library/amazoncorretto:17-al2023-headless"),
-                        DOWNLOADER_IMAGE: ptc.rewrite("docker.io/library/amazonlinux:2023"),
-                        CONFIG_BUILDER_IMAGE: ptc.rewrite("docker.io/library/amazonlinux:2023"),
+                        BASE_IMAGE: buildKitBaseImage("docker.io/library/amazoncorretto:17-al2023-headless"),
+                        DOWNLOADER_IMAGE: buildKitBaseImage("docker.io/library/amazonlinux:2023"),
+                        CONFIG_BUILDER_IMAGE: buildKitBaseImage("docker.io/library/amazonlinux:2023"),
                         JAVA_HOME_PATH: "/usr/lib/jvm/java-17-amazon-corretto",
                         ES_VERSION: "8.19.14",
                         TARBALL_URL: "https://artifacts.elastic.co/downloads/elasticsearch/elasticsearch-8.19.14-linux-ARCH.tar.gz"

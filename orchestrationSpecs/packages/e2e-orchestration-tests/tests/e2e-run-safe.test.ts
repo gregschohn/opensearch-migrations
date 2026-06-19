@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { runSafeCase, runExpandedCases, runStateControlledCase, runImpossibleCase, LiveRunnerDeps } from "../src/e2e-run";
+import { runSafeCase, runExpandedCases, runStateControlledCase, runImpossibleCase, listCasesFromSpec, LiveRunnerDeps } from "../src/e2e-run";
 import { buildTopology } from "../src/componentTopology";
 import { WorkflowCli } from "../src/workflowCli";
 import { K8sClient } from "../src/k8sClient";
@@ -456,6 +456,55 @@ describe("runStateControlledCase", () => {
 });
 
 describe("runExpandedCases", () => {
+    it("lists expanded cases from a spec without submitting workflows", () => {
+        const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "list-cases-"));
+        try {
+            const baselinePath = path.join(tmpDir, "baseline.wf.yaml");
+            const specPath = path.join(tmpDir, "list.test.yaml");
+            fs.writeFileSync(baselinePath, "proxy:\n  captureConfig: {}\n", "utf8");
+            fs.writeFileSync(
+                specPath,
+                [
+                    "baseConfig: ./baseline.wf.yaml",
+                    "phaseCompletionTimeoutSeconds: 5",
+                    "matrix:",
+                    "  subject: captureproxy:capture-proxy",
+                    "  select:",
+                    "    - changeClass: safe",
+                    "      patterns: [subject-change]",
+                    "lifecycle:",
+                    "  setup: []",
+                    "  teardown: []",
+                    "approvalGates: []",
+                    "fixtures: {}",
+                    "",
+                ].join("\n"),
+                "utf8",
+            );
+
+            const { MutatorRegistry } = require("../src/fixtures/mutators") as typeof import("../src/fixtures/mutators");
+            const registry = new MutatorRegistry();
+            registry.register(safeMutator());
+
+            expect(listCasesFromSpec({ specPath, mutatorRegistry: registry })).toEqual([
+                expect.objectContaining({
+                    caseName: "captureproxy-capture-proxy-subject-change-proxy-numThreads",
+                    subject: SUBJECT,
+                    mutatorName: "proxy-numThreads",
+                    declaredChangeClass: "safe",
+                    fieldChangeClass: "safe",
+                    dependencyPattern: "subject-change",
+                    response: null,
+                    subjectStateAtMutation: "completed",
+                    changedPaths: ["traffic.proxies.capture-proxy.proxyConfig.numThreads"],
+                    expectedRerunComponents: [SUBJECT],
+                }),
+            ]);
+        } finally {
+            fs.rmSync(tmpDir, { recursive: true, force: true });
+        }
+    });
+
     it("writes one snapshot per expanded case and returns every path", async () => {
         // Build deps whose spec triggers expansion to a single case
         // via a mutator registry we control. We use the existing

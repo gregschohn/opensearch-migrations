@@ -28,7 +28,7 @@ This test framework verifies that orchestration logic against a live cluster:
 
 ## Generating The Transition Trees
 
-Before writing any tests, run `transitionTreeGenerator` once against the migration framework's user config schema. It reads the `changeRestriction` and checksum materiality annotations on every schema field and produces a per-component map from field path to allowed behavior. Any field without an explicit `changeRestriction` annotation defaults to `safe`, so the generator covers every field in the schema automatically — there is no prerequisite annotation pass before tests can be written.
+Before writing any tests, run the transition-tree generator once against the migration framework's user config schema. It reads the `changeRestriction` and checksum materiality annotations on every schema field and produces a committed map from user-config field path to allowed field-level behavior. Any field without an explicit `changeRestriction` annotation defaults to `safe`, so the generator covers every field in the schema automatically — there is no prerequisite annotation pass before tests can be written.
 
 ```
 proxy:capture-proxy
@@ -46,7 +46,13 @@ Commit these trees to the repo. They are the **single source of ground truth** f
 Regenerate the trees whenever the user config schema changes:
 
 ```
-npx tsx src/transitionTreeGenerator.ts
+npm run -w @opensearch-migrations/e2e-orchestration-tests generate-transition-trees
+```
+
+During development, list the cases a spec will expand to without touching Kubernetes:
+
+```
+npm run -w @opensearch-migrations/e2e-orchestration-tests run -- tests/live-specs/fullMigrationProxySafe.test.yaml --list-cases
 ```
 
 ---
@@ -1013,16 +1019,15 @@ Any behavioral difference between them is a bug.
 ## Current Gaps
 
 **Not yet implemented:**
-- `transitionTreeGenerator` (schema `changeRestriction` → per-component transition trees).
 - Timing capture from Argo node status.
-- Real-cluster validation for gated and impossible response plans. The case-plan executor can construct the responses, but gate-state assertions and non-advancement checks still need live proof.
 - Component-level correlation from Argo nodes to behavior labels.
+- Continue-after-failure for multi-case runs.
 
 **Implemented but incomplete:**
 - Multi-case execution: expanded cases run sequentially, but failure in one case currently stops later cases.
 - Snapshot write-to-disk: compact and detailed snapshots exist, but timing and component-correlated Argo evidence are incomplete.
-- Tree-based pass/fail in `assertLogic`: pure checkpoint assertions exist; generated transition-tree mapping is still pending.
-- Gated/impossible flow: response case plans exist in the live runner; gate-time fixture validations and real-cluster gate assertions are still pending.
+- Tree-based pass/fail in `assertLogic`: pure checkpoint assertions exist, mutators are checked against the generated user-config transition tree at expansion time, and component-level materiality mapping is still pending.
+- Gated/impossible flow: response case plans exist in the live runner and have focused live evidence; gate-time fixture validations and post-merge full reruns are still pending.
 - Outer workflow parity: safe flows work; approval-time validation semantics not yet equivalent to live runner.
 
 ---
