@@ -11,6 +11,7 @@ set -eu
 : "${DATASNAPSHOT_UID:?}"
 : "${SNAPSHOT_NAME:?}"
 : "${CONFIG_CHECKSUM:?}"
+: "${CHECKSUM_FOR_SNAPSHOT_MIGRATION:?}"
 : "${CONSOLE_IMAGE:?}"
 : "${CONSOLE_IMAGE_PULL_POLICY:?}"
 : "${SOURCE_LABEL:?}"
@@ -85,6 +86,7 @@ spec:
                 - {name: DATASNAPSHOT_NAME,        value: "${DATASNAPSHOT_NAME}"}
                 - {name: SNAPSHOT_NAME,            value: "${SNAPSHOT_NAME}"}
                 - {name: CONFIG_CHECKSUM,          value: "${CONFIG_CHECKSUM}"}
+                - {name: CHECKSUM_FOR_SNAPSHOT_MIGRATION, value: "${CHECKSUM_FOR_SNAPSHOT_MIGRATION}"}
                 - {name: SNAPSHOT_CRONJOB_NAME,    value: "${CRONJOB_NAME}"}
                 - {name: STARTUP_GRACE_SECONDS,    value: "${STARTUP_GRACE_SECONDS}"}
                 - {name: CONSOLE_CONFIG_BASE64,    value: "${CONSOLE_CONFIG_BASE64}"}
@@ -124,11 +126,12 @@ seed_status_patch="$(jq -nc \
     --arg updatedAt "$now" \
     --arg snapshotName "$SNAPSHOT_NAME" \
     --arg configChecksum "$CONFIG_CHECKSUM" \
+    --arg checksumForSnapshotMigration "$CHECKSUM_FOR_SNAPSHOT_MIGRATION" \
     '{status:{
         phase:"Pending",
         snapshotName:$snapshotName,
         configChecksum:$configChecksum,
-        checksumForSnapshotMigration:$configChecksum,
+        checksumForSnapshotMigration:$checksumForSnapshotMigration,
         snapshotCreation:{
             phase:"Pending",
             updatedAt:$updatedAt,
@@ -162,6 +165,9 @@ while :; do
             '.spec.jobTemplate.metadata.labels[$k] == $v' >/dev/null || ok=false
         echo "$cj" | jq -e --arg cc "$CONFIG_CHECKSUM" \
             '[.spec.jobTemplate.spec.template.spec.containers[0].env[] | select(.name=="CONFIG_CHECKSUM")][0].value == $cc' \
+            >/dev/null || ok=false
+        echo "$cj" | jq -e --arg cc "$CHECKSUM_FOR_SNAPSHOT_MIGRATION" \
+            '[.spec.jobTemplate.spec.template.spec.containers[0].env[] | select(.name=="CHECKSUM_FOR_SNAPSHOT_MIGRATION")][0].value == $cc' \
             >/dev/null || ok=false
         echo "$cj" | jq -e --arg claimed "$CLAIMED_AT" \
             '[.spec.jobTemplate.spec.template.spec.containers[0].env[] | select(.name=="CLAIMED_AT")][0].value == $claimed' \

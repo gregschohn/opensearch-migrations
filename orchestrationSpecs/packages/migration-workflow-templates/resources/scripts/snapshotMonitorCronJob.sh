@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -eu
 
+: "${CHECKSUM_FOR_SNAPSHOT_MIGRATION:?}"
+
 SNAPSHOT_MONITOR_WORKFLOW_UID_LABEL="${SNAPSHOT_MONITOR_WORKFLOW_UID_LABEL}"
 K8S_API_SERVER="https://${KUBERNETES_SERVICE_HOST}:${KUBERNETES_SERVICE_PORT_HTTPS:-443}"
 K8S_SA_TOKEN_FILE="/var/run/secrets/kubernetes.io/serviceaccount/token"
@@ -97,7 +99,7 @@ make_snapshot_status_patch() {
         --arg message "$message" \
         --arg snapshotName "$SNAPSHOT_NAME" \
         --arg configChecksum "$CONFIG_CHECKSUM" \
-        --arg checksumForSnapshotMigration "$CONFIG_CHECKSUM" \
+        --arg checksumForSnapshotMigration "$CHECKSUM_FOR_SNAPSHOT_MIGRATION" \
         --argjson shardsTotal "$total" \
         --argjson shardsSuccessful "$successful" \
         --argjson shardsFailed "$failed" \

@@ -229,6 +229,10 @@
               "value": "{{inputs.parameters.configChecksum}}"
             },
             {
+              "name": "CHECKSUM_FOR_SNAPSHOT_MIGRATION",
+              "value": "{{=inputs.parameters.configChecksum+':'+inputs.parameters.snapshotName}}"
+            },
+            {
               "name": "CONSOLE_IMAGE",
               "value": "{{inputs.parameters.imageMigrationConsoleLocation}}"
             },
@@ -451,7 +455,7 @@
                 "parameters": [
                   {
                     "name": "configChecksum",
-                    "value": "{{inputs.parameters.configChecksum}}"
+                    "value": "{{=inputs.parameters.configChecksum+':'+jsonpath(inputs.parameters.snapshotConfig, '$.snapshotName')}}"
                   },
                   {
                     "name": "imageMigrationConsoleLocation",

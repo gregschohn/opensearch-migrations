@@ -31,6 +31,14 @@ function getSnapshotDoneCronJobName(dataSnapshotName: BaseExpression<string>) {
     return expr.concat(dataSnapshotName, expr.literal("-snapshot-done"));
 }
 
+export function snapshotOutputChecksumForMigration(
+    configChecksum: BaseExpression<string>,
+    snapshotName: BaseExpression<string>,
+) {
+    // DataSnapshot config alone does not distinguish reset-created snapshots.
+    return expr.concat(configChecksum, expr.literal(":"), snapshotName);
+}
+
 const SNAPSHOT_MONITOR_WORKFLOW_UID_LABEL = "migrations.opensearch.org/snapshot-monitor-workflow-uid";
 const SNAPSHOT_MONITOR_SESSION_LABEL = "migrations.opensearch.org/snapshot-monitor-session";
 
@@ -148,6 +156,10 @@ export const CreateSnapshot = WorkflowBuilder.create({
                 DATASNAPSHOT_UID: b.inputs.dataSnapshotUid,
                 SNAPSHOT_NAME: b.inputs.snapshotName,
                 CONFIG_CHECKSUM: b.inputs.configChecksum,
+                CHECKSUM_FOR_SNAPSHOT_MIGRATION: snapshotOutputChecksumForMigration(
+                    b.inputs.configChecksum,
+                    b.inputs.snapshotName,
+                ),
                 CONSOLE_IMAGE: b.inputs.imageMigrationConsoleLocation,
                 CONSOLE_IMAGE_PULL_POLICY: b.inputs.imageMigrationConsolePullPolicy,
                 SOURCE_LABEL: b.inputs.sourceK8sLabel,
@@ -205,7 +217,10 @@ export const CreateSnapshot = WorkflowBuilder.create({
                 c.register({
                     ...selectInputsForRegister(b, c),
                     resourceName: b.inputs.dataSnapshotName,
-                    configChecksum: b.inputs.configChecksum,
+                    configChecksum: snapshotOutputChecksumForMigration(
+                        b.inputs.configChecksum,
+                        expr.jsonPathStrict(b.inputs.snapshotConfig, "snapshotName"),
+                    ),
                     checksumField: expr.literal("checksumForSnapshotMigration"),
                 }))
         )

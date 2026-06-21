@@ -38,6 +38,7 @@ import {
 import {DocumentBulkLoad} from "./documentBulkLoad";
 import {MetadataMigration} from "./metadataMigration";
 import {CreateOrGetSnapshot} from "./createOrGetSnapshot";
+import {snapshotOutputChecksumForMigration} from "./createSnapshot";
 import {ResourceManagement} from "./resourceManagement";
 
 import {CommonWorkflowParameters, workflowScriptCommand, workflowScriptRootEnvVars} from "./commonUtils/workflowParameters";
@@ -328,7 +329,7 @@ export const FullMigration = WorkflowBuilder.create({
                     ...selectInputsForRegister(b, c),
                     resourceName: b.inputs.resourceName,
                     configChecksum: b.inputs.configChecksum,
-                    checksumField: expr.literal("checksumForSnapshotMigration"),
+                    checksumField: expr.literal("configChecksum"),
                 }),
                 {when: c => ({templateExp: expr.and(
                     expr.equals(c.readSnapshotPhase.outputs.phase, "Pending"),
@@ -488,67 +489,67 @@ export const FullMigration = WorkflowBuilder.create({
         .addInputsFromRecord(ImageParameters)
 
         .addSteps(b => {
+            const snapshotNameResolution = () => expr.get(
+                expr.deserializeRecord(b.inputs.snapshotMigrationConfig),
+                "snapshotNameResolution",
+            );
+            const hasDataSnapshotResource = () =>
+                expr.hasKey(snapshotNameResolution(), "dataSnapshotResourceName");
+            const resolvedSnapshotName = (dataSnapshotName: BaseExpression<string>) => expr.ternary(
+                expr.hasKey(snapshotNameResolution(), "externalSnapshotName"),
+                expr.getLoose(snapshotNameResolution(), "externalSnapshotName"),
+                dataSnapshotName,
+            );
+            const effectiveConfigChecksum = (dataSnapshotName: BaseExpression<string>) => expr.ternary(
+                hasDataSnapshotResource(),
+                snapshotOutputChecksumForMigration(
+                    b.inputs.configChecksum,
+                    resolvedSnapshotName(dataSnapshotName),
+                ),
+                b.inputs.configChecksum,
+            );
+
             return b
+            .addStep("waitIndefinitelyForSnapshot", ResourceManagement, "waitIndefinitelyForDataSnapshot", c => {
+                const config = expr.deserializeRecord(b.inputs.snapshotMigrationConfig);
+                return c.register({
+                    ...selectInputsForRegister(b, c),
+                    resourceName: expr.ternary(
+                        hasDataSnapshotResource(),
+                        expr.getLoose(snapshotNameResolution(), "dataSnapshotResourceName"),
+                        expr.literal("")),
+                    configChecksum: expr.dig(config, ["snapshotConfigChecksum"], expr.literal("")),
+                    checksumField: expr.literal("configChecksum"),
+                });
+            }, {
+                    when: c => ({templateExp: hasDataSnapshotResource()})
+                }
+            )
+            .addStep("readSnapshotName", ResourceManagement, "readDataSnapshotName", c => {
+                    return c.register({
+                        resourceName: expr.ternary(
+                            hasDataSnapshotResource(),
+                            expr.getLoose(snapshotNameResolution(), "dataSnapshotResourceName"),
+                            expr.literal(""))
+                    });
+                }, {
+                    when: c => ({templateExp: hasDataSnapshotResource()})
+                }
+            )
             .addStep("reconcileSnapshotMigrationResource", ResourceManagement, "reconcileSnapshotMigrationResource", c => {
                     return c.register({
                         snapshotMigrationConfig: b.inputs.snapshotMigrationConfig,
                         resourceName: b.inputs.resourceName,
-                        configChecksum: b.inputs.configChecksum,
+                        configChecksum: effectiveConfigChecksum(c.steps.readSnapshotName.outputs.snapshotName),
                         retryGateName: expr.concat(expr.literal("snapshotmigration."), b.inputs.resourceName, expr.literal(".vapretry")),
                         retryGroupName_view: expr.concat(expr.literal("SnapshotMigration: "), b.inputs.resourceName),
                     });
                 },
             )
-            .addStep("waitIndefinitelyForSnapshot", ResourceManagement, "waitIndefinitelyForDataSnapshot", c => {
-                const config = expr.deserializeRecord(b.inputs.snapshotMigrationConfig);
-                const snapshotNameRes = expr.get(config, "snapshotNameResolution");
-                return c.register({
-                    ...selectInputsForRegister(b, c),
-                    resourceName: expr.ternary(
-                        expr.hasKey(snapshotNameRes, "dataSnapshotResourceName"),
-                        expr.getLoose(snapshotNameRes, "dataSnapshotResourceName"),
-                        expr.literal("")),
-                    configChecksum: expr.dig(config, ["snapshotConfigChecksum"], expr.literal("")),
-                    checksumField: expr.literal("checksumForSnapshotMigration"),
-                });
-            }, {
-                    when: c => ({templateExp: expr.and(
-                        checksumNotDone(c.reconcileSnapshotMigrationResource.outputs.currentConfigChecksum, b.inputs.configChecksum),
-                        expr.hasKey(
-                            expr.get(
-                                expr.deserializeRecord(b.inputs.snapshotMigrationConfig),
-                                "snapshotNameResolution"
-                            ),
-                            "dataSnapshotResourceName")
-                    )})
-                }
-            )
-            .addStep("readSnapshotName", ResourceManagement, "readDataSnapshotName", c => {
-                    const snapshotNameRes = expr.get(
-                        expr.deserializeRecord(b.inputs.snapshotMigrationConfig),
-                        "snapshotNameResolution");
-                    return c.register({
-                        resourceName: expr.ternary(
-                            expr.hasKey(snapshotNameRes, "dataSnapshotResourceName"),
-                            expr.getLoose(snapshotNameRes, "dataSnapshotResourceName"),
-                            expr.literal(""))
-                    });
-                }, {
-                    when: c => ({templateExp: expr.and(
-                        checksumNotDone(c.reconcileSnapshotMigrationResource.outputs.currentConfigChecksum, b.inputs.configChecksum),
-                        expr.hasKey(
-                            expr.get(
-                                expr.deserializeRecord(b.inputs.snapshotMigrationConfig),
-                                "snapshotNameResolution"
-                            ),
-                            "dataSnapshotResourceName")
-                    )})
-                }
-            )
             .addStep("migrateFromSnapshot", INTERNAL, "migrateFromSnapshot", c => {
                     const snapshotMigrationConfig = expr.deserializeRecord(b.inputs.snapshotMigrationConfig);
                     const snapshotNameResolution = expr.get(snapshotMigrationConfig, "snapshotNameResolution");
-                    const resolvedSnapshotName = expr.ternary(
+                    const resolvedSnapshotNameForMigration = expr.ternary(
                         expr.hasKey(snapshotNameResolution, "externalSnapshotName"),
                         expr.getLoose(snapshotNameResolution, "externalSnapshotName"),
                         c.steps.readSnapshotName.outputs.snapshotName
@@ -568,7 +569,7 @@ export const FullMigration = WorkflowBuilder.create({
                             authConfig: expr.dig(snapshotMigrationConfig, ["sourceAuth"], expr.makeDict({}))
                         })),
                         snapshotConfig: expr.serialize(expr.makeDict({
-                            snapshotName: resolvedSnapshotName,
+                            snapshotName: resolvedSnapshotNameForMigration,
                             label: expr.get(snapshotRepoConfig, "label"),
                             repoConfig: expr.get(snapshotRepoConfig, "repoConfig")
                         })),
@@ -589,10 +590,14 @@ export const FullMigration = WorkflowBuilder.create({
                         groupName_view: expr.get(snapshotMigrationConfig, "migrationLabel"),
                         workloadIdentityChecksum: expr.get(snapshotMigrationConfig, "workloadIdentityChecksum"),
                         checksumForReplayer: expr.dig(snapshotMigrationConfig, ["checksumForReplayer"], ""),
-                        sourceEndpoint: expr.dig(snapshotMigrationConfig, ["sourceEndpoint"], "")
+                        sourceEndpoint: expr.dig(snapshotMigrationConfig, ["sourceEndpoint"], ""),
+                        configChecksum: effectiveConfigChecksum(c.steps.readSnapshotName.outputs.snapshotName),
                     });
                 }, {
-                    when: c => ({templateExp: checksumNotDone(c.reconcileSnapshotMigrationResource.outputs.currentConfigChecksum, b.inputs.configChecksum)}),
+                    when: c => ({templateExp: checksumNotDone(
+                        c.reconcileSnapshotMigrationResource.outputs.currentConfigChecksum,
+                        effectiveConfigChecksum(c.readSnapshotName.outputs.snapshotName),
+                    )}),
                 }
             )
             // Metadata-only path: workflow patches SM.status itself. On the
@@ -603,14 +608,17 @@ export const FullMigration = WorkflowBuilder.create({
                 c => c.register({
                     resourceName: b.inputs.resourceName,
                     phase: expr.literal("Completed"),
-                    configChecksum: b.inputs.configChecksum,
+                    configChecksum: effectiveConfigChecksum(c.steps.readSnapshotName.outputs.snapshotName),
                     checksumForReplayer: expr.dig(
                         expr.deserializeRecord(b.inputs.snapshotMigrationConfig),
                         ["checksumForReplayer"], ""
                     ),
                 }),
                 {when: c => ({templateExp: expr.and(
-                    checksumNotDone(c.reconcileSnapshotMigrationResource.outputs.currentConfigChecksum, b.inputs.configChecksum),
+                    checksumNotDone(
+                        c.reconcileSnapshotMigrationResource.outputs.currentConfigChecksum,
+                        effectiveConfigChecksum(c.readSnapshotName.outputs.snapshotName),
+                    ),
                     expr.not(expr.hasKey(
                         expr.deserializeRecord(b.inputs.snapshotMigrationConfig),
                         "documentBackfillConfig"))
