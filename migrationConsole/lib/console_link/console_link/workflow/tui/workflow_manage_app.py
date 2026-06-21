@@ -27,6 +27,12 @@ from .config_edit_tree import (
     selected_edit_node,
     update_help_panel,
 )
+from .external_resource_modal import (
+    ExternalResourceFormModal,
+    ExternalResourcePickerModal,
+    ExternalResourceViewModal,
+    values_for_form,
+)
 from .live_status_manager import LiveStatusManager
 from .log_manager import LogManager
 from .manage_injections import ArgoWorkflowInterface, PodScraperInterface, WaiterInterface
@@ -52,6 +58,8 @@ TREE_ROOT_ANCHOR = "workflow-tree"
 NODE_TYPE_POD = "Pod"
 PHASE_RUNNING = "Running"
 PHASE_SUCCEEDED = "Succeeded"
+ACTIVE_WORKFLOW_PHASES = {"Pending", PHASE_RUNNING}
+TERMINAL_WORKFLOW_PHASES = {PHASE_SUCCEEDED, "Failed", "Error"}
 LOADING_ROOT_LABEL = "[yellow]⏳ Waiting for Workflow to be created...[/]"
 DESC_SHOW_OUTPUT = "Show Output"
 PATCH_OUTPUT_STEPS = {
@@ -200,16 +208,34 @@ class WorkflowTreeApp(App):
             service = self._config_edit_service_or_default()
             if hasattr(service, "load_resource_config_snapshots"):
                 snapshots = service.load_resource_config_snapshots(self._workflow_name)
+                submitted_active = self._workflow_has_active_rollout(workflow_data)
                 apply_config_overlays(
                     sections,
-                    submitted_resolved_config=snapshots.get("submitted"),
+                    submitted_resolved_config=snapshots.get("submitted") if submitted_active else None,
                     pending_resolved_config=snapshots.get("pending"),
-                    submitted_console_config=snapshots.get("submitted_console"),
+                    deployed_console_config=snapshots.get("submitted_console") if not submitted_active else None,
+                    submitted_console_config=snapshots.get("submitted_console") if submitted_active else None,
                     pending_console_config=snapshots.get("pending_console"),
                 )
         except Exception:
             logger.exception("Failed to load resource config change overlays")
         return sections
+
+    @staticmethod
+    def _workflow_has_active_rollout(workflow_data: Dict) -> bool:
+        """Return whether the submitted config still represents an active rollout."""
+        status = (workflow_data or {}).get("status") or {}
+        phase = status.get("phase")
+        if phase in TERMINAL_WORKFLOW_PHASES:
+            return False
+        if phase in ACTIVE_WORKFLOW_PHASES:
+            return True
+
+        nodes = status.get("nodes") or {}
+        return any(
+            (node or {}).get("phase") in ACTIVE_WORKFLOW_PHASES
+            for node in nodes.values()
+        )
 
     @staticmethod
     def _assign_workflow_progress(sections, steps):
@@ -557,6 +583,11 @@ class WorkflowTreeApp(App):
                 self.notify(f"❌ Failed: {res.get('message')}", severity="error")
         except Exception as e:
             self.notify(f"Error: {e}", severity="error")
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action in {"expand_node", "collapse_node"} and isinstance(self.screen, ModalScreen):
+            return False
+        return super().check_action(action, parameters)
 
     def action_expand_node(self) -> None:
         tree = self.tree_root_widget
@@ -1120,6 +1151,9 @@ class WorkflowTreeApp(App):
                 lambda value: self._handle_add_config_name(node, value),
             )
         elif kind == "scalar":
+            if node.get("externalRef"):
+                self._show_external_resource_picker(node)
+                return
             input_hint = node.get("inputHint") or {}
             options = input_hint.get("options") or []
             if input_hint.get("kind") == "reference" and options:
@@ -1133,20 +1167,7 @@ class WorkflowTreeApp(App):
                     lambda value: self._handle_scalar_config_value(node, value),
                 )
                 return
-            modal = TextInputModal(
-                f"Edit {'.'.join(node.get('path', []))}",
-                str(node.get("value") or ""),
-                documentation=self._edit_node_documentation(node),
-                validation=self._edit_node_validation(node),
-                required=bool(node.get("required")),
-                on_change=lambda value, locally_valid: self._schedule_scalar_config_validation(
-                    node,
-                    value,
-                    modal,
-                    locally_valid,
-                ),
-            )
-            self.push_screen(modal, lambda value: self._handle_scalar_config_value(node, value))
+            self._show_scalar_config_text_input(node)
         elif kind == "boolean":
             self.action_toggle_config_boolean()
         elif kind == "union":
@@ -1158,6 +1179,193 @@ class WorkflowTreeApp(App):
                     tree.cursor_node.collapse()
                 else:
                     tree.cursor_node.expand()
+
+    def _show_scalar_config_text_input(self, node: Dict) -> None:
+        modal = TextInputModal(
+            f"Edit {'.'.join(node.get('path', []))}",
+            str(node.get("value") or ""),
+            documentation=self._edit_node_documentation(node),
+            validation=self._edit_node_validation(node),
+            required=bool(node.get("required")),
+            on_change=lambda value, locally_valid: self._schedule_scalar_config_validation(
+                node,
+                value,
+                modal,
+                locally_valid,
+            ),
+        )
+        self.push_screen(modal, lambda value: self._handle_scalar_config_value(node, value))
+
+    def _show_external_resource_picker(self, node: Dict) -> None:
+        external_ref = node.get("externalRef") or {}
+        self.run_worker(
+            lambda: self._load_external_resource_picker_worker(node, external_ref),
+            thread=True,
+            name="load_external_resource_picker",
+        )
+
+    def _load_external_resource_picker_worker(self, node: Dict, external_ref: Dict) -> None:
+        try:
+            service = self._config_edit_service_or_default()
+            if not hasattr(service, "list_external_resources"):
+                self.call_from_thread(self._show_scalar_config_text_input, node)
+                return
+            rows = service.list_external_resources(external_ref, str(node.get("value") or "") or None)
+            self.call_from_thread(self._open_external_resource_picker, node, rows)
+        except Exception as e:
+            logger.exception("Failed to list external resources")
+            self.call_from_thread(self.notify, f"External resource picker unavailable: {e}", severity="error")
+
+    def _open_external_resource_picker(self, node: Dict, rows: list[Dict]) -> None:
+        external_ref = node.get("externalRef") or {}
+        title = f"Select {external_ref.get('displayName') or '.'.join(node.get('path', []))}"
+        self.push_screen(
+            ExternalResourcePickerModal(
+                title,
+                rows,
+                node.get("value"),
+                documentation=self._edit_node_documentation(node),
+                can_create=bool(external_ref.get("create")),
+                external_ref=external_ref,
+            ),
+            lambda choice: self._handle_external_resource_picker_choice(node, choice),
+        )
+
+    def _handle_external_resource_picker_choice(self, node: Dict, choice: Optional[Dict]) -> None:
+        if not choice:
+            return
+        action = choice.get("action")
+        if action == "manual":
+            self._show_scalar_config_text_input(node)
+            return
+        if action == "create":
+            self._open_external_resource_form(node, "create")
+            return
+        row = choice.get("row") or {}
+        if action == "select":
+            self._select_external_resource_row(node, row)
+        elif action == "view":
+            self._show_external_resource_view(node, row)
+        elif action == "update":
+            self._open_external_resource_form_for_row(node, row)
+
+    def _select_external_resource_row(self, node: Dict, row: Dict) -> None:
+        name = row.get("name")
+        if not name:
+            return
+        if row.get("status") == "warn":
+            message = f"Use {name} anyway?"
+            if row.get("message"):
+                message += f"\n\n{row.get('message')}"
+            self.push_screen(
+                ConfirmModal(message, confirm_label="Use", cancel_label="Cancel", default_confirm=False),
+                lambda confirmed: self._apply_external_resource_value(node, name) if confirmed else None,
+            )
+            return
+        self._apply_external_resource_value(node, name)
+
+    def _apply_external_resource_value(self, node: Dict, name: str) -> None:
+        self._handle_scalar_config_value(node, name)
+
+    def _show_external_resource_view(self, node: Dict, row: Dict) -> None:
+        self.run_worker(
+            lambda: self._read_external_resource_worker(node, row, "view"),
+            thread=True,
+            name="read_external_resource",
+        )
+
+    def _open_external_resource_form_for_row(self, node: Dict, row: Dict) -> None:
+        self.run_worker(
+            lambda: self._read_external_resource_worker(node, row, "update"),
+            thread=True,
+            name="read_external_resource",
+        )
+
+    def _read_external_resource_worker(self, node: Dict, row: Dict, action: str) -> None:
+        try:
+            service = self._config_edit_service_or_default()
+            if not hasattr(service, "read_external_resource"):
+                raise RuntimeError("reading external resources is not implemented")
+            resource = service.read_external_resource(node.get("externalRef") or {}, str(row.get("name") or ""))
+            if action == "view":
+                self.call_from_thread(self._open_external_resource_view, node, resource)
+            else:
+                self.call_from_thread(self._open_external_resource_form, node, "update", resource)
+        except Exception as e:
+            logger.exception("Failed to read external resource")
+            self.call_from_thread(self.notify, f"External resource read failed: {e}", severity="error")
+
+    def _open_external_resource_view(self, node: Dict, resource: Dict) -> None:
+        self.push_screen(
+            ExternalResourceViewModal(node.get("externalRef") or {}, resource),
+            lambda choice: self._open_external_resource_form(node, "update", resource)
+            if choice and choice.get("action") == "update" else None,
+        )
+
+    def _open_external_resource_form(
+        self,
+        node: Dict,
+        mode: str,
+        resource: Optional[Dict] = None,
+    ) -> None:
+        external_ref = node.get("externalRef") or {}
+        if not external_ref.get("create"):
+            self.notify("Create/update is not available for this reference", severity="warning")
+            return
+        initial_values = values_for_form(external_ref, resource)
+        if mode == "create":
+            name_field = ((external_ref.get("create") or {}).get("apply") or {}).get("nameField")
+            if name_field and node.get("value"):
+                initial_values.setdefault(name_field, str(node.get("value") or ""))
+        self.push_screen(
+            ExternalResourceFormModal(
+                external_ref,
+                mode,
+                initial_values=initial_values,
+                existing_keys=resource.get("keys") if resource else None,
+                documentation=self._edit_node_documentation(node),
+            ),
+            lambda values: self._handle_external_resource_form(node, mode, resource, values),
+        )
+
+    def _handle_external_resource_form(
+        self,
+        node: Dict,
+        mode: str,
+        resource: Optional[Dict],
+        values: Optional[Dict[str, str]],
+    ) -> None:
+        if values is None:
+            return
+        existing_name = resource.get("name") if resource else None
+        self.run_worker(
+            lambda: self._save_external_resource_worker(node, values, existing_name),
+            thread=True,
+            name="save_external_resource",
+        )
+
+    def _save_external_resource_worker(
+        self,
+        node: Dict,
+        values: Dict[str, str],
+        existing_name: Optional[str],
+    ) -> None:
+        try:
+            service = self._config_edit_service_or_default()
+            if not hasattr(service, "save_external_resource"):
+                raise RuntimeError("saving external resources is not implemented")
+            result = service.save_external_resource(node.get("externalRef") or {}, values, existing_name=existing_name)
+            self.call_from_thread(self._handle_external_resource_saved, node, result)
+        except Exception as e:
+            logger.exception("Failed to save external resource")
+            self.call_from_thread(self.notify, f"External resource save failed: {e}", severity="error")
+
+    def _handle_external_resource_saved(self, node: Dict, result: Dict[str, str]) -> None:
+        name = result.get("name")
+        if result.get("message"):
+            self.notify(result["message"])
+        if name:
+            self._apply_external_resource_value(node, name)
 
     def _show_config_variant_picker(self, node: Dict) -> None:
         variants = node.get("variants") or []
@@ -1181,7 +1389,7 @@ class WorkflowTreeApp(App):
             "op": "set",
             "path": node.get("path"),
             "value": value,
-        }, selected_id=node.get("id"))
+        }, selected_id=node.get("id"), auto_edit_required_child=True)
 
     def _handle_add_config_name(self, node: Dict, value: Optional[str]) -> None:
         name = (value or "").strip()
@@ -1407,6 +1615,8 @@ class WorkflowTreeApp(App):
         if kind == "command":
             return "Add"
         if kind == "scalar":
+            if node.get("externalRef"):
+                return "Pick Resource"
             return "Edit Value"
         if kind == "boolean":
             return "Toggle"
@@ -1426,7 +1636,12 @@ class WorkflowTreeApp(App):
             "path": path,
         })
 
-    def _apply_config_edit_operation(self, operation: Dict, selected_id: Optional[str] = None) -> None:
+    def _apply_config_edit_operation(
+        self,
+        operation: Dict,
+        selected_id: Optional[str] = None,
+        auto_edit_required_child: bool = False,
+    ) -> None:
         if self._edit_draft_yaml is None:
             self.notify("No edit draft loaded", severity="error")
             return
@@ -1435,25 +1650,44 @@ class WorkflowTreeApp(App):
             if node and node.data:
                 selected_id = node.data.get("id")
         self.run_worker(
-            lambda: self._apply_config_edit_operation_worker(operation, selected_id),
+            lambda: self._apply_config_edit_operation_worker(operation, selected_id, auto_edit_required_child),
             thread=True,
             name="apply_config_edit_operation",
         )
 
-    def _apply_config_edit_operation_worker(self, operation: Dict, selected_id: Optional[str]) -> None:
+    def _apply_config_edit_operation_worker(
+        self,
+        operation: Dict,
+        selected_id: Optional[str],
+        auto_edit_required_child: bool,
+    ) -> None:
         try:
             service = self._config_edit_service_or_default()
             result = service.apply_operation(self._edit_draft_yaml or "", operation)
-            self.call_from_thread(self._handle_config_edit_apply_result, result, selected_id)
+            self.call_from_thread(
+                self._handle_config_edit_apply_result,
+                result,
+                selected_id,
+                auto_edit_required_child,
+            )
         except Exception as e:
             logger.exception("Failed to apply config edit operation")
             self.call_from_thread(self.notify, f"Edit failed: {e}", severity="error")
 
-    def _handle_config_edit_apply_result(self, result, selected_id: Optional[str]) -> None:
+    def _handle_config_edit_apply_result(
+        self,
+        result,
+        selected_id: Optional[str],
+        auto_edit_required_child: bool = False,
+    ) -> None:
         edit_state = getattr(result, "edit_state", None) or result["edit_state"]
         raw_yaml = getattr(result, "raw_yaml", None)
         if raw_yaml is None:
             raw_yaml = result.get("raw_yaml") or result.get("yaml", "")
+        auto_edit_id = (
+            self._first_required_edit_target_id(edit_state, selected_id)
+            if auto_edit_required_child and selected_id else None
+        )
         self._edit_state = edit_state
         self._edit_draft_yaml = raw_yaml
         self._edit_dirty = True
@@ -1465,7 +1699,9 @@ class WorkflowTreeApp(App):
             self._edit_show_optional,
             self._edit_show_expert,
         )
-        if selected_id:
+        if auto_edit_id:
+            self.call_after_refresh(lambda: self._select_and_edit_config_node(auto_edit_id))
+        elif selected_id:
             self.call_after_refresh(lambda: self._restore_config_edit_selection(selected_id))
         self._update_edit_help()
         self.update_pod_status()
@@ -1486,6 +1722,58 @@ class WorkflowTreeApp(App):
                 self.tree_root_widget.focus()
                 return
             stack.extend(reversed(node.children))
+
+    def _select_and_edit_config_node(self, selected_id: str) -> None:
+        self._select_tree_node_by_id(selected_id)
+        self._update_edit_help()
+        self.update_pod_status()
+        self._update_dynamic_bindings()
+        node = selected_edit_node(self.tree_root_widget)
+        if node:
+            self._edit_config_node(node)
+
+    @classmethod
+    def _first_required_edit_target_id(cls, edit_state: Dict, parent_id: Optional[str]) -> Optional[str]:
+        parent = cls._find_edit_node_by_id(edit_state.get("nodes") or [], parent_id)
+        if not parent:
+            return None
+        candidates = [
+            node.get("id")
+            for node in cls._required_edit_targets(parent.get("children") or [])
+            if node.get("id")
+        ]
+        return candidates[0] if len(candidates) == 1 else None
+
+    @classmethod
+    def _required_edit_targets(cls, nodes) -> list[Dict]:
+        targets = []
+        for node in nodes or []:
+            child_targets = cls._required_edit_targets(node.get("children") or [])
+            if child_targets:
+                targets.extend(child_targets)
+            elif cls._is_required_edit_target(node):
+                targets.append(node)
+        return targets
+
+    @classmethod
+    def _is_required_edit_target(cls, node: Dict) -> bool:
+        if node.get("valueKind") not in {"scalar", "boolean", "union"}:
+            return False
+        if node.get("status") == "required" or node.get("required"):
+            return True
+        return bool((node.get("statusCounts") or {}).get("required"))
+
+    @classmethod
+    def _find_edit_node_by_id(cls, nodes, selected_id: Optional[str]) -> Optional[Dict]:
+        if not selected_id:
+            return None
+        stack = list(nodes or [])
+        while stack:
+            node = stack.pop()
+            if node.get("id") == selected_id:
+                return node
+            stack.extend(node.get("children") or [])
+        return None
 
 
 # --- Utilities ---

@@ -35,6 +35,7 @@ PHASE_SYMBOLS = {
     'Running': ('▶', 'yellow'),
     'Pending': ('○', 'cyan'),
     'Pending Config': ('○', 'cyan'),
+    'Deployed Config': ('✓', 'green'),
     'Initialized': ('○', 'cyan'),
     'Failed': ('✗', 'red'),
     'Error': ('✗', 'red'),
@@ -80,6 +81,8 @@ RESOURCE_KIND_TO_PLURAL = {
 }
 
 VIRTUAL_CONFIG_PLURALS = {'sourceconfigs', 'targetconfigs', 'kafkaconfigs'}
+ADOPTION_ERROR_PHASES = {'Failed', 'Error'}
+ADOPTION_PENDING_PHASES = {'Created', 'Initialized', 'Pending', 'Running'}
 
 CONFIG_MODE_ALL = 'all'
 CONFIG_MODE_DEPLOYED = 'deployed'
@@ -128,6 +131,7 @@ class ResourceNode:
     config_diff: Optional[Dict[str, Any]] = None
     config_presence: Dict[str, bool] = field(default_factory=dict)
     diagnostics: List[Dict[str, Any]] = field(default_factory=list)
+    virtual_adoption: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -156,6 +160,7 @@ def apply_config_overlays(
     sections: List[ResourceSection],
     submitted_resolved_config: Optional[Dict[str, Any]] = None,
     pending_resolved_config: Optional[Dict[str, Any]] = None,
+    deployed_console_config: Optional[Dict[str, Any]] = None,
     submitted_console_config: Optional[Dict[str, Any]] = None,
     pending_console_config: Optional[Dict[str, Any]] = None,
 ) -> None:
@@ -166,13 +171,18 @@ def apply_config_overlays(
     resource tree can show three value phases:
     deployed, pending current workflow rollout, and saved config to submit.
     """
+    deployed_config = _console_resource_map(deployed_console_config)
     submitted = _resolved_resource_map(submitted_resolved_config)
     pending = _resolved_resource_map(pending_resolved_config)
     submitted.update(_console_resource_map(submitted_console_config))
     pending.update(_console_resource_map(pending_console_config))
+    deployed_config_available = deployed_console_config is not None
     submitted_available = submitted_resolved_config is not None or submitted_console_config is not None
     pending_available = pending_resolved_config is not None or pending_console_config is not None
-    if not submitted and not pending and not submitted_available and not pending_available:
+    if (
+        not deployed_config and not submitted and not pending and
+        not deployed_config_available and not submitted_available and not pending_available
+    ):
         return
 
     deployed = {
@@ -196,31 +206,36 @@ def apply_config_overlays(
             pending_available=pending_available,
         )
 
-    for key in sorted((set(submitted) | set(pending)) - set(deployed)):
+    for key in sorted((set(deployed_config) | set(submitted) | set(pending)) - set(deployed)):
         plural, name = key
-        resolved = pending.get(key) or submitted.get(key)
+        resolved = pending.get(key) or submitted.get(key) or deployed_config.get(key)
+        deployed_resource = deployed_config.get(key)
         parameters = (resolved or {}).get('parameters') or {}
         virtual = ResourceNode(
             name=name,
             plural=plural,
-            phase='Pending Config',
+            phase='Deployed Config' if deployed_resource else 'Pending Config',
             depends_on=parameters.get('dependsOn', []) or [],
-            spec={},
+            spec=(deployed_resource or {}).get('parameters') or {},
             status={},
-            diagnostics=_merged_resource_diagnostics(submitted.get(key), pending.get(key)),
+            diagnostics=_merged_resource_diagnostics(deployed_resource, submitted.get(key), pending.get(key)),
             config_presence=_build_config_presence(
-                deployed=False,
+                deployed=key in deployed_config,
                 submitted=key in submitted if submitted_available else None,
                 pending=key in pending if pending_available else None,
             ),
         )
         virtual.config_diff = _build_config_diff(
             plural,
-            {},
+            virtual.spec,
             submitted.get(key),
             pending.get(key),
             submitted_available=submitted_available,
             pending_available=pending_available,
+        )
+        virtual.virtual_adoption = _build_virtual_adoption(
+            submitted.get(key) or deployed_resource,
+            deployed,
         )
         _add_virtual_resource(sections, virtual)
 
@@ -262,14 +277,56 @@ def resource_config_change_summary(sections: List[ResourceSection]) -> Dict[str,
     summary = {'pending': 0, 'to_submit': 0, 'resources': 0}
     for node in _iter_resource_nodes(sections):
         diff = node.config_diff or {}
-        if not diff:
+        submitted_presence_changed = _has_submitted_presence_change(node)
+        pending_presence_changed = _has_pending_presence_change(node)
+        if not diff and not submitted_presence_changed and not pending_presence_changed:
             continue
         summary['resources'] += 1
-        if diff.get('has_submitted_changes'):
+        if diff.get('has_submitted_changes') or submitted_presence_changed:
             summary['pending'] += 1
-        if diff.get('has_pending_submit_changes'):
+        if diff.get('has_pending_submit_changes') or pending_presence_changed:
             summary['to_submit'] += 1
     return summary
+
+
+def _has_submitted_presence_change(resource: ResourceNode) -> bool:
+    presence = resource.config_presence or {}
+    return 'submitted' in presence and presence.get('submitted') != presence.get('deployed', True)
+
+
+def _has_pending_presence_change(resource: ResourceNode) -> bool:
+    presence = resource.config_presence or {}
+    if 'pending' not in presence:
+        return False
+    baseline = presence.get('submitted') if 'submitted' in presence else presence.get('deployed', True)
+    return presence.get('pending') != baseline
+
+
+def format_virtual_adoption(resource: ResourceNode, rich_markup: bool = False) -> List[str]:
+    adoption = resource.virtual_adoption or {}
+    consumers = adoption.get('consumers') or []
+    if not consumers:
+        return []
+    status = adoption.get('status') or 'unknown'
+    counts = adoption.get('counts') or {}
+    count_text = ', '.join(
+        f"{count} {label}"
+        for label, count in counts.items()
+        if count
+    )
+    summary = f"Adoption: {status}"
+    if count_text:
+        summary += f" ({count_text})"
+    result = [_style_adoption_line(summary, status, rich_markup)]
+    for consumer in consumers:
+        line = (
+            f"uses {consumer.get('kind')} {consumer.get('name')}: "
+            f"{consumer.get('status') or 'unknown'}"
+        )
+        if consumer.get('phase'):
+            line += f" ({consumer.get('phase')})"
+        result.append(_style_adoption_line(line, consumer.get('status') or 'unknown', rich_markup))
+    return result
 
 
 def _build_tree_from_raw(raw: Dict[str, List[Dict[str, Any]]]) -> List[ResourceSection]:
@@ -348,7 +405,9 @@ def _console_resource_map(console_config: Optional[Dict[str, Any]]) -> Dict[tupl
                 'kind': 'SourceConfig',
                 'name': name,
                 'parameters': source.get('clientConfig') or {},
+                'parameterProvenance': source.get('parameterProvenance') or {},
                 'diagnostics': source.get('diagnostics') or [],
+                'consumers': source.get('consumers') or [],
             }
     for target in console_config.get('targets') or []:
         name = target.get('refName')
@@ -357,7 +416,9 @@ def _console_resource_map(console_config: Optional[Dict[str, Any]]) -> Dict[tupl
                 'kind': 'TargetConfig',
                 'name': name,
                 'parameters': target.get('clientConfig') or {},
+                'parameterProvenance': target.get('parameterProvenance') or {},
                 'diagnostics': target.get('diagnostics') or [],
+                'consumers': target.get('consumers') or [],
             }
     for kafka in console_config.get('kafkas') or []:
         name = kafka.get('refName')
@@ -366,7 +427,9 @@ def _console_resource_map(console_config: Optional[Dict[str, Any]]) -> Dict[tupl
                 'kind': 'KafkaConfig',
                 'name': name,
                 'parameters': kafka.get('runtime') or {},
+                'parameterProvenance': kafka.get('parameterProvenance') or {},
                 'diagnostics': kafka.get('diagnostics') or [],
+                'consumers': kafka.get('consumers') or [],
             }
     return result
 
@@ -424,6 +487,104 @@ def _merged_resource_diagnostics(*resources: Optional[Dict[str, Any]]) -> List[D
     return list(result.values())
 
 
+def _build_virtual_adoption(
+    virtual_resource: Optional[Dict[str, Any]],
+    deployed_resources: Dict[tuple[str, str], ResourceNode],
+) -> Optional[Dict[str, Any]]:
+    consumers = (virtual_resource or {}).get('consumers') or []
+    if not consumers:
+        return None
+
+    consumer_states = [
+        _virtual_consumer_state(consumer, deployed_resources)
+        for consumer in consumers
+    ]
+    counts = {
+        status: sum(1 for item in consumer_states if item.get('status') == status)
+        for status in ('deployed', 'pending', 'outdated', 'error', 'missing', 'unknown')
+    }
+    status = _virtual_adoption_status(counts)
+    return {
+        'status': status,
+        'counts': counts,
+        'consumers': consumer_states,
+    }
+
+
+def _virtual_consumer_state(
+    consumer: Dict[str, Any],
+    deployed_resources: Dict[tuple[str, str], ResourceNode],
+) -> Dict[str, Any]:
+    kind = consumer.get('kind')
+    name = consumer.get('name')
+    plural = RESOURCE_KIND_TO_PLURAL.get(kind)
+    result = {
+        'kind': kind or 'Resource',
+        'name': name or '<unknown>',
+        'role': consumer.get('role'),
+    }
+    if not plural or not name:
+        return {**result, 'status': 'unknown'}
+
+    resource = deployed_resources.get((plural, name))
+    if not resource:
+        return {**result, 'status': 'missing'}
+
+    expected_checksum = consumer.get('configChecksum')
+    current_checksum = (resource.status or {}).get('configChecksum')
+    phase = resource.phase or (resource.status or {}).get('phase')
+    if phase in ADOPTION_ERROR_PHASES:
+        status = 'error'
+    elif expected_checksum and current_checksum == expected_checksum:
+        status = 'deployed'
+    elif phase in ADOPTION_PENDING_PHASES:
+        status = 'pending'
+    elif expected_checksum and current_checksum and current_checksum != expected_checksum:
+        status = 'outdated'
+    else:
+        status = 'unknown'
+
+    return {
+        **result,
+        'status': status,
+        'phase': phase,
+        'currentChecksum': current_checksum,
+        'expectedChecksum': expected_checksum,
+    }
+
+
+def _virtual_adoption_status(counts: Dict[str, int]) -> str:
+    if counts.get('error'):
+        return 'error'
+    if counts.get('deployed') and any(counts.get(status) for status in ('pending', 'outdated', 'missing', 'unknown')):
+        return 'partial'
+    if counts.get('outdated'):
+        return 'outdated'
+    if counts.get('pending') or counts.get('missing'):
+        return 'pending'
+    if counts.get('deployed'):
+        return 'deployed'
+    return 'unknown'
+
+
+def _adoption_style(status: str) -> str:
+    if status == 'error':
+        return 'red'
+    if status in ('partial', 'outdated', 'missing'):
+        return 'yellow'
+    if status == 'pending':
+        return 'grey50'
+    if status == 'deployed':
+        return 'green'
+    return 'dim'
+
+
+def _style_adoption_line(line: str, status: str, rich_markup: bool) -> str:
+    if not rich_markup:
+        return line
+    return f"[{_adoption_style(status)}]{escape(line)}[/{_adoption_style(status)}]"
+
+
 def _pending_field_value(config_diff: Optional[Dict[str, Any]], path: str):
     for field in (config_diff or {}).get('fields', []):
         if field.get('path') == path:
@@ -462,8 +623,16 @@ def _build_config_diff(
     for path in paths:
         values = {
             'deployed': _value_state(deployed_parameters, path),
-            'submitted': _value_state(submitted_parameters, path),
-            'pending': _value_state(pending_parameters, path),
+            'submitted': _value_state(
+                submitted_parameters,
+                path,
+                _parameter_provenance(submitted_resource, path),
+            ),
+            'pending': _value_state(
+                pending_parameters,
+                path,
+                _parameter_provenance(pending_resource, path),
+            ),
         }
         submitted_changed = (
             compare_submitted_to_deployed and
@@ -471,6 +640,8 @@ def _build_config_diff(
         )
         pending_submit_changed = not _same_state(values['submitted'], values['pending'])
         if not submitted_changed and not pending_submit_changed:
+            continue
+        if _is_pending_only_auto_filled_change(values):
             continue
         if submitted_changed:
             has_submitted_changes = True
@@ -531,12 +702,33 @@ def _leaf_paths(value: Any, prefix: Optional[List[str]] = None):
         yield prefix
 
 
-def _value_state(source: Optional[Dict[str, Any]], path: List[str]) -> Dict[str, Any]:
+def _value_state(
+    source: Optional[Dict[str, Any]],
+    path: List[str],
+    provenance: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     if source is None:
         return {'present': False}
     if not _has_nested(source, path):
         return {'present': False}
-    return {'present': True, 'value': _get_nested(source, '.'.join(path))}
+    result = {'present': True, 'value': _get_nested(source, '.'.join(path))}
+    if provenance:
+        result['provenance'] = provenance
+    return result
+
+
+def _parameter_provenance(resource: Optional[Dict[str, Any]], path: List[str]) -> Optional[Dict[str, Any]]:
+    provenance = (resource or {}).get('parameterProvenance') or {}
+    return provenance.get('.'.join(path))
+
+
+def _is_pending_only_auto_filled_change(values: Dict[str, Dict[str, Any]]) -> bool:
+    if values['deployed'].get('present') or values['submitted'].get('present'):
+        return False
+    if not values['pending'].get('present'):
+        return False
+    presence = (values['pending'].get('provenance') or {}).get('presence')
+    return presence in {'defaulted', 'generated'}
 
 
 def _same_state(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
@@ -683,7 +875,7 @@ def _render_group(parent_tree, group: ResourceGroup, show_live_status: bool = Tr
 
 
 # Phases shown in the resource label (settled states)
-DISPLAY_PHASES = {'Ready', 'Completed', 'Failed', 'Error', 'Pending Config'}
+DISPLAY_PHASES = {'Ready', 'Completed', 'Failed', 'Error', 'Pending Config', 'Deployed Config'}
 
 
 def _render_resource(parent_node, resource: ResourceNode, show_live_status: bool = True) -> None:
@@ -709,6 +901,8 @@ def _add_resource_details(node, resource: ResourceNode, show_live_status: bool =
         node.add(f"[dim]{spec_line}[/dim]")
     for config_line in format_config_diff_fields(resource):
         node.add(f"[cyan]{config_line}[/cyan]")
+    for adoption_line in format_virtual_adoption(resource):
+        node.add(adoption_line)
     for diagnostic in format_resource_diagnostics(resource):
         style = _diagnostic_style(diagnostic.get('severity', 'error'))
         node.add(f"[{style}]{diagnostic['label']}[/{style}]")
@@ -734,12 +928,14 @@ def _resource_change_label(resource: ResourceNode) -> str:
         style = _diagnostic_style(severity)
         label = 'required' if severity == 'required' else severity
         return f' [{style}]({escape(str(label))})[/{style}]'
+    adoption_status = (resource.virtual_adoption or {}).get('status')
+    if adoption_status and adoption_status not in ('deployed', 'unknown'):
+        style = _adoption_style(adoption_status)
+        return f' [{style}]({escape(str(adoption_status))})[/{style}]'
     diff = resource.config_diff or {}
-    if not diff:
-        return ''
-    if diff.get('has_pending_submit_changes'):
+    if diff.get('has_pending_submit_changes') or _has_pending_presence_change(resource):
         return ' [cyan](to submit)[/cyan]'
-    if diff.get('has_submitted_changes'):
+    if diff.get('has_submitted_changes') or _has_submitted_presence_change(resource):
         return ' [magenta](pending)[/magenta]'
     return ''
 

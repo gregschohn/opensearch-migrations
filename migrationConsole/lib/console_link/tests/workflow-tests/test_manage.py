@@ -5,6 +5,8 @@ from typing import Any
 
 import pytest
 from unittest.mock import MagicMock, patch
+from textual.app import App, ComposeResult
+from textual.widgets import Button, Input, Static
 
 from console_link.workflow.tree_utils import APPROVAL_TEMPLATE_NAME
 from console_link.workflow.resource_tree import ResourceGroup, ResourceNode, ResourceSection, _build_tree_from_raw
@@ -20,6 +22,12 @@ from console_link.workflow.tui.workflow_manage_app import (
 from console_link.workflow.tui.choice_select_modal import ChoiceSelectModal
 from console_link.workflow.tui.config_edit_exit_modal import ConfigEditExitModal
 from console_link.workflow.tui.confirm_modal import ConfirmModal
+from console_link.workflow.tui.external_resource_modal import (
+    ExternalResourceFormModal,
+    ExternalResourcePickerModal,
+    ExternalResourceViewModal,
+    PICKER_PAGE_SIZE,
+)
 from console_link.workflow.tui.text_input_modal import TextInputModal
 from console_link.workflow.tui.manage_injections import (
     WaiterInterface,
@@ -110,6 +118,158 @@ FAILING_WAITER = WaiterInterface(
 )
 
 
+def basic_auth_secret_external_ref():
+    return {
+        "kind": "secret",
+        "purpose": "http-basic-auth",
+        "displayName": "HTTP Basic Auth Secret",
+        "description": "Kubernetes Secret containing 'username' and 'password' keys.",
+        "k8s": {
+            "resource": "Secret",
+            "acceptedSecretTypes": ["kubernetes.io/basic-auth", "Opaque"],
+            "requiredKeys": ["username", "password"],
+        },
+        "create": {
+            "label": "HTTP Basic Auth Secret",
+            "fields": [
+                {
+                    "name": "secretName",
+                    "label": "Secret name",
+                    "input": "name",
+                    "required": True,
+                    "validationIds": ["k8s-name"],
+                },
+                {
+                    "name": "username",
+                    "label": "Username",
+                    "input": "text",
+                    "required": True,
+                    "validationIds": ["non-empty"],
+                },
+                {
+                    "name": "password",
+                    "label": "Password",
+                    "input": "password",
+                    "required": True,
+                    "sensitive": True,
+                    "validationIds": ["non-empty"],
+                    "confirm": True,
+                },
+            ],
+            "output": {
+                "kind": "Secret",
+                "type": "kubernetes.io/basic-auth",
+                "stringData": {
+                    "username": {"fromField": "username"},
+                    "password": {"fromField": "password"},
+                },
+            },
+            "apply": {"target": "scalarName", "nameField": "secretName"},
+        },
+    }
+
+
+def test_external_resource_picker_filters_and_paginates_rows():
+    rows = [
+        {
+            "name": f"matching-{index}",
+            "kind": "Secret",
+            "type": "Opaque",
+            "keys": ["username", "password"],
+            "status": "matching",
+            "message": "",
+            "current": False,
+        }
+        for index in range(PICKER_PAGE_SIZE + 2)
+    ]
+    rows.extend([
+        {
+            "name": "current-but-missing",
+            "kind": "Secret",
+            "type": "Opaque",
+            "keys": ["username"],
+            "status": "warn",
+            "message": "missing password",
+            "current": True,
+        },
+        {
+            "name": "other-missing",
+            "kind": "Secret",
+            "type": "Opaque",
+            "keys": ["username"],
+            "status": "warn",
+            "message": "missing password",
+            "current": False,
+        },
+    ])
+
+    modal = ExternalResourcePickerModal(
+        "Select Secret",
+        rows,
+        current_value="current-but-missing",
+        external_ref=basic_auth_secret_external_ref(),
+    )
+
+    assert [row["name"] for row in modal._visible_rows()][-1] == "current-but-missing"
+    assert "other-missing" not in [row["name"] for row in modal._visible_rows()]
+    assert len(modal._displayed_rows()) == PICKER_PAGE_SIZE
+    assert modal._page_count() == 2
+
+    modal.page_index = 1
+    assert [row["name"] for row in modal._displayed_rows()] == [
+        "matching-10",
+        "matching-11",
+        "current-but-missing",
+    ]
+
+    modal.show_all = True
+    modal.page_index = 1
+    assert modal._displayed_rows()[-1]["name"] == "other-missing"
+
+
+@pytest.mark.asyncio
+async def test_external_resource_picker_auto_pages_at_row_boundaries():
+    rows = [
+        {
+            "name": f"matching-{index}",
+            "kind": "Secret",
+            "type": "Opaque",
+            "keys": ["username", "password"],
+            "status": "matching",
+            "message": "",
+            "current": False,
+        }
+        for index in range(PICKER_PAGE_SIZE + 2)
+    ]
+    modal = ExternalResourcePickerModal(
+        "Select Secret",
+        rows,
+        external_ref=basic_auth_secret_external_ref(),
+    )
+
+    class PickerHarness(App):
+        def compose(self) -> ComposeResult:
+            yield Static("")
+
+        async def on_mount(self) -> None:
+            self.push_screen(modal)
+
+    app = PickerHarness()
+    async with app.run_test() as pilot:
+        assert await wait_until(pilot, lambda: isinstance(app.screen, ExternalResourcePickerModal))
+        picker = app.screen
+        picker.set_focus(picker.query_one(f"#row-{PICKER_PAGE_SIZE - 1}", Button))
+
+        await pilot.press("down")
+        assert picker.page_index == 1
+        assert picker.focused.id == "row-0"
+        assert picker._displayed_rows()[0]["name"] == f"matching-{PICKER_PAGE_SIZE}"
+
+        await pilot.press("up")
+        assert picker.page_index == 0
+        assert picker.focused.id == f"row-{PICKER_PAGE_SIZE - 1}"
+
+
 def edit_state_with_missing_basic_auth():
     return {
         "formatVersion": 1,
@@ -170,6 +330,7 @@ def edit_state_with_missing_basic_auth():
                                         "valueKind": "scalar",
                                         "description": "Name of a Kubernetes Secret containing credentials.",
                                         "required": True,
+                                        "externalRef": basic_auth_secret_external_ref(),
                                         "status": "required",
                                         "statusCounts": {"required": 1},
                                         "diagnostics": [
@@ -194,6 +355,26 @@ def edit_state_with_missing_basic_auth():
         "policyPreview": [],
         "validation": {"valid": False, "errors": ["secretName is required"]},
     }
+
+
+def edit_state_with_no_auth():
+    state = copy.deepcopy(edit_state_with_missing_basic_auth())
+    source = state["nodes"][0]
+    legacy = source["children"][0]
+    auth = legacy["children"][1]
+    source["label"] = "[OK] Source Clusters"
+    source["status"] = "ok"
+    source["statusCounts"] = {}
+    legacy["label"] = "[OK] source: legacy"
+    legacy["status"] = "ok"
+    legacy["statusCounts"] = {}
+    auth["label"] = "[OK] authConfig: < none >"
+    auth["value"] = "none"
+    auth["status"] = "ok"
+    auth["statusCounts"] = {}
+    auth["children"] = []
+    state["validation"] = {"valid": True, "errors": []}
+    return state
 
 
 def edit_state_with_sigv4_auth():
@@ -222,6 +403,30 @@ def edit_state_with_sigv4_auth():
             ],
         }
     ]
+    return state
+
+
+def edit_state_with_basic_auth_secret(secret_name="source-creds"):
+    state = copy.deepcopy(edit_state_with_missing_basic_auth())
+    source = state["nodes"][0]
+    legacy = source["children"][0]
+    auth = legacy["children"][1]
+    secret = auth["children"][0]
+    source["label"] = "[OK] Source Clusters"
+    source["status"] = "ok"
+    source["statusCounts"] = {}
+    legacy["label"] = "[OK] source: legacy"
+    legacy["status"] = "ok"
+    legacy["statusCounts"] = {}
+    auth["label"] = "[OK] authConfig: < basic >"
+    auth["status"] = "ok"
+    auth["statusCounts"] = {}
+    secret["label"] = f"[OK] secretName: {secret_name}"
+    secret["value"] = secret_name
+    secret["status"] = "ok"
+    secret["statusCounts"] = {}
+    secret["diagnostics"] = []
+    state["validation"] = {"valid": True, "errors": []}
     return state
 
 
@@ -965,8 +1170,11 @@ async def test_resource_view_edit_mode_applies_variant_and_saves(mock_workflow_w
             await pilot.press("enter")
             assert await wait_until(pilot, lambda: isinstance(app.screen, ChoiceSelectModal))
             assert "Authentication configuration" in str(app.screen.query_one("#documentation").content)
-            await pilot.press("down")
+            await pilot.press("right")
             assert "AWS SigV4 request signing" in str(app.screen.query_one("#choice-doc").content)
+            await pilot.press("left")
+            assert "AWS SigV4 request signing" not in str(app.screen.query_one("#choice-doc").content)
+            await pilot.press("right")
             await pilot.press("enter")
             assert await wait_until(pilot, lambda: len(service.apply_calls) == 1)
             assert service.apply_calls[0] == (
@@ -977,13 +1185,353 @@ async def test_resource_view_edit_mode_applies_variant_and_saves(mock_workflow_w
                     "value": "sigv4",
                 },
             )
-            assert "authConfig: < sigv4 > [REQ 1]" in get_clean_text_label(tree.cursor_node)
+            assert await wait_until(pilot, lambda: isinstance(app.screen, TextInputModal))
+            assert "Edit sourceClusters.legacy.authConfig.sigv4.region" in str(app.screen.query_one("#prompt").content)
+            assert isinstance(app.screen.focused, Input)
+            await pilot.press("right")
+            assert isinstance(app.screen.focused, Input)
+            await pilot.press("escape")
+            assert await wait_until(
+                pilot,
+                lambda: get_clean_text_label(tree.cursor_node) == "region: <required> [REQ 1]",
+            )
 
             await pilot.press("s")
             assert await wait_until(pilot, lambda: service.saved_yaml == ["updated-yaml"])
 
             await pilot.press("ctrl+s")
             assert await wait_until(pilot, lambda: service.saved_yaml == ["updated-yaml", "updated-yaml"])
+
+
+@pytest.mark.asyncio
+async def test_resource_view_edit_mode_variant_opens_single_required_child_picker(mock_workflow_with_two_pods):
+    """Selecting a variant drills into its one required child without hard-coding the auth path."""
+
+    class FakeConfigEditService:
+        def __init__(self):
+            self.apply_calls = []
+
+        def load_edit_session(self):
+            return {
+                "raw_yaml": "initial-yaml",
+                "edit_state": edit_state_with_no_auth(),
+            }
+
+        def apply_operation(self, raw_yaml, operation):
+            self.apply_calls.append((raw_yaml, operation))
+            return {
+                "raw_yaml": "updated-yaml",
+                "edit_state": edit_state_with_missing_basic_auth(),
+            }
+
+        def list_external_resources(self, external_ref, current_value=None):
+            return [{
+                "name": "source-creds",
+                "kind": "Secret",
+                "type": "kubernetes.io/basic-auth",
+                "keys": ["username", "password"],
+                "status": "matching",
+                "message": "",
+                "current": False,
+            }]
+
+    service = FakeConfigEditService()
+    argo_service = ArgoService(
+        get_workflow=lambda name, namespace: ({"success": True}, mock_workflow_with_two_pods),
+        approve_step=MagicMock(),
+    )
+    pod_scraper = MagicMock(spec=PodScraperInterface(None, None, None))
+    pod_scraper.fetch_pods_metadata.return_value = []
+
+    app = WorkflowTreeApp(
+        namespace="default",
+        name="test-wf",
+        argo_service=argo_service,
+        pod_scraper=pod_scraper,
+        workflow_waiter=FAILING_WAITER,
+        refresh_interval=100.0,
+        resource_view=True,
+        config_edit_service=service,
+    )
+
+    with patch("console_link.workflow.resource_tree.build_resource_tree",
+               return_value=resource_sections_for_manage_tests()):
+        async with app.run_test() as pilot:
+            tree = app.query_one("#workflow-tree")
+            tree.focus()
+            assert await wait_until(pilot, lambda: len(tree.root.children) > 0, timeout=5.0)
+
+            await pilot.press("e")
+            assert await wait_until(pilot, lambda: get_clean_text_label(tree.root) == "Workflow Config Edit")
+            app._select_tree_node_by_id("edit:sourceClusters.legacy.authConfig")
+            app._update_dynamic_bindings()
+
+            await pilot.press("enter")
+            assert await wait_until(pilot, lambda: isinstance(app.screen, ChoiceSelectModal))
+            await pilot.press("down")
+            await pilot.press("enter")
+
+            assert await wait_until(pilot, lambda: len(service.apply_calls) == 1)
+            assert service.apply_calls[0][1] == {
+                "op": "set",
+                "path": ["sourceClusters", "legacy", "authConfig"],
+                "value": "basic",
+            }
+            assert await wait_until(pilot, lambda: isinstance(app.screen, ExternalResourcePickerModal))
+            assert get_clean_text_label(tree.cursor_node) == "secretName: <required> [REQ 1]"
+
+
+@pytest.mark.asyncio
+async def test_resource_view_edit_mode_external_secret_picker_creates_and_applies(mock_workflow_with_two_pods):
+    """External Secret refs open a picker, bind c to create, and apply the created Secret name."""
+
+    class FakeConfigEditService:
+        def __init__(self):
+            self.apply_calls = []
+            self.saved_external = []
+
+        def load_edit_session(self):
+            return {
+                "raw_yaml": "initial-yaml",
+                "edit_state": edit_state_with_missing_basic_auth(),
+            }
+
+        def list_external_resources(self, external_ref, current_value=None):
+            return [
+                {
+                    "name": "source-creds",
+                    "kind": "Secret",
+                    "type": "kubernetes.io/basic-auth",
+                    "keys": ["username", "password"],
+                    "status": "matching",
+                    "message": "",
+                    "current": False,
+                },
+                {
+                    "name": "admin-creds",
+                    "kind": "Secret",
+                    "type": "Opaque",
+                    "keys": ["username"],
+                    "status": "warn",
+                    "message": "missing password",
+                    "current": False,
+                },
+            ]
+
+        def save_external_resource(self, external_ref, values, existing_name=None):
+            self.saved_external.append((external_ref["purpose"], values, existing_name))
+            return {"name": values["secretName"], "message": f"Secret created: {values['secretName']}"}
+
+        def apply_operation(self, raw_yaml, operation):
+            self.apply_calls.append((raw_yaml, operation))
+            return {
+                "raw_yaml": "updated-yaml",
+                "edit_state": edit_state_with_basic_auth_secret(operation["value"]),
+            }
+
+    service = FakeConfigEditService()
+    argo_service = ArgoService(
+        get_workflow=lambda name, namespace: ({"success": True}, mock_workflow_with_two_pods),
+        approve_step=MagicMock(),
+    )
+    pod_scraper = MagicMock(spec=PodScraperInterface(None, None, None))
+    pod_scraper.fetch_pods_metadata.return_value = []
+
+    app = WorkflowTreeApp(
+        namespace="default",
+        name="test-wf",
+        argo_service=argo_service,
+        pod_scraper=pod_scraper,
+        workflow_waiter=FAILING_WAITER,
+        refresh_interval=100.0,
+        resource_view=True,
+        config_edit_service=service,
+    )
+
+    with patch("console_link.workflow.resource_tree.build_resource_tree",
+               return_value=resource_sections_for_manage_tests()):
+        async with app.run_test() as pilot:
+            tree = app.query_one("#workflow-tree")
+            tree.focus()
+            assert await wait_until(pilot, lambda: len(tree.root.children) > 0, timeout=5.0)
+
+            await pilot.press("e")
+            assert await wait_until(pilot, lambda: get_clean_text_label(tree.root) == "Workflow Config Edit")
+            app._select_tree_node_by_id("edit:sourceClusters.legacy.authConfig.basic.secretName")
+            app._update_dynamic_bindings()
+
+            await pilot.press("enter")
+            assert await wait_until(pilot, lambda: isinstance(app.screen, ExternalResourcePickerModal))
+            assert app.screen.query_one("#create").label.plain == "c Create"
+            assert app.screen.query_one("#toggle-show-all").label.plain == "a All"
+            await pilot.press("right")
+            assert app.screen.focused.id == "select"
+            await pilot.press("right")
+            assert app.screen.focused.id == "create"
+            await pilot.press("left")
+            assert app.screen.focused.id == "select"
+            row_labels = [
+                button.label.plain if hasattr(button.label, "plain") else str(button.label)
+                for button in app.screen.query(Button)
+                if button.id and button.id.startswith("row-") and button.display
+            ]
+            assert row_labels == ["source-creds"]
+            assert "Opaque" not in " ".join(row_labels)
+            assert "missing password" not in " ".join(row_labels)
+            row_doc = str(app.screen.query_one("#row-doc").content)
+            assert "Matching" not in row_doc
+            assert "current value" not in row_doc.lower()
+            assert "Keys: username, password." in row_doc
+
+            await pilot.press("a")
+            assert await wait_until(
+                pilot,
+                lambda: any(
+                    (button.label.plain if hasattr(button.label, "plain") else str(button.label)) == "admin-creds (missing password)"
+                    for button in app.screen.query(Button)
+                    if button.id and button.id.startswith("row-") and button.display
+                ),
+            )
+            await pilot.press("down")
+            assert "Missing keys: password" in str(app.screen.query_one("#row-doc").content)
+
+            await pilot.press("c")
+            assert await wait_until(pilot, lambda: isinstance(app.screen, ExternalResourceFormModal))
+            app.screen.query_one("#field-0").value = "new-creds"
+            app.screen.query_one("#field-1").value = "admin"
+            app.screen.query_one("#field-2").value = "secret"
+            app.screen.query_one("#field-2-confirm").value = "secret"
+            await pilot.press("enter")
+
+            assert await wait_until(pilot, lambda: len(service.apply_calls) == 1)
+            assert service.saved_external == [(
+                "http-basic-auth",
+                {"secretName": "new-creds", "username": "admin", "password": "secret"},
+                None,
+            )]
+            assert service.apply_calls[0] == (
+                "initial-yaml",
+                {
+                    "op": "set",
+                    "path": ["sourceClusters", "legacy", "authConfig", "basic", "secretName"],
+                    "value": "new-creds",
+                },
+            )
+
+
+@pytest.mark.asyncio
+async def test_resource_view_edit_mode_external_secret_view_update_hides_password(mock_workflow_with_two_pods):
+    """Picker view/update panes show non-sensitive values and preserve hidden passwords."""
+
+    class FakeConfigEditService:
+        def __init__(self):
+            self.apply_calls = []
+            self.saved_external = []
+
+        def load_edit_session(self):
+            return {
+                "raw_yaml": "initial-yaml",
+                "edit_state": edit_state_with_basic_auth_secret("source-creds"),
+            }
+
+        def list_external_resources(self, external_ref, current_value=None):
+            return [{
+                "name": "source-creds",
+                "kind": "Secret",
+                "type": "kubernetes.io/basic-auth",
+                "keys": ["username", "password"],
+                "status": "matching",
+                "message": "",
+                "current": True,
+            }]
+
+        def read_external_resource(self, external_ref, name):
+            return {
+                "kind": "Secret",
+                "name": name,
+                "type": "kubernetes.io/basic-auth",
+                "keys": ["username", "password"],
+                "values": {"username": "admin", "password": "super-secret"},
+            }
+
+        def save_external_resource(self, external_ref, values, existing_name=None):
+            self.saved_external.append((values, existing_name))
+            return {"name": existing_name or values["secretName"], "message": "Secret updated: source-creds"}
+
+        def apply_operation(self, raw_yaml, operation):
+            self.apply_calls.append((raw_yaml, operation))
+            return {
+                "raw_yaml": "updated-yaml",
+                "edit_state": edit_state_with_basic_auth_secret(operation["value"]),
+            }
+
+    service = FakeConfigEditService()
+    argo_service = ArgoService(
+        get_workflow=lambda name, namespace: ({"success": True}, mock_workflow_with_two_pods),
+        approve_step=MagicMock(),
+    )
+    pod_scraper = MagicMock(spec=PodScraperInterface(None, None, None))
+    pod_scraper.fetch_pods_metadata.return_value = []
+
+    app = WorkflowTreeApp(
+        namespace="default",
+        name="test-wf",
+        argo_service=argo_service,
+        pod_scraper=pod_scraper,
+        workflow_waiter=FAILING_WAITER,
+        refresh_interval=100.0,
+        resource_view=True,
+        config_edit_service=service,
+    )
+
+    with patch("console_link.workflow.resource_tree.build_resource_tree",
+               return_value=resource_sections_for_manage_tests()):
+        async with app.run_test() as pilot:
+            tree = app.query_one("#workflow-tree")
+            tree.focus()
+            assert await wait_until(pilot, lambda: len(tree.root.children) > 0, timeout=5.0)
+
+            await pilot.press("e")
+            assert await wait_until(pilot, lambda: get_clean_text_label(tree.root) == "Workflow Config Edit")
+            app._select_tree_node_by_id("edit:sourceClusters.legacy.authConfig.basic.secretName")
+            app._update_dynamic_bindings()
+
+            await pilot.press("enter")
+            assert await wait_until(pilot, lambda: isinstance(app.screen, ExternalResourcePickerModal))
+            await pilot.press("v")
+            assert await wait_until(pilot, lambda: isinstance(app.screen, ExternalResourceViewModal))
+            view_text = str(app.screen.query_one("#contents").content)
+            assert "username: admin" in view_text
+            assert "password: <hidden>" in view_text
+            assert "super-secret" not in view_text
+            assert app.screen.focused.id == "update"
+            await pilot.press("right")
+            assert app.screen.focused.id == "back"
+            await pilot.press("left")
+            assert app.screen.focused.id == "update"
+
+            await pilot.press("u")
+            assert await wait_until(pilot, lambda: isinstance(app.screen, ExternalResourceFormModal))
+            assert app.screen.query_one("#field-1").value == "admin"
+            assert app.screen.query_one("#field-2").value == ""
+            assert isinstance(app.screen.focused, Input)
+            await pilot.press("right")
+            assert isinstance(app.screen.focused, Input)
+            app.screen.query_one("#save").focus()
+            await pilot.press("right")
+            assert app.screen.focused.id == "cancel"
+            await pilot.press("left")
+            assert app.screen.focused.id == "save"
+            app.screen.query_one("#field-1").value = "root"
+            await pilot.press("enter")
+
+            assert await wait_until(pilot, lambda: len(service.saved_external) == 1)
+            assert service.saved_external == [(
+                {"secretName": "source-creds", "username": "root", "password": ""},
+                "source-creds",
+            )]
+            assert await wait_until(pilot, lambda: len(service.apply_calls) == 1)
+            assert service.apply_calls[0][1]["value"] == "source-creds"
 
 
 @pytest.mark.asyncio
@@ -1051,10 +1599,21 @@ async def test_resource_view_edit_mode_confirms_discard_on_escape(mock_workflow_
             await pilot.press("enter")
             assert await wait_until(pilot, lambda: len(service.apply_calls) == 1)
             assert app._edit_dirty is True
+            assert await wait_until(pilot, lambda: isinstance(app.screen, TextInputModal))
+            await pilot.press("escape")
+            assert await wait_until(
+                pilot,
+                lambda: get_clean_text_label(tree.cursor_node) == "region: <required> [REQ 1]",
+            )
 
             await pilot.press("escape")
             assert await wait_until(pilot, lambda: isinstance(app.screen, ConfigEditExitModal))
             assert "Validation still reports" in str(app.screen.query_one("#status").content)
+            assert app.screen.focused.id == "return"
+            await pilot.press("left")
+            assert app.screen.focused.id == "save"
+            await pilot.press("right")
+            assert app.screen.focused.id == "return"
             await pilot.press("enter")
             assert await wait_until(pilot, lambda: get_clean_text_label(tree.root) == "Workflow Config Edit")
             assert app._edit_mode is True
@@ -1390,8 +1949,141 @@ async def test_resource_view_shows_config_phases_and_submits_workflow(mock_workf
 
             await pilot.press("s")
             assert await wait_until(pilot, lambda: isinstance(app.screen, ConfirmModal))
+            assert app.screen.focused.id == "yes"
+            await pilot.press("right")
+            assert app.screen.focused.id == "no"
+            await pilot.press("left")
+            assert app.screen.focused.id == "yes"
             await pilot.press("enter")
             assert await wait_until(pilot, lambda: service.submit_calls == ["migration"])
+
+
+@pytest.mark.asyncio
+async def test_resource_view_collapses_submitted_projection_after_workflow_succeeds():
+    """Submitted projections are rollout state only while the workflow is active."""
+
+    class FakeConfigEditService:
+        def load_resource_config_snapshots(self, workflow_name):
+            return {
+                "submitted": {
+                    "resources": [{
+                        "kind": "KafkaCluster",
+                        "name": "default",
+                        "parameters": {"version": "3.7.0", "auth": {"type": "none"}},
+                    }]
+                },
+                "pending": {
+                    "resources": [{
+                        "kind": "KafkaCluster",
+                        "name": "default",
+                        "parameters": {"version": "3.8.0", "auth": {"type": "none"}},
+                    }]
+                },
+            }
+
+    workflow = {
+        "metadata": {"name": "migration", "resourceVersion": "123"},
+        "status": {
+            "phase": PHASE_SUCCEEDED,
+            "nodes": {
+                "node-1": {"id": "node-1", "displayName": "step-1", "type": "Pod", "phase": PHASE_SUCCEEDED}
+            },
+        },
+    }
+    argo_service = ArgoService(
+        get_workflow=lambda name, namespace: ({"success": True}, workflow),
+        approve_step=MagicMock(),
+    )
+    pod_scraper = MagicMock(spec=PodScraperInterface(None, None, None))
+    pod_scraper.fetch_pods_metadata.return_value = []
+
+    app = WorkflowTreeApp(
+        namespace="default",
+        name="migration",
+        argo_service=argo_service,
+        pod_scraper=pod_scraper,
+        workflow_waiter=FAILING_WAITER,
+        refresh_interval=100.0,
+        resource_view=True,
+        config_edit_service=FakeConfigEditService(),
+    )
+
+    with patch("console_link.workflow.resource_tree.build_resource_tree",
+               return_value=resource_sections_with_kafka_config()):
+        async with app.run_test() as pilot:
+            tree = app.query_one("#workflow-tree")
+            tree.focus()
+            assert await wait_until(pilot, lambda: find_tree_node_by_id(tree.root, "resource:default") is not None)
+
+            resource_node = find_tree_node_by_id(tree.root, "resource:default")
+            labels = [get_clean_text_label(child) for child in resource_node.children]
+            assert "version: deployed=3.6.0 | pending=3.6.0 | to-submit=3.8.0" in labels
+
+            await pilot.press("v")
+            await pilot.press("v")
+            assert await wait_until(
+                pilot,
+                lambda: any(
+                    get_clean_text_label(child) == "version: pending=3.6.0"
+                    for child in find_tree_node_by_id(tree.root, "resource:default").children
+                ),
+            )
+
+
+@pytest.mark.asyncio
+async def test_resource_view_uses_submitted_console_as_deployed_virtual_config_after_success():
+    """Terminal workflows use the latest submitted console config as the virtual deployed baseline."""
+
+    class FakeConfigEditService:
+        def load_resource_config_snapshots(self, workflow_name):
+            return {
+                "submitted_console": {
+                    "sources": [{
+                        "refName": "source",
+                        "clientConfig": {"endpoint": "https://old.example.com"},
+                    }],
+                },
+                "pending_console": {
+                    "sources": [{
+                        "refName": "source",
+                        "clientConfig": {"endpoint": "https://new.example.com"},
+                    }],
+                },
+            }
+
+    workflow = {
+        "metadata": {"name": "migration", "resourceVersion": "123"},
+        "status": {"phase": PHASE_SUCCEEDED, "nodes": {}},
+    }
+    argo_service = ArgoService(
+        get_workflow=lambda name, namespace: ({"success": True}, workflow),
+        approve_step=MagicMock(),
+    )
+    pod_scraper = MagicMock(spec=PodScraperInterface(None, None, None))
+    pod_scraper.fetch_pods_metadata.return_value = []
+
+    app = WorkflowTreeApp(
+        namespace="default",
+        name="migration",
+        argo_service=argo_service,
+        pod_scraper=pod_scraper,
+        workflow_waiter=FAILING_WAITER,
+        refresh_interval=100.0,
+        resource_view=True,
+        config_edit_service=FakeConfigEditService(),
+    )
+
+    with patch("console_link.workflow.resource_tree.build_resource_tree",
+               return_value=_build_tree_from_raw({})):
+        async with app.run_test() as pilot:
+            tree = app.query_one("#workflow-tree")
+            tree.focus()
+            assert await wait_until(pilot, lambda: find_tree_node_by_id(tree.root, "resource:source") is not None)
+
+            source_node = find_tree_node_by_id(tree.root, "resource:source")
+            assert "Deployed Config" in get_clean_text_label(source_node)
+            labels = [get_clean_text_label(child) for child in source_node.children]
+            assert "endpoint: deployed=https://old.example.com | pending=https://old.example.com | to-submit=https://new.example.com" in labels
 
 
 @pytest.mark.asyncio
