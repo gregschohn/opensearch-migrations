@@ -39,6 +39,12 @@ true
 {{- if $chart.version }}
                   --version {{ $chart.version }} \
 {{- end }}
+{{- if $chart.plainHttp }}
+                  --plain-http \
+{{- end }}
+{{- if $chart.insecureSkipTlsVerify }}
+                  --insecure-skip-tls-verify \
+{{- end }}
 {{- if $chart.namespace }}
                   --namespace {{ $chart.namespace }} \
                   --create-namespace \

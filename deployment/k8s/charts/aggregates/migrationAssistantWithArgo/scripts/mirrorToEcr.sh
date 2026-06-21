@@ -78,6 +78,46 @@ ensure_crane() {
   echo "crane installed to ${crane_dir}/crane"
 }
 
+wait_for_copy_slot() {
+  local max_jobs="$1"
+  while [ "$(jobs -rp | wc -l)" -ge "$max_jobs" ]; do
+    sleep 1
+  done
+}
+
+crane_copy_with_timeout() {
+  local src="$1" dest="$2"
+  local platform="${3:-}"
+  local copy_jobs="${4:-}"
+  local timeout_seconds="${CRANE_COPY_TIMEOUT_SECONDS:-300}"
+  local copy_pid watchdog_pid status
+  local args=(copy)
+
+  if [ -n "$copy_jobs" ]; then
+    args+=(--jobs "$copy_jobs")
+  fi
+  if [ -n "$platform" ]; then
+    args+=(--platform "$platform")
+  fi
+  crane "${args[@]}" "$src" "$dest" &
+  copy_pid=$!
+  (
+    sleep "$timeout_seconds"
+    kill "$copy_pid" >/dev/null 2>&1 || true
+  ) &
+  watchdog_pid=$!
+
+  if wait "$copy_pid"; then
+    status=0
+  else
+    status=$?
+  fi
+
+  kill "$watchdog_pid" >/dev/null 2>&1 || true
+  wait "$watchdog_pid" 2>/dev/null || true
+  return "$status"
+}
+
 # Registry hostname → ECR pull-through cache prefix (matches PullThroughCacheHelper.groovy)
 # Args: <ptc-endpoint> <image>
 ptc_rewrite() {
@@ -97,18 +137,18 @@ ptc_rewrite() {
   echo "${ptc}/${prefix}/${path}"
 }
 
-# Copy a single image to ECR, trying pull-through cache then mirror sources.
-# Args: <ecr-host> <region> <dockerhub-mirrors> <ptc-endpoint> <image>
-copy_image() {
-  local ecr_host="$1" region="$2" dockerhub_mirrors="$3" ptc="$4" image="$5"
+image_mirror_destination() {
+  local registry="$1" image="$2"
   local image_no_tag="${image%%:*}" tag="${image##*:}"
-  local ecr_repo="mirrored/${image_no_tag}"
-  local dest="${ecr_host}/${ecr_repo}:${tag}"
+  echo "${registry}/mirrored/${image_no_tag}:${tag}"
+}
 
-  # Build source candidates — for mirror.gcr.io/*, try each mirror
+image_source_candidates() {
+  local image="$1" dockerhub_mirrors="$2"
   local sources="$image"
   case "$image" in mirror.gcr.io/*)
-    local path="${image#mirror.gcr.io/}" ; sources=""
+    local path="${image#mirror.gcr.io/}"
+    sources=""
     for m in $dockerhub_mirrors; do
       if [ "$m" = "public.ecr.aws" ]; then
         case "$path" in library/*) sources="${sources:+$sources }${m}/docker/${path}" ;; esac
@@ -117,6 +157,39 @@ copy_image() {
       fi
     done
   ;; esac
+  echo "$sources"
+}
+
+image_exists_in_registry() {
+  local image="$1"
+  crane digest "$image" >/dev/null 2>&1
+}
+
+local_registry_platform() {
+  if [ -n "${LOCAL_MIRROR_PLATFORM:-}" ]; then
+    echo "$LOCAL_MIRROR_PLATFORM"
+    return
+  fi
+
+  local arch
+  arch="$(uname -m)"
+  case "$arch" in
+    x86_64|amd64) echo "linux/amd64" ;;
+    aarch64|arm64) echo "linux/arm64" ;;
+    *) echo "Unsupported local mirror architecture: $arch" >&2; return 1 ;;
+  esac
+}
+
+# Copy a single image to ECR, trying pull-through cache then mirror sources.
+# Args: <ecr-host> <region> <dockerhub-mirrors> <ptc-endpoint> <image>
+copy_image() {
+  local ecr_host="$1" region="$2" dockerhub_mirrors="$3" ptc="$4" image="$5"
+  local image_no_tag="${image%%:*}"
+  local ecr_repo="mirrored/${image_no_tag}"
+  local dest
+  dest="$(image_mirror_destination "$ecr_host" "$image")"
+  local sources
+  sources="$(image_source_candidates "$image" "$dockerhub_mirrors")"
 
   aws ecr create-repository --repository-name "$ecr_repo" --region "$region" 2>/dev/null || true
 
@@ -126,12 +199,45 @@ copy_image() {
 
   for src in $sources; do
     for attempt in 1 2 3 4 5; do
-      if crane copy "$src" "$dest" 2>/dev/null; then
+      if crane_copy_with_timeout "$src" "$dest"; then
         [ "$src" != "$image" ] && echo "  ℹ️  $image (via $src)"
         echo "  ✅ $image"; return 0
       fi
       sleep $((5 * 2**(attempt-1)))  # exponential backoff: 5s, 10s, 20s, 40s, 80s
     done
+  done
+  echo "  ❌ $image" >&2; return 1
+}
+
+# Copy a single image to any registry using the same mirrored path convention
+# as ECR, but without AWS authentication or repository creation.
+# Args: <registry-host> <dockerhub-mirrors> <ptc-endpoint> <image>
+copy_image_to_registry() {
+  local registry="$1" dockerhub_mirrors="$2" ptc="$3" image="$4"
+  local dest
+  dest="$(image_mirror_destination "$registry" "$image")"
+  local sources
+  sources="$(image_source_candidates "$image" "$dockerhub_mirrors")"
+  local platform
+  platform="$(local_registry_platform)"
+  local copy_jobs="${LOCAL_CRANE_COPY_JOBS:-${CRANE_COPY_JOBS:-2}}"
+
+  if image_exists_in_registry "$dest"; then
+    echo "  ✅ $image (already mirrored)"; return 0
+  fi
+
+  local ptc_src
+  ptc_src=$(ptc_rewrite "$ptc" "$image") && sources="$ptc_src ${sources}"
+
+  for src in $sources; do
+    if crane_copy_with_timeout "$src" "$dest" "$platform" "$copy_jobs"; then
+      [ "$src" != "$image" ] && echo "  ℹ️  $image (via $src)"
+      echo "  ✅ $image"; return 0
+    fi
+    if image_exists_in_registry "$dest"; then
+      [ "$src" != "$image" ] && echo "  ℹ️  $image (via $src)"
+      echo "  ✅ $image (verified after copy)"; return 0
+    fi
   done
   echo "  ❌ $image" >&2; return 1
 }
@@ -168,9 +274,7 @@ mirror_images_to_ecr() {
   echo "$images" | sed 's/^[[:space:]]*//' | sed 's/[[:space:]]*$//' | grep -v '^#' | grep -v '^$' > "$_imglist"
   while IFS= read -r image; do
     # Throttle to $_max_jobs concurrent copies
-    while [ "$(jobs -rp | wc -l)" -ge "$_max_jobs" ]; do
-      wait -n 2>/dev/null || true
-    done
+    wait_for_copy_slot "$_max_jobs"
     ( copy_image "$ecr_host" "$region" "$dockerhub_mirrors" "$ptc" "$image" || echo "$image" >> "$_failfile" ) &
   done < "$_imglist"
   rm -f "$_imglist"
@@ -182,6 +286,41 @@ mirror_images_to_ecr() {
     echo "" >&2
     echo "If this is unexpected, please open an issue at:" >&2
     echo "  https://github.com/opensearch-project/opensearch-migrations/issues/new" >&2
+    rm -f "$_failfile"
+    exit 1
+  fi
+  rm -f "$_failfile"
+}
+
+# Mirror container images to a generic registry such as a local Docker registry.
+# Args: <registry-host> <images-string>
+mirror_images_to_registry() {
+  local registry="$1" images="$2"
+  local dockerhub_mirrors="${DOCKERHUB_MIRRORS:-mirror.gcr.io docker.io public.ecr.aws}"
+
+  ensure_crane
+
+  local ptc="${LOCAL_PULL_THROUGH_ENDPOINT:-${ECR_PULL_THROUGH_ENDPOINT:-}}"
+  if [ -n "$ptc" ]; then
+    echo "Pull-through cache source enabled: $ptc"
+  fi
+
+  echo ""
+  echo "=== Mirroring container images to ${registry} ==="
+  local _imglist _max_jobs="${MIRROR_MAX_JOBS:-4}" _failfile
+  _imglist=$(mktemp)
+  _failfile=$(mktemp)
+  echo "$images" | sed 's/^[[:space:]]*//' | sed 's/[[:space:]]*$//' | grep -v '^#' | grep -v '^$' > "$_imglist"
+  while IFS= read -r image; do
+    wait_for_copy_slot "$_max_jobs"
+    ( copy_image_to_registry "$registry" "$dockerhub_mirrors" "$ptc" "$image" || echo "$image" >> "$_failfile" ) &
+  done < "$_imglist"
+  rm -f "$_imglist"
+  wait
+  if [ -s "$_failfile" ]; then
+    echo "" >&2
+    echo "❌ The following image copies failed:" >&2
+    sed 's/^/  - /' "$_failfile" >&2
     rm -f "$_failfile"
     exit 1
   fi
@@ -254,6 +393,81 @@ mirror_charts_to_ecr() {
   done < "$_chartlist"
   rm -f "$_chartlist"
   [ "$_chart_fail" -eq 0 ] || echo "⚠️  Some chart copies failed" >&2
+
+  echo ""
+  echo "=== Mirroring complete ==="
+}
+
+# Mirror helm charts to a generic OCI registry. For a local Docker registry this
+# usually needs --plain-http because the registry is intentionally not TLS-backed.
+# Args: <registry-host> <charts-string>
+mirror_charts_to_registry() {
+  local registry="$1" charts="$2"
+  local plain_http="${LOCAL_REGISTRY_PLAIN_HTTP:-true}"
+  local push_flags=()
+  if [ "$plain_http" = "true" ]; then
+    push_flags+=(--plain-http)
+  fi
+
+  ensure_crane
+
+  echo ""
+  echo "=== Mirroring Helm charts to ${registry} ==="
+  local _chartlist _chart_fail=0 _workdir
+  _chartlist=$(mktemp)
+  _workdir=$(mktemp -d)
+  echo "$charts" | grep -v '^[[:space:]]*$' > "$_chartlist"
+  if (
+    cd "$_workdir"
+    while IFS='|' read -r name version repo; do
+      name="${name#"${name%%[![:space:]]*}"}"; name="${name%"${name##*[![:space:]]}"}"
+      version="${version#"${version%%[![:space:]]*}"}"; version="${version%"${version##*[![:space:]]}"}"
+      repo="${repo#"${repo%%[![:space:]]*}"}"; repo="${repo%"${repo##*[![:space:]]}"}"
+      [ -z "$name" ] && continue
+
+      echo "  Pulling $name $version from $repo..."
+      local _pull_err _ok=0
+      _pull_err=$(mktemp)
+      if echo "$repo" | grep -q '^oci://'; then
+        helm pull "$repo/$name" --version "$version" </dev/null 2>"$_pull_err" && _ok=1
+      else
+        helm pull "$name" --repo "$repo" --version "$version" </dev/null 2>"$_pull_err" && _ok=1
+      fi
+      if [ "$_ok" -ne 1 ]; then
+        echo "  ❌ FAILED to pull $name $version" >&2
+        sed 's/^/    /' "$_pull_err" >&2
+        rm -f "$_pull_err"
+        _chart_fail=1
+        continue
+      fi
+      rm -f "$_pull_err"
+
+      local tgz
+      tgz=$(ls "${name}"-*.tgz 2>/dev/null | head -1)
+      if [ -z "$tgz" ]; then
+        echo "  ❌ FAILED to download $name $version" >&2
+        _chart_fail=1
+        continue
+      fi
+
+      echo "  Pushing $tgz → oci://${registry}/charts"
+      if helm push "$tgz" "oci://${registry}/charts" "${push_flags[@]}" </dev/null 2>&1; then
+        echo "  ✅ $name $version"
+      else
+        echo "  ❌ FAILED to push $name" >&2
+        _chart_fail=1
+      fi
+      rm -f "$tgz"
+    done < "$_chartlist"
+    exit "$_chart_fail"
+  ); then
+    _chart_fail=0
+  else
+    _chart_fail=$?
+  fi
+  rm -f "$_chartlist"
+  rm -rf "$_workdir"
+  [ "$_chart_fail" -eq 0 ] || exit "$_chart_fail"
 
   echo ""
   echo "=== Mirroring complete ==="

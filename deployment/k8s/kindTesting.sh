@@ -45,6 +45,9 @@ if [[ "${USE_LOCAL_REGISTRY:-true}" == "true" ]]; then
     [[ -n "${node}" ]] && kind_nodes+=("${node}")
   done < <(kind get nodes --name "${KIND_CLUSTER_NAME}")
   connect_cluster_to_registry_network kind "${kind_nodes[@]}"
+  if [[ "${USE_LOCAL_ARTIFACT_MIRROR:-false}" == "true" ]]; then
+    ensure_cluster_registry_service ma "${kind_nodes[0]}"
+  fi
 
   cat <<EOF | kubectl --context "${KIND_CONTEXT}" apply -f -
 apiVersion: v1

@@ -128,6 +128,17 @@ deploy_local_charts() {
   cd "${MIGRATIONS_REPO_ROOT_DIR}/deployment/k8s/"
   local image_tag="${LOCAL_IMAGE_TAG:-latest}"
   local target_opensearch_image_tag="${TARGET_OPENSEARCH_IMAGE_TAG:-2.19.1}"
+  local target_opensearch_image_repository="${TARGET_OPENSEARCH_IMAGE_REPOSITORY:-${LOCAL_REGISTRY}/docker-hub/opensearchproject/opensearch}"
+  local local_mirror_values_file=""
+  local ma_values_args=("-f" "charts/aggregates/migrationAssistantWithArgo/valuesForLocalK8s.yaml")
+
+  if [[ "${USE_LOCAL_ARTIFACT_MIRROR:-false}" == "true" ]]; then
+    target_opensearch_image_repository="${TARGET_OPENSEARCH_IMAGE_REPOSITORY:-${LOCAL_REGISTRY}/mirrored/mirror.gcr.io/opensearchproject/opensearch}"
+    local_mirror_values_file="$(mktemp)"
+    "${MIGRATIONS_REPO_ROOT_DIR}/deployment/k8s/charts/aggregates/migrationAssistantWithArgo/scripts/generateLocalRegistryValues.sh" \
+      "${LOCAL_REGISTRY}" > "${local_mirror_values_file}"
+    ma_values_args+=("-f" "${local_mirror_values_file}")
+  fi
 
   print_step "Updating Helm dependencies"
   retry_command 4 20 helm dependency update charts/aggregates/testClusters
@@ -139,7 +150,7 @@ deploy_local_charts() {
     print_step "Installing Migration Assistant chart"
     helm --kube-context "${KUBE_CONTEXT}" upgrade --install --create-namespace -n ma ma charts/aggregates/migrationAssistantWithArgo \
       --wait --timeout 10m \
-      -f charts/aggregates/migrationAssistantWithArgo/valuesForLocalK8s.yaml \
+      "${ma_values_args[@]}" \
       --set "images.captureProxy.repository=${LOCAL_REGISTRY}/migrations/capture_proxy" \
       --set "images.captureProxy.tag=${image_tag}" \
       --set "images.captureProxy.pullPolicy=Always" \
@@ -166,7 +177,7 @@ deploy_local_charts() {
       --wait --timeout 10m \
       --set "source.image=${LOCAL_REGISTRY}/migrations/elasticsearch_searchguard" \
       --set "source.imageTag=${image_tag}" \
-      --set "target.image.repository=${LOCAL_REGISTRY}/docker-hub/opensearchproject/opensearch" \
+      --set "target.image.repository=${target_opensearch_image_repository}" \
       --set "target.image.tag=${target_opensearch_image_tag}"
   else
     echo "Using non-local registry (USE_LOCAL_REGISTRY=false). Adjust repositories as needed."

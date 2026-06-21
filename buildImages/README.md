@@ -48,6 +48,42 @@ images, so independent Docker image builds run concurrently while preserving
 the required dependency ordering between images that build on top of each
 other.
 
+### Pull-through cache for build base images
+
+The build has separate pull-through-cache support for base images. Jenkins sets
+`ECR_PULL_THROUGH_ENDPOINT`, and the root Gradle build turns that into the
+`pullThroughCacheEndpoint` property. You can also pass the property explicitly:
+
+```shell
+./gradlew buildImagesToRegistry \
+  -PregistryEndpoint=localhost:5001 \
+  -PpullThroughCacheEndpoint=123456789012.dkr.ecr.us-east-1.amazonaws.com
+```
+
+When that endpoint is set, supported base images are rewritten through the ECR
+pull-through cache prefix convention. For example:
+
+```text
+docker.io/library/amazonlinux:2023
+  -> <ptc-endpoint>/docker-hub/library/amazonlinux:2023
+
+quay.io/prometheus/prometheus:v3.3.1
+  -> <ptc-endpoint>/quay/prometheus/prometheus:v3.3.1
+```
+
+Jib-managed Java images use this through `PullThroughCacheHelper.baseImageConfig`.
+BuildKit-managed Dockerfiles receive rewritten base images through build args
+where the Gradle build declares them.
+
+This is not currently the same layout used by
+`deployment/k8s/mirrorLocalArtifacts.sh`. The local deployment mirror stores
+images under `mirrored/<source-registry>/...`, such as
+`localhost:5001/mirrored/docker.io/library/amazonlinux:2023`, while the ECR
+pull-through-cache helper expects `docker-hub/library/amazonlinux:2023`.
+Using the local mirror for build-time base image pulls would require either
+publishing ECR-compatible aliases into the local registry or adding a local
+mirror rewrite mode to the Gradle/build helper.
+
 Or customized to use a specific registry endpoint
 ```shell
 ./gradlew buildImagesToRegistry -PregistryEndpoint=123456789012.dkr.ecr.us-east-2.amazonaws.com/my-ecr-repo

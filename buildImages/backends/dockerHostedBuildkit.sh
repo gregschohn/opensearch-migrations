@@ -155,6 +155,44 @@ EOF
   done
 }
 
+ensure_cluster_registry_service() {
+  local namespace="${1:-ma}"
+  local node="${2:?node container name is required}"
+  local host_gw
+
+  set_docker_hosted_defaults
+  host_gw="$(docker exec "${node}" sh -c "ip route show default | awk '/default/ {print \$3; exit}'")"
+
+  kubectl --context "${KUBE_CONTEXT}" create namespace "${namespace}" --dry-run=client -o yaml \
+    | kubectl --context "${KUBE_CONTEXT}" apply -f -
+
+  cat <<EOF | kubectl --context "${KUBE_CONTEXT}" apply -f -
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${EXTERNAL_REGISTRY_NAME}
+  namespace: ${namespace}
+spec:
+  type: ClusterIP
+  ports:
+    - name: registry
+      port: ${EXTERNAL_REGISTRY_PORT}
+      targetPort: ${EXTERNAL_REGISTRY_PORT}
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: ${EXTERNAL_REGISTRY_NAME}
+  namespace: ${namespace}
+subsets:
+  - addresses:
+      - ip: ${host_gw}
+    ports:
+      - name: registry
+        port: ${EXTERNAL_REGISTRY_PORT}
+EOF
+}
+
 ensure_buildx_builder() {
   local builder_name
   builder_name="builder-${KUBE_CONTEXT//[^a-zA-Z0-9_-]/-}"
