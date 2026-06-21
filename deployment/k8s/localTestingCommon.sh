@@ -20,6 +20,24 @@ print_step() {
   echo "==> $1"
 }
 
+retry_command() {
+  local attempts delay attempt
+  attempts="$1"
+  delay="$2"
+  shift 2
+
+  for ((attempt = 1; attempt <= attempts; attempt++)); do
+    if "$@"; then
+      return 0
+    fi
+    if [[ "${attempt}" == "${attempts}" ]]; then
+      return 1
+    fi
+    echo "Command failed, retrying in ${delay}s (${attempt}/${attempts}): $*" >&2
+    sleep "${delay}"
+  done
+}
+
 wait_for_ma_runtime() {
   print_step "Waiting for core Migration Assistant workloads"
   kubectl --context "${KUBE_CONTEXT}" -n ma rollout status statefulset/migration-console --timeout=10m
@@ -109,10 +127,20 @@ run_named_hook() {
 deploy_local_charts() {
   cd "${MIGRATIONS_REPO_ROOT_DIR}/deployment/k8s/"
   local image_tag="${LOCAL_IMAGE_TAG:-latest}"
+  local target_opensearch_image_tag="${TARGET_OPENSEARCH_IMAGE_TAG:-2.19.1}"
+  local local_mirror_values_file=""
+  local ma_values_args=("-f" "charts/aggregates/migrationAssistantWithArgo/valuesForLocalK8s.yaml")
+
+  if [[ "${USE_LOCAL_ARTIFACT_MIRROR:-false}" == "true" ]]; then
+    local_mirror_values_file="$(mktemp)"
+    "${MIGRATIONS_REPO_ROOT_DIR}/deployment/k8s/charts/aggregates/migrationAssistantWithArgo/scripts/generateLocalRegistryValues.sh" \
+      "${LOCAL_REGISTRY}" > "${local_mirror_values_file}"
+    ma_values_args+=("-f" "${local_mirror_values_file}")
+  fi
 
   print_step "Updating Helm dependencies"
-  helm dependency update charts/aggregates/testClusters
-  helm dependency update charts/aggregates/migrationAssistantWithArgo
+  retry_command 4 20 helm dependency update charts/aggregates/testClusters
+  retry_command 4 20 helm dependency update charts/aggregates/migrationAssistantWithArgo
 
   if [[ "${USE_LOCAL_REGISTRY:-false}" == "true" ]]; then
     echo "Using LOCAL_REGISTRY for images: ${LOCAL_REGISTRY}"
@@ -120,7 +148,7 @@ deploy_local_charts() {
     print_step "Installing Migration Assistant chart"
     helm --kube-context "${KUBE_CONTEXT}" upgrade --install --create-namespace -n ma ma charts/aggregates/migrationAssistantWithArgo \
       --wait --timeout 10m \
-      -f charts/aggregates/migrationAssistantWithArgo/valuesForLocalK8s.yaml \
+      "${ma_values_args[@]}" \
       --set "images.captureProxy.repository=${LOCAL_REGISTRY}/migrations/capture_proxy" \
       --set "images.captureProxy.tag=${image_tag}" \
       --set "images.captureProxy.pullPolicy=Always" \
@@ -144,7 +172,9 @@ deploy_local_charts() {
     helm --kube-context "${KUBE_CONTEXT}" upgrade --install --create-namespace -n ma tc charts/aggregates/testClusters \
       --wait --timeout 10m \
       --set "source.image=${LOCAL_REGISTRY}/migrations/elasticsearch_searchguard" \
-      --set "source.imageTag=${image_tag}"
+      --set "source.imageTag=${image_tag}" \
+      --set "target.image.repository=${LOCAL_REGISTRY}/mirrored/mirror.gcr.io/opensearchproject/opensearch" \
+      --set "target.image.tag=${target_opensearch_image_tag}"
   else
     echo "Using non-local registry (USE_LOCAL_REGISTRY=false). Adjust repositories as needed."
     print_step "Installing Migration Assistant chart"

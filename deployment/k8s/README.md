@@ -126,6 +126,66 @@ If you want the kind cluster to run on OrbStack instead of Docker Desktop,
 switch the active Docker context before running the script so `docker` and
 `kind` target the same backend.
 
+### Local third-party artifact mirror
+
+The local registry can also mirror third-party images and Helm charts that the
+local charts install. This is useful when Docker Hub, Quay, or chart repository
+access is slow or rate-limited: the first mirror run pulls from the public
+upstreams, and later kind/minikube deploys pull those artifacts from the shared
+`docker-registry` container.
+
+Warm the local registry before running `kindTesting.sh` or `localTesting.sh`:
+
+```shell
+MIRROR_MAX_JOBS=1 LOCAL_CRANE_COPY_JOBS=1 CRANE_COPY_TIMEOUT_SECONDS=3600 \
+  $(git rev-parse --show-toplevel)/deployment/k8s/mirrorLocalArtifacts.sh \
+    --registry localhost:5001
+```
+
+The default mirror profile is `local-dev`, which mirrors the chart/image set
+used by the normal local MA and test-cluster installs. Use `--all` only when
+you need every artifact from the EKS private-ECR mirror manifest.
+
+After the mirror is warm, enable it for local deployments:
+
+```shell
+USE_LOCAL_ARTIFACT_MIRROR=true \
+  $(git rev-parse --show-toplevel)/deployment/k8s/kindTesting.sh
+```
+
+or:
+
+```shell
+USE_LOCAL_ARTIFACT_MIRROR=true \
+  $(git rev-parse --show-toplevel)/deployment/k8s/localTesting.sh
+```
+
+With this flag, the deployment script generates a temporary Helm values file
+from `charts/aggregates/migrationAssistantWithArgo/scripts/generateLocalRegistryValues.sh`.
+That values file rewrites third-party chart repositories to
+`oci://docker-registry:5001/charts/...` and third-party image repositories to
+`docker-registry:5001/mirrored/...`. Project images are still built from source
+by Gradle and pushed to `docker-registry:5001/migrations/...`.
+
+Useful mirror knobs:
+
+* `MIRROR_MAX_JOBS`: number of images copied at once. Use `1` on laptops when
+  large layers make Docker Desktop or the network unstable.
+* `LOCAL_CRANE_COPY_JOBS`: number of concurrent layer copies inside one image
+  copy. Use `1` for the most conservative local behavior.
+* `LOCAL_MIRROR_PLATFORM`: image platform to mirror. Defaults to the host
+  Linux platform, such as `linux/arm64` on Apple Silicon.
+* `LOCAL_REGISTRY_PLAIN_HTTP`: controls `helm push --plain-http` for the local
+  OCI registry. Defaults to `true`.
+
+This mirror currently covers deployment-time third-party artifacts. Build-time
+base image pulls are still controlled by the Gradle pull-through-cache settings
+described in [Building Images Locally](../../buildImages/README.md). Jenkins
+sets `ECR_PULL_THROUGH_ENDPOINT`, which Gradle uses to rewrite supported base
+images through ECR pull-through cache. The local mirror stores images under
+`mirrored/<source-registry>/...`, so it is not yet a drop-in replacement for
+the ECR pull-through-cache path names.
+
 ## Deploying
 
 ### What Helm Manages (and what it doesn't manage)

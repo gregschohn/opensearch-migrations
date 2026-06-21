@@ -98,6 +98,9 @@ while IFS= read -r node; do
   [[ -n "${node}" ]] && mk_nodes+=("${node}")
 done < <(minikube -p "${MINIKUBE_PROFILE}" node list 2>/dev/null | awk '{print $1}')
 connect_cluster_to_registry_network "${MINIKUBE_PROFILE}" "${mk_nodes[@]}"
+if [[ "${USE_LOCAL_ARTIFACT_MIRROR:-false}" == "true" ]]; then
+  ensure_cluster_registry_service ma "${mk_nodes[0]}"
+fi
 
 run_local_test_deploy
 
