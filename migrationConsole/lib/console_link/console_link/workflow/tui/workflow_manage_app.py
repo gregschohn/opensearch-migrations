@@ -30,7 +30,6 @@ from .config_edit_tree import (
 from .external_resource_modal import (
     ExternalResourceFormModal,
     ExternalResourcePickerModal,
-    ExternalResourceViewModal,
     values_for_form,
 )
 from .live_status_manager import LiveStatusManager
@@ -597,10 +596,11 @@ class WorkflowTreeApp(App):
     def action_collapse_node(self) -> None:
         tree = self.tree_root_widget
         if node := tree.cursor_node:
-            if node.is_expanded:
+            if node.is_expanded and node.children:
                 node.collapse()
             elif node.parent:
-                tree.select_node(node.parent)
+                tree.move_cursor(node.parent)
+                tree.focus()
 
     def update_pod_status(self) -> None:
         status_bar = self.query_one("#pod-status", Static)
@@ -678,14 +678,12 @@ class WorkflowTreeApp(App):
             self.bind("?", "show_config_edit_help", description="Help")
             self.bind("v", "cycle_config_value_mode", description="Value Mode")
             self.bind("t", "cycle_config_status_mode", description="Status Mode")
-            if self._edit_show_optional:
-                self.bind("o", "hide_config_optional_fields", description="Hide Optional")
-            else:
-                self.bind("O", "show_config_optional_fields", description="Show Optional")
-            if self._edit_show_expert:
-                self.bind("x", "hide_config_expert_fields", description="Hide Expert")
-            else:
-                self.bind("X", "show_config_expert_fields", description="Show Expert")
+            optional_description = "Hide Optional" if self._edit_show_optional else "Show Optional"
+            expert_description = "Hide Expert" if self._edit_show_expert else "Show Expert"
+            self.bind("o", "toggle_config_optional_fields", description=optional_description)
+            self.bind("O", "toggle_config_optional_fields", description=optional_description)
+            self.bind("x", "toggle_config_expert_fields", description=expert_description)
+            self.bind("X", "toggle_config_expert_fields", description=expert_description)
             self.bind("i", "edit_selected_config_node", show=False)
             self._bindings.bind(
                 "left",
@@ -1038,20 +1036,12 @@ class WorkflowTreeApp(App):
         self._edit_status_mode = self._next_edit_mode(self._edit_status_mode)
         self._rerender_config_edit_state()
 
-    def action_show_config_optional_fields(self) -> None:
-        self._edit_show_optional = True
+    def action_toggle_config_optional_fields(self) -> None:
+        self._edit_show_optional = not self._edit_show_optional
         self._rerender_config_edit_state()
 
-    def action_hide_config_optional_fields(self) -> None:
-        self._edit_show_optional = False
-        self._rerender_config_edit_state()
-
-    def action_show_config_expert_fields(self) -> None:
-        self._edit_show_expert = True
-        self._rerender_config_edit_state()
-
-    def action_hide_config_expert_fields(self) -> None:
-        self._edit_show_expert = False
+    def action_toggle_config_expert_fields(self) -> None:
+        self._edit_show_expert = not self._edit_show_expert
         self._rerender_config_edit_state()
 
     @staticmethod
@@ -1235,19 +1225,14 @@ class WorkflowTreeApp(App):
         if not choice:
             return
         action = choice.get("action")
-        if action == "manual":
-            self._show_scalar_config_text_input(node)
-            return
         if action == "create":
-            self._open_external_resource_form(node, "create")
+            self._open_external_resource_form(node, "create", return_to_picker=True)
             return
         row = choice.get("row") or {}
         if action == "select":
             self._select_external_resource_row(node, row)
-        elif action == "view":
-            self._show_external_resource_view(node, row)
         elif action == "update":
-            self._open_external_resource_form_for_row(node, row)
+            self._open_external_resource_form_for_row(node, row, return_to_picker=True)
 
     def _select_external_resource_row(self, node: Dict, row: Dict) -> None:
         name = row.get("name")
@@ -1267,46 +1252,30 @@ class WorkflowTreeApp(App):
     def _apply_external_resource_value(self, node: Dict, name: str) -> None:
         self._handle_scalar_config_value(node, name)
 
-    def _show_external_resource_view(self, node: Dict, row: Dict) -> None:
+    def _open_external_resource_form_for_row(self, node: Dict, row: Dict, return_to_picker: bool = False) -> None:
         self.run_worker(
-            lambda: self._read_external_resource_worker(node, row, "view"),
+            lambda: self._read_external_resource_worker(node, row, return_to_picker),
             thread=True,
             name="read_external_resource",
         )
 
-    def _open_external_resource_form_for_row(self, node: Dict, row: Dict) -> None:
-        self.run_worker(
-            lambda: self._read_external_resource_worker(node, row, "update"),
-            thread=True,
-            name="read_external_resource",
-        )
-
-    def _read_external_resource_worker(self, node: Dict, row: Dict, action: str) -> None:
+    def _read_external_resource_worker(self, node: Dict, row: Dict, return_to_picker: bool) -> None:
         try:
             service = self._config_edit_service_or_default()
             if not hasattr(service, "read_external_resource"):
                 raise RuntimeError("reading external resources is not implemented")
             resource = service.read_external_resource(node.get("externalRef") or {}, str(row.get("name") or ""))
-            if action == "view":
-                self.call_from_thread(self._open_external_resource_view, node, resource)
-            else:
-                self.call_from_thread(self._open_external_resource_form, node, "update", resource)
+            self.call_from_thread(self._open_external_resource_form, node, "update", resource, return_to_picker)
         except Exception as e:
             logger.exception("Failed to read external resource")
             self.call_from_thread(self.notify, f"External resource read failed: {e}", severity="error")
-
-    def _open_external_resource_view(self, node: Dict, resource: Dict) -> None:
-        self.push_screen(
-            ExternalResourceViewModal(node.get("externalRef") or {}, resource),
-            lambda choice: self._open_external_resource_form(node, "update", resource)
-            if choice and choice.get("action") == "update" else None,
-        )
 
     def _open_external_resource_form(
         self,
         node: Dict,
         mode: str,
         resource: Optional[Dict] = None,
+        return_to_picker: bool = False,
     ) -> None:
         external_ref = node.get("externalRef") or {}
         if not external_ref.get("create"):
@@ -1325,7 +1294,7 @@ class WorkflowTreeApp(App):
                 existing_keys=resource.get("keys") if resource else None,
                 documentation=self._edit_node_documentation(node),
             ),
-            lambda values: self._handle_external_resource_form(node, mode, resource, values),
+            lambda values: self._handle_external_resource_form(node, mode, resource, values, return_to_picker),
         )
 
     def _handle_external_resource_form(
@@ -1334,8 +1303,11 @@ class WorkflowTreeApp(App):
         mode: str,
         resource: Optional[Dict],
         values: Optional[Dict[str, str]],
+        return_to_picker: bool = False,
     ) -> None:
         if values is None:
+            if return_to_picker:
+                self._show_external_resource_picker(node)
             return
         existing_name = resource.get("name") if resource else None
         self.run_worker(

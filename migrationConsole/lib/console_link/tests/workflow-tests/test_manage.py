@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 from unittest.mock import MagicMock, patch
 from textual.app import App, ComposeResult
-from textual.widgets import Button, Input, Static
+from textual.widgets import Button, Input, Static, TextArea
 
 from console_link.workflow.tree_utils import APPROVAL_TEMPLATE_NAME
 from console_link.workflow.resource_tree import ResourceGroup, ResourceNode, ResourceSection, _build_tree_from_raw
@@ -22,10 +22,10 @@ from console_link.workflow.tui.workflow_manage_app import (
 from console_link.workflow.tui.choice_select_modal import ChoiceSelectModal
 from console_link.workflow.tui.config_edit_exit_modal import ConfigEditExitModal
 from console_link.workflow.tui.confirm_modal import ConfirmModal
+from console_link.workflow.tui.container_select_modal import ContainerSelectModal
 from console_link.workflow.tui.external_resource_modal import (
     ExternalResourceFormModal,
     ExternalResourcePickerModal,
-    ExternalResourceViewModal,
     PICKER_PAGE_SIZE,
 )
 from console_link.workflow.tui.text_input_modal import TextInputModal
@@ -169,6 +169,98 @@ def basic_auth_secret_external_ref():
     }
 
 
+def tls_secret_external_ref(purpose="proxy-server-tls", display_name="TLS Certificate Secret"):
+    return {
+        "kind": "secret",
+        "purpose": purpose,
+        "displayName": display_name,
+        "description": "Kubernetes TLS Secret containing 'tls.crt' and 'tls.key' entries.",
+        "k8s": {
+            "resource": "Secret",
+            "acceptedSecretTypes": ["kubernetes.io/tls", "Opaque"],
+            "requiredKeys": ["tls.crt", "tls.key"],
+            "contentValidationIds": ["tls-certificate-key-pair"],
+        },
+        "create": {
+            "label": display_name,
+            "fields": [
+                {
+                    "name": "secretName",
+                    "label": "Secret name",
+                    "input": "name",
+                    "required": True,
+                    "validationIds": ["k8s-name"],
+                },
+                {
+                    "name": "certificate",
+                    "label": "Certificate PEM",
+                    "input": "multilineText",
+                    "required": True,
+                    "validationIds": ["non-empty", "pem-certificate-chain"],
+                },
+                {
+                    "name": "privateKey",
+                    "label": "Private key PEM",
+                    "input": "secretMultilineText",
+                    "required": True,
+                    "sensitive": True,
+                    "validationIds": ["non-empty", "pem-private-key"],
+                    "confirm": True,
+                },
+            ],
+            "output": {
+                "kind": "Secret",
+                "type": "kubernetes.io/tls",
+                "stringData": {
+                    "tls.crt": {"fromField": "certificate"},
+                    "tls.key": {"fromField": "privateKey"},
+                },
+            },
+            "apply": {"target": "scalarName", "nameField": "secretName"},
+        },
+    }
+
+
+def log4j_config_map_external_ref():
+    return {
+        "kind": "configMap",
+        "purpose": "log4j-config",
+        "displayName": "Log4j2 ConfigMap",
+        "description": "Kubernetes ConfigMap containing a Log4j2 properties file.",
+        "k8s": {
+            "resource": "ConfigMap",
+            "requiredKeys": ["log4j2.properties"],
+            "contentValidationIds": ["log4j-properties"],
+        },
+        "create": {
+            "label": "Log4j2 ConfigMap",
+            "fields": [
+                {
+                    "name": "configMapName",
+                    "label": "ConfigMap name",
+                    "input": "name",
+                    "required": True,
+                    "validationIds": ["k8s-name"],
+                },
+                {
+                    "name": "properties",
+                    "label": "log4j2.properties",
+                    "input": "multilineText",
+                    "required": True,
+                    "validationIds": ["non-empty", "log4j-properties"],
+                },
+            ],
+            "output": {
+                "kind": "ConfigMap",
+                "data": {
+                    "log4j2.properties": {"fromField": "properties"},
+                },
+            },
+            "apply": {"target": "scalarName", "nameField": "configMapName"},
+        },
+    }
+
+
 def test_external_resource_picker_filters_and_paginates_rows():
     rows = [
         {
@@ -212,11 +304,12 @@ def test_external_resource_picker_filters_and_paginates_rows():
 
     assert [row["name"] for row in modal._visible_rows()][-1] == "current-but-missing"
     assert "other-missing" not in [row["name"] for row in modal._visible_rows()]
-    assert len(modal._displayed_rows()) == PICKER_PAGE_SIZE
+    assert len(modal._displayed_entries()) == PICKER_PAGE_SIZE
     assert modal._page_count() == 2
 
     modal.page_index = 1
     assert [row["name"] for row in modal._displayed_rows()] == [
+        "matching-9",
         "matching-10",
         "matching-11",
         "current-but-missing",
@@ -245,6 +338,7 @@ async def test_external_resource_picker_auto_pages_at_row_boundaries():
         "Select Secret",
         rows,
         external_ref=basic_auth_secret_external_ref(),
+        can_create=True,
     )
 
     class PickerHarness(App):
@@ -263,11 +357,130 @@ async def test_external_resource_picker_auto_pages_at_row_boundaries():
         await pilot.press("down")
         assert picker.page_index == 1
         assert picker.focused.id == "row-0"
-        assert picker._displayed_rows()[0]["name"] == f"matching-{PICKER_PAGE_SIZE}"
+        assert picker._displayed_rows()[0]["name"] == f"matching-{PICKER_PAGE_SIZE - 2}"
+
+        picker._focus_row(len(picker._displayed_entries()) - 1)
+        await pilot.press("down")
+        assert picker.page_index == 0
+        assert picker.focused.id == "row-0"
+        assert picker.query_one("#row-0", Button).label.plain == "+ Create New (c)"
 
         await pilot.press("up")
-        assert picker.page_index == 0
-        assert picker.focused.id == f"row-{PICKER_PAGE_SIZE - 1}"
+        assert picker.page_index == picker._page_count() - 1
+        assert picker.focused.id == f"row-{len(picker._displayed_entries()) - 1}"
+
+
+@pytest.mark.asyncio
+async def test_external_resource_picker_action_buttons_click_focused_item_without_taking_focus():
+    rows = [
+        {
+            "name": "first-creds",
+            "kind": "Secret",
+            "type": "kubernetes.io/basic-auth",
+            "keys": ["username", "password"],
+            "status": "matching",
+            "message": "",
+            "current": False,
+        },
+        {
+            "name": "second-creds",
+            "kind": "Secret",
+            "type": "kubernetes.io/basic-auth",
+            "keys": ["username", "password"],
+            "status": "matching",
+            "message": "",
+            "current": False,
+        },
+    ]
+    modal = ExternalResourcePickerModal(
+        "Select Secret",
+        rows,
+        external_ref=basic_auth_secret_external_ref(),
+    )
+    result = {}
+
+    class PickerHarness(App):
+        def compose(self) -> ComposeResult:
+            yield Static("")
+
+        async def on_mount(self) -> None:
+            self.push_screen(modal, lambda choice: result.update(choice or {}))
+
+    app = PickerHarness()
+    async with app.run_test() as pilot:
+        assert await wait_until(pilot, lambda: isinstance(app.screen, ExternalResourcePickerModal))
+        picker = app.screen
+        assert picker.focused.id == "row-1"
+        assert picker.query_one("#row-0", Button).label.plain == "Matching"
+        assert picker.query_one("#select", Button).label.plain == "Select (<Enter>)"
+        assert not picker.query_one("#select", Button).can_focus
+        assert not picker.query_one("#update", Button).can_focus
+        assert not picker.query_one("#cancel", Button).can_focus
+
+        await pilot.press("down")
+        assert picker.focused.id == "row-2"
+
+        await pilot.click("#select")
+
+    assert result["action"] == "select"
+    assert result["row"]["name"] == "second-creds"
+
+
+@pytest.mark.asyncio
+async def test_choice_select_modal_renders_mouse_ok_enter_affordance():
+    modal = ChoiceSelectModal(
+        "Select mode",
+        [
+            {"label": "first", "value": "first"},
+            {"label": "second", "value": "second"},
+        ],
+        current_value="first",
+    )
+    result = {}
+
+    class ChoiceHarness(App):
+        def compose(self) -> ComposeResult:
+            yield Static("")
+
+        async def on_mount(self) -> None:
+            self.push_screen(modal, lambda value: result.update({"value": value}))
+
+    app = ChoiceHarness()
+    async with app.run_test() as pilot:
+        assert await wait_until(pilot, lambda: isinstance(app.screen, ChoiceSelectModal))
+        assert app.screen.query_one("#ok", Button).label.plain == "OK (<Enter>)"
+        assert app.screen.query_one("#cancel", Button).label.plain == "Cancel (Esc)"
+        assert not app.screen.query_one("#ok", Button).can_focus
+
+        await pilot.press("down")
+        await pilot.click("#ok")
+
+    assert result == {"value": "second"}
+
+
+@pytest.mark.asyncio
+async def test_container_select_modal_renders_mouse_ok_enter_affordance():
+    modal = ContainerSelectModal(["main", "sidecar"], "pod-a")
+    result = {}
+
+    class ContainerHarness(App):
+        def compose(self) -> ComposeResult:
+            yield Static("")
+
+        async def on_mount(self) -> None:
+            self.push_screen(modal, lambda value: result.update({"value": value}))
+
+    app = ContainerHarness()
+    async with app.run_test() as pilot:
+        assert await wait_until(pilot, lambda: isinstance(app.screen, ContainerSelectModal))
+        assert app.screen.query_one("#ok", Button).label.plain == "OK (<Enter>)"
+        assert app.screen.query_one("#cancel", Button).label.plain == "Cancel (Esc)"
+        assert not app.screen.query_one("#ok", Button).can_focus
+
+        await pilot.press("down")
+        await pilot.click("#ok")
+
+    assert result == {"value": "sidecar"}
 
 
 def edit_state_with_missing_basic_auth():
@@ -427,6 +640,189 @@ def edit_state_with_basic_auth_secret(secret_name="source-creds"):
     secret["statusCounts"] = {}
     secret["diagnostics"] = []
     state["validation"] = {"valid": True, "errors": []}
+    return state
+
+
+def edit_state_with_proxy_logging_config(config_map_name=""):
+    missing = not bool(config_map_name)
+    return {
+        "formatVersion": 1,
+        "provenance": {"source": "pending-yaml", "lossy": False, "warnings": []},
+        "nodes": [
+            {
+                "id": "edit:traffic",
+                "path": ["traffic"],
+                "label": "[REQ 1] Live Traffic Migration" if missing else "[OK] Live Traffic Migration",
+                "valueKind": "object",
+                "description": "Live traffic capture and replay resources.",
+                "status": "required" if missing else "ok",
+                "statusCounts": {"required": 1} if missing else {},
+                "children": [
+                    {
+                        "id": "edit:traffic.proxies",
+                        "path": ["traffic", "proxies"],
+                        "label": "[REQ 1] Capture" if missing else "[OK] Capture",
+                        "valueKind": "record",
+                        "description": "Capture proxies.",
+                        "status": "required" if missing else "ok",
+                        "statusCounts": {"required": 1} if missing else {},
+                        "children": [
+                            {
+                                "id": "edit:traffic.proxies.cap",
+                                "path": ["traffic", "proxies", "cap"],
+                                "label": "[REQ 1] capture proxy: cap" if missing else "[OK] capture proxy: cap",
+                                "valueKind": "object",
+                                "description": "Capture proxy.",
+                                "status": "required" if missing else "ok",
+                                "statusCounts": {"required": 1} if missing else {},
+                                "children": [
+                                    {
+                                        "id": "edit:traffic.proxies.cap.proxyConfig",
+                                        "path": ["traffic", "proxies", "cap", "proxyConfig"],
+                                        "label": "[REQ 1] proxyConfig" if missing else "[OK] proxyConfig",
+                                        "valueKind": "object",
+                                        "description": "Capture proxy options.",
+                                        "status": "required" if missing else "ok",
+                                        "statusCounts": {"required": 1} if missing else {},
+                                        "children": [
+                                            {
+                                                "id": "edit:traffic.proxies.cap.proxyConfig.loggingConfigurationOverrideConfigMap",
+                                                "path": [
+                                                    "traffic", "proxies", "cap", "proxyConfig",
+                                                    "loggingConfigurationOverrideConfigMap"
+                                                ],
+                                                "label": (
+                                                    f"[OK] loggingConfigurationOverrideConfigMap: {config_map_name}"
+                                                    if config_map_name
+                                                    else "[REQ] loggingConfigurationOverrideConfigMap: <required>"
+                                                ),
+                                                "value": config_map_name,
+                                                "valueKind": "scalar",
+                                                "description": "Name of a Kubernetes ConfigMap containing Log4j2 properties.",
+                                                "required": True,
+                                                "externalRef": log4j_config_map_external_ref(),
+                                                "status": "ok" if config_map_name else "required",
+                                                "statusCounts": {} if config_map_name else {"required": 1},
+                                            },
+                                        ],
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            }
+        ],
+        "pendingSubmitChanges": [],
+        "submittedRolloutChanges": [],
+        "policyPreview": [],
+        "validation": {"valid": not missing, "errors": [] if not missing else ["logging config is required"]},
+    }
+
+
+def edit_state_with_proxy_tls_secret(secret_name=""):
+    state = edit_state_with_proxy_logging_config("logging-config")
+    traffic = state["nodes"][0]
+    proxy_config = traffic["children"][0]["children"][0]["children"][0]
+    tls_node = {
+        "id": "edit:traffic.proxies.cap.proxyConfig.tls",
+        "path": ["traffic", "proxies", "cap", "proxyConfig", "tls"],
+        "label": "[REQ 1] tls: < existingSecret >" if not secret_name else "[OK] tls: < existingSecret >",
+        "value": "existingSecret",
+        "valueKind": "union",
+        "description": "TLS certificate configuration for HTTPS termination at the proxy.",
+        "presence": "optional",
+        "status": "required" if not secret_name else "ok",
+        "statusCounts": {"required": 1} if not secret_name else {},
+        "variants": [
+            {"label": "default", "value": "unset"},
+            {"label": "existingSecret", "value": "existingSecret"},
+            {"label": "certManager", "value": "certManager"},
+            {"label": "plaintext", "value": "plaintext"},
+        ],
+        "children": [
+            {
+                "id": "edit:traffic.proxies.cap.proxyConfig.tls.secretName",
+                "path": ["traffic", "proxies", "cap", "proxyConfig", "tls", "secretName"],
+                "label": f"[OK] secretName: {secret_name}" if secret_name else "[REQ] secretName: <required>",
+                "value": secret_name,
+                "valueKind": "scalar",
+                "description": "Name of an existing Kubernetes TLS secret containing 'tls.crt' and 'tls.key' entries.",
+                "required": True,
+                "externalRef": tls_secret_external_ref(),
+                "status": "ok" if secret_name else "required",
+                "statusCounts": {} if secret_name else {"required": 1},
+            }
+        ],
+    }
+    proxy_config["children"] = [tls_node]
+    for node in [traffic, traffic["children"][0], traffic["children"][0]["children"][0], proxy_config]:
+        node["label"] = node["label"].replace("[OK]", "[REQ 1]") if not secret_name else node["label"]
+        node["status"] = "required" if not secret_name else "ok"
+        node["statusCounts"] = {"required": 1} if not secret_name else {}
+    state["validation"] = {"valid": bool(secret_name), "errors": [] if secret_name else ["secretName is required"]}
+    return state
+
+
+def edit_state_with_proxy_console_client_secret(secret_name=""):
+    state = edit_state_with_proxy_tls_secret("proxy-tls")
+    tls_node = state["nodes"][0]["children"][0]["children"][0]["children"][0]["children"][0]
+    tls_node["children"].append({
+        "id": "edit:traffic.proxies.cap.proxyConfig.tls.clientAuth",
+        "path": ["traffic", "proxies", "cap", "proxyConfig", "tls", "clientAuth"],
+        "label": "[OK] clientAuth: < enabled >",
+        "value": "enabled",
+        "valueKind": "union",
+        "description": "Optional mutual TLS client-authentication configuration for the capture proxy listener.",
+        "presence": "optional",
+        "status": "ok",
+        "statusCounts": {},
+        "variants": [
+            {"label": "disabled", "value": "disabled"},
+            {"label": "enabled", "value": "enabled"},
+        ],
+        "children": [
+            {
+                "id": "edit:traffic.proxies.cap.proxyConfig.tls.clientAuth.trustedClientCaPem",
+                "path": ["traffic", "proxies", "cap", "proxyConfig", "tls", "clientAuth", "trustedClientCaPem"],
+                "label": "[OK] trustedClientCaPem: -----BEGIN CERTIFICATE-----...",
+                "value": "-----BEGIN CERTIFICATE-----\nabc\n-----END CERTIFICATE-----\n",
+                "valueKind": "scalar",
+                "description": "Inline PEM trusted CA certificate used to verify client certificates accepted by the capture proxy.",
+                "status": "ok",
+                "statusCounts": {},
+            },
+            {
+                "id": "edit:traffic.proxies.cap.proxyConfig.tls.clientAuth.consoleClientSecretName",
+                "path": [
+                    "traffic", "proxies", "cap", "proxyConfig", "tls", "clientAuth", "consoleClientSecretName"
+                ],
+                "label": f"[OK] consoleClientSecretName: {secret_name}" if secret_name
+                else "[OK] consoleClientSecretName: <unset>",
+                "value": secret_name,
+                "valueKind": "scalar",
+                "description": "Name of a Kubernetes TLS Secret containing the client certificate and private key "
+                "that migration-console commands use when connecting to this mTLS-enabled proxy.",
+                "presence": "optional",
+                "externalRef": tls_secret_external_ref(
+                    "proxy-console-client-tls",
+                    "Proxy Client Certificate Secret"
+                ),
+                "status": "ok",
+                "statusCounts": {},
+            },
+            {
+                "id": "edit:traffic.proxies.cap.proxyConfig.tls.clientAuth.required",
+                "path": ["traffic", "proxies", "cap", "proxyConfig", "tls", "clientAuth", "required"],
+                "label": "[OK] required: true",
+                "value": True,
+                "valueKind": "boolean",
+                "description": "When true, clients must present a certificate signed by the configured trusted client CA.",
+                "status": "ok",
+                "statusCounts": {},
+            },
+        ],
+    })
     return state
 
 
@@ -997,6 +1393,11 @@ async def test_non_edit_enter_opens_approval_confirmation(mock_workflow_with_pod
 
         await pilot.press("enter")
         assert await wait_until(pilot, lambda: isinstance(app.screen, ConfirmModal))
+        assert app.screen.query_one("#yes", Button).label.plain == "Yes (y)"
+        assert app.screen.query_one("#no", Button).label.plain == "No (n)"
+        await pilot.press("enter")
+        await pilot.pause()
+        argo_service.approve_step.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -1170,6 +1571,7 @@ async def test_resource_view_edit_mode_applies_variant_and_saves(mock_workflow_w
             await pilot.press("enter")
             assert await wait_until(pilot, lambda: isinstance(app.screen, ChoiceSelectModal))
             assert "Authentication configuration" in str(app.screen.query_one("#documentation").content)
+            assert app.screen.query_one("#cancel", Button).label.plain == "Cancel (Esc)"
             await pilot.press("right")
             assert "AWS SigV4 request signing" in str(app.screen.query_one("#choice-doc").content)
             await pilot.press("left")
@@ -1187,6 +1589,8 @@ async def test_resource_view_edit_mode_applies_variant_and_saves(mock_workflow_w
             )
             assert await wait_until(pilot, lambda: isinstance(app.screen, TextInputModal))
             assert "Edit sourceClusters.legacy.authConfig.sigv4.region" in str(app.screen.query_one("#prompt").content)
+            assert app.screen.query_one("#save", Button).label.plain == "Save (<Enter>)"
+            assert app.screen.query_one("#cancel", Button).label.plain == "Cancel (Esc)"
             assert isinstance(app.screen.focused, Input)
             await pilot.press("right")
             assert isinstance(app.screen.focused, Input)
@@ -1362,38 +1766,52 @@ async def test_resource_view_edit_mode_external_secret_picker_creates_and_applie
 
             await pilot.press("enter")
             assert await wait_until(pilot, lambda: isinstance(app.screen, ExternalResourcePickerModal))
-            assert app.screen.query_one("#create").label.plain == "c Create"
-            assert app.screen.query_one("#toggle-show-all").label.plain == "a All"
+            assert "Required Keys: username, password" in str(app.screen.query_one("#requirement").content)
+            assert app.screen.query_one("#select", Button).label.plain == "Select (<Enter>)"
+            assert app.screen.focused.id == "row-2"
             await pilot.press("right")
-            assert app.screen.focused.id == "select"
-            await pilot.press("right")
-            assert app.screen.focused.id == "create"
+            assert app.screen.focused.id == "row-2"
             await pilot.press("left")
-            assert app.screen.focused.id == "select"
+            assert app.screen.focused.id == "row-2"
             row_labels = [
                 button.label.plain if hasattr(button.label, "plain") else str(button.label)
                 for button in app.screen.query(Button)
                 if button.id and button.id.startswith("row-") and button.display
             ]
-            assert row_labels == ["source-creds"]
+            assert row_labels == [
+                "+ Create New (c)",
+                "Matching",
+                "  source-creds",
+                "▶ Non-Matching Secrets",
+            ]
             assert "Opaque" not in " ".join(row_labels)
             assert "missing password" not in " ".join(row_labels)
-            row_doc = str(app.screen.query_one("#row-doc").content)
-            assert "Matching" not in row_doc
-            assert "current value" not in row_doc.lower()
-            assert "Keys: username, password." in row_doc
+            assert not app.screen.query_one("#row-doc").display
 
-            await pilot.press("a")
+            app.screen.set_focus(app.screen.query_one("#row-3", Button))
+            await pilot.press("right")
             assert await wait_until(
                 pilot,
                 lambda: any(
-                    (button.label.plain if hasattr(button.label, "plain") else str(button.label)) == "admin-creds (missing password)"
+                    (button.label.plain if hasattr(button.label, "plain") else str(button.label)) == "  admin-creds (missing password)"
                     for button in app.screen.query(Button)
                     if button.id and button.id.startswith("row-") and button.display
                 ),
             )
-            await pilot.press("down")
+            assert app.screen.query_one("#row-3", Button).label.plain == "▼ Non-Matching Secrets"
+            await pilot.press("left")
+            assert app.screen.query_one("#row-3", Button).label.plain == "▶ Non-Matching Secrets"
+            await pilot.press("right")
+            app.screen.set_focus(app.screen.query_one("#row-4", Button))
+            app.screen._update_row_doc()
             assert "Missing keys: password" in str(app.screen.query_one("#row-doc").content)
+
+            await pilot.press("c")
+            assert await wait_until(pilot, lambda: isinstance(app.screen, ExternalResourceFormModal))
+            assert app.screen.query_one("#save", Button).label.plain == "Create (<Enter>)"
+            assert app.screen.query_one("#cancel", Button).label.plain == "Cancel (Esc)"
+            await pilot.press("escape")
+            assert await wait_until(pilot, lambda: isinstance(app.screen, ExternalResourcePickerModal))
 
             await pilot.press("c")
             assert await wait_until(pilot, lambda: isinstance(app.screen, ExternalResourceFormModal))
@@ -1420,8 +1838,75 @@ async def test_resource_view_edit_mode_external_secret_picker_creates_and_applie
 
 
 @pytest.mark.asyncio
-async def test_resource_view_edit_mode_external_secret_view_update_hides_password(mock_workflow_with_two_pods):
-    """Picker view/update panes show non-sensitive values and preserve hidden passwords."""
+async def test_resource_view_edit_mode_left_from_external_ref_leaf_moves_to_parent_without_dialog(
+        mock_workflow_with_two_pods):
+    """Left arrow should navigate up from edit leaves without activating the parent."""
+
+    class FakeConfigEditService:
+        def __init__(self):
+            self.apply_calls = []
+            self.list_calls = 0
+
+        def load_edit_session(self):
+            return {
+                "raw_yaml": "initial-yaml",
+                "edit_state": edit_state_with_basic_auth_secret("source-creds"),
+            }
+
+        def list_external_resources(self, external_ref, current_value=None):
+            self.list_calls += 1
+            return []
+
+        def apply_operation(self, raw_yaml, operation):
+            self.apply_calls.append((raw_yaml, operation))
+            return {
+                "raw_yaml": "updated-yaml",
+                "edit_state": edit_state_with_basic_auth_secret(operation["value"]),
+            }
+
+    service = FakeConfigEditService()
+    argo_service = ArgoService(
+        get_workflow=lambda name, namespace: ({"success": True}, mock_workflow_with_two_pods),
+        approve_step=MagicMock(),
+    )
+    pod_scraper = MagicMock(spec=PodScraperInterface(None, None, None))
+    pod_scraper.fetch_pods_metadata.return_value = []
+
+    app = WorkflowTreeApp(
+        namespace="default",
+        name="test-wf",
+        argo_service=argo_service,
+        pod_scraper=pod_scraper,
+        workflow_waiter=FAILING_WAITER,
+        refresh_interval=100.0,
+        resource_view=True,
+        config_edit_service=service,
+    )
+
+    with patch("console_link.workflow.resource_tree.build_resource_tree",
+               return_value=resource_sections_for_manage_tests()):
+        async with app.run_test() as pilot:
+            tree = app.query_one("#workflow-tree")
+            tree.focus()
+            assert await wait_until(pilot, lambda: len(tree.root.children) > 0, timeout=5.0)
+
+            await pilot.press("e")
+            assert await wait_until(pilot, lambda: get_clean_text_label(tree.root) == "Workflow Config Edit")
+            app._select_tree_node_by_id("edit:sourceClusters.legacy.authConfig.basic.secretName")
+            app._update_dynamic_bindings()
+
+            await pilot.press("left")
+            await pilot.pause()
+
+            assert tree.cursor_node.data["id"] == "edit:sourceClusters.legacy.authConfig"
+            assert not isinstance(app.screen, (ChoiceSelectModal, ExternalResourcePickerModal))
+            assert service.list_calls == 0
+            assert service.apply_calls == []
+
+
+@pytest.mark.asyncio
+async def test_resource_view_edit_mode_external_secret_update_hides_password(mock_workflow_with_two_pods):
+    """Picker update reads non-sensitive values and preserves hidden passwords."""
 
     class FakeConfigEditService:
         def __init__(self):
@@ -1498,22 +1983,18 @@ async def test_resource_view_edit_mode_external_secret_view_update_hides_passwor
 
             await pilot.press("enter")
             assert await wait_until(pilot, lambda: isinstance(app.screen, ExternalResourcePickerModal))
-            await pilot.press("v")
-            assert await wait_until(pilot, lambda: isinstance(app.screen, ExternalResourceViewModal))
-            view_text = str(app.screen.query_one("#contents").content)
-            assert "username: admin" in view_text
-            assert "password: <hidden>" in view_text
-            assert "super-secret" not in view_text
-            assert app.screen.focused.id == "update"
-            await pilot.press("right")
-            assert app.screen.focused.id == "back"
-            await pilot.press("left")
-            assert app.screen.focused.id == "update"
+            await pilot.press("u")
+            assert await wait_until(pilot, lambda: isinstance(app.screen, ExternalResourceFormModal))
+            assert app.screen.query_one("#save", Button).label.plain == "Update (<Enter>)"
+            assert app.screen.query_one("#cancel", Button).label.plain == "Cancel (Esc)"
+            await pilot.press("escape")
+            assert await wait_until(pilot, lambda: isinstance(app.screen, ExternalResourcePickerModal))
 
             await pilot.press("u")
             assert await wait_until(pilot, lambda: isinstance(app.screen, ExternalResourceFormModal))
             assert app.screen.query_one("#field-1").value == "admin"
             assert app.screen.query_one("#field-2").value == ""
+            assert "super-secret" not in str(app.screen.query_one("#field-2").value)
             assert isinstance(app.screen.focused, Input)
             await pilot.press("right")
             assert isinstance(app.screen.focused, Input)
@@ -1532,6 +2013,317 @@ async def test_resource_view_edit_mode_external_secret_view_update_hides_passwor
             )]
             assert await wait_until(pilot, lambda: len(service.apply_calls) == 1)
             assert service.apply_calls[0][1]["value"] == "source-creds"
+
+
+@pytest.mark.asyncio
+async def test_resource_view_edit_mode_external_config_map_picker_creates_and_applies(mock_workflow_with_two_pods):
+    """ConfigMap refs use the schema descriptor for picker requirements and multiline create forms."""
+
+    class FakeConfigEditService:
+        def __init__(self):
+            self.apply_calls = []
+            self.saved_external = []
+
+        def load_edit_session(self):
+            return {
+                "raw_yaml": "initial-yaml",
+                "edit_state": edit_state_with_proxy_logging_config(),
+            }
+
+        def list_external_resources(self, external_ref, current_value=None):
+            return [
+                {
+                    "name": "valid-log4j",
+                    "kind": "ConfigMap",
+                    "keys": ["log4j2.properties"],
+                    "status": "matching",
+                    "message": "",
+                    "current": False,
+                },
+                {
+                    "name": "missing-key",
+                    "kind": "ConfigMap",
+                    "keys": ["application.properties"],
+                    "status": "warn",
+                    "message": "missing log4j2.properties",
+                    "current": False,
+                },
+            ]
+
+        def save_external_resource(self, external_ref, values, existing_name=None):
+            self.saved_external.append((external_ref["purpose"], values, existing_name))
+            return {"name": values["configMapName"], "message": f"ConfigMap created: {values['configMapName']}"}
+
+        def apply_operation(self, raw_yaml, operation):
+            self.apply_calls.append((raw_yaml, operation))
+            return {
+                "raw_yaml": "updated-yaml",
+                "edit_state": edit_state_with_proxy_logging_config(operation["value"]),
+            }
+
+    service = FakeConfigEditService()
+    argo_service = ArgoService(
+        get_workflow=lambda name, namespace: ({"success": True}, mock_workflow_with_two_pods),
+        approve_step=MagicMock(),
+    )
+    pod_scraper = MagicMock(spec=PodScraperInterface(None, None, None))
+    pod_scraper.fetch_pods_metadata.return_value = []
+
+    app = WorkflowTreeApp(
+        namespace="default",
+        name="test-wf",
+        argo_service=argo_service,
+        pod_scraper=pod_scraper,
+        workflow_waiter=FAILING_WAITER,
+        refresh_interval=100.0,
+        resource_view=True,
+        config_edit_service=service,
+    )
+
+    with patch("console_link.workflow.resource_tree.build_resource_tree",
+               return_value=resource_sections_for_manage_tests()):
+        async with app.run_test() as pilot:
+            tree = app.query_one("#workflow-tree")
+            tree.focus()
+            assert await wait_until(pilot, lambda: len(tree.root.children) > 0, timeout=5.0)
+
+            await pilot.press("e")
+            assert await wait_until(pilot, lambda: get_clean_text_label(tree.root) == "Workflow Config Edit")
+            app._select_tree_node_by_id(
+                "edit:traffic.proxies.cap.proxyConfig.loggingConfigurationOverrideConfigMap"
+            )
+            app._update_dynamic_bindings()
+
+            await pilot.press("enter")
+            assert await wait_until(pilot, lambda: isinstance(app.screen, ExternalResourcePickerModal))
+            assert "Required Keys: log4j2.properties" in str(app.screen.query_one("#requirement").content)
+            assert app.screen.query_one("#row-2", Button).label.plain == "  valid-log4j"
+
+            await pilot.press("c")
+            assert await wait_until(pilot, lambda: isinstance(app.screen, ExternalResourceFormModal))
+            assert "Create Log4j2 ConfigMap" in str(app.screen.query_one("#title").content)
+            assert isinstance(app.screen.query_one("#field-1"), TextArea)
+
+            app.screen.query_one("#field-0", Input).value = "new-log4j"
+            app.screen.query_one("#field-1", TextArea).load_text("not a properties file")
+            app.screen.action_submit()
+            assert "Log4j2 property assignment" in str(app.screen.query_one("#validation").content)
+
+            app.screen.query_one("#field-1", TextArea).load_text("status = warn\nrootLogger.level = info\n")
+            app.screen.action_submit()
+
+            assert await wait_until(pilot, lambda: len(service.apply_calls) == 1)
+            assert service.saved_external == [(
+                "log4j-config",
+                {"configMapName": "new-log4j", "properties": "status = warn\nrootLogger.level = info\n"},
+                None,
+            )]
+            assert service.apply_calls[0][1] == {
+                "op": "set",
+                "path": [
+                    "traffic", "proxies", "cap", "proxyConfig", "loggingConfigurationOverrideConfigMap"
+                ],
+                "value": "new-log4j",
+            }
+
+
+@pytest.mark.asyncio
+async def test_resource_view_edit_mode_proxy_console_client_secret_picker_creates_and_applies(
+        mock_workflow_with_two_pods):
+    """Proxy clientAuth console Secret refs use TLS Secret picker/create descriptors."""
+
+    class FakeConfigEditService:
+        def __init__(self):
+            self.apply_calls = []
+            self.saved_external = []
+
+        def load_edit_session(self):
+            return {
+                "raw_yaml": "initial-yaml",
+                "edit_state": edit_state_with_proxy_console_client_secret(),
+            }
+
+        def list_external_resources(self, external_ref, current_value=None):
+            return [{
+                "name": "client-cert",
+                "kind": "Secret",
+                "type": "kubernetes.io/tls",
+                "keys": ["tls.crt", "tls.key"],
+                "status": "matching",
+                "message": "",
+                "current": False,
+            }]
+
+        def save_external_resource(self, external_ref, values, existing_name=None):
+            self.saved_external.append((external_ref["purpose"], values, existing_name))
+            return {"name": values["secretName"], "message": f"Secret created: {values['secretName']}"}
+
+        def apply_operation(self, raw_yaml, operation):
+            self.apply_calls.append((raw_yaml, operation))
+            return {
+                "raw_yaml": "updated-yaml",
+                "edit_state": edit_state_with_proxy_console_client_secret(operation["value"]),
+            }
+
+    service = FakeConfigEditService()
+    argo_service = ArgoService(
+        get_workflow=lambda name, namespace: ({"success": True}, mock_workflow_with_two_pods),
+        approve_step=MagicMock(),
+    )
+    pod_scraper = MagicMock(spec=PodScraperInterface(None, None, None))
+    pod_scraper.fetch_pods_metadata.return_value = []
+
+    app = WorkflowTreeApp(
+        namespace="default",
+        name="test-wf",
+        argo_service=argo_service,
+        pod_scraper=pod_scraper,
+        workflow_waiter=FAILING_WAITER,
+        refresh_interval=100.0,
+        resource_view=True,
+        config_edit_service=service,
+    )
+
+    with patch("console_link.workflow.resource_tree.build_resource_tree",
+               return_value=resource_sections_for_manage_tests()):
+        async with app.run_test() as pilot:
+            tree = app.query_one("#workflow-tree")
+            tree.focus()
+            assert await wait_until(pilot, lambda: len(tree.root.children) > 0, timeout=5.0)
+
+            await pilot.press("e")
+            assert await wait_until(pilot, lambda: get_clean_text_label(tree.root) == "Workflow Config Edit")
+            app._select_tree_node_by_id(
+                "edit:traffic.proxies.cap.proxyConfig.tls.clientAuth.consoleClientSecretName"
+            )
+            app._update_dynamic_bindings()
+
+            await pilot.press("enter")
+            assert await wait_until(pilot, lambda: isinstance(app.screen, ExternalResourcePickerModal))
+            assert "Required Keys: tls.crt, tls.key" in str(app.screen.query_one("#requirement").content)
+            await pilot.press("c")
+            assert await wait_until(pilot, lambda: isinstance(app.screen, ExternalResourceFormModal))
+            assert "Create Proxy Client Certificate Secret" in str(app.screen.query_one("#title").content)
+
+            app.screen.query_one("#field-0", Input).value = "new-client-cert"
+            app.screen.query_one("#field-1", TextArea).load_text("bad cert")
+            app.screen.query_one("#field-2", TextArea).load_text("bad key")
+            app.screen.query_one("#field-2-confirm", TextArea).load_text("bad key")
+            app.screen.action_submit()
+            assert "PEM CERTIFICATE" in str(app.screen.query_one("#validation").content)
+
+            app.screen.query_one("#field-1", TextArea).load_text(
+                "-----BEGIN CERTIFICATE-----\nabc\n-----END CERTIFICATE-----\n"
+            )
+            app.screen.query_one("#field-2", TextArea).load_text(
+                "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n"
+            )
+            app.screen.query_one("#field-2-confirm", TextArea).load_text(
+                "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n"
+            )
+            app.screen.action_submit()
+
+            assert await wait_until(pilot, lambda: len(service.apply_calls) == 1)
+            assert service.saved_external[0][0] == "proxy-console-client-tls"
+            assert service.apply_calls[0][1]["path"] == [
+                "traffic", "proxies", "cap", "proxyConfig", "tls", "clientAuth", "consoleClientSecretName"
+            ]
+            assert service.apply_calls[0][1]["value"] == "new-client-cert"
+
+
+@pytest.mark.asyncio
+async def test_resource_view_edit_mode_proxy_tls_secret_picker_creates_and_applies(mock_workflow_with_two_pods):
+    """Proxy TLS existingSecret refs use TLS Secret picker/create/update descriptors."""
+
+    class FakeConfigEditService:
+        def __init__(self):
+            self.apply_calls = []
+            self.saved_external = []
+
+        def load_edit_session(self):
+            return {
+                "raw_yaml": "initial-yaml",
+                "edit_state": edit_state_with_proxy_tls_secret(),
+            }
+
+        def list_external_resources(self, external_ref, current_value=None):
+            return [{
+                "name": "proxy-tls",
+                "kind": "Secret",
+                "type": "kubernetes.io/tls",
+                "keys": ["tls.crt", "tls.key"],
+                "status": "matching",
+                "message": "",
+                "current": False,
+            }]
+
+        def save_external_resource(self, external_ref, values, existing_name=None):
+            self.saved_external.append((external_ref["purpose"], values, existing_name))
+            return {"name": values["secretName"], "message": f"Secret created: {values['secretName']}"}
+
+        def apply_operation(self, raw_yaml, operation):
+            self.apply_calls.append((raw_yaml, operation))
+            return {
+                "raw_yaml": "updated-yaml",
+                "edit_state": edit_state_with_proxy_tls_secret(operation["value"]),
+            }
+
+    service = FakeConfigEditService()
+    argo_service = ArgoService(
+        get_workflow=lambda name, namespace: ({"success": True}, mock_workflow_with_two_pods),
+        approve_step=MagicMock(),
+    )
+    pod_scraper = MagicMock(spec=PodScraperInterface(None, None, None))
+    pod_scraper.fetch_pods_metadata.return_value = []
+
+    app = WorkflowTreeApp(
+        namespace="default",
+        name="test-wf",
+        argo_service=argo_service,
+        pod_scraper=pod_scraper,
+        workflow_waiter=FAILING_WAITER,
+        refresh_interval=100.0,
+        resource_view=True,
+        config_edit_service=service,
+    )
+
+    with patch("console_link.workflow.resource_tree.build_resource_tree",
+               return_value=resource_sections_for_manage_tests()):
+        async with app.run_test() as pilot:
+            tree = app.query_one("#workflow-tree")
+            tree.focus()
+            assert await wait_until(pilot, lambda: len(tree.root.children) > 0, timeout=5.0)
+
+            await pilot.press("e")
+            assert await wait_until(pilot, lambda: get_clean_text_label(tree.root) == "Workflow Config Edit")
+            app._select_tree_node_by_id("edit:traffic.proxies.cap.proxyConfig.tls.secretName")
+            app._update_dynamic_bindings()
+
+            await pilot.press("enter")
+            assert await wait_until(pilot, lambda: isinstance(app.screen, ExternalResourcePickerModal))
+            await pilot.press("c")
+            assert await wait_until(pilot, lambda: isinstance(app.screen, ExternalResourceFormModal))
+            assert "Create TLS Certificate Secret" in str(app.screen.query_one("#title").content)
+
+            app.screen.query_one("#field-0", Input).value = "new-proxy-tls"
+            app.screen.query_one("#field-1", TextArea).load_text(
+                "-----BEGIN CERTIFICATE-----\nabc\n-----END CERTIFICATE-----\n"
+            )
+            app.screen.query_one("#field-2", TextArea).load_text(
+                "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n"
+            )
+            app.screen.query_one("#field-2-confirm", TextArea).load_text(
+                "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n"
+            )
+            app.screen.action_submit()
+
+            assert await wait_until(pilot, lambda: len(service.apply_calls) == 1)
+            assert service.saved_external[0][0] == "proxy-server-tls"
+            assert service.apply_calls[0][1] == {
+                "op": "set",
+                "path": ["traffic", "proxies", "cap", "proxyConfig", "tls", "secretName"],
+                "value": "new-proxy-tls",
+            }
 
 
 @pytest.mark.asyncio
@@ -1595,11 +2387,13 @@ async def test_resource_view_edit_mode_confirms_discard_on_escape(mock_workflow_
 
             await pilot.press("enter")
             assert await wait_until(pilot, lambda: isinstance(app.screen, ChoiceSelectModal))
+            assert app.screen.query_one("#cancel", Button).label.plain == "Cancel (Esc)"
             await pilot.press("down")
             await pilot.press("enter")
             assert await wait_until(pilot, lambda: len(service.apply_calls) == 1)
             assert app._edit_dirty is True
             assert await wait_until(pilot, lambda: isinstance(app.screen, TextInputModal))
+            assert app.screen.query_one("#save", Button).label.plain == "Save (<Enter>)"
             await pilot.press("escape")
             assert await wait_until(
                 pilot,
@@ -1610,6 +2404,9 @@ async def test_resource_view_edit_mode_confirms_discard_on_escape(mock_workflow_
             assert await wait_until(pilot, lambda: isinstance(app.screen, ConfigEditExitModal))
             assert "Validation still reports" in str(app.screen.query_one("#status").content)
             assert app.screen.focused.id == "return"
+            assert app.screen.query_one("#discard", Button).label.plain == "Discard (d)"
+            assert app.screen.query_one("#save", Button).label.plain == "Save (s)"
+            assert app.screen.query_one("#return", Button).label.plain == "Return (r)"
             await pilot.press("left")
             assert app.screen.focused.id == "save"
             await pilot.press("right")
@@ -1824,6 +2621,8 @@ async def test_resource_view_edit_mode_optional_and_expert_visibility(mock_workf
             assert find_tree_node_by_id(tree.root, "edit:sourceClusters.legacy.allowInsecure") is not None
             assert find_tree_node_by_id(tree.root, "edit:sourceClusters.legacy.serviceType") is None
             assert binding_descriptions(app, "o") == ["Hide Optional"]
+            assert binding_descriptions(app, "O") == ["Hide Optional"]
+            assert binding_descriptions(app, "x") == ["Show Expert"]
             assert binding_descriptions(app, "X") == ["Show Expert"]
 
             await pilot.press("o")
@@ -1833,6 +2632,7 @@ async def test_resource_view_edit_mode_optional_and_expert_visibility(mock_workf
             )
             assert find_tree_node_by_id(tree.root, "edit:sourceClusters.legacy.endpoint") is not None
             assert "optional off" in str(app.query_one("#pod-status").content)
+            assert binding_descriptions(app, "o") == ["Show Optional"]
             assert binding_descriptions(app, "O") == ["Show Optional"]
 
             await pilot.press("X")
@@ -1843,13 +2643,14 @@ async def test_resource_view_edit_mode_optional_and_expert_visibility(mock_workf
             assert find_tree_node_by_id(tree.root, "edit:sourceClusters.legacy.allowInsecure") is None
             assert "expert on" in str(app.query_one("#pod-status").content)
             assert binding_descriptions(app, "x") == ["Hide Expert"]
+            assert binding_descriptions(app, "X") == ["Hide Expert"]
 
-            await pilot.press("O")
+            await pilot.press("o")
             assert await wait_until(
                 pilot,
                 lambda: find_tree_node_by_id(tree.root, "edit:sourceClusters.legacy.allowInsecure") is not None,
             )
-            await pilot.press("x")
+            await pilot.press("X")
             assert await wait_until(
                 pilot,
                 lambda: find_tree_node_by_id(tree.root, "edit:sourceClusters.legacy.serviceType") is None,

@@ -1,3 +1,4 @@
+import json
 import re
 from typing import Any, Dict, List, Optional
 
@@ -6,7 +7,8 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Static
+from textual.widget import Widget
+from textual.widgets import Button, Input, Static, TextArea
 
 from .modal_button_navigation import BUTTON_ARROW_BINDINGS, ButtonArrowNavigationMixin, ModalButton
 
@@ -14,28 +16,29 @@ from .modal_button_navigation import BUTTON_ARROW_BINDINGS, ButtonArrowNavigatio
 PICKER_PAGE_SIZE = 10
 
 
+class MouseOnlyModalButton(ModalButton, can_focus=False):
+    pass
+
+
 class ExternalResourcePickerModal(ButtonArrowNavigationMixin, ModalScreen[Optional[Dict[str, Any]]]):
     CSS = """
     ExternalResourcePickerModal { align: center middle; background: $background 60%; }
-    #dialog { width: 82; max-height: 22; border: thick $primary; background: $surface; padding: 0 1; }
+    #dialog { width: 82; height: auto; max-height: 22; border: thick $primary; background: $surface; padding: 0 1; }
     #title { text-align: center; margin-bottom: 0; }
-    #rows { height: auto; max-height: 10; overflow-y: auto; }
-    #row-doc { color: gray; margin-top: 0; min-height: 2; }
-    #actions { align: center middle; height: 1; margin-top: 0; }
+    #requirement { text-align: center; color: gray; margin-bottom: 1; }
+    #rows { height: auto; max-height: 10; overflow-y: auto; margin-bottom: 1; }
+    #row-doc { color: gray; margin-bottom: 1; }
+    #actions { height: auto; }
+    .action-row { align: center middle; height: 1; }
     Button { margin: 0 1 0 0; min-width: 5; height: 1; min-height: 1; border: none; padding: 0 1; }
-    #rows Button { width: 100%; text-align: left; }
+    #rows Button { width: 100%; text-align: left; content-align: left middle; }
     """
     BUTTON_NAV_SELECTOR = "#actions Button"
     BINDINGS = [
         *BUTTON_ARROW_BINDINGS,
         Binding("enter", "select", "Select", show=False, priority=True),
         Binding("c", "create", "Create"),
-        Binding("m", "manual", "Manual"),
-        Binding("v", "view", "View"),
         Binding("u", "update", "Update"),
-        Binding("a", "toggle_show_all", "Show All"),
-        Binding("n", "next_page", "Next"),
-        Binding("p", "previous_page", "Prev"),
         Binding("up", "focus_previous", "Up", show=False),
         Binding("down", "focus_next", "Down", show=False),
         Binding("escape", "cancel", "Cancel", show=False),
@@ -63,43 +66,38 @@ class ExternalResourcePickerModal(ButtonArrowNavigationMixin, ModalScreen[Option
     def compose(self) -> ComposeResult:
         with Container(id="dialog"):
             yield Static(escape(self.title_text), id="title")
+            yield Static(escape(_requirement_title(self.external_ref)), id="requirement")
             with Vertical(id="rows"):
                 for index in range(PICKER_PAGE_SIZE):
                     yield ModalButton("", id=f"row-{index}")
                 yield Static("", id="empty")
             yield Static("", id="row-doc")
-            with Horizontal(id="actions"):
-                yield ModalButton("Select", id="select")
-                yield ModalButton("c Create", id="create", variant="success", disabled=not self.can_create)
-                yield ModalButton("m Manual", id="manual")
-                yield ModalButton("v View", id="view", disabled=not bool(self.rows))
-                yield ModalButton("u Update", id="update", disabled=not bool(self.rows))
-                yield ModalButton("p Prev", id="previous-page")
-                yield ModalButton("n Next", id="next-page")
-                yield ModalButton("a All", id="toggle-show-all")
-                yield ModalButton("Cancel", id="cancel", variant="error")
+            with Vertical(id="actions"):
+                with Horizontal(classes="action-row"):
+                    yield MouseOnlyModalButton("Select (<Enter>)", id="select", variant="primary")
+                    yield MouseOnlyModalButton("Update (u)", id="update", disabled=not bool(self.rows))
+                    yield MouseOnlyModalButton("Cancel", id="cancel", variant="error")
 
     def on_mount(self) -> None:
+        self.query_one("#requirement", Static).display = bool(_requirement_title(self.external_ref))
         self._render_rows()
-        if self._displayed_rows():
-            self._focus_row(0)
-        elif self.can_create:
-            self.set_focus(self.query_one("#create", Button))
+        initial_entry_index = self._initial_entry_index()
+        if initial_entry_index is not None:
+            self._focus_entry_index(initial_entry_index)
         else:
-            self.set_focus(self.query_one("#manual", Button))
+            self.set_focus(None)
         self._update_row_doc()
 
     def action_focus_previous(self) -> None:
-        if self._focused_row_index() == 0 and self._show_previous_page():
-            self._focus_row(len(self._displayed_rows()) - 1)
+        if self._focused_row_index() is not None:
+            self._focus_entry_by_delta(-1)
             return
         self.focus_previous()
         self._update_row_doc()
 
     def action_focus_next(self) -> None:
-        row_index = self._focused_row_index()
-        if row_index is not None and row_index == len(self._displayed_rows()) - 1 and self._show_next_page():
-            self._focus_row(0)
+        if self._focused_row_index() is not None:
+            self._focus_entry_by_delta(1)
             return
         self.focus_next()
         self._update_row_doc()
@@ -111,31 +109,18 @@ class ExternalResourcePickerModal(ButtonArrowNavigationMixin, ModalScreen[Option
         if self.can_create:
             self.dismiss({"action": "create"})
 
-    def action_manual(self) -> None:
-        self.dismiss({"action": "manual"})
-
     def action_select(self) -> None:
-        row = self._focused_row()
-        if row:
-            self.dismiss({"action": "select", "row": row})
-
-    def action_view(self) -> None:
-        row = self._focused_row()
-        if row:
-            self.dismiss({"action": "view", "row": row})
+        self._select_entry(self._focused_entry())
 
     def action_update(self) -> None:
-        row = self._focused_row()
+        row = self._selected_resource_row()
         if row:
             self.dismiss({"action": "update", "row": row})
 
     def action_toggle_show_all(self) -> None:
         if not self._has_hidden_rows():
             return
-        self.show_all = not self.show_all
-        self.page_index = 0
-        self._render_rows()
-        self._focus_first_row_or_action()
+        self._set_nonmatching_expanded(not self.show_all)
 
     def action_next_page(self) -> None:
         self._show_next_page()
@@ -144,60 +129,88 @@ class ExternalResourcePickerModal(ButtonArrowNavigationMixin, ModalScreen[Option
         self._show_previous_page()
 
     def on_mouse_scroll_down(self, event) -> None:
-        if self._show_next_page():
+        if self._focus_entry_by_delta(1):
             event.stop()
 
     def on_mouse_scroll_up(self, event) -> None:
-        if self._show_previous_page():
+        if self._focus_entry_by_delta(-1):
             event.stop()
 
     def action_focus_button_previous(self) -> None:
-        super().action_focus_button_previous()
-        self._update_row_doc()
+        if self._focused_row_index() is not None:
+            self._collapse_focused_tree_entry()
 
     def action_focus_button_next(self) -> None:
-        super().action_focus_button_next()
-        self._update_row_doc()
+        if self._focused_row_index() is not None:
+            self._expand_focused_tree_entry()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         button_id = event.button.id or ""
         if button_id.startswith("row-"):
-            row = self._displayed_rows()[int(button_id.removeprefix("row-"))]
-            self.dismiss({"action": "select", "row": row})
+            entry = self._entry_at_button_id(button_id)
+            if not entry:
+                return
+            self._focus_entry_index(self._absolute_index_for_button_id(button_id))
+            self._select_entry(entry)
         elif button_id == "select":
-            self.action_select()
+            self._select_entry(self._focused_entry())
         elif button_id == "create":
             self.action_create()
-        elif button_id == "manual":
-            self.action_manual()
-        elif button_id == "view":
-            self.action_view()
         elif button_id == "update":
             self.action_update()
-        elif button_id == "toggle-show-all":
-            self.action_toggle_show_all()
-        elif button_id == "next-page":
-            self.action_next_page()
-        elif button_id == "previous-page":
-            self.action_previous_page()
         elif button_id == "cancel":
             self.dismiss(None)
 
     def _focused_row(self) -> Optional[Dict[str, Any]]:
-        focused = self.app.focused or self.focused
-        if isinstance(focused, Button) and focused.id and focused.id.startswith("row-"):
-            displayed = self._displayed_rows()
-            index = int(focused.id.removeprefix("row-"))
-            return displayed[index] if index < len(displayed) else None
-        displayed = self._displayed_rows()
-        return displayed[0] if displayed else None
+        entry = self._focused_entry()
+        if entry and entry.get("type") == "resource":
+            return entry.get("row")
+        return self._selected_resource_row()
+
+    def _focused_entry(self) -> Optional[Dict[str, Any]]:
+        index = self._focused_entry_index()
+        return self._entry_at_visible_index(index) if index is not None else None
 
     def _focused_row_index(self) -> Optional[int]:
         focused = self.app.focused or self.focused
         if not isinstance(focused, Button) or not focused.id or not focused.id.startswith("row-"):
             return None
         index = int(focused.id.removeprefix("row-"))
-        return index if index < len(self._displayed_rows()) else None
+        return index if index < len(self._displayed_entries()) else None
+
+    def _focused_entry_index(self) -> Optional[int]:
+        row_index = self._focused_row_index()
+        if row_index is None:
+            return None
+        return self.page_index * PICKER_PAGE_SIZE + row_index
+
+    def _entry_at_button_id(self, button_id: str) -> Optional[Dict[str, Any]]:
+        return self._entry_at_visible_index(self._absolute_index_for_button_id(button_id))
+
+    def _absolute_index_for_button_id(self, button_id: str) -> int:
+        return self.page_index * PICKER_PAGE_SIZE + int(button_id.removeprefix("row-"))
+
+    def _entry_at_visible_index(self, index: Optional[int]) -> Optional[Dict[str, Any]]:
+        if index is None:
+            return None
+        entries = self._visible_entries()
+        return entries[index] if 0 <= index < len(entries) else None
+
+    def _select_entry(self, entry: Optional[Dict[str, Any]]) -> None:
+        if not entry:
+            return
+        if entry.get("type") == "create":
+            self.action_create()
+        elif entry.get("type") == "group" and entry.get("group") == "nonmatching":
+            self._set_nonmatching_expanded(not self.show_all)
+        elif entry.get("type") == "resource":
+            self.dismiss({"action": "select", "row": entry.get("row")})
+
+    def _selected_resource_row(self) -> Optional[Dict[str, Any]]:
+        entry = self._focused_entry()
+        if entry and entry.get("type") == "resource":
+            return entry.get("row")
+        return None
 
     def _show_next_page(self) -> bool:
         if self.page_index >= self._page_count() - 1:
@@ -206,6 +219,59 @@ class ExternalResourcePickerModal(ButtonArrowNavigationMixin, ModalScreen[Option
         self._render_rows()
         self._focus_first_row_or_action()
         return True
+
+    def _show_first_page(self) -> bool:
+        if self.page_index == 0:
+            if self._focus_first_row_or_action():
+                return True
+            return bool(self._displayed_entries())
+        self.page_index = 0
+        self._render_rows()
+        return self._focus_first_row_or_action()
+
+    def _show_last_page(self, focus_last: bool = False) -> bool:
+        last_page = self._page_count() - 1
+        if self.page_index == last_page:
+            if focus_last and self._displayed_entries():
+                self._focus_row(len(self._displayed_entries()) - 1)
+                return True
+            return bool(self._displayed_entries())
+        self.page_index = last_page
+        self._render_rows()
+        if focus_last:
+            return self._focus_last_row_or_action()
+        return self._focus_first_row_or_action()
+
+    def _set_nonmatching_expanded(self, expanded: bool) -> None:
+        if not self._has_hidden_rows() or self.show_all == expanded:
+            self._update_row_doc()
+            return
+        self.show_all = expanded
+        self._render_rows()
+        self._focus_nonmatching_group()
+
+    def _expand_focused_tree_entry(self) -> None:
+        entry = self._focused_entry()
+        if entry and entry.get("type") == "group" and entry.get("group") == "nonmatching" and not self.show_all:
+            self._set_nonmatching_expanded(True)
+
+    def _collapse_focused_tree_entry(self) -> None:
+        entry = self._focused_entry()
+        if not self.show_all or not entry:
+            return
+        if entry.get("type") == "group" and entry.get("group") == "nonmatching":
+            self._set_nonmatching_expanded(False)
+        elif entry.get("type") == "resource" and self._is_nonmatching_row(entry.get("row")):
+            self._set_nonmatching_expanded(False)
+
+    def _focus_nonmatching_group(self) -> None:
+        for index, entry in enumerate(self._visible_entries()):
+            if entry.get("type") == "group" and entry.get("group") == "nonmatching":
+                self.page_index = index // PICKER_PAGE_SIZE
+                self._render_rows()
+                self._focus_entry_index(index)
+                return
+        self._focus_first_row_or_action()
 
     def _show_previous_page(self) -> bool:
         if self.page_index <= 0:
@@ -216,43 +282,85 @@ class ExternalResourcePickerModal(ButtonArrowNavigationMixin, ModalScreen[Option
         return True
 
     def _update_row_doc(self) -> None:
-        row = self._focused_row()
-        summary = self._page_summary()
-        requirement = _requirement_hint(self.external_ref)
-        if not row:
-            pieces = [_empty_picker_hint(self.rows, self._has_hidden_rows()), requirement, summary]
-            self.query_one("#row-doc", Static).update(escape("\n".join(part for part in pieces if part).strip()))
-            return
-        message = _row_hint(row)
-        pieces = [message, requirement, summary]
-        self.query_one("#row-doc", Static).update(escape("\n".join(part for part in pieces if part).strip()))
+        entry = self._focused_entry()
+        message = ""
+        if entry and entry.get("type") == "resource":
+            message = _row_hint(entry.get("row") or {})
+        elif entry and entry.get("type") == "group" and entry.get("group") == "nonmatching" and self._nonmatching_rows():
+            message = "Press Enter or Right to show resources that may not satisfy this reference."
+        doc = self.query_one("#row-doc", Static)
+        doc.update(escape(message))
+        doc.display = bool(message)
+        self._update_action_buttons()
 
     def _visible_rows(self) -> List[Dict[str, Any]]:
-        if self.show_all:
-            return list(self.rows)
+        return [
+            entry.get("row")
+            for entry in self._visible_entries()
+            if entry.get("type") == "resource"
+        ]
+
+    def _displayed_rows(self) -> List[Dict[str, Any]]:
+        return [
+            entry.get("row")
+            for entry in self._displayed_entries()
+            if entry.get("type") == "resource"
+        ]
+
+    def _visible_entries(self) -> List[Dict[str, Any]]:
+        entries = []
+        if self.can_create:
+            entries.append({"type": "create", "label": "+ Create New (c)"})
+        matching_rows = self._matching_rows()
+        if matching_rows:
+            entries.append({"type": "group", "group": "matching", "label": "Matching"})
+            entries.extend({"type": "resource", "row": row, "label": f"  {_row_label(row, False)}"} for row in matching_rows)
+        nonmatching_rows = self._nonmatching_rows()
+        if nonmatching_rows:
+            marker = "▼" if self.show_all else "▶"
+            entries.append({
+                "type": "group",
+                "group": "nonmatching",
+                "label": f"{marker} Non-Matching {_resource_kind_plural(self.external_ref, self.rows)}",
+            })
+            if self.show_all:
+                entries.extend({"type": "resource", "row": row, "label": f"  {_row_label(row, True)}"} for row in nonmatching_rows)
+        return entries
+
+    def _displayed_entries(self) -> List[Dict[str, Any]]:
+        start = self.page_index * PICKER_PAGE_SIZE
+        return self._visible_entries()[start:start + PICKER_PAGE_SIZE]
+
+    def _matching_rows(self) -> List[Dict[str, Any]]:
         return [
             row for row in self.rows
             if row.get("status") == "matching" or row.get("current")
         ]
 
-    def _displayed_rows(self) -> List[Dict[str, Any]]:
-        start = self.page_index * PICKER_PAGE_SIZE
-        return self._visible_rows()[start:start + PICKER_PAGE_SIZE]
+    def _nonmatching_rows(self) -> List[Dict[str, Any]]:
+        matching = set(id(row) for row in self._matching_rows())
+        return [row for row in self.rows if id(row) not in matching]
+
+    def _is_nonmatching_row(self, row: Optional[Dict[str, Any]]) -> bool:
+        if row is None:
+            return False
+        return id(row) in {id(candidate) for candidate in self._nonmatching_rows()}
 
     def _page_count(self) -> int:
-        visible = len(self._visible_rows())
+        visible = len(self._visible_entries())
         return max(1, (visible + PICKER_PAGE_SIZE - 1) // PICKER_PAGE_SIZE)
 
     def _has_hidden_rows(self) -> bool:
-        return len(self._visible_rows()) < len(self.rows) or self.show_all
+        return bool(self._nonmatching_rows())
 
     def _render_rows(self) -> None:
-        displayed = self._displayed_rows()
+        displayed = self._displayed_entries()
         for index in range(PICKER_PAGE_SIZE):
             button = self.query_one(f"#row-{index}", Button)
             if index < len(displayed):
-                button.label = _row_label(displayed[index], self.show_all)
-                button.disabled = False
+                entry = displayed[index]
+                button.label = entry.get("label") or ""
+                button.disabled = not self._entry_is_focusable(entry)
                 button.display = True
             else:
                 button.disabled = True
@@ -264,103 +372,108 @@ class ExternalResourcePickerModal(ButtonArrowNavigationMixin, ModalScreen[Option
         self._update_row_doc()
 
     def _update_action_buttons(self) -> None:
-        has_displayed_rows = bool(self._displayed_rows())
-        self.query_one("#select", Button).disabled = not has_displayed_rows
-        self.query_one("#view", Button).disabled = not has_displayed_rows
-        self.query_one("#update", Button).disabled = not has_displayed_rows
-        self.query_one("#previous-page", Button).disabled = self.page_index <= 0
-        self.query_one("#next-page", Button).disabled = self.page_index >= self._page_count() - 1
-        toggle = self.query_one("#toggle-show-all", Button)
-        toggle.disabled = not self._has_hidden_rows()
-        toggle.label = "a Matches" if self.show_all else "a All"
+        has_displayed_entries = bool(self._displayed_entries())
+        has_active_resource = bool(self._selected_resource_row())
+        self.query_one("#select", Button).disabled = not has_displayed_entries
+        self.query_one("#update", Button).disabled = not has_active_resource
 
-    def _focus_first_row_or_action(self) -> None:
-        if self._displayed_rows():
-            self._focus_row(0)
-        elif self.can_create:
-            self.set_focus(self.query_one("#create", Button))
-        else:
-            self.set_focus(self.query_one("#manual", Button))
+    def _initial_entry_index(self) -> Optional[int]:
+        entries = self._visible_entries()
+        for index, entry in enumerate(entries):
+            row = entry.get("row") or {}
+            if entry.get("type") == "resource" and (row.get("current") or row.get("name") == self.current_value):
+                return index
+        for index, entry in enumerate(entries):
+            if entry.get("type") == "resource":
+                return index
+        for index, entry in enumerate(entries):
+            if self._entry_is_focusable(entry):
+                return index
+        return None
+
+    def _entry_is_focusable(self, entry: Dict[str, Any]) -> bool:
+        return entry.get("type") != "group" or entry.get("group") == "nonmatching"
+
+    def _focus_first_row_or_action(self) -> bool:
+        if self._focus_entry_by_visible_index(0, 1):
+            return True
+        self.set_focus(None)
         self._update_row_doc()
+        return False
+
+    def _focus_last_row_or_action(self) -> bool:
+        if self._focus_entry_by_visible_index(len(self._visible_entries()) - 1, -1):
+            return True
+        self.set_focus(None)
+        self._update_row_doc()
+        return False
 
     def _focus_row(self, index: int) -> None:
-        displayed = self._displayed_rows()
+        self._focus_entry_by_visible_index(self.page_index * PICKER_PAGE_SIZE + index, 1)
+
+    def _focus_entry_by_visible_index(self, index: int, direction: int) -> bool:
+        focusable = self._focusable_entry_indexes()
+        if not focusable:
+            return False
+        if index in focusable:
+            target = index
+        else:
+            if direction >= 0:
+                candidates = [candidate for candidate in focusable if candidate >= index]
+                target = candidates[0] if candidates else focusable[0]
+            else:
+                candidates = [candidate for candidate in focusable if candidate <= index]
+                target = candidates[-1] if candidates else focusable[-1]
+        self._focus_entry_index(target)
+        return True
+
+    def _focus_entry_by_delta(self, delta: int) -> bool:
+        focusable = self._focusable_entry_indexes()
+        if not focusable:
+            return False
+        current_index = self._focused_entry_index()
+        if current_index in focusable:
+            target = focusable[(focusable.index(current_index) + delta) % len(focusable)]
+        else:
+            target = focusable[0 if delta >= 0 else -1]
+        self._focus_entry_index(target)
+        return True
+
+    def _focusable_entry_indexes(self) -> List[int]:
+        return [
+            index for index, entry in enumerate(self._visible_entries())
+            if self._entry_is_focusable(entry)
+        ]
+
+    def _focus_entry_index(self, index: int) -> None:
+        target_page = index // PICKER_PAGE_SIZE
+        if target_page != self.page_index:
+            self.page_index = target_page
+            self._render_rows()
+        else:
+            self.page_index = target_page
+        displayed = self._displayed_entries()
         if not displayed:
             return
-        index = max(0, min(index, len(displayed) - 1))
-        self.set_focus(self.query_one(f"#row-{index}", Button))
+        row_index = index % PICKER_PAGE_SIZE
+        if row_index >= len(displayed):
+            row_index = len(displayed) - 1
+        self.set_focus(self.query_one(f"#row-{row_index}", Button))
         self._update_row_doc()
-
-    def _page_summary(self) -> str:
-        visible_count = len(self._visible_rows())
-        if visible_count == 0:
-            hidden_count = len(self.rows)
-            hidden = f" {hidden_count} hidden (a all)." if hidden_count and not self.show_all else ""
-            return f"0/{len(self.rows)} shown.{hidden}"
-        start = self.page_index * PICKER_PAGE_SIZE + 1
-        end = min(start + PICKER_PAGE_SIZE - 1, visible_count)
-        hidden_count = len(self.rows) - visible_count
-        hidden = f" {hidden_count} hidden (a all)." if hidden_count and not self.show_all else ""
-        return f"{start}-{end}/{visible_count} shown.{hidden}"
-
-
-class ExternalResourceViewModal(ButtonArrowNavigationMixin, ModalScreen[Optional[Dict[str, Any]]]):
-    CSS = """
-    ExternalResourceViewModal { align: center middle; background: $background 60%; }
-    #dialog { width: 72; height: auto; border: thick $primary; background: $surface; padding: 1 2; }
-    #title { text-align: center; margin-bottom: 1; }
-    #contents { margin-bottom: 1; }
-    #actions { align: center middle; height: 3; }
-    Button { margin: 0 1; min-width: 12; }
-    """
-    BUTTON_NAV_SELECTOR = "#actions Button"
-    BINDINGS = [
-        *BUTTON_ARROW_BINDINGS,
-        Binding("u", "update", "Update"),
-        Binding("escape", "cancel", "Back", show=False),
-    ]
-
-    def __init__(self, external_ref: Dict[str, Any], resource: Dict[str, Any]):
-        super().__init__()
-        self.external_ref = external_ref
-        self.resource = resource
-
-    def compose(self) -> ComposeResult:
-        title = f"{self.resource.get('kind', 'Resource')} {self.resource.get('name', '')}".strip()
-        with Container(id="dialog"):
-            yield Static(escape(title), id="title")
-            yield Static(_resource_view_text(self.external_ref, self.resource), id="contents")
-            with Horizontal(id="actions"):
-                yield ModalButton("Update (u)", id="update", variant="primary")
-                yield ModalButton("Back", id="back")
-
-    def on_mount(self) -> None:
-        self.query_one("#update", Button).focus()
-
-    def action_update(self) -> None:
-        self.dismiss({"action": "update"})
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "update":
-            self.action_update()
-        else:
-            self.dismiss(None)
 
 
 class ExternalResourceFormModal(ButtonArrowNavigationMixin, ModalScreen[Optional[Dict[str, str]]]):
     CSS = """
     ExternalResourceFormModal { align: center middle; background: $background 60%; }
-    #dialog { width: 76; height: auto; border: thick $primary; background: $surface; padding: 1 2; }
-    #title { text-align: center; margin-bottom: 1; }
+    #dialog { width: 76; height: auto; border: thick $primary; background: $surface; padding: 0 1; }
+    #title { text-align: center; margin-bottom: 0; }
     #documentation { color: gray; margin-bottom: 1; }
-    .field-label { margin-top: 1; }
-    #validation { color: $error; margin: 1 0; min-height: 1; }
-    #actions { align: center middle; height: 3; }
-    Button { margin: 0 1; min-width: 12; }
+    .field-label { margin-top: 0; }
+    #validation { color: $error; margin: 0 0 1 0; min-height: 1; }
+    #actions { align: center middle; height: 1; }
+    Button { margin: 0 1 0 0; min-width: 5; height: 1; min-height: 1; border: none; padding: 0 1; }
     Input { width: 100%; }
+    TextArea { width: 100%; height: 5; }
     """
     BUTTON_NAV_SELECTOR = "#actions Button"
     BINDINGS = [
@@ -397,33 +510,23 @@ class ExternalResourceFormModal(ButtonArrowNavigationMixin, ModalScreen[Optional
                 field_id = f"field-{index}"
                 self._field_input_ids[field["name"]] = field_id
                 yield Static(escape(str(field.get("label") or field["name"])), classes="field-label")
-                yield Input(
-                    value=self._initial_value_for_field(field),
-                    id=field_id,
-                    password=_field_is_sensitive(field),
-                    placeholder=self._placeholder_for_field(field),
-                    disabled=self.mode == "update" and field["name"] == self._name_field(),
-                )
+                yield self._input_widget_for_field(field, field_id)
                 if field.get("confirm"):
                     confirm_id = f"field-{index}-confirm"
                     self._confirm_input_ids[field["name"]] = confirm_id
                     yield Static(escape(f"Confirm {field.get('label') or field['name']}"), classes="field-label")
-                    yield Input(
-                        value="",
-                        id=confirm_id,
-                        password=True,
-                        placeholder=self._placeholder_for_field(field),
-                    )
+                    yield self._input_widget_for_field(field, confirm_id, confirm=True)
             yield Static("", id="validation")
             with Horizontal(id="actions"):
-                yield ModalButton(verb, id="save", variant="success")
-                yield ModalButton("Cancel", id="cancel", variant="error")
+                yield ModalButton(f"{verb} (<Enter>)", id="save", variant="success")
+                yield ModalButton("Cancel (Esc)", id="cancel", variant="error")
 
     def on_mount(self) -> None:
+        self.query_one("#documentation", Static).display = bool(self.documentation)
         first_id = next(iter(self._field_input_ids.values()), None)
         if first_id:
-            first = self.query_one(f"#{first_id}", Input)
-            if first.disabled:
+            first = self.query_one(f"#{first_id}")
+            if getattr(first, "disabled", False):
                 self.focus_next()
             else:
                 first.focus()
@@ -433,7 +536,7 @@ class ExternalResourceFormModal(ButtonArrowNavigationMixin, ModalScreen[Optional
 
     def action_submit(self) -> None:
         values = {
-            field["name"]: self.query_one(f"#{self._field_input_ids[field['name']]}", Input).value
+            field["name"]: self._field_value(self._field_input_ids[field["name"]])
             for field in self.fields
         }
         message = self._validation_message(values)
@@ -458,14 +561,44 @@ class ExternalResourceFormModal(ButtonArrowNavigationMixin, ModalScreen[Optional
                     continue
             if field.get("required") and not value.strip():
                 return f"{field.get('label') or name} is required."
-            if "k8s-name" in (field.get("validationIds") or []) and value and not _is_k8s_name(value):
-                return f"{field.get('label') or name} must be a valid Kubernetes DNS name."
+            validation_message = _field_validation_message(field, value)
+            if validation_message:
+                return validation_message
             confirm_id = self._confirm_input_ids.get(name)
             if confirm_id:
-                confirm_value = self.query_one(f"#{confirm_id}", Input).value
+                confirm_value = self._field_value(confirm_id)
                 if value != confirm_value:
                     return f"{field.get('label') or name} and confirmation do not match."
         return None
+
+    def _input_widget_for_field(self, field: Dict[str, Any], field_id: str, confirm: bool = False) -> Widget:
+        placeholder = self._placeholder_for_field(field)
+        disabled = self.mode == "update" and field["name"] == self._name_field()
+        value = "" if confirm else self._initial_value_for_field(field)
+        if _field_is_multiline(field):
+            return TextArea(
+                value,
+                id=field_id,
+                placeholder=placeholder,
+                disabled=disabled,
+                show_line_numbers=False,
+                tab_behavior="focus",
+            )
+        return Input(
+            value=value,
+            id=field_id,
+            password=_field_is_sensitive(field),
+            placeholder=placeholder,
+            disabled=disabled,
+        )
+
+    def _field_value(self, field_id: str) -> str:
+        widget = self.query_one(f"#{field_id}")
+        if isinstance(widget, Input):
+            return widget.value
+        if isinstance(widget, TextArea):
+            return widget.text
+        return ""
 
     def _initial_value_for_field(self, field: Dict[str, Any]) -> str:
         if self.mode == "update" and _field_is_sensitive(field):
@@ -515,60 +648,34 @@ def _row_missing_keys(row: Dict[str, Any]) -> List[str]:
     ]
 
 
-def _requirement_hint(external_ref: Dict[str, Any]) -> str:
+def _requirement_title(external_ref: Dict[str, Any]) -> str:
     k8s_hint = external_ref.get("k8s") or {}
     required_keys = [str(key) for key in k8s_hint.get("requiredKeys") or []]
     recommended_keys = [str(key) for key in k8s_hint.get("recommendedKeys") or []]
     if required_keys:
-        return f"Keys: {', '.join(required_keys)}."
+        return f"(Required Keys: {', '.join(required_keys)})"
     if recommended_keys:
-        return f"Recommended: {', '.join(recommended_keys)}."
+        return f"(Recommended Keys: {', '.join(recommended_keys)})"
     description = str(external_ref.get("description") or "").strip()
     if description:
         return description
     return ""
 
 
+def _resource_kind_plural(external_ref: Dict[str, Any], rows: List[Dict[str, Any]]) -> str:
+    k8s_hint = external_ref.get("k8s") or {}
+    kind = str(k8s_hint.get("resource") or "").strip()
+    if not kind:
+        kind = str(next((row.get("kind") for row in rows if row.get("kind")), "Resource"))
+    if kind.endswith("s"):
+        return kind
+    return f"{kind}s"
+
+
 def _empty_picker_text(rows: List[Dict[str, Any]], show_all: bool) -> str:
     if rows and not show_all:
         return "No matching resources on this page."
     return "No Kubernetes resources found."
-
-
-def _empty_picker_hint(rows: List[Dict[str, Any]], has_hidden_rows: bool) -> str:
-    if rows and has_hidden_rows:
-        return "No matching resources are shown by default."
-    if rows:
-        return "No resources on this page."
-    return "No Kubernetes resources found."
-
-
-def _resource_view_text(external_ref: Dict[str, Any], resource: Dict[str, Any]) -> str:
-    values = resource.get("values") or {}
-    lines = [
-        f"Name: {escape(str(resource.get('name') or ''))}",
-        f"Type: {escape(str(resource.get('type') or resource.get('kind') or ''))}",
-        "",
-    ]
-    for key, field in _output_key_fields(external_ref).items():
-        value = "<hidden>" if _field_is_sensitive(field) else values.get(key, "")
-        lines.append(f"{escape(key)}: {escape(str(value))}")
-    extra_keys = sorted(set(values.keys()) - set(_output_key_fields(external_ref).keys()))
-    if extra_keys:
-        lines.append("")
-        lines.append(f"Additional keys: {escape(', '.join(extra_keys))}")
-    return "\n".join(lines)
-
-
-def _output_key_fields(external_ref: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
-    create = external_ref.get("create") or {}
-    output = create.get("output") or {}
-    fields = {field.get("name"): field for field in create.get("fields") or []}
-    mappings = output.get("stringData") or output.get("data") or {}
-    return {
-        key: fields.get(source.get("fromField"), {"name": source.get("fromField"), "sensitive": True})
-        for key, source in mappings.items()
-    }
 
 
 def _output_key_for_field(external_ref: Dict[str, Any], field_name: str) -> Optional[str]:
@@ -604,5 +711,53 @@ def _field_is_sensitive(field: Dict[str, Any]) -> bool:
     return field.get("input") in {"password", "secretMultilineText"}
 
 
+def _field_is_multiline(field: Dict[str, Any]) -> bool:
+    return field.get("input") in {"multilineText", "secretMultilineText"}
+
+
+def _field_validation_message(field: Dict[str, Any], value: str) -> Optional[str]:
+    label = str(field.get("label") or field.get("name") or "Value")
+    for validation_id in field.get("validationIds") or []:
+        if validation_id == "non-empty" and not value.strip():
+            return f"{label} is required."
+        if validation_id == "k8s-name" and value and not _is_k8s_name(value):
+            return f"{label} must be a valid Kubernetes DNS name."
+        if validation_id == "configmap-key" and value and not _is_config_map_key(value):
+            return f"{label} must be a valid ConfigMap key."
+        if validation_id == "pem-certificate-chain" and value and not _looks_like_pem_certificate_chain(value):
+            return f"{label} must include at least one PEM CERTIFICATE block."
+        if validation_id == "pem-private-key" and value and not _looks_like_pem_private_key(value):
+            return f"{label} must include a PEM PRIVATE KEY block."
+        if validation_id == "log4j-properties" and value and not _looks_like_log4j_properties(value):
+            return f"{label} must include at least one Log4j2 property assignment."
+        if validation_id == "json" and value:
+            try:
+                json.loads(value)
+            except json.JSONDecodeError as e:
+                return f"{label} must be valid JSON: {e.msg}."
+    return None
+
+
 def _is_k8s_name(value: str) -> bool:
     return bool(re.fullmatch(r"[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*", value))
+
+
+def _is_config_map_key(value: str) -> bool:
+    return bool(re.fullmatch(r"(?!\.{1,2}$)(?!\.\.)[A-Za-z0-9._-]+", value))
+
+
+def _looks_like_pem_certificate_chain(value: str) -> bool:
+    return bool(re.search(r"-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----", value.strip()))
+
+
+def _looks_like_pem_private_key(value: str) -> bool:
+    return bool(re.search(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]+?-----END [A-Z ]*PRIVATE KEY-----", value.strip()))
+
+
+def _looks_like_log4j_properties(value: str) -> bool:
+    lines = [
+        line.strip()
+        for line in value.splitlines()
+        if line.strip() and not line.lstrip().startswith(("#", "!"))
+    ]
+    return bool(lines) and any("=" in line for line in lines)
