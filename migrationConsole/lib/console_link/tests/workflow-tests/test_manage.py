@@ -18,6 +18,7 @@ from console_link.workflow.tui.workflow_manage_app import (
     copy_to_clipboard,
     PHASE_SUCCEEDED,
     PHASE_RUNNING,
+    reset_terminal_mouse_reporting,
 )
 from console_link.workflow.tui.choice_select_modal import ChoiceSelectModal
 from console_link.workflow.tui.config_edit_exit_modal import ConfigEditExitModal
@@ -425,6 +426,27 @@ async def test_external_resource_picker_action_buttons_click_focused_item_withou
 
     assert result["action"] == "select"
     assert result["row"]["name"] == "second-creds"
+
+
+def test_external_resource_selection_builds_object_ref_values():
+    row = {
+        "name": "migrations-ca",
+        "kind": "ClusterIssuer",
+        "group": "cert-manager.io",
+    }
+
+    assert WorkflowTreeApp._external_resource_value_for_row(
+        {"selection": {"target": "objectRef"}},
+        row,
+    ) == {
+        "name": "migrations-ca",
+        "kind": "ClusterIssuer",
+        "group": "cert-manager.io",
+    }
+    assert WorkflowTreeApp._external_resource_value_for_row(
+        {"selection": {"target": "scalarName"}},
+        row,
+    ) == "migrations-ca"
 
 
 @pytest.mark.asyncio
@@ -1118,6 +1140,63 @@ def edit_state_with_unset_kafka_override_children():
     }
 
 
+def edit_state_with_workflow_config_kafka():
+    return {
+        "formatVersion": 1,
+        "provenance": {"source": "pending-yaml", "lossy": False, "warnings": []},
+        "nodes": [
+            {
+                "id": "edit:workflowConfiguration",
+                "path": ["workflowConfiguration"],
+                "label": "Workflow Configuration",
+                "valueKind": "object",
+                "description": "Shared workflow configuration.",
+                "status": "ok",
+                "statusCounts": {},
+                "children": [
+                    {
+                        "id": "edit:kafkaClusterConfiguration",
+                        "path": ["kafkaClusterConfiguration"],
+                        "label": "Kafka Clients",
+                        "valueKind": "record",
+                        "description": "Kafka cluster configurations.",
+                        "status": "ok",
+                        "statusCounts": {},
+                        "children": [
+                            {
+                                "id": "edit:kafkaClusterConfiguration.kafka",
+                                "path": ["kafkaClusterConfiguration", "kafka"],
+                                "label": "kafka: kafka",
+                                "valueKind": "object",
+                                "description": "Kafka cluster configuration.",
+                                "status": "ok",
+                                "statusCounts": {},
+                                "children": [
+                                    {
+                                        "id": "edit:kafkaClusterConfiguration.kafka.mode",
+                                        "path": ["kafkaClusterConfiguration", "kafka", "mode"],
+                                        "label": "mode: < autoCreate >",
+                                        "value": "autoCreate",
+                                        "valueKind": "union",
+                                        "description": "Kafka cluster mode.",
+                                        "status": "ok",
+                                        "statusCounts": {},
+                                        "variants": [{"label": "autoCreate", "value": "autoCreate"}],
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            },
+        ],
+        "pendingSubmitChanges": [],
+        "submittedRolloutChanges": [],
+        "policyPreview": [],
+        "validation": {"valid": True, "errors": []},
+    }
+
+
 def edit_state_with_field_visibility():
     return {
         "formatVersion": 1,
@@ -1222,6 +1301,45 @@ def resource_sections_for_manage_tests():
             ],
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_config_edit_loading_ignores_late_resource_refresh(mock_workflow_with_two_pods):
+    """A resource refresh finishing after edit starts must not repaint Migration Status."""
+
+    argo_service = MagicMock(spec=ArgoService(None, None))
+    argo_service.get_workflow.return_value = ({"success": True}, mock_workflow_with_two_pods)
+
+    pod_scraper = MagicMock(spec=PodScraperInterface(None, None, None))
+    pod_scraper.fetch_pods_metadata.return_value = []
+
+    app = WorkflowTreeApp(
+        namespace="default",
+        name="test-wf",
+        argo_service=argo_service,
+        pod_scraper=pod_scraper,
+        workflow_waiter=FAILING_WAITER,
+        refresh_interval=100.0,
+        resource_view=True,
+    )
+    app.action_refresh_workflow = lambda: None
+
+    async with app.run_test() as pilot:
+        tree = app.query_one("#workflow-tree")
+        await pilot.pause()
+        app._tree_state.rebuild(resource_sections_for_manage_tests(), {})
+        assert get_clean_text_label(tree.root) == "Migration Status"
+        assert tree.show_root is False
+        assert tree.disabled is False
+
+        app._show_config_edit_loading()
+        app._handle_resource_data(resource_sections_for_manage_tests(), {}, force_reload=True)
+
+        assert get_clean_text_label(tree.root) == "Migration Status"
+        assert tree.show_root is False
+        assert tree.disabled is True
+        assert app.title == "Workflow Config Edit"
+        assert "Loading configuration editor" in str(app.query_one("#edit-help").content)
 
 
 def resource_sections_with_kafka_config():
@@ -1457,6 +1575,28 @@ def test_mouse_reporting_falls_back_to_raw_escape_sequences():
     assert driver.flushes == 2
 
 
+def test_terminal_mouse_reporting_reset_writes_raw_disable_sequences():
+    """The command shutdown guard always sends terminal mouse modes off."""
+
+    class FakeOutput:
+        def __init__(self):
+            self.writes = []
+            self.flushes = 0
+
+        def write(self, value):
+            self.writes.append(value)
+
+        def flush(self):
+            self.flushes += 1
+
+    output = FakeOutput()
+    reset_terminal_mouse_reporting(output)
+
+    assert output.writes == [DISABLE_MOUSE_SEQUENCES]
+    assert output.flushes == 1
+    assert "\x1b[?1002l" in DISABLE_MOUSE_SEQUENCES
+
+
 def test_mouse_reporting_private_disable_also_releases_pixel_mode():
     """Pixel mouse reporting is disabled explicitly when a driver helper omits that mode."""
 
@@ -1678,8 +1818,7 @@ async def test_resource_view_edit_mode_shows_branch_diagnostics(mock_workflow_wi
             assert "Source Clusters [REQ 1]" in get_clean_text_label(tree.root.children[0])
             assert "yellow" in get_label_style(tree.root.children[0])
 
-            for _ in range(4):
-                await pilot.press("down")
+            app._select_tree_node_by_id("edit:sourceClusters.legacy.authConfig")
             await pilot.pause()
 
             selected = get_clean_text_label(tree.cursor_node)
@@ -2795,32 +2934,271 @@ async def test_resource_view_edit_mode_colors_and_fixed_data_modes(mock_workflow
             assert await wait_until(pilot, lambda: get_clean_text_label(tree.root) == "Workflow Config Edit")
 
             source_node = tree.root.children[0]
-            assert "Source Clusters [CHG 1]" in get_clean_text_label(source_node)
-            assert "cyan" in get_label_style(source_node)
+            assert "Source Clusters [1 change]" in get_clean_text_label(source_node)
+            assert get_label_style(source_node) == ""
+            assert not source_node.is_expanded
 
-            for _ in range(3):
-                await pilot.press("down")
-            await pilot.pause()
+            endpoint_node = find_tree_node_by_id(tree.root, "edit:sourceClusters.legacy.endpoint")
+            assert endpoint_node is not None
 
-            assert "deployed/workflow=https://old.example.com:9200" in get_clean_text_label(tree.cursor_node)
-            assert "pending=https://new.example.com:9200" in get_clean_text_label(tree.cursor_node)
-            assert "cyan" in get_label_style(tree.cursor_node)
+            assert "deployed/workflow=https://old.example.com:9200" in get_clean_text_label(endpoint_node)
+            assert "pending=https://new.example.com:9200" in get_clean_text_label(endpoint_node)
+            assert get_label_style(endpoint_node) == ""
             assert binding_descriptions(app, "v") == []
             assert binding_descriptions(app, "t") == []
-            initial_label = get_clean_text_label(tree.cursor_node)
-            initial_style = get_label_style(tree.cursor_node)
+            initial_label = get_clean_text_label(endpoint_node)
+            initial_style = get_label_style(endpoint_node)
 
             await pilot.press("v")
             await pilot.pause()
-            assert get_clean_text_label(tree.cursor_node) == initial_label
-            assert get_label_style(tree.cursor_node) == initial_style
+            assert get_clean_text_label(endpoint_node) == initial_label
+            assert get_label_style(endpoint_node) == initial_style
             assert "Values: All" in str(app.query_one("#pod-status").content)
 
             await pilot.press("t")
             await pilot.pause()
-            assert get_clean_text_label(tree.cursor_node) == initial_label
-            assert get_label_style(tree.cursor_node) == initial_style
+            assert get_clean_text_label(endpoint_node) == initial_label
+            assert get_label_style(endpoint_node) == initial_style
             assert "Status: All" in str(app.query_one("#pod-status").content)
+
+
+@pytest.mark.asyncio
+async def test_resource_view_edit_mode_enriches_deployed_values_from_console_snapshots(mock_workflow_with_two_pods):
+    """Edit mode uses submitted console resources as the deployed/current baseline."""
+
+    state = edit_state_with_editable_source_fields()
+    source = state["nodes"][0]
+    legacy = source["children"][0]
+    endpoint = legacy["children"][0]
+    for node in (source, legacy, endpoint):
+        node["status"] = "ok"
+        node["statusCounts"] = {}
+    endpoint.pop("states", None)
+
+    class FakeConfigEditService:
+        def load_edit_session(self):
+            return {
+                "raw_yaml": (
+                    "sourceClusters:\n"
+                    "  legacy:\n"
+                    "    endpoint: https://new.example.com:9200\n"
+                    "    allowInsecure: false\n"
+                ),
+                "edit_state": state,
+            }
+
+        def load_resource_config_snapshots(self, workflow_name):
+            return {
+                "submitted": {},
+                "submitted_console": {
+                    "sources": [{
+                        "refName": "legacy",
+                        "clientConfig": {
+                            "endpoint": "https://old.example.com:9200",
+                            "allow_insecure": False,
+                        },
+                    }],
+                    "targets": [],
+                    "kafkas": [],
+                    "consumerGroups": [],
+                },
+            }
+
+    argo_service = ArgoService(
+        get_workflow=lambda name, namespace: ({"success": True}, mock_workflow_with_two_pods),
+        approve_step=MagicMock(),
+    )
+    pod_scraper = MagicMock(spec=PodScraperInterface(None, None, None))
+    pod_scraper.fetch_pods_metadata.return_value = []
+
+    app = WorkflowTreeApp(
+        namespace="default",
+        name="test-wf",
+        argo_service=argo_service,
+        pod_scraper=pod_scraper,
+        workflow_waiter=FAILING_WAITER,
+        refresh_interval=100.0,
+        resource_view=True,
+        config_edit_service=FakeConfigEditService(),
+    )
+
+    with patch("console_link.workflow.resource_tree.build_resource_tree",
+               return_value=resource_sections_for_manage_tests()):
+        async with app.run_test() as pilot:
+            tree = app.query_one("#workflow-tree")
+            tree.focus()
+            assert await wait_until(pilot, lambda: len(tree.root.children) > 0, timeout=5.0)
+
+            await pilot.press("e")
+            assert await wait_until(pilot, lambda: get_clean_text_label(tree.root) == "Workflow Config Edit")
+
+            source_node = find_tree_node_by_id(tree.root, "edit:sourceClusters")
+            endpoint_node = find_tree_node_by_id(tree.root, "edit:sourceClusters.legacy.endpoint")
+            assert source_node is not None
+            assert endpoint_node is not None
+            assert "Source Clusters [1 change]" in get_clean_text_label(source_node)
+            assert (
+                "endpoint: deployed/workflow=https://old.example.com:9200 | "
+                "pending=https://new.example.com:9200 [1 change]"
+            ) == get_clean_text_label(endpoint_node)
+
+
+@pytest.mark.asyncio
+async def test_resource_view_edit_mode_preserves_matching_resource_expansion(mock_workflow_with_two_pods):
+    """Entering edit mode maps the resource-view expansion shape onto matching edit nodes."""
+
+    class FakeConfigEditService:
+        def load_edit_session(self):
+            return {
+                "raw_yaml": "kafkaClusterConfiguration:\n  kafka:\n    autoCreate: {}\n",
+                "edit_state": edit_state_with_workflow_config_kafka(),
+            }
+
+    argo_service = ArgoService(
+        get_workflow=lambda name, namespace: ({"success": True}, mock_workflow_with_two_pods),
+        approve_step=MagicMock(),
+    )
+    pod_scraper = MagicMock(spec=PodScraperInterface(None, None, None))
+    pod_scraper.fetch_pods_metadata.return_value = []
+    sections = [
+        ResourceSection(
+            name="Workflow Configuration",
+            groups=[
+                ResourceGroup(
+                    plural="kafkaconfigs",
+                    display_name="Kafka Clients",
+                    resources=[
+                        ResourceNode(
+                            name="kafka",
+                            plural="kafkaconfigs",
+                            phase="Pending Config",
+                            depends_on=[],
+                            spec={"type": "autoCreate"},
+                            status={},
+                        )
+                    ],
+                ),
+            ],
+        )
+    ]
+
+    app = WorkflowTreeApp(
+        namespace="default",
+        name="test-wf",
+        argo_service=argo_service,
+        pod_scraper=pod_scraper,
+        workflow_waiter=FAILING_WAITER,
+        refresh_interval=100.0,
+        resource_view=True,
+        config_edit_service=FakeConfigEditService(),
+    )
+
+    with patch("console_link.workflow.resource_tree.build_resource_tree", return_value=sections):
+        async with app.run_test() as pilot:
+            tree = app.query_one("#workflow-tree")
+            tree.focus()
+            assert await wait_until(pilot, lambda: find_tree_node_by_id(tree.root, "resource:kafka") is not None)
+            find_tree_node_by_id(tree.root, "resource:kafka").collapse()
+
+            await pilot.press("e")
+            assert await wait_until(pilot, lambda: get_clean_text_label(tree.root) == "Workflow Config Edit")
+
+            assert find_tree_node_by_id(tree.root, "edit:workflowConfiguration").is_expanded
+            assert find_tree_node_by_id(tree.root, "edit:kafkaClusterConfiguration").is_expanded
+            assert not find_tree_node_by_id(tree.root, "edit:kafkaClusterConfiguration.kafka").is_expanded
+
+
+@pytest.mark.asyncio
+async def test_resource_view_edit_mode_does_not_count_absent_kafka_override_scaffolding(mock_workflow_with_two_pods):
+    """Schema children under absent optional Kafka override blocks are not pending edits."""
+
+    state = edit_state_with_unset_kafka_override_children()
+    replicas = (
+        state["nodes"][0]["children"][0]["children"][0]["children"][0]["children"][0]
+    )
+    replicas["value"] = 3
+    replicas["label"] = "replicas: 3"
+    kafka_override = state["nodes"][0]["children"][0]["children"][0]["children"][0]
+    kafka_override["children"].append({
+        "id": (
+            "edit:kafkaClusterConfiguration.kafka.autoCreate"
+            ".clusterSpecOverrides.kafka.gcLoggingEnabled"
+        ),
+        "path": [
+            "kafkaClusterConfiguration",
+            "kafka",
+            "autoCreate",
+            "clusterSpecOverrides",
+            "kafka",
+            "gcLoggingEnabled",
+        ],
+        "label": "gcLoggingEnabled: false",
+        "value": False,
+        "valueKind": "boolean",
+        "presence": "optional",
+        "description": "GC logging.",
+        "status": "ok",
+        "statusCounts": {},
+    })
+
+    class FakeConfigEditService:
+        def load_edit_session(self):
+            return {
+                "raw_yaml": "kafkaClusterConfiguration:\n  kafka:\n    autoCreate: {}\n",
+                "edit_state": state,
+            }
+
+        def load_resource_config_snapshots(self, workflow_name):
+            return {
+                "submitted": {
+                    "workflowConfig": {
+                        "kafkaClusterConfiguration": {
+                            "kafka": {"autoCreate": {}},
+                        },
+                    },
+                },
+            }
+
+    argo_service = ArgoService(
+        get_workflow=lambda name, namespace: ({"success": True}, mock_workflow_with_two_pods),
+        approve_step=MagicMock(),
+    )
+    pod_scraper = MagicMock(spec=PodScraperInterface(None, None, None))
+    pod_scraper.fetch_pods_metadata.return_value = []
+
+    app = WorkflowTreeApp(
+        namespace="default",
+        name="test-wf",
+        argo_service=argo_service,
+        pod_scraper=pod_scraper,
+        workflow_waiter=FAILING_WAITER,
+        refresh_interval=100.0,
+        resource_view=True,
+        config_edit_service=FakeConfigEditService(),
+    )
+
+    with patch("console_link.workflow.resource_tree.build_resource_tree",
+               return_value=resource_sections_for_manage_tests()):
+        async with app.run_test() as pilot:
+            tree = app.query_one("#workflow-tree")
+            tree.focus()
+            assert await wait_until(pilot, lambda: len(tree.root.children) > 0, timeout=5.0)
+
+            await pilot.press("e")
+            assert await wait_until(pilot, lambda: get_clean_text_label(tree.root) == "Workflow Config Edit")
+
+            assert "change" not in get_clean_text_label(
+                find_tree_node_by_id(
+                    tree.root,
+                    "edit:kafkaClusterConfiguration.kafka.autoCreate.clusterSpecOverrides",
+                )
+            )
+            assert "change" not in get_clean_text_label(
+                find_tree_node_by_id(
+                    tree.root,
+                    "edit:kafkaClusterConfiguration.kafka.autoCreate.clusterSpecOverrides.kafka",
+                )
+            )
 
 
 @pytest.mark.asyncio
@@ -3198,8 +3576,8 @@ async def test_resource_view_uses_submitted_console_as_deployed_virtual_config_a
 
 
 @pytest.mark.asyncio
-async def test_resource_view_expands_config_changes_after_edit_exit_without_workflow():
-    """Returning from edit mode should reveal changed resource phases even without a workflow."""
+async def test_resource_view_preserves_collapsed_config_changes_after_edit_exit_without_workflow():
+    """Returning from edit mode preserves collapsed resource branches and badges the root."""
 
     class FakeConfigEditService:
         def load_edit_session(self):
@@ -3253,10 +3631,11 @@ async def test_resource_view_expands_config_changes_after_edit_exit_without_work
                 pilot,
                 lambda: (
                     get_clean_text_label(tree.root) == "Migration Status"
-                    and find_tree_node_by_id(tree.root, "group:Buffer").is_expanded
-                    and find_tree_node_by_id(tree.root, "resource:default").is_expanded
+                    and not find_tree_node_by_id(tree.root, "group:Buffer").is_expanded
+                    and not find_tree_node_by_id(tree.root, "resource:default").is_expanded
                 ),
             )
+            assert "[1 change]" in get_clean_text_label(find_tree_node_by_id(tree.root, "group:Buffer"))
 
 
 @pytest.mark.asyncio

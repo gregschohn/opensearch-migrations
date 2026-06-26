@@ -1,4 +1,5 @@
-import {applyEditOperationToObject, buildEditStateFromObject, EditNode} from "../src/editConfig";
+import {applyEditOperationToObject, buildEditStateFromObject} from "../src/editConfig";
+import type {EditNode} from "../src/schemaEditModel";
 import {buildUnifiedSchema, USER_PROXY_PROCESS_OPTION_KEYS, USER_PROXY_WORKFLOW_OPTION_KEYS} from "@opensearch-migrations/schemas";
 import {parse} from "yaml";
 import {spawnSync} from "child_process";
@@ -16,6 +17,10 @@ function findNode(nodes: EditNode[], id: string): EditNode | undefined {
         stack.push(...(node.children ?? []));
     }
     return undefined;
+}
+
+function cleanLabel(node: EditNode | undefined): string {
+    return (node?.label ?? "").replace(/^\[[^\]]+\]\s*/, "");
 }
 
 function withUnifiedSchemaFixture<T>(callback: () => T): T {
@@ -38,6 +43,37 @@ function withUnifiedSchemaFixture<T>(callback: () => T): T {
 }
 
 describe("editConfig state", () => {
+    it("uses the same top-level grouping as the resource view", () => {
+        const state = buildEditStateFromObject({
+            sourceClusters: {
+                source: {endpoint: "https://source.example.com:9200", version: "ES 7.10"},
+            },
+            targetClusters: {
+                target: {endpoint: "https://target.example.com:9200"},
+            },
+            kafkaClusterConfiguration: {kafka: {autoCreate: {}}},
+            traffic: {proxies: {}, s3Sources: {}, replayers: {}},
+            snapshotMigrationConfigs: [{fromSource: "source", toTarget: "target"}],
+        });
+
+        expect(state.nodes.map(cleanLabel)).toEqual([
+            "Workflow Configuration",
+            "Snapshot Migration",
+            "Live Traffic Migration",
+        ]);
+        expect((state.nodes[0].children ?? []).map(cleanLabel)).toEqual([
+            "Kafka Clients",
+            "Sources",
+            "Targets",
+        ]);
+        expect((state.nodes[1].children ?? []).map(cleanLabel)).toEqual(["Backfill"]);
+        expect((state.nodes[2].children ?? []).map(cleanLabel)).toEqual([
+            "Capture",
+            "Buffer",
+            "Replay",
+        ]);
+    });
+
     it("shows missing basic auth children as required on the branch and parent", () => {
         const state = buildEditStateFromObject({
             sourceClusters: {
@@ -60,17 +96,22 @@ describe("editConfig state", () => {
         const secretName = findNode(state.nodes, "edit:sourceClusters.legacy.authConfig.basic.secretName");
 
         expect(source?.status).toBe("required");
-        expect(source?.label).toContain("[REQ 1]");
+        expect(source?.statusCounts?.required).toBe(1);
         expect(auth?.status).toBe("required");
         expect(auth?.label).toContain("authConfig: < basic >");
         expect(secretName?.status).toBe("required");
         expect(secretName?.label).toContain("secretName: <required>");
         expect(secretName?.externalRef).toMatchObject({
-            kind: "secret",
+            kind: "kubernetesResource",
             purpose: "http-basic-auth",
+            matchProfiles: ["http-basic-auth-secret"],
+            selection: {target: "scalarName"},
             k8s: {
-                resource: "Secret",
-                requiredKeys: ["username", "password"],
+                resourceTypes: [{group: "", version: "v1", kind: "Secret", namespaced: true}],
+                match: {
+                    requiredKeys: ["username", "password"],
+                    acceptedSecretTypes: ["kubernetes.io/basic-auth", "Opaque"],
+                },
             },
             create: {
                 label: "HTTP Basic Auth Secret",
@@ -98,7 +139,7 @@ describe("editConfig state", () => {
         const auth = findNode(state.nodes, "edit:sourceClusters.legacy.authConfig");
 
         expect(auth?.status).toBe("ok");
-        expect(auth?.label).toContain("[OK] authConfig: < none >");
+        expect(auth?.label).toContain("authConfig: < none >");
         expect(auth?.children).toHaveLength(0);
     });
 
@@ -156,7 +197,7 @@ describe("editConfig state", () => {
 
         expect(state.validation.valid).toBe(false);
         expect(sourceClusters?.status).toBe("required");
-        expect(sourceClusters?.label).toContain("[REQ 1]");
+        expect(sourceClusters?.statusCounts?.required).toBe(1);
         expect(targetClusters?.status).toBe("required");
     });
 
@@ -627,9 +668,9 @@ describe("editConfig state", () => {
             expect(findNode(state.nodes, `edit:traffic.proxies.cap.proxyConfig.${key}`)).toBeDefined();
         }
         expect(proxy?.status).toBe("required");
-        expect(proxy?.label).toContain("[REQ 1]");
+        expect(proxy?.statusCounts?.required).toBe(1);
         expect(proxyConfig?.status).toBe("required");
-        expect(proxyConfig?.label).toContain("[REQ 1]");
+        expect(proxyConfig?.statusCounts?.required).toBe(1);
         expect(proxyConfig?.required).toBe(true);
         expect(proxyConfig?.presence).toBe("required");
         expect(listenPort?.status).toBe("required");
@@ -642,9 +683,9 @@ describe("editConfig state", () => {
         expect(setHeader).toMatchObject({presence: "optional", valueKind: "array"});
         expect(kafkaTopic?.status).toBe("ok");
         expect(kafkaTopic?.label).toContain("kafkaTopic: <unset>");
-        expect(captureGroup?.label).toContain("[REQ 1]");
+        expect(captureGroup?.statusCounts?.required).toBe(1);
         expect(addProxy?.status).toBe("ok");
-        expect(addProxy?.label).toContain("[OK] + Add capture proxy");
+        expect(addProxy?.label).toContain("+ Add capture proxy");
     });
 
     it("does not require replay config when traffic capture is configured alone", () => {
@@ -665,9 +706,7 @@ describe("editConfig state", () => {
 
         expect(state.validation.valid).toBe(true);
         expect(traffic?.status).toBe("ok");
-        expect(traffic?.label).not.toContain("[REQ");
         expect(replayGroup?.status).toBe("ok");
-        expect(replayGroup?.label).not.toContain("[REQ");
         expect(addReplay?.status).toBe("ok");
     });
 
@@ -704,11 +743,16 @@ describe("editConfig state", () => {
             required: true,
             status: "required",
             externalRef: {
-                kind: "secret",
+                kind: "kubernetesResource",
                 purpose: "proxy-server-tls",
+                matchProfiles: ["tls-secret"],
+                selection: {target: "scalarName"},
                 k8s: {
-                    resource: "Secret",
-                    requiredKeys: ["tls.crt", "tls.key"],
+                    resourceTypes: [{group: "", version: "v1", kind: "Secret", namespaced: true}],
+                    match: {
+                        requiredKeys: ["tls.crt", "tls.key"],
+                        acceptedSecretTypes: ["kubernetes.io/tls", "Opaque"],
+                    },
                 },
                 create: {
                     label: "TLS Certificate Secret",
@@ -716,6 +760,49 @@ describe("editConfig state", () => {
                 },
             },
         });
+    });
+
+    it("renders proxy TLS certManager issuerRef as a Kubernetes object reference", () => {
+        const state = buildEditStateFromObject({
+            sourceClusters: {source: {endpoint: "", version: "ES 7.10.2"}},
+            targetClusters: {},
+            traffic: {
+                proxies: {
+                    cap: {
+                        source: "source",
+                        proxyConfig: {
+                            listenPort: 9201,
+                            tls: {
+                                mode: "certManager",
+                                issuerRef: {name: "migrations-ca", kind: "ClusterIssuer"},
+                                dnsNames: ["cap.default.svc.cluster.local"],
+                            },
+                        },
+                    },
+                },
+            },
+            snapshotMigrationConfigs: [],
+        });
+
+        const issuerRef = findNode(state.nodes, "edit:traffic.proxies.cap.proxyConfig.tls.issuerRef");
+
+        expect(issuerRef).toMatchObject({
+            valueKind: "object",
+            value: {name: "migrations-ca", kind: "ClusterIssuer"},
+            externalRef: {
+                kind: "kubernetesResource",
+                purpose: "cert-manager-issuer",
+                selection: {target: "objectRef"},
+                k8s: {
+                    resourceTypes: [
+                        {group: "cert-manager.io", version: "v1", kind: "Issuer", namespaced: true},
+                        {group: "cert-manager.io", version: "v1", kind: "ClusterIssuer", namespaced: false},
+                        {group: "awspca.cert-manager.io", version: "v1beta1", kind: "AWSPCAClusterIssuer", namespaced: false},
+                    ],
+                },
+            },
+        });
+        expect(issuerRef?.label).toContain("issuerRef: migrations-ca (ClusterIssuer)");
     });
 
     it("applies proxy TLS mode changes and refreshes required children", () => {
@@ -786,11 +873,16 @@ describe("editConfig state", () => {
             value: "console-client-cert",
             presence: "optional",
             externalRef: {
-                kind: "secret",
+                kind: "kubernetesResource",
                 purpose: "proxy-console-client-tls",
+                matchProfiles: ["tls-secret"],
+                selection: {target: "scalarName"},
                 k8s: {
-                    resource: "Secret",
-                    requiredKeys: ["tls.crt", "tls.key"],
+                    resourceTypes: [{group: "", version: "v1", kind: "Secret", namespaced: true}],
+                    match: {
+                        requiredKeys: ["tls.crt", "tls.key"],
+                        acceptedSecretTypes: ["kubernetes.io/tls", "Opaque"],
+                    },
                 },
                 create: {
                     label: "Proxy Client Certificate Secret",
