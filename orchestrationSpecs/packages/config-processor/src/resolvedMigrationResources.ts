@@ -7,10 +7,20 @@ import {
 import {createHash} from "crypto";
 import {z} from "zod";
 import {FILE_SOURCE_RUNTIME_FIELDS, fileSourceRefsForTrace} from "./fileSourceUtils";
-import {KAFKA_VERSION, MigrationConfigTransformer} from "./migrationConfigTransformer";
+import {MigrationConfigTransformer} from "./migrationConfigTransformer";
 import {validationForConfig} from "./editConfig";
 import type {EditDiagnostic} from "./schemaEditModel";
 import type {ConsoleResources} from "./consoleResources";
+import {
+    KAFKA_VERSION,
+    kafkaClusterNameForReference,
+    looseKafkaEntriesForConfig,
+} from "./kafkaConfigResolution";
+import {
+    CLUSTER_CLIENT_DISPLAY_FIELDS,
+    KAFKA_CONFIG_DISPLAY_FIELDS,
+    displayFieldsForProjectedKind,
+} from "./resourceDisplayFields";
 
 type WorkflowConfig = z.infer<typeof ARGO_MIGRATION_CONFIG_PRE_ENRICH>;
 type KafkaClusterConfig = NonNullable<WorkflowConfig["kafkaClusters"]>[number];
@@ -44,6 +54,7 @@ export interface ResolvedMigrationResource {
     name: string;
     parameters: Record<string, unknown>;
     annotations?: Record<string, string>;
+    displayFields?: string[];
     parameterPolicies?: ResolvedParameterPolicy[];
     parameterProvenance?: ResolvedParameterProvenanceMap;
     projectionComplete?: boolean;
@@ -285,12 +296,14 @@ function resource(
     parameterProvenance?: ResolvedParameterProvenanceMap,
 ): ResolvedMigrationResource {
     const normalizedParameters = removeUndefined(parameters) as Record<string, unknown>;
+    const displayFields = displayFieldsForProjectedKind(kind, normalizedParameters);
     return {
         apiVersion: CRD_API_VERSION,
         kind,
         name,
         parameters: normalizedParameters,
         ...(annotations === undefined ? {} : {annotations}),
+        ...(displayFields ? {displayFields} : {}),
         ...(options.includeParameterPolicies
             ? {parameterPolicies: resourcePolicies(kind, normalizedParameters)}
             : {}),
@@ -887,10 +900,7 @@ function userReplayEntryFor(
     replay: ReplayConfig,
 ): [string, Record<string, unknown>] | undefined {
     for (const [key, value] of recordEntries(sourceRecordAt(options, ["traffic", "replayers"]))) {
-        const fromCapturedTraffic = asString(value.fromCapturedTraffic);
-        const toTarget = asString(value.toTarget);
-        const expectedName = [fromCapturedTraffic, toTarget, key].filter(Boolean).join("-");
-        if (expectedName === replay.name || key === replay.name) {
+        if (key === replay.name) {
             return [key, value];
         }
     }
@@ -986,25 +996,6 @@ function looseKafkaClusterParameters(kafkaConfig: Record<string, unknown>): Reco
     return parameters;
 }
 
-function looseKafkaEntries(config: Record<string, unknown>): [string, Record<string, unknown>][] {
-    const explicit = recordEntries(config.kafkaClusterConfiguration);
-    if (explicit.length > 0) {
-        return explicit;
-    }
-
-    const traffic = asRecord(config.traffic);
-    const names = new Set<string>();
-    for (const [, proxy] of recordEntries(traffic.proxies)) {
-        names.add(asString(proxy.kafka) ?? "default");
-    }
-    for (const [, s3] of recordEntries(traffic.s3Sources)) {
-        names.add(asString(s3.kafka) ?? "default");
-    }
-    return [...names].sort().map(name =>
-        [name, {autoCreate: {}} as Record<string, unknown>] as [string, Record<string, unknown>]
-    );
-}
-
 function looseTopicSpecForKafka(
     kafkaEntries: [string, Record<string, unknown>][],
     kafkaName: string,
@@ -1022,7 +1013,7 @@ function looseCapturedTrafficParameters(
     source: Record<string, unknown>,
     kafkaEntries: [string, Record<string, unknown>][],
 ): Record<string, unknown> {
-    const kafkaName = asString(source.kafka) ?? "default";
+    const kafkaName = kafkaClusterNameForReference({kafka: asString(source.kafka)});
     const topicSpec = looseTopicSpecForKafka(kafkaEntries, kafkaName);
     return {
         dependsOn: [kafkaName],
@@ -1080,6 +1071,101 @@ function looseSnapshotMigrationParameters(
         targetLabel,
         snapshotLabel: snapshotName,
     };
+}
+
+function snapshotMigrationPlaceholderParameters(
+    migration: Record<string, unknown>,
+    migrationIndex: number,
+): Record<string, unknown> {
+    return {
+        fromSource: asString(migration.fromSource) ?? `source-${migrationIndex}`,
+        toTarget: asString(migration.toTarget) ?? `target-${migrationIndex}`,
+    };
+}
+
+function snapshotMigrationPlaceholderProvenance(
+    parameters: Record<string, unknown>,
+    migration: Record<string, unknown>,
+    migrationIndex: number,
+    options: ResolvedMigrationResourcesOptions,
+): ResolvedParameterProvenanceMap | undefined {
+    if (!shouldIncludeParameterProvenance(options)) {
+        return undefined;
+    }
+    const basePath = ["snapshotMigrationConfigs", String(migrationIndex)];
+    return buildParameterProvenance(parameters, parameterPath => {
+        const key = parameterPath[0];
+        return {
+            presence: hasPath(migration, [key]) ? "authored" : "defaulted",
+            sourcePath: [...basePath, key],
+        };
+    });
+}
+
+function hasSnapshotMigrationResourceFor(
+    resources: ResolvedMigrationResource[],
+    migrationIndex: number,
+    parameters: Record<string, unknown>,
+): boolean {
+    const migrationPath = ["snapshotMigrationConfigs", String(migrationIndex)];
+    return resources.some(resource => {
+        if (resource.kind !== "SnapshotMigration") {
+            return false;
+        }
+        if (Object.values(resource.parameterProvenance ?? {}).some(provenance =>
+            startsWithPath(provenance.sourcePath, migrationPath)
+        )) {
+            return true;
+        }
+        return (
+            resource.parameters.sourceLabel === parameters.fromSource &&
+            resource.parameters.targetLabel === parameters.toTarget
+        );
+    });
+}
+
+function looseSnapshotMigrationPlaceholderResources(
+    rawConfig: Record<string, unknown>,
+    validation: ReturnType<typeof validationForConfig>,
+    options: ResolvedMigrationResourcesOptions,
+    existingResources: ResolvedMigrationResource[] = [],
+): ResolvedMigrationResource[] {
+    const migrations = Array.isArray(rawConfig.snapshotMigrationConfigs)
+        ? rawConfig.snapshotMigrationConfigs
+        : [];
+    const placeholders: ResolvedMigrationResource[] = [];
+    const usedNames = new Set(
+        existingResources
+            .filter(resource => resource.kind === "SnapshotMigration")
+            .map(resource => resource.name)
+    );
+
+    migrations.forEach((migration, migrationIndex) => {
+        if (!isRecord(migration)) {
+            return;
+        }
+        const parameters = snapshotMigrationPlaceholderParameters(migration, migrationIndex);
+        if (hasSnapshotMigrationResourceFor([...existingResources, ...placeholders], migrationIndex, parameters)) {
+            return;
+        }
+
+        const baseName = `snapshot migration: ${parameters.fromSource} -> ${parameters.toTarget}`;
+        const name = usedNames.has(baseName)
+            ? `${baseName} (${migrationIndex + 1})`
+            : baseName;
+        usedNames.add(name);
+        placeholders.push(resourceWithDiagnostics(
+            "SnapshotMigration",
+            name,
+            parameters,
+            validation,
+            [["snapshotMigrationConfigs", String(migrationIndex)]],
+            options,
+            snapshotMigrationPlaceholderProvenance(parameters, migration, migrationIndex, options),
+        ));
+    });
+
+    return placeholders;
 }
 
 function looseClusterClientConfig(cluster: Record<string, unknown>): Record<string, unknown> {
@@ -1224,6 +1310,7 @@ function looseConsoleResources(
             refName: name,
             aliases: [name],
             clientConfig,
+            displayFields: [...CLUSTER_CLIENT_DISPLAY_FIELDS],
             parameterProvenance: looseClusterClientProvenance(
                 clientConfig,
                 cluster,
@@ -1244,6 +1331,7 @@ function looseConsoleResources(
             refName: name,
             aliases: [name],
             clientConfig,
+            displayFields: [...CLUSTER_CLIENT_DISPLAY_FIELDS],
             parameterProvenance: looseClusterClientProvenance(
                 clientConfig,
                 cluster,
@@ -1253,13 +1341,14 @@ function looseConsoleResources(
             diagnostics,
         };
     });
-    const kafkas = looseKafkaEntries(rawConfig).map(([name, kafka]) => {
+    const kafkas = looseKafkaEntriesForConfig(rawConfig).map(([name, kafka]) => {
         const runtime = looseKafkaRuntime(name, kafka) as any;
         return {
             refName: name,
             aliases: [name, `kafkacluster.${name}`],
             ...(("autoCreate" in kafka || Object.keys(kafka).length === 0) ? {k8sName: name} : {}),
             runtime,
+            displayFields: [...KAFKA_CONFIG_DISPLAY_FIELDS],
             parameterProvenance: looseKafkaRuntimeProvenance(name, kafka, runtime),
             source: "config" as const,
             diagnostics: diagnosticsForPrefixes(validation.diagnostics, [["kafkaClusterConfiguration", name]]),
@@ -1282,7 +1371,7 @@ function buildLooseResourceList(
     options: ResolvedMigrationResourcesOptions = {},
 ): ResolvedMigrationResource[] {
     const resources: ResolvedMigrationResource[] = [];
-    const kafkaEntries = looseKafkaEntries(rawConfig);
+    const kafkaEntries = looseKafkaEntriesForConfig(rawConfig);
 
     for (const [name, kafka] of kafkaEntries) {
         if ("autoCreate" in kafka || Object.keys(kafka).length === 0) {
@@ -1302,7 +1391,7 @@ function buildLooseResourceList(
     const traffic = asRecord(rawConfig.traffic);
     for (const [proxyName, proxy] of recordEntries(traffic.proxies)) {
         const topicParameters = looseCapturedTrafficParameters(proxyName, proxy, kafkaEntries);
-        const kafkaName = asString(proxy.kafka) ?? "default";
+        const kafkaName = kafkaClusterNameForReference({kafka: asString(proxy.kafka)});
         resources.push(resourceWithDiagnostics(
             "CapturedTraffic",
             `${proxyName}-topic`,
@@ -1338,7 +1427,7 @@ function buildLooseResourceList(
 
     for (const [s3Name, s3] of recordEntries(traffic.s3Sources)) {
         const parameters = looseS3CapturedTrafficParameters(s3Name, s3, kafkaEntries);
-        const kafkaName = asString(s3.kafka) ?? "default";
+        const kafkaName = kafkaClusterNameForReference({kafka: asString(s3.kafka)});
         resources.push(resourceWithDiagnostics(
             "CapturedTraffic",
             `${s3Name}-topic`,
@@ -1356,7 +1445,7 @@ function buildLooseResourceList(
         const parameters = looseTrafficReplayParameters(replayer);
         resources.push(resourceWithDiagnostics(
             "TrafficReplay",
-            [fromCapturedTraffic, toTarget, replayName].join("-"),
+            replayName,
             parameters,
             validation,
             [["traffic", "replayers", replayName]],
@@ -1440,6 +1529,8 @@ function buildLooseResourceList(
         }
     });
 
+    resources.push(...looseSnapshotMigrationPlaceholderResources(rawConfig, validation, options, resources));
+
     return resources;
 }
 
@@ -1457,8 +1548,12 @@ export async function buildLooseResolvedMigrationResources(
     };
     try {
         const workflowConfig = await new MigrationConfigTransformer().processFromObject(rawConfig);
+        const resolved = buildResolvedMigrationResources(workflowConfig, workflowName, resolvedOptions);
+        resolved.resources.push(
+            ...looseSnapshotMigrationPlaceholderResources(raw, validation, resolvedOptions, resolved.resources)
+        );
         return {
-            ...buildResolvedMigrationResources(workflowConfig, workflowName, resolvedOptions),
+            ...resolved,
             projectionMode: "loose",
             projectionComplete: true,
             validation: {

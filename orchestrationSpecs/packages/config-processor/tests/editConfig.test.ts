@@ -62,7 +62,7 @@ describe("editConfig state", () => {
             "Live Traffic Migration",
         ]);
         expect((state.nodes[0].children ?? []).map(cleanLabel)).toEqual([
-            "Kafka Clients",
+            "Kafka Clusters",
             "Sources",
             "Targets",
         ]);
@@ -483,7 +483,7 @@ describe("editConfig state", () => {
             snapshotMigrationConfigs: [{fromSource: "legacy", toTarget: "prod", perSnapshotConfig: {}}],
         });
 
-        expect(findNode(state.nodes, "edit:kafkaClusterConfiguration.default")?.label).toContain("kafka: default");
+        expect(cleanLabel(findNode(state.nodes, "edit:kafkaClusterConfiguration.default"))).toBe("default");
         expect(findNode(state.nodes, "edit:kafkaClusterConfiguration.default.autoCreate.auth")).toMatchObject({
             valueKind: "union",
             value: "unset",
@@ -511,9 +511,9 @@ describe("editConfig state", () => {
             valueKind: "object",
             presence: "optional",
         });
-        expect(findNode(state.nodes, "edit:traffic.proxies.capture")?.label).toContain("capture proxy: capture");
-        expect(findNode(state.nodes, "edit:traffic.s3Sources.archive")?.label).toContain("S3 captured traffic source: archive");
-        expect(findNode(state.nodes, "edit:traffic.replayers.replay")?.label).toContain("traffic replay: replay");
+        expect(cleanLabel(findNode(state.nodes, "edit:traffic.proxies.capture"))).toBe("capture");
+        expect(cleanLabel(findNode(state.nodes, "edit:traffic.s3Sources.archive"))).toBe("archive");
+        expect(cleanLabel(findNode(state.nodes, "edit:traffic.replayers.replay"))).toBe("replay");
         expect(findNode(state.nodes, "edit:snapshotMigrationConfigs.0")?.label).toContain("snapshot migration: legacy -> prod");
         expect(findNode(state.nodes, "edit:snapshotMigrationConfigs:add")?.label).toContain("+ Add snapshot migration");
         expect(findNode(state.nodes, "edit:traffic.proxies.capture.source")?.inputHint).toMatchObject({
@@ -652,6 +652,7 @@ describe("editConfig state", () => {
         const captureGroup = findNode(state.nodes, "edit:traffic.proxies");
         const proxy = findNode(state.nodes, "edit:traffic.proxies.cap");
         const proxyConfig = findNode(state.nodes, "edit:traffic.proxies.cap.proxyConfig");
+        const kafka = findNode(state.nodes, "edit:traffic.proxies.cap.kafka");
         const listenPort = findNode(state.nodes, "edit:traffic.proxies.cap.proxyConfig.listenPort");
         const kafkaTopic = findNode(state.nodes, "edit:traffic.proxies.cap.kafkaTopic");
         const podReplicas = findNode(state.nodes, "edit:traffic.proxies.cap.proxyConfig.podReplicas");
@@ -673,6 +674,9 @@ describe("editConfig state", () => {
         expect(proxyConfig?.statusCounts?.required).toBe(1);
         expect(proxyConfig?.required).toBe(true);
         expect(proxyConfig?.presence).toBe("required");
+        expect(kafka).toMatchObject({status: "ok", presence: "optional", value: "default", valueDefaulted: true});
+        expect(kafka?.label).toContain("kafka: default");
+        expect(kafkaTopic?.valueDefaulted).toBeUndefined();
         expect(listenPort?.status).toBe("required");
         expect(listenPort?.presence).toBe("required");
         expect(listenPort?.valueType).toBe("number");

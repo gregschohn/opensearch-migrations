@@ -6,11 +6,16 @@ from textual.widgets._tree import TreeNode, Tree
 
 from console_link.workflow.resource_tree import (
     ResourceNode, ResourceGroup, ResourceSection,
-    PHASE_SYMBOLS, RESOURCE_SECTIONS, DISPLAY_PHASES,
+    PHASE_SYMBOLS, DISPLAY_PHASES,
     CONFIG_MODE_ALL, format_config_diff_fields, format_spec_fields, format_live_status, has_notable_steps,
     collect_notable_steps, find_last_succeeded, step_timestamp,
     maybe_rewrite_wait_step, resource_visible_in_config_mode,
-    format_resource_diagnostics, format_virtual_adoption,
+    format_resource_diagnostics, format_rollout_status_suffix,
+)
+from console_link.workflow.manage_tree_schema import group_plurals_for
+from console_link.workflow.manage_tree_status import (
+    diagnostic_style,
+    format_change_flag,
 )
 from console_link.workflow.tree_utils import get_step_rich_label, get_step_status_output
 from console_link.workflow.commands.crd_utils import DISPLAY_NAMES
@@ -41,20 +46,29 @@ class ResourceTreeStateManager:
         self.tree.root.label = root_label
         self.tree.show_root = True
 
-    def rebuild(self, sections: List[ResourceSection], workflow_data: Dict = None) -> None:
+    def rebuild(
+        self,
+        sections: List[ResourceSection],
+        workflow_data: Dict = None,
+        root_label: str = "[bold]Migration Status[/]",
+        expand_all: bool = True,
+    ) -> None:
         """Full rebuild of the resource tree from pre-built sections."""
         self._workflow_data = workflow_data or {}
         self.tree.clear()
-        self.tree.root.label = "[bold]Migration Status[/]"
+        self.tree.root.label = root_label
         self.tree.show_root = False
         self._populate_tree(sections)
-        self.tree.root.expand_all()
+        if expand_all:
+            self.tree.root.expand_all()
+        else:
+            self.tree.root.expand()
 
     def expand_config_differences(self, sections: List[ResourceSection]) -> None:
         """Expand the ancestors and resource nodes that contain rollout-phase differences."""
         if not self.tree:
             return
-        expansion_ids = self._config_difference_expansion_ids(sections)
+        expansion_ids = self.config_difference_expansion_ids(sections)
         if not expansion_ids:
             return
         self.tree.root.expand()
@@ -65,6 +79,10 @@ class ResourceTreeStateManager:
             if node_id in expansion_ids:
                 node.expand()
             stack.extend(node.children)
+
+    def config_difference_expansion_ids(self, sections: List[ResourceSection]) -> set:
+        """Return tree IDs that should be expanded to reveal rollout-phase differences."""
+        return self._config_difference_expansion_ids(sections)
 
     @classmethod
     def _config_difference_expansion_ids(cls, sections: List[ResourceSection]) -> set:
@@ -105,10 +123,15 @@ class ResourceTreeStateManager:
             return True
         return False
 
-    def update(self, sections: List[ResourceSection], workflow_data: Dict = None) -> None:
+    def update(
+        self,
+        sections: List[ResourceSection],
+        workflow_data: Dict = None,
+        root_label: str = "[bold]Migration Status[/]",
+    ) -> None:
         """Incremental update preserving cursor, scroll, and expand/collapse state."""
         self._workflow_data = workflow_data or {}
-        self.tree.root.label = "[bold]Migration Status[/]"
+        self.tree.root.label = root_label
         self.tree.show_root = False
         self._update_sections(self.tree.root, sections)
 
@@ -118,40 +141,74 @@ class ResourceTreeStateManager:
         """Diff sections against existing tree children."""
         new_sections = [s for s in sections if any(self._group_has_content(g) for g in s.groups)]
         existing = self._existing_by_id(root)
-        new_ids = [f'section:{s.name}' for s in new_sections]
+        new_ids = [self._section_root_id(s) for s in new_sections]
 
         if self._has_structural_change(existing, new_ids):
-            collapsed = self._save_collapsed(root)
+            collapsed = self._save_collapsed_recursive(root)
             self._remove_children(root)
             for section in new_sections:
-                sid = f'section:{section.name}'
-                node = root.add(self._section_label(section), data={'id': sid})
-                for group in section.groups:
-                    self._add_group(node, group)
-                if sid in collapsed:
-                    node.collapse()
-                else:
-                    node.expand()
+                self._add_section_root(root, section, collapsed)
         else:
             for section in new_sections:
-                sid = f'section:{section.name}'
+                sid = self._section_root_id(section)
                 section_node = existing[sid]
-                section_node.set_label(self._section_label(section))
-                self._update_groups(section_node, section.groups)
+                flat_group = self._flat_section_group(section)
+                if flat_group:
+                    section_node.set_label(self._group_label(flat_group))
+                    if flat_group.tree_data and isinstance(section_node.data, dict):
+                        section_node.data.update(flat_group.tree_data)
+                    if flat_group.not_configured:
+                        self._replace_not_configured_child(section_node)
+                    else:
+                        self._update_resources(section_node, flat_group)
+                else:
+                    section_node.set_label(self._section_label(section))
+                    if section.tree_data and isinstance(section_node.data, dict):
+                        section_node.data.update(section.tree_data)
+                    self._update_groups(section_node, section.groups)
+
+    def _add_section_root(self, root: TreeNode, section: ResourceSection, collapsed_ids: set) -> None:
+        flat_group = self._flat_section_group(section)
+        if flat_group:
+            node = self._add_group(root, flat_group)
+            if node is None:
+                return
+            node_id = self._group_id(flat_group)
+            default_expanded = flat_group.tree_default_expanded
+        else:
+            node_id = self._section_id(section)
+            data = {'id': node_id}
+            if section.tree_data:
+                data.update(section.tree_data)
+            node = root.add(self._section_label(section), data=data)
+            for group in section.groups:
+                self._add_group(node, group)
+            default_expanded = section.tree_default_expanded
+
+        if node_id in collapsed_ids:
+            node.collapse()
+        elif default_expanded is False:
+            node.collapse()
+        else:
+            node.expand()
+        if collapsed_ids:
+            self._restore_collapse_state_recursive(node, collapsed_ids)
 
     def _update_groups(self, section_node: TreeNode, groups: List[ResourceGroup]) -> None:
         """Diff groups within a section."""
         new_groups = [g for g in groups if self._group_has_content(g)]
         existing = self._existing_by_id(section_node)
-        new_ids = [f'group:{g.display_name}' for g in new_groups]
+        new_ids = [self._group_id(g) for g in new_groups]
 
         if self._has_structural_change(existing, new_ids):
             self._rebuild_groups(section_node, new_groups)
         else:
             for group in new_groups:
-                gid = f'group:{group.display_name}'
+                gid = self._group_id(group)
                 group_node = existing[gid]
                 group_node.set_label(self._group_label(group))
+                if group.tree_data and isinstance(group_node.data, dict):
+                    group_node.data.update(group.tree_data)
                 if not group.not_configured:
                     self._update_resources(group_node, group)
 
@@ -160,31 +217,30 @@ class ResourceTreeStateManager:
         collapsed = self._save_collapsed(section_node)
         self._remove_children(section_node)
         for group in groups:
-            gid = f'group:{group.display_name}'
-            node = section_node.add(self._group_label(group), data={'id': gid})
+            gid = self._group_id(group)
+            data = {'id': gid}
+            if group.tree_data:
+                data.update(group.tree_data)
+            node = section_node.add(self._group_label(group), data=data)
             if group.not_configured:
                 node.add("[dim](not configured)[/dim]", data=None)
             else:
                 self._add_group_resources(node, group)
             if gid in collapsed:
                 node.collapse()
+            elif group.tree_default_expanded is False:
+                node.collapse()
             else:
                 node.expand()
 
     def _update_resources(self, group_node: TreeNode, group: ResourceGroup) -> None:
         """Diff resources within a group."""
-        group_plurals = next(
-            (plurals for _, grps in RESOURCE_SECTIONS for plurals, _ in grps if plurals[0] == group.plural),
-            [group.plural]
-        )
+        group_plurals = group_plurals_for(group.plural)
         plural_order = {p: i for i, p in enumerate(group_plurals)}
-        sorted_resources = sorted(
-            self._visible_resources(group),
-            key=lambda r: (plural_order.get(r.plural, 99), r.name),
-        )
+        sorted_resources = self._sorted_resources(group, plural_order)
 
         existing = self._existing_by_id(group_node)
-        new_ids = [f'{RESOURCE_ID_PREFIX}{r.name}' for r in sorted_resources]
+        new_ids = [self._resource_id(r) for r in sorted_resources]
 
         if self._has_structural_change(existing, new_ids):
             collapsed = self._save_collapsed(group_node)
@@ -194,10 +250,11 @@ class ResourceTreeStateManager:
             self._restore_collapse_state(group_node, collapsed)
         else:
             for resource in sorted_resources:
-                rid = f'{RESOURCE_ID_PREFIX}{resource.name}'
+                rid = self._resource_id(resource)
                 resource_node = existing[rid]
                 resource_node.set_label(self._resource_label(resource))
-                resource_node.data['phase'] = resource.phase
+                if resource_node.data and isinstance(resource_node.data, dict):
+                    resource_node.data['phase'] = resource.phase
                 # Always rebuild the subtree below the resource (details + workflow steps)
                 self._rebuild_resource_children(resource_node, resource)
 
@@ -226,26 +283,29 @@ class ResourceTreeStateManager:
 
     def _add_group_resources(self, group_node: TreeNode, group: ResourceGroup) -> None:
         """Add sorted resources to a group node."""
-        group_plurals = next(
-            (plurals for _, grps in RESOURCE_SECTIONS for plurals, _ in grps if plurals[0] == group.plural),
-            [group.plural]
-        )
+        group_plurals = group_plurals_for(group.plural)
         plural_order = {p: i for i, p in enumerate(group_plurals)}
-        for resource in sorted(group.resources, key=lambda r: (plural_order.get(r.plural, 99), r.name)):
+        for resource in self._sorted_resources(group, plural_order):
             if not self._resource_visible(resource):
                 continue
             self._add_resource(group_node, resource)
 
     @classmethod
     def _section_label(cls, section: ResourceSection) -> str:
-        return f"[bold]{section.name}[/]{cls._change_count_badge(cls._section_change_summary(section))}"
+        if section.tree_label is not None:
+            return section.tree_label
+        return f"[bold]{section.name}[/]{format_change_flag(cls._section_change_summary(section))}"
 
     @classmethod
     def _group_label(cls, group: ResourceGroup) -> str:
-        return f"[bold]{group.display_name}[/]{cls._change_count_badge(cls._group_change_summary(group))}"
+        if group.tree_label is not None:
+            return group.tree_label
+        return f"[bold]{group.display_name}[/]{format_change_flag(cls._group_change_summary(group))}"
 
     @staticmethod
     def _resource_label(resource: ResourceNode) -> str:
+        if resource.tree_label is not None:
+            return resource.tree_label
         symbol, color = PHASE_SYMBOLS.get(resource.phase, ('?', 'white'))
         change_label = ResourceTreeStateManager._resource_change_label(resource)
         if resource.phase in DISPLAY_PHASES:
@@ -260,26 +320,23 @@ class ResourceTreeStateManager:
         diagnostic = ResourceTreeStateManager._highest_priority_diagnostic(resource)
         if diagnostic:
             severity = diagnostic.get('severity') or 'error'
-            style = ResourceTreeStateManager._diagnostic_style(severity)
+            style = diagnostic_style(severity)
             label = 'required' if severity == 'required' else severity
             return f' [{style}]({label})[/{style}]'
         adoption_status = (resource.virtual_adoption or {}).get('status')
-        if adoption_status and adoption_status not in ('deployed', 'unknown'):
-            style = ResourceTreeStateManager._adoption_style(adoption_status)
-            return f' [{style}]({adoption_status})[/{style}]'
+        rollout_label = format_rollout_status_suffix(adoption_status, rich_markup=True)
+        if rollout_label:
+            return rollout_label
         diff = resource.config_diff or {}
         if not diff:
-            return ResourceTreeStateManager._change_count_badge(
+            return format_change_flag(
                 ResourceTreeStateManager._resource_change_summary(resource)
             )
-        badge = ResourceTreeStateManager._change_count_badge(
-            ResourceTreeStateManager._resource_change_summary(resource)
-        )
         if diff.get('has_pending_submit_changes'):
-            return f' [green](to submit)[/green]{badge}'
+            return ' [green](to submit)[/green]'
         if diff.get('has_submitted_changes'):
-            return f' [grey50](pending)[/grey50]{badge}'
-        return badge
+            return ' [grey50](pending)[/grey50]'
+        return format_change_flag(ResourceTreeStateManager._resource_change_summary(resource))
 
     @classmethod
     def _section_change_summary(cls, section: ResourceSection) -> Dict[str, int]:
@@ -298,6 +355,8 @@ class ResourceTreeStateManager:
     @classmethod
     def _resource_change_summary(cls, resource: ResourceNode) -> Dict[str, int]:
         summary = {'count': 0, 'pending_submit': 0}
+        if resource.tree_change_summary is not None:
+            cls._merge_change_summary(summary, resource.tree_change_summary)
         diff = resource.config_diff or {}
         field_count = len(diff.get('fields') or [])
         presence_changed = cls._resource_presence_changed(resource)
@@ -326,42 +385,12 @@ class ResourceTreeStateManager:
         left['pending_submit'] += right.get('pending_submit', 0)
 
     @staticmethod
-    def _change_count_badge(summary: Dict[str, int]) -> str:
-        count = summary.get('count', 0)
-        if not count:
-            return ''
-        style = 'green' if summary.get('pending_submit') else 'grey50'
-        return f' [{style}][{count} change{"s" if count != 1 else ""}][/{style}]'
-
-    @staticmethod
     def _highest_priority_diagnostic(resource: ResourceNode) -> Optional[Dict]:
         rank = {'error': 4, 'required': 3, 'blocked': 3, 'gated': 2, 'warning': 1}
         diagnostics = resource.diagnostics or []
         if not diagnostics:
             return None
         return max(diagnostics, key=lambda item: rank.get(item.get('severity'), 0))
-
-    @staticmethod
-    def _diagnostic_style(severity: str) -> str:
-        if severity in ('error', 'blocked'):
-            return 'red'
-        if severity == 'required':
-            return 'yellow'
-        if severity == 'gated':
-            return 'magenta'
-        return 'yellow'
-
-    @staticmethod
-    def _adoption_style(status: str) -> str:
-        if status == 'error':
-            return 'red'
-        if status in ('partial', 'outdated', 'missing'):
-            return 'yellow'
-        if status == 'pending':
-            return 'grey50'
-        if status == 'deployed':
-            return 'green'
-        return 'dim'
 
     @staticmethod
     def _existing_by_id(parent: TreeNode) -> Dict[str, TreeNode]:
@@ -441,38 +470,64 @@ class ResourceTreeStateManager:
             section_has_content = any(self._group_has_content(g) for g in section.groups)
             if not section_has_content:
                 continue
-            section_node = self.tree.root.add(
-                self._section_label(section), data={'id': f'section:{section.name}'})
-            for group in section.groups:
-                self._add_group(section_node, group)
+            self._add_section_root(self.tree.root, section, set())
 
-    def _add_group(self, parent: TreeNode, group: ResourceGroup) -> None:
+    def _add_group(self, parent: TreeNode, group: ResourceGroup) -> Optional[TreeNode]:
         """Add a resource group to the tree."""
         if not self._group_has_content(group):
-            return
+            return None
+        data = {'id': self._group_id(group)}
+        if group.tree_data:
+            data.update(group.tree_data)
         group_node = parent.add(
-            self._group_label(group), data={'id': f'group:{group.display_name}'})
+            self._group_label(group), data=data)
+        if group.tree_default_expanded is False:
+            group_node.collapse()
+        else:
+            group_node.expand()
         if group.not_configured:
             group_node.add("[dim](not configured)[/dim]", data=None)
-            return
+            return group_node
 
-        group_plurals = next(
-            (plurals for _, grps in RESOURCE_SECTIONS for plurals, _ in grps if plurals[0] == group.plural),
-            [group.plural]
-        )
+        group_plurals = group_plurals_for(group.plural)
         plural_order = {p: i for i, p in enumerate(group_plurals)}
-        for resource in sorted(self._visible_resources(group), key=lambda r: (plural_order.get(r.plural, 99), r.name)):
+        for resource in self._sorted_resources(group, plural_order):
             self._add_resource(group_node, resource)
+        return group_node
+
+    def _flat_section_group(self, section: ResourceSection) -> Optional[ResourceGroup]:
+        visible_groups = [group for group in section.groups if self._group_has_content(group)]
+        if (
+            len(visible_groups) == 1
+            and visible_groups[0].display_name == section.name
+            and section.tree_id is None
+            and section.tree_label is None
+            and section.tree_data is None
+        ):
+            return visible_groups[0]
+        return None
+
+    def _section_root_id(self, section: ResourceSection) -> str:
+        flat_group = self._flat_section_group(section)
+        return self._group_id(flat_group) if flat_group else self._section_id(section)
+
+    @staticmethod
+    def _replace_not_configured_child(node: TreeNode) -> None:
+        ResourceTreeStateManager._remove_children(node)
+        node.add("[dim](not configured)[/dim]", data=None)
 
     def _add_resource(self, parent: TreeNode, resource: ResourceNode) -> None:
         """Add a resource node with its details and workflow subtree."""
         label = self._resource_label(resource)
         resource_path = f"{DISPLAY_NAMES.get(resource.plural, resource.plural)}.{resource.name}"
-        resource_node = parent.add(label, data={
-            'id': f'{RESOURCE_ID_PREFIX}{resource.name}',
+        data = {
+            'id': self._resource_id(resource),
             'resource_path': resource_path,
             'phase': resource.phase,
-        })
+        }
+        if resource.tree_data:
+            data.update(resource.tree_data)
+        resource_node = parent.add(label, data=data)
 
         # Spec details
         self._add_resource_details(resource_node, resource)
@@ -494,16 +549,18 @@ class ResourceTreeStateManager:
             if not self._resource_visible(child):
                 continue
             self._add_resource(resource_node, child)
+        if resource.tree_default_expanded is False and resource_node.children:
+            resource_node.collapse()
+        elif resource.tree_default_expanded is True and resource_node.children:
+            resource_node.expand()
 
     def _add_resource_details(self, resource_node: TreeNode, resource: ResourceNode) -> None:
         for field in format_spec_fields(resource):
             resource_node.add(f"[dim]{field}[/dim]", data=None)
         for field in format_config_diff_fields(resource, self._config_value_mode, rich_markup=True):
             resource_node.add(field, data=None)
-        for adoption in format_virtual_adoption(resource, rich_markup=True):
-            resource_node.add(adoption, data=None)
         for diagnostic in format_resource_diagnostics(resource):
-            style = self._diagnostic_style(diagnostic.get('severity', 'error'))
+            style = diagnostic_style(diagnostic.get('severity', 'error'))
             resource_node.add(f"[{style}]{diagnostic['label']}[/{style}]", data=None)
 
     def _group_has_content(self, group: ResourceGroup) -> bool:
@@ -511,6 +568,28 @@ class ResourceTreeStateManager:
 
     def _visible_resources(self, group: ResourceGroup) -> List[ResourceNode]:
         return [resource for resource in group.resources if self._resource_visible(resource)]
+
+    @staticmethod
+    def _resource_id(resource: ResourceNode) -> str:
+        return resource.tree_id or f'{RESOURCE_ID_PREFIX}{resource.name}'
+
+    @staticmethod
+    def _section_id(section: ResourceSection) -> str:
+        return section.tree_id or f'section:{section.name}'
+
+    @staticmethod
+    def _group_id(group: ResourceGroup) -> str:
+        return group.tree_id or f'group:{group.display_name}'
+
+    def _sorted_resources(self, group: ResourceGroup, plural_order: Dict[str, int]) -> List[ResourceNode]:
+        return sorted(
+            self._visible_resources(group),
+            key=lambda r: (
+                r.tree_sort_index if r.tree_sort_index is not None else 10_000,
+                plural_order.get(r.plural, 99),
+                r.name,
+            ),
+        )
 
     def _resource_visible(self, resource: ResourceNode) -> bool:
         return resource_visible_in_config_mode(resource, self._config_value_mode)

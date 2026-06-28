@@ -2,31 +2,28 @@
 
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
-import json
 
 from rich.console import Console
 from rich.markup import escape
 from rich.tree import Tree
 
 from .commands.crd_utils import list_migration_resources_full
+from .manage_tree_schema import (
+    RESOURCE_SECTIONS,
+    WORKFLOW_CONFIGURATION_SECTION,
+    display_name_for_plural,
+    group_plurals_for,
+)
+from .manage_tree_status import (
+    adoption_style,
+    diagnostic_style,
+    format_phase_value_segment,
+    same_value_state,
+)
 from .tree_utils import (
     get_node_input_parameter, get_step_rich_label, is_approval_node, get_node_phase,
 )
 
-
-# Sections and their resource groups
-# Each section contains (list of plurals, display name) tuples
-RESOURCE_SECTIONS = [
-    ('Snapshot Migration', [
-        (['datasnapshots'], 'Snapshot'),
-        (['snapshotmigrations'], 'Backfill'),
-    ]),
-    ('Live Traffic Migration', [
-        (['captureproxies'], 'Capture'),
-        (['kafkaclusters', 'capturedtraffics'], 'Buffer'),
-        (['trafficreplays'], 'Replay'),
-    ]),
-]
 
 PHASE_SYMBOLS = {
     'Ready': ('✓', 'green'),
@@ -41,34 +38,6 @@ PHASE_SYMBOLS = {
     'Error': ('✗', 'red'),
     'Skipped': ('~', 'dim'),
     'Unknown': ('?', 'white'),
-}
-
-# Key spec fields to display per resource type.
-# TODO: Derive these from the generated JSON schema instead of hardcoding here.
-# The Zod schemas in orchestrationSpecs/packages/schemas/src/userSchemas.ts already emit
-# x-change-restriction via getSchemaFromZod.ts; a similar x-user-visible annotation could
-# be added, then this code would filter the JSON schema (at runtime or build time).
-SPEC_DISPLAY_FIELDS = {
-    'sourceconfigs': [
-        'endpoint', 'version', 'allow_insecure',
-        'basic_auth.k8s_secret_name', 'sigv4.region', 'sigv4.service',
-    ],
-    'targetconfigs': [
-        'endpoint', 'version', 'allow_insecure',
-        'basic_auth.k8s_secret_name', 'sigv4.region', 'sigv4.service',
-    ],
-    'kafkaconfigs': [
-        'type', 'clusterName', 'authType', 'listenerName',
-    ],
-    'kafkaclusters': ['version', 'auth.type', 'nodePool.replicas'],
-    'capturedtraffics': ['topicName', 'partitions', 'replicas'],
-    'captureproxies': ['podReplicas', 'listenPort', 'internetFacing', 'serviceType'],
-    'datasnapshots': ['snapshotPrefix', 'indexAllowlist'],
-    'snapshotmigrations': [
-        'documentBackfillPodReplicas', 'sourceVersion',
-        'documentBackfillIndexAllowlist', 'metadataMigrationIndexAllowlist',
-    ],
-    'trafficreplays': ['podReplicas', 'speedupFactor', 'removeAuthHeader'],
 }
 
 RESOURCE_KIND_TO_PLURAL = {
@@ -132,6 +101,13 @@ class ResourceNode:
     config_presence: Dict[str, bool] = field(default_factory=dict)
     diagnostics: List[Dict[str, Any]] = field(default_factory=list)
     virtual_adoption: Optional[Dict[str, Any]] = None
+    tree_id: Optional[str] = None
+    tree_label: Optional[Any] = None
+    tree_data: Optional[Dict[str, Any]] = None
+    tree_default_expanded: Optional[bool] = None
+    tree_change_summary: Optional[Dict[str, int]] = None
+    tree_sort_index: Optional[int] = None
+    display_fields: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -141,6 +117,10 @@ class ResourceGroup:
     display_name: str
     resources: List[ResourceNode] = field(default_factory=list)
     not_configured: bool = False
+    tree_id: Optional[str] = None
+    tree_label: Optional[Any] = None
+    tree_data: Optional[Dict[str, Any]] = None
+    tree_default_expanded: Optional[bool] = None
 
 
 @dataclass
@@ -148,6 +128,10 @@ class ResourceSection:
     """A top-level section grouping related resource groups."""
     name: str
     groups: List[ResourceGroup] = field(default_factory=list)
+    tree_id: Optional[str] = None
+    tree_label: Optional[Any] = None
+    tree_data: Optional[Dict[str, Any]] = None
+    tree_default_expanded: Optional[bool] = None
 
 
 def build_resource_tree(namespace: str) -> List[ResourceSection]:
@@ -176,6 +160,8 @@ def apply_config_overlays(
     pending = _resolved_resource_map(pending_resolved_config)
     submitted.update(_console_resource_map(submitted_console_config))
     pending.update(_console_resource_map(pending_console_config))
+    _merge_resolved_kafka_configs(submitted, submitted_resolved_config)
+    _merge_resolved_kafka_configs(pending, pending_resolved_config)
     deployed_config_available = deployed_console_config is not None
     submitted_available = submitted_resolved_config is not None or submitted_console_config is not None
     pending_available = pending_resolved_config is not None or pending_console_config is not None
@@ -192,6 +178,7 @@ def apply_config_overlays(
 
     for key, node in deployed.items():
         node.diagnostics = _merged_resource_diagnostics(submitted.get(key), pending.get(key))
+        node.display_fields = _merged_display_fields(deployed_config.get(key), submitted.get(key), pending.get(key))
         node.config_presence = _build_config_presence(
             deployed=True,
             submitted=key in submitted if submitted_available else None,
@@ -218,6 +205,7 @@ def apply_config_overlays(
             depends_on=parameters.get('dependsOn', []) or [],
             spec=(deployed_resource or {}).get('parameters') or {},
             status={},
+            display_fields=_merged_display_fields(deployed_resource, submitted.get(key), pending.get(key)),
             diagnostics=_merged_resource_diagnostics(deployed_resource, submitted.get(key), pending.get(key)),
             config_presence=_build_config_presence(
                 deployed=key in deployed_config,
@@ -238,6 +226,7 @@ def apply_config_overlays(
             deployed,
         )
         _add_virtual_resource(sections, virtual)
+    _nest_topics_under_kafka_sections(sections)
 
 
 def resource_visible_in_config_mode(resource: ResourceNode, value_mode: str) -> bool:
@@ -302,31 +291,14 @@ def _has_pending_presence_change(resource: ResourceNode) -> bool:
     return presence.get('pending') != baseline
 
 
-def format_virtual_adoption(resource: ResourceNode, rich_markup: bool = False) -> List[str]:
-    adoption = resource.virtual_adoption or {}
-    consumers = adoption.get('consumers') or []
-    if not consumers:
-        return []
-    status = adoption.get('status') or 'unknown'
-    counts = adoption.get('counts') or {}
-    count_text = ', '.join(
-        f"{count} {label}"
-        for label, count in counts.items()
-        if count
-    )
-    summary = f"Adoption: {status}"
-    if count_text:
-        summary += f" ({count_text})"
-    result = [_style_adoption_line(summary, status, rich_markup)]
-    for consumer in consumers:
-        line = (
-            f"uses {consumer.get('kind')} {consumer.get('name')}: "
-            f"{consumer.get('status') or 'unknown'}"
-        )
-        if consumer.get('phase'):
-            line += f" ({consumer.get('phase')})"
-        result.append(_style_adoption_line(line, consumer.get('status') or 'unknown', rich_markup))
-    return result
+def format_rollout_status_suffix(status: Optional[str], rich_markup: bool = False) -> str:
+    if not status or status in ('deployed', 'unknown'):
+        return ''
+    text = f"rollout {status}"
+    if not rich_markup:
+        return f" ({text})"
+    style = adoption_style(status)
+    return f" [{style}]({escape(text)})[/{style}]"
 
 
 def _build_tree_from_raw(raw: Dict[str, List[Dict[str, Any]]]) -> List[ResourceSection]:
@@ -360,12 +332,28 @@ def _nest_topics_under_kafka(resources: List[ResourceNode]) -> None:
     topics_to_remove = []
     for resource in resources:
         if resource.plural == 'capturedtraffics':
-            parent_name = resource.spec.get('kafkaClusterName') or ''
+            parent_name = _captured_traffic_kafka_parent_name(resource)
             if parent_name in kafka_by_name:
                 kafka_by_name[parent_name].children.append(resource)
                 topics_to_remove.append(resource)
     for topic in topics_to_remove:
         resources.remove(topic)
+
+
+def _nest_topics_under_kafka_sections(sections: List[ResourceSection]) -> None:
+    """Apply Kafka/CapturedTraffic nesting after virtual overlay resources are added."""
+    for section in sections:
+        for group in section.groups:
+            if {'kafkaclusters', 'capturedtraffics'}.issubset(set(group_plurals_for(group.plural))):
+                _nest_topics_under_kafka(group.resources)
+
+
+def _captured_traffic_kafka_parent_name(resource: ResourceNode) -> str:
+    return (
+        resource.spec.get('kafkaClusterName')
+        or _pending_field_value(resource.config_diff, 'kafkaClusterName')
+        or ''
+    )
 
 
 def _iter_resource_nodes(sections: List[ResourceSection]):
@@ -405,6 +393,7 @@ def _console_resource_map(console_config: Optional[Dict[str, Any]]) -> Dict[tupl
                 'kind': 'SourceConfig',
                 'name': name,
                 'parameters': source.get('clientConfig') or {},
+                'displayFields': source.get('displayFields') or [],
                 'parameterProvenance': source.get('parameterProvenance') or {},
                 'diagnostics': source.get('diagnostics') or [],
                 'consumers': source.get('consumers') or [],
@@ -416,6 +405,7 @@ def _console_resource_map(console_config: Optional[Dict[str, Any]]) -> Dict[tupl
                 'kind': 'TargetConfig',
                 'name': name,
                 'parameters': target.get('clientConfig') or {},
+                'displayFields': target.get('displayFields') or [],
                 'parameterProvenance': target.get('parameterProvenance') or {},
                 'diagnostics': target.get('diagnostics') or [],
                 'consumers': target.get('consumers') or [],
@@ -427,6 +417,7 @@ def _console_resource_map(console_config: Optional[Dict[str, Any]]) -> Dict[tupl
                 'kind': 'KafkaConfig',
                 'name': name,
                 'parameters': kafka.get('runtime') or {},
+                'displayFields': kafka.get('displayFields') or [],
                 'parameterProvenance': kafka.get('parameterProvenance') or {},
                 'diagnostics': kafka.get('diagnostics') or [],
                 'consumers': kafka.get('consumers') or [],
@@ -434,13 +425,63 @@ def _console_resource_map(console_config: Optional[Dict[str, Any]]) -> Dict[tupl
     return result
 
 
+def _merge_resolved_kafka_configs(
+    target: Dict[tuple[str, str], Dict[str, Any]],
+    resolved_config: Optional[Dict[str, Any]],
+) -> None:
+    """Derive virtual Kafka config rows from canonical resolved KafkaCluster CRs."""
+    if not resolved_config:
+        return
+    for resource in resolved_config.get('resources') or []:
+        if resource.get('kind') != 'KafkaCluster' or not resource.get('name'):
+            continue
+        name = str(resource['name'])
+        parameters = resource.get('parameters') or {}
+        auth_type = _get_nested(parameters, 'auth.type') if _has_nested(parameters, ['auth', 'type']) else None
+        runtime = {
+            'type': 'strimzi',
+            'clusterName': name,
+        }
+        if auth_type:
+            runtime['authType'] = auth_type
+            runtime['listenerName'] = 'tls' if auth_type == 'scram-sha-512' else 'plain'
+
+        key = ('kafkaconfigs', name)
+        existing = target.get(key) or {}
+        target[key] = {
+            **existing,
+            'kind': 'KafkaConfig',
+            'name': name,
+            'parameters': {
+                **(existing.get('parameters') or {}),
+                **runtime,
+            },
+            'displayFields': existing.get('displayFields') or ['type', 'clusterName', 'authType', 'listenerName'],
+            'parameterProvenance': _resolved_kafka_config_provenance(
+                resource.get('parameterProvenance') or {},
+                existing.get('parameterProvenance') or {},
+            ),
+        }
+
+
+def _resolved_kafka_config_provenance(
+    resource_provenance: Dict[str, Any],
+    existing_provenance: Dict[str, Any],
+) -> Dict[str, Any]:
+    result = dict(existing_provenance)
+    auth = resource_provenance.get('auth.type')
+    if auth:
+        result['authType'] = {
+            **auth,
+            'path': ['authType'],
+        }
+    return result
+
+
 def _add_virtual_resource(sections: List[ResourceSection], resource: ResourceNode) -> None:
     for section in sections:
         for group in section.groups:
-            group_plurals = next(
-                (plurals for _, grps in RESOURCE_SECTIONS for plurals, _ in grps if plurals[0] == group.plural),
-                [group.plural]
-            )
+            group_plurals = group_plurals_for(group.plural)
             if resource.plural in group_plurals:
                 if resource.plural == 'capturedtraffics':
                     parent_name = resource.spec.get('kafkaClusterName') or _pending_field_value(
@@ -455,17 +496,12 @@ def _add_virtual_resource(sections: List[ResourceSection], resource: ResourceNod
                 group.not_configured = False
                 group.resources.append(resource)
                 return
-    display_names = {
-        'sourceconfigs': 'Sources',
-        'targetconfigs': 'Targets',
-        'kafkaconfigs': 'Kafka Clients',
-    }
-    display_name = display_names.get(resource.plural)
+    display_name = display_name_for_plural(resource.plural)
     if not display_name:
         return
-    section = next((item for item in sections if item.name == 'Workflow Configuration'), None)
+    section = next((item for item in sections if item.name == WORKFLOW_CONFIGURATION_SECTION), None)
     if section is None:
-        section = ResourceSection(name='Workflow Configuration', groups=[])
+        section = ResourceSection(name=WORKFLOW_CONFIGURATION_SECTION, groups=[])
         sections.insert(0, section)
     group = next((item for item in section.groups if item.plural == resource.plural), None)
     if group is None:
@@ -485,6 +521,14 @@ def _merged_resource_diagnostics(*resources: Optional[Dict[str, Any]]) -> List[D
             )
             result[key] = diagnostic
     return list(result.values())
+
+
+def _merged_display_fields(*resources: Optional[Dict[str, Any]]) -> List[str]:
+    for resource in reversed(resources):
+        fields = (resource or {}).get('displayFields') or []
+        if fields:
+            return [str(field) for field in fields]
+    return []
 
 
 def _build_virtual_adoption(
@@ -567,24 +611,6 @@ def _virtual_adoption_status(counts: Dict[str, int]) -> str:
     return 'unknown'
 
 
-def _adoption_style(status: str) -> str:
-    if status == 'error':
-        return 'red'
-    if status in ('partial', 'outdated', 'missing'):
-        return 'yellow'
-    if status == 'pending':
-        return 'grey50'
-    if status == 'deployed':
-        return 'green'
-    return 'dim'
-
-
-def _style_adoption_line(line: str, status: str, rich_markup: bool) -> str:
-    if not rich_markup:
-        return line
-    return f"[{_adoption_style(status)}]{escape(line)}[/{_adoption_style(status)}]"
-
-
 def _pending_field_value(config_diff: Optional[Dict[str, Any]], path: str):
     for field in (config_diff or {}).get('fields', []):
         if field.get('path') == path:
@@ -615,7 +641,12 @@ def _build_config_diff(
     if submitted_parameters is None and pending_parameters is None and not deployed_parameters:
         return None
 
-    paths = _ordered_config_paths(plural, deployed_parameters, submitted_parameters, pending_parameters)
+    paths = _ordered_config_paths(
+        _merged_display_fields(submitted_resource, pending_resource),
+        deployed_parameters,
+        submitted_parameters,
+        pending_parameters,
+    )
     fields = []
     has_submitted_changes = False
     has_pending_submit_changes = False
@@ -636,9 +667,9 @@ def _build_config_diff(
         }
         submitted_changed = (
             compare_submitted_to_deployed and
-            not _same_state(values['deployed'], values['submitted'])
+            not same_value_state(values['deployed'], values['submitted'])
         )
-        pending_submit_changed = not _same_state(values['submitted'], values['pending'])
+        pending_submit_changed = not same_value_state(values['submitted'], values['pending'])
         if not submitted_changed and not pending_submit_changed:
             continue
         if _is_pending_only_auto_filled_change(values):
@@ -649,7 +680,7 @@ def _build_config_diff(
             has_pending_submit_changes = True
         fields.append({
             'path': '.'.join(path),
-            'label': path[-1],
+            'label': _config_diff_field_label(plural, path, values),
             'values': values,
         })
 
@@ -665,12 +696,12 @@ def _build_config_diff(
 
 
 def _ordered_config_paths(
-    plural: str,
+    display_fields: List[str],
     deployed_parameters: Dict[str, Any],
     submitted_parameters: Optional[Dict[str, Any]],
     pending_parameters: Optional[Dict[str, Any]],
 ) -> List[List[str]]:
-    configured = [field.split('.') for field in SPEC_DISPLAY_FIELDS.get(plural, [])]
+    configured = [field.split('.') for field in display_fields]
     discovered = set()
     for source in (deployed_parameters, submitted_parameters, pending_parameters):
         for path in _leaf_paths(source or {}):
@@ -686,6 +717,30 @@ def _ordered_config_paths(
     for key in sorted(discovered - seen):
         ordered.append(list(key))
     return ordered
+
+
+def _config_diff_field_label(plural: str, path: List[str], values: Dict[str, Dict[str, Any]]) -> str:
+    if plural not in VIRTUAL_CONFIG_PLURALS:
+        return path[-1]
+    for phase in ('pending', 'submitted', 'deployed'):
+        provenance = (values.get(phase) or {}).get('provenance') or {}
+        source_path = provenance.get('sourcePath')
+        if source_path:
+            return _source_config_label(source_path, path[-1])
+    return path[-1]
+
+
+def _source_config_label(source_path: List[Any], fallback: str) -> str:
+    if not isinstance(source_path, list) or not source_path:
+        return fallback
+    parts = [str(part) for part in source_path]
+    if parts[0] in {'sourceClusters', 'targetClusters', 'kafkaClusterConfiguration'} and len(parts) > 2:
+        parts = parts[2:]
+    elif parts[0] == 'traffic' and len(parts) > 3 and parts[1] in {'proxies', 's3Sources', 'replayers'}:
+        parts = parts[3:]
+    elif parts[0] == 'snapshotMigrationConfigs' and len(parts) > 2:
+        parts = parts[2:]
+    return '.'.join(parts) or fallback
 
 
 def _leaf_paths(value: Any, prefix: Optional[List[str]] = None):
@@ -729,14 +784,6 @@ def _is_pending_only_auto_filled_change(values: Dict[str, Dict[str, Any]]) -> bo
         return False
     presence = (values['pending'].get('provenance') or {}).get('presence')
     return presence in {'defaulted', 'generated'}
-
-
-def _same_state(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
-    if bool(left.get('present')) != bool(right.get('present')):
-        return False
-    if not left.get('present'):
-        return True
-    return json.dumps(left.get('value'), sort_keys=True) == json.dumps(right.get('value'), sort_keys=True)
 
 
 def _has_nested(data: Dict[str, Any], path: List[str]) -> bool:
@@ -865,10 +912,7 @@ def _render_group(parent_tree, group: ResourceGroup, show_live_status: bool = Tr
         group_node.add("[dim](not configured)[/dim]")
         return
 
-    group_plurals = next(
-        (plurals for _, grps in RESOURCE_SECTIONS for plurals, _ in grps if plurals[0] == group.plural),
-        [group.plural]
-    )
+    group_plurals = group_plurals_for(group.plural)
     plural_order = {p: i for i, p in enumerate(group_plurals)}
     for resource in sorted(group.resources, key=lambda r: (plural_order.get(r.plural, 99), r.name)):
         _render_resource(group_node, resource, show_live_status)
@@ -901,10 +945,8 @@ def _add_resource_details(node, resource: ResourceNode, show_live_status: bool =
         node.add(f"[dim]{spec_line}[/dim]")
     for config_line in format_config_diff_fields(resource):
         node.add(f"[cyan]{config_line}[/cyan]")
-    for adoption_line in format_virtual_adoption(resource):
-        node.add(adoption_line)
     for diagnostic in format_resource_diagnostics(resource):
-        style = _diagnostic_style(diagnostic.get('severity', 'error'))
+        style = diagnostic_style(diagnostic.get('severity', 'error'))
         node.add(f"[{style}]{diagnostic['label']}[/{style}]")
     if resource.depends_on and resource.phase not in ('Ready', 'Completed'):
         deps = ", ".join(resource.depends_on)
@@ -925,13 +967,13 @@ def _resource_change_label(resource: ResourceNode) -> str:
     diagnostic = _highest_priority_diagnostic(resource)
     if diagnostic:
         severity = diagnostic.get('severity') or 'error'
-        style = _diagnostic_style(severity)
+        style = diagnostic_style(severity)
         label = 'required' if severity == 'required' else severity
         return f' [{style}]({escape(str(label))})[/{style}]'
     adoption_status = (resource.virtual_adoption or {}).get('status')
-    if adoption_status and adoption_status not in ('deployed', 'unknown'):
-        style = _adoption_style(adoption_status)
-        return f' [{style}]({escape(str(adoption_status))})[/{style}]'
+    rollout_label = format_rollout_status_suffix(adoption_status, rich_markup=True)
+    if rollout_label:
+        return rollout_label
     diff = resource.config_diff or {}
     if diff.get('has_pending_submit_changes') or _has_pending_presence_change(resource):
         return ' [green](to submit)[/green]'
@@ -946,16 +988,6 @@ def _highest_priority_diagnostic(resource: ResourceNode) -> Optional[Dict[str, A
     if not diagnostics:
         return None
     return max(diagnostics, key=lambda item: rank.get(item.get('severity'), 0))
-
-
-def _diagnostic_style(severity: str) -> str:
-    if severity in ('error', 'blocked'):
-        return 'red'
-    if severity == 'required':
-        return 'yellow'
-    if severity == 'gated':
-        return 'magenta'
-    return 'yellow'
 
 
 def _should_show_step(step: Dict[str, Any]) -> bool:
@@ -1066,15 +1098,23 @@ def _node_phase(node: Dict[str, Any]) -> str:
 
 def format_spec_fields(resource: ResourceNode) -> List[str]:
     """Extract key spec fields for display. Returns list of 'field: value' strings."""
-    fields = SPEC_DISPLAY_FIELDS.get(resource.plural, [])
+    fields = resource.display_fields or ['.'.join(path) for path in sorted(_leaf_paths(resource.spec))]
+    changed_paths = {
+        str(field.get('path'))
+        for field in (resource.config_diff or {}).get('fields', [])
+        if field.get('path')
+    }
     parts = []
     for field_path in fields:
+        if field_path in changed_paths:
+            continue
         value = _get_nested(resource.spec, field_path)
         if value is not None and value != '' and value != []:
             label = field_path.split('.')[-1]
             if isinstance(value, list):
+                original = value
                 value = ', '.join(str(v) for v in value[:3])
-                if len(resource.spec.get(field_path, [])) > 3:
+                if len(original) > 3:
                     value += '...'
             parts.append(f"{label}: {value}")
     return parts
@@ -1110,27 +1150,15 @@ def format_config_diff_fields(
 
 
 def _format_config_value_segment(mode: str, state: Dict[str, Any], rich_markup: bool) -> str:
-    segment = f"{CONFIG_VALUE_LABELS.get(mode, mode)}={_format_config_value(state)}"
-    if not rich_markup:
-        return segment
-    style = CONFIG_VALUE_STYLES.get(mode)
-    escaped = escape(segment)
-    return f"[{style}]{escaped}[/{style}]" if style else escaped
-
-
-def _format_config_value(state: Dict[str, Any]) -> str:
-    if not state.get('present'):
-        return '<absent>'
-    value = state.get('value')
-    if isinstance(value, bool):
-        return 'true' if value else 'false'
-    if isinstance(value, list):
-        return '[' + ', '.join(str(item) for item in value) + ']'
-    if isinstance(value, dict):
-        return json.dumps(value, sort_keys=True)
-    if value is None:
-        return 'null'
-    return str(value)
+    return format_phase_value_segment(
+        mode,
+        state,
+        CONFIG_VALUE_LABELS,
+        CONFIG_VALUE_STYLES,
+        rich_markup=rich_markup,
+        missing_value='<absent>',
+        none_value='null',
+    )
 
 
 def format_resource_diagnostics(resource: ResourceNode) -> List[Dict[str, str]]:

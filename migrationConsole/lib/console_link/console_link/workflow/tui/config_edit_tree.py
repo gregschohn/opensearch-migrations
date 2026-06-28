@@ -1,11 +1,26 @@
 """Rendering helpers for schema-driven workflow config edit state."""
 
-import re
 from typing import Any, Dict, Iterable, Optional
 
 from rich.text import Text
 from textual.widgets import Static, Tree
-from textual.widgets._tree import TreeNode
+
+from console_link.workflow.manage_tree_schema import (
+    EDIT_ID_BY_TREE_ID,
+    RESOURCE_SECTIONS,
+    WORKFLOW_CONFIGURATION_SECTION,
+)
+from console_link.workflow.manage_tree_status import (
+    STATUS_PRIORITY,
+    STATUS_STYLE,
+    format_status_badge,
+    payload_status,
+    strip_status_badge,
+    format_phase_value_groups,
+    format_state_value,
+)
+from console_link.workflow.resource_tree import ResourceGroup, ResourceNode, ResourceSection
+from console_link.workflow.tui.resource_tree_state_manager import ResourceTreeStateManager
 
 
 EDIT_NODE_TYPE = "config-edit"
@@ -36,44 +51,6 @@ _STATE_MODES = (
     EDIT_MODE_CURRENT_WORKFLOW,
     EDIT_MODE_PENDING_SUBMIT,
 )
-_STATUS_PRIORITY = {
-    "ok": 0,
-    "changed": 1,
-    "warning": 2,
-    "gated": 3,
-    "required": 4,
-    "error": 5,
-    "blocked": 6,
-}
-_STATUS_STYLE = {
-    "ok": "",
-    "changed": "",
-    "warning": "yellow",
-    "gated": "magenta",
-    "required": "yellow",
-    "error": "red",
-    "blocked": "bold red",
-}
-_STATUS_BADGE = {
-    "ok": "OK",
-    "changed": "CHG",
-    "warning": "WARN",
-    "gated": "GATED",
-    "required": "REQ",
-    "error": "ERR",
-    "blocked": "BLOCK",
-}
-_STATUS_COUNT_KEY = {
-    "changed": "changed",
-    "warning": "warnings",
-    "gated": "gated",
-    "required": "required",
-    "error": "errors",
-    "blocked": "blocked",
-}
-_BADGE_PREFIX_RE = re.compile(r"^\[[^\]]+\]\s*")
-
-
 def render_edit_state(
     tree: Tree,
     edit_state: Dict[str, Any],
@@ -83,14 +60,20 @@ def render_edit_state(
     show_expert: bool = False,
     expansion_state: Optional[Dict[str, bool]] = None,
 ) -> None:
-    """Render a generic TS-provided EditStateV1 into the manage tree."""
-    tree.clear()
-    tree.root.set_label(Text("Workflow Config Edit"))
-    tree.show_root = False
-    tree.root.data = {"id": "config-edit-root", "type": EDIT_NODE_TYPE}
-    for node in edit_state.get("nodes", []):
-        _add_edit_node(tree.root, node, value_mode, status_mode, show_optional, show_expert, expansion_state)
-    tree.root.expand()
+    """Render a TS-provided EditStateV1 through the shared manage resource tree renderer."""
+    sections = edit_state_resource_sections(
+        edit_state,
+        value_mode,
+        status_mode,
+        show_optional,
+        show_expert,
+        expansion_state,
+    )
+    ResourceTreeStateManager(tree_widget=tree).rebuild(
+        sections,
+        root_label="Workflow Config Edit",
+        expand_all=False,
+    )
 
 
 def selected_edit_node(tree: Tree) -> Optional[Dict[str, Any]]:
@@ -123,41 +106,225 @@ def update_help_panel(
     panel.update("\n".join(lines[:4]))
 
 
-def _add_edit_node(
-    parent: TreeNode,
-    edit_node: Dict[str, Any],
+def edit_state_resource_sections(
+    edit_state: Dict[str, Any],
     value_mode: str,
     status_mode: str,
     show_optional: bool,
     show_expert: bool,
     expansion_state: Optional[Dict[str, bool]] = None,
-) -> Optional[TreeNode]:
+) -> list[ResourceSection]:
+    """Convert edit nodes to the same section/group/resource model used by status view."""
+    roots = edit_state.get("nodes") or []
+    node_by_id = _index_edit_nodes(roots)
+    used_top_level_ids = set()
+    sections: list[ResourceSection] = []
+
+    for section_name, group_defs in RESOURCE_SECTIONS:
+        section_edit_node = node_by_id.get(EDIT_ID_BY_TREE_ID.get(f"section:{section_name}", ""))
+        groups: list[ResourceGroup] = []
+        for plurals, group_name in group_defs:
+            group_edit_node = node_by_id.get(EDIT_ID_BY_TREE_ID.get(f"group:{group_name}", ""))
+            if group_edit_node is None:
+                continue
+            used_top_level_ids.add(str(group_edit_node.get("id")))
+            visible_children = [
+                child for child in group_edit_node.get("children") or []
+                if _should_render_edit_node(child, status_mode, show_optional, show_expert)
+            ]
+            if not visible_children and not _should_render_edit_node(
+                group_edit_node,
+                status_mode,
+                show_optional,
+                show_expert,
+                visible_children,
+            ):
+                continue
+            groups.append(ResourceGroup(
+                plural=plurals[0],
+                display_name=group_name,
+                resources=[
+                    _edit_node_to_resource_node(
+                        child,
+                        index,
+                        value_mode,
+                        status_mode,
+                        show_optional,
+                        show_expert,
+                        expansion_state,
+                    )
+                    for index, child in enumerate(visible_children)
+                ],
+                tree_id=str(group_edit_node.get("id") or f"group:{group_name}"),
+                tree_label=_node_label(group_edit_node, value_mode, status_mode),
+                tree_data=_edit_node_tree_data(group_edit_node),
+                tree_default_expanded=_edit_node_should_expand(
+                    group_edit_node,
+                    status_mode,
+                    visible_children,
+                    expansion_state,
+                ),
+            ))
+        if groups:
+            if section_edit_node is not None:
+                used_top_level_ids.add(str(section_edit_node.get("id")))
+            sections.append(ResourceSection(
+                name=section_name,
+                groups=groups,
+                tree_id=str(section_edit_node.get("id")) if section_edit_node else None,
+                tree_label=_node_label(section_edit_node, value_mode, status_mode) if section_edit_node else None,
+                tree_data=_edit_node_tree_data(section_edit_node) if section_edit_node else None,
+                tree_default_expanded=_edit_node_should_expand(
+                    section_edit_node,
+                    status_mode,
+                    section_edit_node.get("children") or [],
+                    expansion_state,
+                ) if section_edit_node else None,
+            ))
+
+    fallback_roots = [
+        node for node in roots
+        if str(node.get("id")) not in used_top_level_ids
+        and not _root_consumed_by_section_groups(node, used_top_level_ids, status_mode, show_optional, show_expert)
+        and _should_render_edit_node(node, status_mode, show_optional, show_expert)
+    ]
+    if fallback_roots:
+        sections.append(ResourceSection(
+            name=WORKFLOW_CONFIGURATION_SECTION,
+            groups=[
+                ResourceGroup(
+                    plural="configedit",
+                    display_name="Configuration",
+                    resources=[
+                        _edit_node_to_resource_node(
+                            node,
+                            index,
+                            value_mode,
+                            status_mode,
+                            show_optional,
+                            show_expert,
+                            expansion_state,
+                        )
+                        for index, node in enumerate(fallback_roots)
+                    ],
+                )
+            ],
+        ))
+
+    return sections
+
+
+def _root_consumed_by_section_groups(
+    root: Dict[str, Any],
+    used_ids: set[str],
+    status_mode: str,
+    show_optional: bool,
+    show_expert: bool,
+) -> bool:
+    children = [
+        child for child in root.get("children") or []
+        if _should_render_edit_node(child, status_mode, show_optional, show_expert)
+    ]
+    if not children:
+        return False
+    return all(str(child.get("id")) in used_ids for child in children)
+
+
+def _index_edit_nodes(nodes: list[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    result: Dict[str, Dict[str, Any]] = {}
+    stack = list(nodes)
+    while stack:
+        node = stack.pop()
+        node_id = node.get("id")
+        if node_id:
+            result[str(node_id)] = node
+        stack.extend(node.get("children") or [])
+    return result
+
+
+def _edit_node_tree_data(edit_node: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "type": EDIT_NODE_TYPE,
+        "edit_node": edit_node,
+    }
+
+
+def _edit_node_to_resource_node(
+    edit_node: Dict[str, Any],
+    sort_index: int,
+    value_mode: str,
+    status_mode: str,
+    show_optional: bool,
+    show_expert: bool,
+    expansion_state: Optional[Dict[str, bool]] = None,
+) -> ResourceNode:
     visible_children = [
         child for child in edit_node.get("children") or []
         if _should_render_edit_node(child, status_mode, show_optional, show_expert)
     ]
-    if not _should_render_edit_node(edit_node, status_mode, show_optional, show_expert, visible_children):
-        return None
-    node = parent.add(
-        _node_label(edit_node, value_mode, status_mode),
-        data={
-            "id": edit_node.get("id"),
-            "type": EDIT_NODE_TYPE,
-            "edit_node": edit_node,
-        },
+    should_expand = _edit_node_should_expand(
+        edit_node,
+        status_mode,
+        visible_children,
+        expansion_state,
     )
-    for child in visible_children:
-        _add_edit_node(node, child, value_mode, status_mode, show_optional, show_expert, expansion_state)
-    node_id = edit_node.get("id")
+
+    return ResourceNode(
+        name=str(edit_node.get("id") or edit_node.get("label") or f"config-{sort_index}"),
+        plural="configedit",
+        phase="Config Edit",
+        depends_on=[],
+        spec={},
+        status={},
+        children=[
+            _edit_node_to_resource_node(
+                child,
+                index,
+                value_mode,
+                status_mode,
+                show_optional,
+                show_expert,
+                expansion_state,
+            )
+            for index, child in enumerate(visible_children)
+        ],
+        tree_id=str(edit_node.get("id") or f"edit:anonymous.{sort_index}"),
+        tree_label=_node_label(edit_node, value_mode, status_mode),
+        tree_data=_edit_node_tree_data(edit_node),
+        tree_default_expanded=should_expand,
+        tree_change_summary=_edit_change_summary(edit_node, status_mode),
+        tree_sort_index=sort_index,
+    )
+
+
+def _edit_node_should_expand(
+    edit_node: Dict[str, Any],
+    status_mode: str,
+    visible_children: list[Dict[str, Any]],
+    expansion_state: Optional[Dict[str, bool]] = None,
+) -> bool:
+    node_id = str(edit_node.get("id") or "")
     if node_id in (expansion_state or {}):
-        should_expand = bool((expansion_state or {}).get(node_id))
-    else:
-        should_expand = _should_expand_edit_node(edit_node, status_mode, visible_children)
-    if should_expand:
-        node.expand()
-    else:
-        node.collapse()
-    return node
+        return bool((expansion_state or {}).get(node_id))
+    return _should_expand_edit_node(edit_node, status_mode, visible_children)
+
+
+def _edit_change_summary(edit_node: Dict[str, Any], status_mode: str) -> Dict[str, int]:
+    status, counts = _effective_status(edit_node, status_mode)
+    changed = int(counts.get("changed") or 0)
+    notable = (
+        changed
+        or counts.get("required")
+        or counts.get("errors")
+        or counts.get("warnings")
+        or counts.get("gated")
+        or counts.get("blocked")
+        or status not in {"ok", None}
+    )
+    return {
+        "count": int(changed or 1) if notable else 0,
+        "pending_submit": int(changed or 1) if changed or status == "changed" else 0,
+    }
 
 
 def _should_expand_edit_node(
@@ -205,7 +372,7 @@ def _is_optional_unset_block(edit_node: Dict[str, Any], visible_children: list[D
     if edit_node.get("valueKind") not in {"object", "array", "record", "union"}:
         return False
 
-    label = _strip_badge(str(edit_node.get("label", ""))).lower()
+    label = strip_status_badge(str(edit_node.get("label", ""))).lower()
     value_present = "value" in edit_node
     value = edit_node.get("value")
     if "<unset>" in label:
@@ -250,13 +417,13 @@ def _should_render_edit_node(
 def _node_label(edit_node: Dict[str, Any], value_mode: str, status_mode: str) -> Text:
     status, counts = _effective_status(edit_node, status_mode)
     body = _label_body(edit_node, value_mode)
-    badge = _badge(status, counts)
+    badge = format_status_badge(status, counts)
     label = f"{body} {badge}" if badge else body
-    return Text(label, style=_STATUS_STYLE.get(status, ""))
+    return Text(label, style=STATUS_STYLE.get(status, ""))
 
 
 def _label_body(edit_node: Dict[str, Any], value_mode: str) -> str:
-    label = _strip_badge(str(edit_node.get("label", "")))
+    label = strip_status_badge(str(edit_node.get("label", "")))
     mode_value = _formatted_mode_value(edit_node, value_mode)
     if mode_value is None:
         return label
@@ -270,63 +437,18 @@ def _formatted_mode_value(edit_node: Dict[str, Any], value_mode: str) -> Optiona
         return None
 
     if value_mode != EDIT_MODE_ALL:
-        payload = states.get(value_mode) or {}
-        value = _payload_value(payload)
-        if value is None:
-            return None
-        return value
-
-    values = []
-    for mode in _STATE_MODES:
-        payload = states.get(mode) or {}
-        value = _payload_value(payload)
-        if value is not None:
-            values.append((_STATE_LABELS[mode], value))
-    if not values:
-        return None
-    if len({value for _, value in values}) == 1:
-        return values[0][1]
-
-    groups: list[tuple[list[str], str]] = []
-    for label, value in values:
-        if groups and groups[-1][1] == value:
-            groups[-1][0].append(label)
-        else:
-            groups.append(([label], value))
-    return " | ".join(f"{'/'.join(labels)}={value}" for labels, value in groups)
-
-
-def _payload_value(payload: Dict[str, Any]) -> Optional[str]:
-    if payload.get("present") is False:
-        return "<absent>"
-    if "value" not in payload:
-        return None
-    return _format_value(payload.get("value"))
-
-
-def _format_value(value: Any) -> str:
-    if value is None:
-        return "<unset>"
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    return str(value)
-
-
-def _strip_badge(label: str) -> str:
-    return _BADGE_PREFIX_RE.sub("", label)
-
-
-def _badge(status: str, counts: Dict[str, Any]) -> str:
-    name = _STATUS_BADGE.get(status, status.upper())
-    count_key = _STATUS_COUNT_KEY.get(status)
-    count = counts.get(count_key) if count_key else None
-    if status == "ok":
-        return ""
-    if count is None:
-        count = 1
-    if status == "changed":
-        return f"[{count} change{'s' if count != 1 else ''}]"
-    return f"[{name} {count}]"
+        return format_state_value(
+            states.get(value_mode) or {},
+            missing_value=None,
+            none_value="<unset>",
+        )
+    return format_phase_value_groups(
+        _STATE_MODES,
+        states,
+        _STATE_LABELS,
+        missing_value=None,
+        none_value="<unset>",
+    )
 
 
 def _effective_status(edit_node: Dict[str, Any], status_mode: str) -> tuple[str, Dict[str, Any]]:
@@ -334,29 +456,15 @@ def _effective_status(edit_node: Dict[str, Any], status_mode: str) -> tuple[str,
     if status_mode != EDIT_MODE_ALL:
         payload = states.get(status_mode)
         if payload:
-            return _payload_status(payload, edit_node)
-        return _payload_status(edit_node)
+            return payload_status(payload, edit_node)
+        return payload_status(edit_node)
 
-    candidates = [_payload_status(edit_node)]
+    candidates = [payload_status(edit_node)]
     for mode in _STATE_MODES:
         payload = states.get(mode)
         if payload:
-            candidates.append(_payload_status(payload, edit_node))
-    return max(candidates, key=lambda item: _STATUS_PRIORITY.get(item[0], 0))
-
-
-def _payload_status(payload: Dict[str, Any], fallback: Optional[Dict[str, Any]] = None) -> tuple[str, Dict[str, Any]]:
-    counts = payload.get("statusCounts") or {}
-    for status in ("blocked", "error", "required", "gated", "warning", "changed"):
-        count_key = _STATUS_COUNT_KEY[status]
-        if counts.get(count_key):
-            return status, counts
-    status = payload.get("status")
-    if status:
-        return status, counts
-    if fallback is not None:
-        return _payload_status(fallback)
-    return "ok", counts
+            candidates.append(payload_status(payload, edit_node))
+    return max(candidates, key=lambda item: STATUS_PRIORITY.get(item[0], 0))
 
 
 def _status_line(edit_node: Dict[str, Any], status_mode: str) -> str:
@@ -379,7 +487,7 @@ def _status_line(edit_node: Dict[str, Any], status_mode: str) -> str:
     if counts.get("blocked"):
         summary.append(f"{counts['blocked']} blocked")
     if counts.get("changed"):
-        summary.append(f"{counts['changed']} changed")
+        summary.append("changed")
     if summary:
         return "[yellow]Status:[/] " + ", ".join(summary)
     if status != "ok":

@@ -9,7 +9,15 @@ from textual.app import App, ComposeResult
 from textual.widgets import Button, Input, Static, TextArea
 
 from console_link.workflow.tree_utils import APPROVAL_TEMPLATE_NAME
-from console_link.workflow.resource_tree import ResourceGroup, ResourceNode, ResourceSection, _build_tree_from_raw
+from console_link.workflow.resource_tree import (
+    ResourceGroup,
+    ResourceNode,
+    ResourceSection,
+    _build_tree_from_raw,
+    apply_config_overlays,
+    format_config_diff_fields,
+)
+from console_link.workflow.manage_tree_schema import RESOURCE_SECTIONS
 from console_link.workflow.tui.workflow_manage_app import (
     DISABLE_MOUSE_PIXELS_SEQUENCE,
     DISABLE_MOUSE_SEQUENCES,
@@ -514,7 +522,7 @@ def edit_state_with_missing_basic_auth():
             {
                 "id": "edit:sourceClusters",
                 "path": ["sourceClusters"],
-                "label": "[REQ 1] Source Clusters",
+                "label": "[REQ 1] Sources",
                 "valueKind": "record",
                 "description": "Source Elasticsearch or OpenSearch clusters to migrate from.",
                 "status": "required",
@@ -523,7 +531,7 @@ def edit_state_with_missing_basic_auth():
                     {
                         "id": "edit:sourceClusters.legacy",
                         "path": ["sourceClusters", "legacy"],
-                        "label": "[REQ 1] source: legacy",
+                        "label": "[REQ 1] legacy",
                         "valueKind": "object",
                         "description": "Connection and snapshot configuration for a source cluster.",
                         "status": "required",
@@ -599,10 +607,10 @@ def edit_state_with_no_auth():
     source = state["nodes"][0]
     legacy = source["children"][0]
     auth = legacy["children"][1]
-    source["label"] = "[OK] Source Clusters"
+    source["label"] = "[OK] Sources"
     source["status"] = "ok"
     source["statusCounts"] = {}
-    legacy["label"] = "[OK] source: legacy"
+    legacy["label"] = "[OK] legacy"
     legacy["status"] = "ok"
     legacy["statusCounts"] = {}
     auth["label"] = "[OK] authConfig: < none >"
@@ -649,10 +657,10 @@ def edit_state_with_basic_auth_secret(secret_name="source-creds"):
     legacy = source["children"][0]
     auth = legacy["children"][1]
     secret = auth["children"][0]
-    source["label"] = "[OK] Source Clusters"
+    source["label"] = "[OK] Sources"
     source["status"] = "ok"
     source["statusCounts"] = {}
-    legacy["label"] = "[OK] source: legacy"
+    legacy["label"] = "[OK] legacy"
     legacy["status"] = "ok"
     legacy["statusCounts"] = {}
     auth["label"] = "[OK] authConfig: < basic >"
@@ -694,7 +702,7 @@ def edit_state_with_proxy_logging_config(config_map_name=""):
                             {
                                 "id": "edit:traffic.proxies.cap",
                                 "path": ["traffic", "proxies", "cap"],
-                                "label": "[REQ 1] capture proxy: cap" if missing else "[OK] capture proxy: cap",
+                                "label": "[REQ 1] cap" if missing else "[OK] cap",
                                 "valueKind": "object",
                                 "description": "Capture proxy.",
                                 "status": "required" if missing else "ok",
@@ -858,7 +866,7 @@ def edit_state_with_editable_source_fields():
             {
                 "id": "edit:sourceClusters",
                 "path": ["sourceClusters"],
-                "label": "[CHG 1] Source Clusters",
+                "label": "[CHG 1] Sources",
                 "valueKind": "record",
                 "description": "Source Elasticsearch or OpenSearch clusters to migrate from.",
                 "status": "changed",
@@ -867,7 +875,7 @@ def edit_state_with_editable_source_fields():
                     {
                         "id": "edit:sourceClusters.legacy",
                         "path": ["sourceClusters", "legacy"],
-                        "label": "[CHG 1] source: legacy",
+                        "label": "[CHG 1] legacy",
                         "valueKind": "object",
                         "description": "Connection and snapshot configuration for a source cluster.",
                         "status": "changed",
@@ -1013,7 +1021,7 @@ def edit_state_with_kafka_override_leaf():
                     {
                         "id": "edit:kafkaClusterConfiguration.kafka",
                         "path": ["kafkaClusterConfiguration", "kafka"],
-                        "label": "[OK] kafka: kafka",
+                        "label": "[OK] kafka",
                         "valueKind": "object",
                         "description": "Kafka cluster configuration.",
                         "status": "ok",
@@ -1063,7 +1071,7 @@ def edit_state_with_unset_kafka_override_children():
                     {
                         "id": "edit:kafkaClusterConfiguration.kafka",
                         "path": ["kafkaClusterConfiguration", "kafka"],
-                        "label": "kafka: kafka",
+                        "label": "kafka",
                         "valueKind": "object",
                         "description": "Kafka cluster configuration.",
                         "status": "ok",
@@ -1157,7 +1165,7 @@ def edit_state_with_workflow_config_kafka():
                     {
                         "id": "edit:kafkaClusterConfiguration",
                         "path": ["kafkaClusterConfiguration"],
-                        "label": "Kafka Clients",
+                        "label": "Kafka Clusters",
                         "valueKind": "record",
                         "description": "Kafka cluster configurations.",
                         "status": "ok",
@@ -1166,7 +1174,7 @@ def edit_state_with_workflow_config_kafka():
                             {
                                 "id": "edit:kafkaClusterConfiguration.kafka",
                                 "path": ["kafkaClusterConfiguration", "kafka"],
-                                "label": "kafka: kafka",
+                                "label": "kafka",
                                 "valueKind": "object",
                                 "description": "Kafka cluster configuration.",
                                 "status": "ok",
@@ -1197,6 +1205,157 @@ def edit_state_with_workflow_config_kafka():
     }
 
 
+def edit_state_with_changed_capture_and_snapshot_migration():
+    return {
+        "formatVersion": 1,
+        "provenance": {"source": "pending-yaml", "lossy": False, "warnings": []},
+        "nodes": [
+            {
+                "id": "edit:snapshotMigration",
+                "path": ["snapshotMigration"],
+                "label": "Snapshot Migration",
+                "valueKind": "object",
+                "status": "changed",
+                "statusCounts": {"changed": 1},
+                "children": [
+                    {
+                        "id": "edit:snapshotMigrationConfigs",
+                        "path": ["snapshotMigrationConfigs"],
+                        "label": "Backfill",
+                        "valueKind": "record",
+                        "status": "changed",
+                        "statusCounts": {"changed": 1},
+                        "children": [
+                            {
+                                "id": "edit:snapshotMigrationConfigs.source-target",
+                                "path": ["snapshotMigrationConfigs", "source -> target"],
+                                "label": "snapshot migration: source -> target",
+                                "valueKind": "object",
+                                "status": "changed",
+                                "statusCounts": {"changed": 1},
+                                "children": [
+                                    {
+                                        "id": "edit:snapshotMigrationConfigs.source-target.fromSource",
+                                        "path": ["snapshotMigrationConfigs", "source -> target", "fromSource"],
+                                        "label": "fromSource: source",
+                                        "valueKind": "scalar",
+                                        "status": "changed",
+                                        "statusCounts": {"changed": 1},
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            },
+            {
+                "id": "edit:traffic",
+                "path": ["traffic"],
+                "label": "Live Traffic Migration",
+                "valueKind": "object",
+                "status": "changed",
+                "statusCounts": {"changed": 1},
+                "children": [
+                    {
+                        "id": "edit:traffic.proxies",
+                        "path": ["traffic", "proxies"],
+                        "label": "Capture",
+                        "valueKind": "record",
+                        "status": "changed",
+                        "statusCounts": {"changed": 1},
+                        "children": [
+                            {
+                                "id": "edit:traffic.proxies.cap",
+                                "path": ["traffic", "proxies", "cap"],
+                                "label": "cap",
+                                "valueKind": "object",
+                                "status": "changed",
+                                "statusCounts": {"changed": 1},
+                                "children": [
+                                    {
+                                        "id": "edit:traffic.proxies.cap.proxyConfig",
+                                        "path": ["traffic", "proxies", "cap", "proxyConfig"],
+                                        "label": "proxyConfig",
+                                        "valueKind": "object",
+                                        "status": "changed",
+                                        "statusCounts": {"changed": 1},
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            },
+        ],
+        "pendingSubmitChanges": [],
+        "submittedRolloutChanges": [],
+        "policyPreview": [],
+        "validation": {"valid": True, "errors": []},
+    }
+
+
+def edit_state_with_capture_defaulted_kafka():
+    return {
+        "formatVersion": 1,
+        "provenance": {"source": "pending-yaml", "lossy": False, "warnings": []},
+        "nodes": [
+            {
+                "id": "edit:traffic",
+                "path": ["traffic"],
+                "label": "Live Traffic Migration",
+                "valueKind": "object",
+                "status": "ok",
+                "children": [
+                    {
+                        "id": "edit:traffic.proxies",
+                        "path": ["traffic", "proxies"],
+                        "label": "Capture",
+                        "valueKind": "record",
+                        "status": "ok",
+                        "children": [
+                            {
+                                "id": "edit:traffic.proxies.cap",
+                                "path": ["traffic", "proxies", "cap"],
+                                "label": "cap",
+                                "valueKind": "object",
+                                "status": "ok",
+                                "children": [
+                                    {
+                                        "id": "edit:traffic.proxies.cap.source",
+                                        "path": ["traffic", "proxies", "cap", "source"],
+                                        "label": "source: source",
+                                        "value": "source",
+                                        "valueKind": "scalar",
+                                        "status": "ok",
+                                    },
+                                    {
+                                        "id": "edit:traffic.proxies.cap.kafka",
+                                        "path": ["traffic", "proxies", "cap", "kafka"],
+                                        "label": "kafka: default",
+                                        "value": "default",
+                                        "valueDefaulted": True,
+                                        "valueKind": "scalar",
+                                        "status": "ok",
+                                    },
+                                    {
+                                        "id": "edit:traffic.proxies.cap.kafkaTopic",
+                                        "path": ["traffic", "proxies", "cap", "kafkaTopic"],
+                                        "label": "kafkaTopic: aa",
+                                        "value": "aa",
+                                        "valueKind": "scalar",
+                                        "status": "ok",
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            },
+        ],
+        "validation": {"valid": True, "errors": []},
+    }
+
+
 def edit_state_with_field_visibility():
     return {
         "formatVersion": 1,
@@ -1205,7 +1364,7 @@ def edit_state_with_field_visibility():
             {
                 "id": "edit:sourceClusters",
                 "path": ["sourceClusters"],
-                "label": "[REQ 1] Source Clusters",
+                "label": "[REQ 1] Sources",
                 "valueKind": "record",
                 "description": "Source Elasticsearch or OpenSearch clusters to migrate from.",
                 "status": "required",
@@ -1214,7 +1373,7 @@ def edit_state_with_field_visibility():
                     {
                         "id": "edit:sourceClusters.legacy",
                         "path": ["sourceClusters", "legacy"],
-                        "label": "[REQ 1] source: legacy",
+                        "label": "[REQ 1] legacy",
                         "valueKind": "object",
                         "description": "Connection and snapshot configuration for a source cluster.",
                         "status": "required",
@@ -1386,6 +1545,58 @@ async def wait_until(pilot, predicate, timeout=5.0, interval=0.1):
 
 # --- Tests ---
 
+def test_manage_tree_schema_orders_roots_like_workflow_config():
+    """Top-level manage roots should track the authored config shape."""
+
+    assert [section_name for section_name, _ in RESOURCE_SECTIONS] == [
+        "Sources",
+        "Targets",
+        "Snapshot Migration",
+        "Kafka Clusters",
+        "Live Traffic Migration",
+    ]
+
+
+def test_source_config_diff_order_matches_edit_schema_order():
+    """Status config diffs should follow the same field order as the edit schema."""
+
+    sections = [
+        ResourceSection(
+            name="Workflow Configuration",
+            groups=[ResourceGroup(plural="sourceconfigs", display_name="Sources")],
+        )
+    ]
+    apply_config_overlays(
+        sections,
+        pending_console_config={
+            "sources": [
+                {
+                    "refName": "source",
+                    "clientConfig": {
+                        "endpoint": "https://source.example.com:9200",
+                        "version": "ES 7.10.2",
+                        "allow_insecure": True,
+                        "basic_auth": {"k8s_secret_name": "source-creds"},
+                    },
+                    "parameterProvenance": {
+                        "endpoint": {"sourcePath": ["sourceClusters", "source", "endpoint"]},
+                        "allow_insecure": {"sourcePath": ["sourceClusters", "source", "allowInsecure"]},
+                        "version": {"sourcePath": ["sourceClusters", "source", "version"]},
+                        "basic_auth.k8s_secret_name": {
+                            "sourcePath": ["sourceClusters", "source", "authConfig", "basic", "secretName"]
+                        },
+                    },
+                    "displayFields": ["endpoint", "allow_insecure", "version", "basic_auth.k8s_secret_name"],
+                }
+            ]
+        },
+    )
+
+    source = sections[0].groups[0].resources[0]
+    labels = [line.split(":", 1)[0] for line in format_config_diff_fields(source)]
+    assert labels == ["endpoint", "allowInsecure", "version", "authConfig.basic.secretName"]
+
+
 @pytest.mark.asyncio
 async def test_waiter_loop_and_rediscovery(mock_workflow_with_two_pods):
     """Test the discovery, deletion, and re-discovery lifecycle via WaiterInterface."""
@@ -1498,6 +1709,48 @@ async def test_resource_view_renders_resources_without_workflow():
                 lambda: "Values: Deployed" in str(app.query_one("#pod-status").content),
             )
             mock_waiter.trigger.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_resource_view_left_right_expand_and_collapse_on_launch():
+    """Status mode should bind left/right to tree navigation before entering edit mode."""
+
+    argo_service = MagicMock(spec=ArgoService(None, None))
+    argo_service.get_workflow.return_value = ({"success": False, "error": "not found"}, {})
+
+    pod_scraper = MagicMock(spec=PodScraperInterface(None, None, None))
+    pod_scraper.fetch_pods_metadata.return_value = []
+
+    app = WorkflowTreeApp(
+        namespace="default",
+        name="test-wf",
+        argo_service=argo_service,
+        pod_scraper=pod_scraper,
+        workflow_waiter=FAILING_WAITER,
+        refresh_interval=100.0,
+        resource_view=True,
+        config_edit_service=object(),
+    )
+
+    with patch("console_link.workflow.resource_tree.build_resource_tree",
+               return_value=resource_sections_with_kafka_config()):
+        async with app.run_test() as pilot:
+            tree = app.query_one("#workflow-tree")
+            assert await wait_until(
+                pilot,
+                lambda: find_tree_node_by_id(tree.root, "group:Buffer") is not None,
+                timeout=5.0,
+            )
+
+            buffer_node = find_tree_node_by_id(tree.root, "group:Buffer")
+            assert buffer_node.is_expanded
+            tree.move_cursor(buffer_node)
+
+            await pilot.press("left")
+            assert not buffer_node.is_expanded
+
+            await pilot.press("right")
+            assert buffer_node.is_expanded
 
 
 @pytest.mark.asyncio
@@ -1814,9 +2067,14 @@ async def test_resource_view_edit_mode_shows_branch_diagnostics(mock_workflow_wi
 
             await pilot.press("e")
             assert await wait_until(pilot, lambda: get_clean_text_label(tree.root) == "Workflow Config Edit")
+            assert app.screen.focused is tree
+            assert tree.cursor_node is not None
+            assert (tree.cursor_node.data or {}).get("type") == "config-edit"
 
-            assert "Source Clusters [REQ 1]" in get_clean_text_label(tree.root.children[0])
-            assert "yellow" in get_label_style(tree.root.children[0])
+            source_group = find_tree_node_by_id(tree.root, "edit:sourceClusters")
+            assert source_group is not None
+            assert "Sources [REQ 1]" in get_clean_text_label(source_group)
+            assert "yellow" in get_label_style(source_group)
 
             app._select_tree_node_by_id("edit:sourceClusters.legacy.authConfig")
             await pilot.pause()
@@ -1830,6 +2088,99 @@ async def test_resource_view_edit_mode_shows_branch_diagnostics(mock_workflow_wi
 
             await pilot.press("escape")
             assert await wait_until(pilot, lambda: get_clean_text_label(tree.root) == "Migration Status")
+
+
+@pytest.mark.asyncio
+async def test_resource_view_edit_mode_preserves_expanded_resource_nodes():
+    """Expanded status resources should stay expanded when projected into the edit tree."""
+
+    class FakeConfigEditService:
+        def load_edit_session(self):
+            return {
+                "raw_yaml": "snapshotMigrationConfigs: []\ntraffic:\n  proxies: {}\n",
+                "edit_state": edit_state_with_changed_capture_and_snapshot_migration(),
+            }
+
+    argo_service = MagicMock(spec=ArgoService(None, None))
+    argo_service.get_workflow.return_value = ({"success": False, "error": "not found"}, {})
+
+    pod_scraper = MagicMock(spec=PodScraperInterface(None, None, None))
+    pod_scraper.fetch_pods_metadata.return_value = []
+
+    sections = [
+        ResourceSection(
+            name="Snapshot Migration",
+            groups=[
+                ResourceGroup(
+                    plural="snapshotmigrations",
+                    display_name="Backfill",
+                    resources=[
+                        ResourceNode(
+                            name="snapshot migration: source -> target",
+                            plural="snapshotmigrations",
+                            phase="Pending Config",
+                            depends_on=[],
+                            spec={},
+                            status={},
+                            config_diff={"has_pending_submit_changes": True, "fields": [{"label": "fromSource"}]},
+                        )
+                    ],
+                )
+            ],
+        ),
+        ResourceSection(
+            name="Live Traffic Migration",
+            groups=[
+                ResourceGroup(
+                    plural="captureproxies",
+                    display_name="Capture",
+                    resources=[
+                        ResourceNode(
+                            name="cap",
+                            plural="captureproxies",
+                            phase="Pending Config",
+                            depends_on=[],
+                            spec={},
+                            status={},
+                            config_diff={"has_pending_submit_changes": True, "fields": [{"label": "listenPort"}]},
+                        )
+                    ],
+                )
+            ],
+        ),
+    ]
+
+    app = WorkflowTreeApp(
+        namespace="default",
+        name="migration",
+        argo_service=argo_service,
+        pod_scraper=pod_scraper,
+        workflow_waiter=FAILING_WAITER,
+        refresh_interval=100.0,
+        resource_view=True,
+        config_edit_service=FakeConfigEditService(),
+    )
+
+    with patch("console_link.workflow.resource_tree.build_resource_tree", return_value=sections):
+        async with app.run_test() as pilot:
+            tree = app.query_one("#workflow-tree")
+            tree.focus()
+            assert await wait_until(
+                pilot,
+                lambda: (
+                    find_tree_node_by_id(tree.root, "resource:snapshot migration: source -> target") is not None
+                    and find_tree_node_by_id(tree.root, "resource:cap") is not None
+                ),
+                timeout=5.0,
+            )
+            assert find_tree_node_by_id(tree.root, "resource:snapshot migration: source -> target").is_expanded
+            assert find_tree_node_by_id(tree.root, "resource:cap").is_expanded
+
+            await pilot.press("e")
+            assert await wait_until(pilot, lambda: get_clean_text_label(tree.root) == "Workflow Config Edit")
+
+            assert find_tree_node_by_id(tree.root, "edit:snapshotMigrationConfigs.source-target").is_expanded
+            assert find_tree_node_by_id(tree.root, "edit:traffic.proxies.cap").is_expanded
 
 
 @pytest.mark.asyncio
@@ -2933,8 +3284,9 @@ async def test_resource_view_edit_mode_colors_and_fixed_data_modes(mock_workflow
             await pilot.press("e")
             assert await wait_until(pilot, lambda: get_clean_text_label(tree.root) == "Workflow Config Edit")
 
-            source_node = tree.root.children[0]
-            assert "Source Clusters [1 change]" in get_clean_text_label(source_node)
+            source_node = find_tree_node_by_id(tree.root, "edit:sourceClusters")
+            assert source_node is not None
+            assert "Sources (changed)" in get_clean_text_label(source_node)
             assert get_label_style(source_node) == ""
             assert not source_node.is_expanded
 
@@ -3036,10 +3388,10 @@ async def test_resource_view_edit_mode_enriches_deployed_values_from_console_sna
             endpoint_node = find_tree_node_by_id(tree.root, "edit:sourceClusters.legacy.endpoint")
             assert source_node is not None
             assert endpoint_node is not None
-            assert "Source Clusters [1 change]" in get_clean_text_label(source_node)
+            assert "Sources (changed)" in get_clean_text_label(source_node)
             assert (
                 "endpoint: deployed/workflow=https://old.example.com:9200 | "
-                "pending=https://new.example.com:9200 [1 change]"
+                "pending=https://new.example.com:9200 (changed)"
             ) == get_clean_text_label(endpoint_node)
 
 
@@ -3062,11 +3414,11 @@ async def test_resource_view_edit_mode_preserves_matching_resource_expansion(moc
     pod_scraper.fetch_pods_metadata.return_value = []
     sections = [
         ResourceSection(
-            name="Workflow Configuration",
+            name="Kafka Clusters",
             groups=[
                 ResourceGroup(
                     plural="kafkaconfigs",
-                    display_name="Kafka Clients",
+                    display_name="Kafka Clusters",
                     resources=[
                         ResourceNode(
                             name="kafka",
@@ -3103,9 +3455,94 @@ async def test_resource_view_edit_mode_preserves_matching_resource_expansion(moc
             await pilot.press("e")
             assert await wait_until(pilot, lambda: get_clean_text_label(tree.root) == "Workflow Config Edit")
 
-            assert find_tree_node_by_id(tree.root, "edit:workflowConfiguration").is_expanded
-            assert find_tree_node_by_id(tree.root, "edit:kafkaClusterConfiguration").is_expanded
+            kafka_root = find_tree_node_by_id(tree.root, "edit:kafkaClusterConfiguration")
+            assert kafka_root is not None
+            assert kafka_root.parent is tree.root
+            assert kafka_root.is_expanded
+            assert find_tree_node_by_id(tree.root, "edit:workflowConfiguration") is None
             assert not find_tree_node_by_id(tree.root, "edit:kafkaClusterConfiguration.kafka").is_expanded
+
+
+def test_workflow_config_value_state_uses_schema_default_only_when_parent_exists():
+    node = {
+        "path": ["traffic", "proxies", "cap", "kafka"],
+        "value": "default",
+        "valueDefaulted": True,
+        "valueKind": "scalar",
+    }
+
+    assert WorkflowTreeApp._workflow_config_value_state(
+        {"traffic": {"proxies": {"cap": {"source": "source"}}}},
+        node,
+        allow_node_default=True,
+    ) == {"present": True, "value": "default"}
+    assert WorkflowTreeApp._workflow_config_value_state(
+        {},
+        node,
+        allow_node_default=True,
+    ) == {"present": False}
+    assert WorkflowTreeApp._workflow_config_value_state(
+        {"traffic": {"proxies": {"cap": {"source": "source"}}}},
+        {**node, "valueDefaulted": False},
+        allow_node_default=True,
+    ) == {"present": False}
+
+
+@pytest.mark.asyncio
+async def test_resource_view_edit_mode_renders_defaulted_capture_kafka_value(mock_workflow_with_two_pods):
+    class FakeConfigEditService:
+        def load_edit_session(self):
+            return {
+                "raw_yaml": (
+                    "traffic:\n"
+                    "  proxies:\n"
+                    "    cap:\n"
+                    "      source: source\n"
+                    "      kafkaTopic: aa\n"
+                ),
+                "edit_state": edit_state_with_capture_defaulted_kafka(),
+            }
+
+        def load_resource_config_snapshots(self, workflow_name):
+            return {
+                "submitted": {"workflowConfig": {}},
+                "submitted_console": {},
+                "pending_console": {},
+            }
+
+    argo_service = ArgoService(
+        get_workflow=lambda name, namespace: ({"success": True}, mock_workflow_with_two_pods),
+        approve_step=MagicMock(),
+    )
+    pod_scraper = MagicMock(spec=PodScraperInterface(None, None, None))
+    pod_scraper.fetch_pods_metadata.return_value = []
+
+    app = WorkflowTreeApp(
+        namespace="default",
+        name="test-wf",
+        argo_service=argo_service,
+        pod_scraper=pod_scraper,
+        workflow_waiter=FAILING_WAITER,
+        refresh_interval=100.0,
+        resource_view=True,
+        config_edit_service=FakeConfigEditService(),
+    )
+
+    with patch("console_link.workflow.resource_tree.build_resource_tree",
+               return_value=resource_sections_for_manage_tests()):
+        async with app.run_test() as pilot:
+            tree = app.query_one("#workflow-tree")
+            tree.focus()
+            assert await wait_until(pilot, lambda: len(tree.root.children) > 0, timeout=5.0)
+
+            await pilot.press("e")
+            assert await wait_until(pilot, lambda: get_clean_text_label(tree.root) == "Workflow Config Edit")
+
+            kafka = find_tree_node_by_id(tree.root, "edit:traffic.proxies.cap.kafka")
+            assert kafka is not None
+            assert get_clean_text_label(kafka) == (
+                "kafka: deployed/workflow=<absent> | pending=default (changed)"
+            )
 
 
 @pytest.mark.asyncio
@@ -3424,8 +3861,8 @@ async def test_resource_view_shows_config_phases_and_submits_workflow(mock_workf
                     for child in find_tree_node_by_id(tree.root, "resource:default").children
                 ),
             )
-            assert find_tree_node_by_id(tree.root, "group:Buffer").is_expanded
-            assert find_tree_node_by_id(tree.root, "resource:default").is_expanded
+            assert not find_tree_node_by_id(tree.root, "group:Buffer").is_expanded
+            assert not find_tree_node_by_id(tree.root, "resource:default").is_expanded
             await pilot.press("v")
             await pilot.press("v")
             assert await wait_until(
@@ -3623,9 +4060,15 @@ async def test_resource_view_preserves_collapsed_config_changes_after_edit_exit_
 
             find_tree_node_by_id(tree.root, "group:Buffer").collapse()
             find_tree_node_by_id(tree.root, "resource:default").collapse()
+            await pilot.press("v")
+            assert await wait_until(
+                pilot,
+                lambda: "Values: Deployed" in str(app.query_one("#pod-status").content),
+            )
 
             await pilot.press("e")
             assert await wait_until(pilot, lambda: get_clean_text_label(tree.root) == "Workflow Config Edit")
+            assert "Values: All" in str(app.query_one("#pod-status").content)
             await pilot.press("escape")
             assert await wait_until(
                 pilot,
@@ -3633,9 +4076,10 @@ async def test_resource_view_preserves_collapsed_config_changes_after_edit_exit_
                     get_clean_text_label(tree.root) == "Migration Status"
                     and not find_tree_node_by_id(tree.root, "group:Buffer").is_expanded
                     and not find_tree_node_by_id(tree.root, "resource:default").is_expanded
+                    and "Values: All" in str(app.query_one("#pod-status").content)
                 ),
             )
-            assert "[1 change]" in get_clean_text_label(find_tree_node_by_id(tree.root, "group:Buffer"))
+            assert "(to submit)" in get_clean_text_label(find_tree_node_by_id(tree.root, "group:Buffer"))
 
 
 @pytest.mark.asyncio
