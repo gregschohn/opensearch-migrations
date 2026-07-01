@@ -29,6 +29,9 @@ from .config_edit_tree import (
     EDIT_MODE_LABELS,
     EDIT_MODES,
     EDIT_MODE_PENDING_SUBMIT,
+    FIELD_VISIBILITY_ESSENTIAL,
+    FIELD_VISIBILITY_LABELS,
+    FIELD_VISIBILITY_MODES,
     render_edit_state,
     selected_edit_node,
     update_help_panel,
@@ -137,8 +140,7 @@ class WorkflowTreeApp(App):
         self._edit_dirty = False
         self._edit_value_mode = EDIT_MODE_ALL
         self._edit_status_mode = EDIT_MODE_ALL
-        self._edit_show_optional = True
-        self._edit_show_expert = False
+        self._edit_field_visibility = FIELD_VISIBILITY_ESSENTIAL
         self._after_config_edit_save: Optional[str] = None
         self._resource_value_mode = EDIT_MODE_ALL
         self._resource_change_summary = {'pending': 0, 'to_submit': 0, 'resources': 0}
@@ -154,6 +156,10 @@ class WorkflowTreeApp(App):
         self._edit_validation_delay = 0.4
         self._mouse_input_enabled = True
         self._mouse_pixels_was_enabled = False
+        self._last_pod_status_text: Optional[str] = None
+        self._last_binding_signature: Optional[tuple] = None
+        self._managed_output_ref_cache: Dict[str, list[tuple[str, str]]] = {}
+        self._workflow_output_refs_by_resource: Optional[Dict[str, list[tuple[str, str]]]] = None
 
         # State Containers (Managers)
         self._pods = PodNameManager(self, pod_scraper, name, namespace)
@@ -301,6 +307,7 @@ class WorkflowTreeApp(App):
         is_restart = self.current_run_id != new_run_id
         self._last_resource_sections = sections
         self._last_resource_workflow_data = workflow_data
+        self._clear_managed_output_ref_caches()
         self._resource_change_summary = resource_config_change_summary(sections)
         if hasattr(self._tree_state, "set_config_value_mode"):
             self._tree_state.set_config_value_mode(self._resource_value_mode)
@@ -338,6 +345,7 @@ class WorkflowTreeApp(App):
 
         new_run_id = new_data.get('status', {}).get('startedAt')
         is_restart = self.current_run_id != new_run_id
+        self._clear_managed_output_ref_caches()
 
         if is_restart:
             self.current_run_id = new_run_id
@@ -449,15 +457,28 @@ class WorkflowTreeApp(App):
         if not tree_node:
             logger.info("Show output requested with no selected tree node")
             return []
+        refs = self._managed_output_refs_for_tree_node(tree_node, log=True)
+        logger.info("Collected %s managed output ref(s)", len(refs))
+        return refs
 
+    def _has_managed_output_refs(self, tree_node) -> bool:
+        return bool(self._managed_output_refs_for_tree_node(tree_node, log=False))
+
+    def _managed_output_refs_for_tree_node(self, tree_node, log: bool = False):
+        if not tree_node:
+            return []
+        cache_key = self._managed_output_ref_cache_key(tree_node)
+        if cache_key in self._managed_output_ref_cache:
+            return self._managed_output_ref_cache[cache_key]
         selected_data = tree_node.data or {}
-        logger.info(
-            "Collecting managed output refs from selected node id=%s name=%s type=%s phase=%s",
-            selected_data.get('id'),
-            selected_data.get('display_name') or selected_data.get('displayName'),
-            selected_data.get('type'),
-            selected_data.get('phase'),
-        )
+        if log:
+            logger.info(
+                "Collecting managed output refs from selected node id=%s name=%s type=%s phase=%s",
+                selected_data.get('id'),
+                selected_data.get('display_name') or selected_data.get('displayName'),
+                selected_data.get('type'),
+                selected_data.get('phase'),
+            )
 
         refs = []
         stack = [tree_node]
@@ -472,15 +493,16 @@ class WorkflowTreeApp(App):
                 resource_name = self._input_parameter(data, 'resourceName')
                 if resource_name:
                     resource_path = resource_display_name(plural, resource_name)
-                    logger.info(
-                        "Found managed output ref patch_step=%s node_id=%s resource=%s output=%s",
-                        step_name,
-                        data.get('id'),
-                        resource_path,
-                        output_name,
-                    )
+                    if log:
+                        logger.info(
+                            "Found managed output ref patch_step=%s node_id=%s resource=%s output=%s",
+                            step_name,
+                            data.get('id'),
+                            resource_path,
+                            output_name,
+                        )
                     refs.append((resource_path, output_name))
-                else:
+                elif log:
                     logger.warning(
                         "Managed output patch step %s node_id=%s had no resourceName input",
                         step_name,
@@ -492,15 +514,32 @@ class WorkflowTreeApp(App):
         if not refs and selected_data.get('id', '').startswith(RESOURCE_ID_PREFIX):
             resource_name = selected_data.get('id', '').removeprefix(RESOURCE_ID_PREFIX)
             refs = self._find_output_refs_in_workflow_data(resource_name)
-        logger.info("Collected %s managed output ref(s)", len(refs))
+        self._managed_output_ref_cache[cache_key] = refs
         return refs
+
+    @staticmethod
+    def _managed_output_ref_cache_key(tree_node) -> str:
+        data = tree_node.data or {}
+        node_id = data.get("id")
+        return str(node_id) if node_id else f"tree:{id(tree_node)}"
+
+    def _clear_managed_output_ref_caches(self) -> None:
+        self._managed_output_ref_cache.clear()
+        self._workflow_output_refs_by_resource = None
+        self._last_binding_signature = None
 
     def _find_output_refs_in_workflow_data(self, resource_name: str):
         """Search raw workflow nodes for patch-output steps matching a resource."""
+        return list(self._workflow_output_ref_map().get(resource_name, []))
+
+    def _workflow_output_ref_map(self) -> Dict[str, list[tuple[str, str]]]:
+        if self._workflow_output_refs_by_resource is not None:
+            return self._workflow_output_refs_by_resource
         workflow_data = self._tree_state._workflow_data
         if not workflow_data:
-            return []
-        refs = []
+            self._workflow_output_refs_by_resource = {}
+            return self._workflow_output_refs_by_resource
+        refs: Dict[str, list[tuple[str, str]]] = {}
         for node in (workflow_data.get('status', {}).get('nodes', {}) or {}).values():
             display_name = node.get('displayName', '')
             step_name = display_name.split('(')[0].strip()
@@ -509,9 +548,10 @@ class WorkflowTreeApp(App):
                 continue
             plural, output_name = patch_spec
             node_resource = self._input_parameter(node, 'resourceName')
-            if node_resource == resource_name:
+            if node_resource:
                 resource_path = resource_display_name(plural, node_resource)
-                refs.append((resource_path, output_name))
+                refs.setdefault(node_resource, []).append((resource_path, output_name))
+        self._workflow_output_refs_by_resource = refs
         return refs
 
     def action_view_output(self) -> None:
@@ -652,62 +692,83 @@ class WorkflowTreeApp(App):
                 tree.focus()
 
     def update_pod_status(self) -> None:
-        status_bar = self.query_one("#pod-status", Static)
         if self._edit_mode:
             node = selected_edit_node(self.tree_root_widget)
             dirty = "dirty" if self._edit_dirty else "clean"
             value_mode = EDIT_MODE_LABELS.get(self._edit_value_mode, self._edit_value_mode)
             status_mode = EDIT_MODE_LABELS.get(self._edit_status_mode, self._edit_status_mode)
-            optional_state = "optional on" if self._edit_show_optional else "optional off"
-            expert_state = "expert on" if self._edit_show_expert else "expert off"
+            field_visibility = FIELD_VISIBILITY_LABELS.get(
+                self._edit_field_visibility,
+                self._edit_field_visibility,
+            )
             if node:
                 status = node.get("status", "ok")
-                status_bar.update(
+                self._set_pod_status(
                     f"Config edit: [bold cyan]{status}[/]  [{dirty}]  "
                     f"Values: {value_mode}  Status: {status_mode}  "
-                    f"{optional_state}, {expert_state}  s/Ctrl+s saves, Esc exits"
+                    f"Fields: {field_visibility}  s/Ctrl+s saves, Esc exits"
                 )
             else:
-                status_bar.update(
+                self._set_pod_status(
                     f"Config edit: [{dirty}]  Values: {value_mode}  "
-                    f"Status: {status_mode}  {optional_state}, {expert_state}  s/Ctrl+s saves, Esc exits"
+                    f"Status: {status_mode}  Fields: {field_visibility}  s/Ctrl+s saves, Esc exits"
                 )
             return
         if self._resource_view:
             summary = self._resource_change_summary
             value_mode = CONFIG_MODE_LABELS.get(self._resource_value_mode, self._resource_value_mode)
             if self._submitting_workflow:
-                status_bar.update(f"Submitting workflow...  Values: {value_mode}")
+                self._set_pod_status(f"Submitting workflow...  Values: {value_mode}")
                 return
             if summary.get('resources'):
-                status_bar.update(
+                self._set_pod_status(
                     f"Config changes: [green]{summary.get('to_submit', 0)} to submit[/], "
                     f"[grey50]{summary.get('pending', 0)} pending[/]  Values: {value_mode}"
                 )
                 return
-            status_bar.update(f"Values: {value_mode}")
+            self._set_pod_status(f"Values: {value_mode}")
             return
-        if not self.current_node_data:
-            status_bar.update("")
+        node = self.current_node_data
+        if not node:
+            self._set_pod_status("")
             return
         
-        node_type = self.current_node_data.get('type')
-        if is_approval_node(self.current_node_data):
+        node_type = node.get('type')
+        if is_approval_node(node):
             name_param = None
-            for p in self.current_node_data.get('inputs', {}).get('parameters', []):
+            for p in node.get('inputs', {}).get('parameters', []):
                 if p.get('name') in ('resourceName', 'name'):
                     name_param = p.get('value')
                     break
-            status_bar.update(f"Name: [bold cyan]{name_param}[/]" if name_param else "")
+            self._set_pod_status(f"Name: [bold cyan]{name_param}[/]" if name_param else "")
         elif node_type == NODE_TYPE_POD:
-            node_id = self.current_node_data.get('id')
+            node_id = node.get('id')
             name = self._pods.get_name(node_id) if node_id else None
-            status_bar.update(f"Pod: [bold green]{name}[/]" if name else "Pod: (not available)")
+            self._set_pod_status(f"Pod: [bold green]{name}[/]" if name else "Pod: (not available)")
         else:
-            status_bar.update("")
+            self._set_pod_status("")
+
+    def _set_pod_status(self, content: str) -> None:
+        if content == self._last_pod_status_text:
+            return
+        self._last_pod_status_text = content
+        self.query_one("#pod-status", Static).update(content)
 
     def _update_dynamic_bindings(self) -> None:
         """Reconfigures the Footer and keys based on the currently selected node."""
+        tree_node = self.tree_root_widget.cursor_node
+        edit_node = selected_edit_node(self.tree_root_widget) if self._edit_mode else None
+        node = edit_node if self._edit_mode else (tree_node.data if tree_node and tree_node.data else None)
+        output_available = (
+            False
+            if self._edit_mode or not node
+            else self._has_managed_output_refs(tree_node)
+        )
+        signature = self._dynamic_binding_signature(node, output_available)
+        if signature == self._last_binding_signature:
+            return
+        self._last_binding_signature = signature
+
         self._bindings = self._bindings.__class__()
 
         self.bind("ctrl+p", "command_palette", show=False)
@@ -720,17 +781,11 @@ class WorkflowTreeApp(App):
         )
 
         if self._edit_mode:
-            node = selected_edit_node(self.tree_root_widget)
             self.bind("escape", "exit_config_edit", description="Exit Edit")
             self.bind("s", "save_config_edit", description="Save")
             self.bind("ctrl+s", "save_config_edit", description="Save")
             self.bind("?", "show_config_edit_help", description="Help")
-            optional_description = "Hide Optional" if self._edit_show_optional else "Show Optional"
-            expert_description = "Hide Expert" if self._edit_show_expert else "Show Expert"
-            self.bind("o", "toggle_config_optional_fields", description=optional_description)
-            self.bind("O", "toggle_config_optional_fields", description=optional_description)
-            self.bind("x", "toggle_config_expert_fields", description=expert_description)
-            self.bind("X", "toggle_config_expert_fields", description=expert_description)
+            self.bind("f", "cycle_config_field_visibility", description=self._next_field_visibility_description())
             self.bind("i", "edit_selected_config_node", show=False)
             self._bindings.bind(
                 "enter",
@@ -783,31 +838,58 @@ class WorkflowTreeApp(App):
             self.bind("s", "submit_workflow", description="Submit")
             self.bind("v", "cycle_resource_value_mode", description="Value Mode")
 
-        node = self.current_node_data
         if node:
-            self._bind_node_actions(node)
+            self._bind_node_actions(node, output_available)
 
         self.refresh_bindings()
 
-    def _bind_node_actions(self, node: Dict) -> None:
+    def _dynamic_binding_signature(self, node: Optional[Dict], output_available: bool) -> tuple:
+        base = (
+            self._edit_mode,
+            self._resource_view,
+            self._mouse_input_enabled,
+        )
+        if self._edit_mode:
+            return (
+                *base,
+                self._edit_field_visibility,
+                (node or {}).get("valueKind"),
+                bool((node or {}).get("command")),
+                self._is_removable_edit_node(node),
+            )
+
+        node = node or {}
+        node_id = node.get('id') or ''
+        node_type = node.get('type')
+        return (
+            *base,
+            node_id.startswith(RESOURCE_ID_PREFIX),
+            node_type,
+            node.get('phase'),
+            is_approval_node(node),
+            bool(self._pods.get_name(node_id)) if node_type == NODE_TYPE_POD else False,
+            output_available,
+        )
+
+    def _bind_node_actions(self, node: Dict, output_available: bool) -> None:
         """Bind context-sensitive keys for the selected node."""
         node_id = node.get('id') or ''
         ntype = node.get('type')
 
         if node_id.startswith(RESOURCE_ID_PREFIX):
             self.bind("l", "view_resource_logs", description="View Logs")
-            if self._collect_managed_output_refs():
+            if output_available:
                 self.bind("o", "view_output", description=DESC_SHOW_OUTPUT)
         elif ntype == NODE_TYPE_POD and self._pods.get_name(node_id) and not is_approval_node(node):
             self.bind("l", "view_logs", description="View Logs")
-            if self._collect_managed_output_refs():
+            if output_available:
                 self.bind("o", "view_output", description=DESC_SHOW_OUTPUT)
             if node.get('phase') == PHASE_RUNNING:
                 self.bind("f", "follow_logs", description="Follow Logs")
             self.bind("c", "copy_pod_name", description="Copy Pod Name")
         elif is_approval_node(node) and node.get('phase') == PHASE_RUNNING:
             self.bind("a", "approve_step", description="Approve")
-        elif self._collect_managed_output_refs():
+        elif output_available:
             self.bind("o", "view_output", description=DESC_SHOW_OUTPUT)
 
     def action_toggle_mouse_input(self) -> None:
@@ -1018,16 +1100,14 @@ class WorkflowTreeApp(App):
         self._edit_dirty = False
         self._edit_value_mode = EDIT_MODE_ALL
         self._edit_status_mode = EDIT_MODE_ALL
-        self._edit_show_optional = True
-        self._edit_show_expert = False
+        self._edit_field_visibility = FIELD_VISIBILITY_ESSENTIAL
         expansion_state = self._edit_expansion_state_for_render(edit_state)
         render_edit_state(
             self.tree_root_widget,
             edit_state,
             self._edit_value_mode,
             self._edit_status_mode,
-            self._edit_show_optional,
-            self._edit_show_expert,
+            self._edit_field_visibility,
             expansion_state=expansion_state,
         )
         self._focus_config_edit_tree()
@@ -1100,8 +1180,8 @@ class WorkflowTreeApp(App):
                 prefer_console=False,
             )
 
-            submitted_changed = not same_value_state(deployed, current)
-            pending_changed = not same_value_state(current, pending)
+            submitted_changed = self._edit_state_changed(deployed, current)
+            pending_changed = self._edit_state_changed(current, pending)
             own_changed = 1 if submitted_changed or pending_changed else 0
 
             states[EDIT_MODE_DEPLOYED] = self._edit_state_payload(deployed, changed=False)
@@ -1288,11 +1368,23 @@ class WorkflowTreeApp(App):
         found, value = cls._lookup_workflow_config_path(workflow_config, node.get("path") or [])
         if not found:
             if allow_node_default and cls._node_schema_default_applies(workflow_config, node):
-                return {"present": True, "value": node.get("value")}
+                return {"present": True, "value": node.get("value"), "defaulted": True}
             return {"present": False}
         if node.get("valueKind") == "union":
             value = cls._union_variant_value(value, node)
         return {"present": True, "value": value}
+
+    @staticmethod
+    def _edit_state_changed(previous: Dict[str, Any], next_state: Dict[str, Any]) -> bool:
+        if same_value_state(previous, next_state):
+            return False
+        if (
+            not previous.get("present")
+            and next_state.get("present")
+            and next_state.get("defaulted")
+        ):
+            return False
+        return True
 
     @classmethod
     def _node_schema_default_applies(cls, workflow_config: Dict[str, Any], node: Dict[str, Any]) -> bool:
@@ -1445,8 +1537,7 @@ class WorkflowTreeApp(App):
         self._edit_dirty = False
         self._edit_value_mode = EDIT_MODE_ALL
         self._edit_status_mode = EDIT_MODE_ALL
-        self._edit_show_optional = True
-        self._edit_show_expert = False
+        self._edit_field_visibility = FIELD_VISIBILITY_ESSENTIAL
         self._after_config_edit_save = None
         self._cancel_config_edit_validation()
         self._set_resource_value_mode(EDIT_MODE_ALL)
@@ -1602,12 +1693,8 @@ class WorkflowTreeApp(App):
         self._edit_status_mode = self._next_edit_mode(self._edit_status_mode)
         self._rerender_config_edit_state()
 
-    def action_toggle_config_optional_fields(self) -> None:
-        self._edit_show_optional = not self._edit_show_optional
-        self._rerender_config_edit_state()
-
-    def action_toggle_config_expert_fields(self) -> None:
-        self._edit_show_expert = not self._edit_show_expert
+    def action_cycle_config_field_visibility(self) -> None:
+        self._edit_field_visibility = self._next_field_visibility(self._edit_field_visibility)
         self._rerender_config_edit_state()
 
     @staticmethod
@@ -1617,6 +1704,21 @@ class WorkflowTreeApp(App):
         except ValueError:
             index = 0
         return EDIT_MODES[(index + 1) % len(EDIT_MODES)]
+
+    @staticmethod
+    def _next_field_visibility(current: str) -> str:
+        try:
+            index = FIELD_VISIBILITY_MODES.index(current)
+        except ValueError:
+            index = 0
+        return FIELD_VISIBILITY_MODES[(index + 1) % len(FIELD_VISIBILITY_MODES)]
+
+    def _next_field_visibility_description(self) -> str:
+        next_mode = self._next_field_visibility(self._edit_field_visibility)
+        label = FIELD_VISIBILITY_LABELS.get(next_mode, next_mode)
+        if next_mode == FIELD_VISIBILITY_ESSENTIAL:
+            return f"Show {label}"
+        return f"Show {label} Fields"
 
     def _rerender_config_edit_state(self) -> None:
         if not self._edit_mode or self._edit_state is None:
@@ -1630,8 +1732,7 @@ class WorkflowTreeApp(App):
             self._edit_state,
             self._edit_value_mode,
             self._edit_status_mode,
-            self._edit_show_optional,
-            self._edit_show_expert,
+            self._edit_field_visibility,
             expansion_state=self._edit_expansion_state_for_render(self._edit_state),
         )
         if selected_id:
@@ -1687,16 +1788,17 @@ class WorkflowTreeApp(App):
             return
         self._edit_config_node(node)
 
-    def _edit_config_node(self, node: Dict) -> None:
+    def _edit_config_node(self, node: Dict, discard_path_on_cancel: Optional[list[str]] = None) -> None:
         kind = node.get("valueKind")
         if kind == "command" and node.get("id", "").endswith(":add"):
             command = node.get("command") or {}
             if command.get("requiresName") is False:
+                added_id, added_path = self._array_add_auto_edit_target(node)
                 self._apply_config_edit_operation({
                     "op": "add",
                     "path": node.get("path"),
                     "value": {},
-                })
+                }, post_apply_edit_id=added_id, discard_path_on_cancel=added_path)
                 return
             label = str(node.get("label", "+ Add")).replace("[OK] ", "")
             self.push_screen(
@@ -1709,7 +1811,7 @@ class WorkflowTreeApp(App):
                 lambda value: self._handle_add_config_name(node, value),
             )
         elif node.get("externalRef"):
-            self._show_external_resource_picker(node)
+            self._show_external_resource_picker(node, discard_path_on_cancel=discard_path_on_cancel)
             return
         elif kind == "scalar":
             input_hint = node.get("inputHint") or {}
@@ -1723,16 +1825,20 @@ class WorkflowTreeApp(App):
                         node.get("value"),
                         documentation=self._edit_node_documentation(node),
                     ),
-                    lambda value: self._handle_scalar_config_value(node, value),
+                    lambda value: self._handle_scalar_config_value(
+                        node,
+                        value,
+                        discard_path_on_cancel=discard_path_on_cancel,
+                    ),
                 )
                 return
-            self._show_scalar_config_text_input(node)
+            self._show_scalar_config_text_input(node, discard_path_on_cancel=discard_path_on_cancel)
         elif kind == "boolean":
-            self._show_boolean_config_picker(node)
+            self._show_boolean_config_picker(node, discard_path_on_cancel=discard_path_on_cancel)
         elif kind == "union":
-            self._show_config_variant_picker(node)
+            self._show_config_variant_picker(node, discard_path_on_cancel=discard_path_on_cancel)
         elif kind in {"object", "array"} and not node.get("children"):
-            self._show_structured_config_editor(node)
+            self._show_structured_config_editor(node, discard_path_on_cancel=discard_path_on_cancel)
         else:
             tree = self.tree_root_widget
             if tree.cursor_node:
@@ -1741,7 +1847,11 @@ class WorkflowTreeApp(App):
                 else:
                     tree.cursor_node.expand()
 
-    def _show_scalar_config_text_input(self, node: Dict) -> None:
+    def _show_scalar_config_text_input(
+        self,
+        node: Dict,
+        discard_path_on_cancel: Optional[list[str]] = None,
+    ) -> None:
         modal = TextInputModal(
             f"Edit {'.'.join(node.get('path', []))}",
             str(node.get("value") or ""),
@@ -1756,10 +1866,22 @@ class WorkflowTreeApp(App):
                 modal,
                 locally_valid,
             ),
+            regex_help=self._edit_node_regex_help(node),
         )
-        self.push_screen(modal, lambda value: self._handle_scalar_config_value(node, value))
+        self.push_screen(
+            modal,
+            lambda value: self._handle_scalar_config_value(
+                node,
+                value,
+                discard_path_on_cancel=discard_path_on_cancel,
+            ),
+        )
 
-    def _show_structured_config_editor(self, node: Dict) -> None:
+    def _show_structured_config_editor(
+        self,
+        node: Dict,
+        discard_path_on_cancel: Optional[list[str]] = None,
+    ) -> None:
         kind = str(node.get("valueKind") or "object")
         self.push_screen(
             StructuredValueModal(
@@ -1770,7 +1892,11 @@ class WorkflowTreeApp(App):
                 clear_allowed=self._config_node_can_unset(node),
                 clear_label="Clear",
             ),
-            lambda value: self._handle_structured_config_value(node, value),
+            lambda value: self._handle_structured_config_value(
+                node,
+                value,
+                discard_path_on_cancel=discard_path_on_cancel,
+            ),
         )
 
     @staticmethod
@@ -1780,8 +1906,14 @@ class WorkflowTreeApp(App):
             return "[]\n" if node.get("valueKind") == "array" else "{}\n"
         return yaml.safe_dump(value, sort_keys=False)
 
-    def _handle_structured_config_value(self, node: Dict, value: Optional[Any]) -> None:
+    def _handle_structured_config_value(
+        self,
+        node: Dict,
+        value: Optional[Any],
+        discard_path_on_cancel: Optional[list[str]] = None,
+    ) -> None:
         if value is None:
+            self._discard_config_edit_added_item(discard_path_on_cancel)
             return
         if value is CLEAR_VALUE:
             self._unset_config_node(node)
@@ -1793,27 +1925,41 @@ class WorkflowTreeApp(App):
             "value": value,
         }, selected_id=node.get("id"))
 
-    def _show_external_resource_picker(self, node: Dict) -> None:
+    def _show_external_resource_picker(
+        self,
+        node: Dict,
+        discard_path_on_cancel: Optional[list[str]] = None,
+    ) -> None:
         external_ref = node.get("externalRef") or {}
         self.run_worker(
-            lambda: self._load_external_resource_picker_worker(node, external_ref),
+            lambda: self._load_external_resource_picker_worker(node, external_ref, discard_path_on_cancel),
             thread=True,
             name="load_external_resource_picker",
         )
 
-    def _load_external_resource_picker_worker(self, node: Dict, external_ref: Dict) -> None:
+    def _load_external_resource_picker_worker(
+        self,
+        node: Dict,
+        external_ref: Dict,
+        discard_path_on_cancel: Optional[list[str]],
+    ) -> None:
         try:
             service = self._config_edit_service_or_default()
             if not hasattr(service, "list_external_resources"):
-                self.call_from_thread(self._show_scalar_config_text_input, node)
+                self.call_from_thread(self._show_scalar_config_text_input, node, discard_path_on_cancel)
                 return
             rows = service.list_external_resources(external_ref, node.get("value"))
-            self.call_from_thread(self._open_external_resource_picker, node, rows)
+            self.call_from_thread(self._open_external_resource_picker, node, rows, discard_path_on_cancel)
         except Exception as e:
             logger.exception("Failed to list external resources")
             self.call_from_thread(self.notify, f"External resource picker unavailable: {e}", severity="error")
 
-    def _open_external_resource_picker(self, node: Dict, rows: list[Dict]) -> None:
+    def _open_external_resource_picker(
+        self,
+        node: Dict,
+        rows: list[Dict],
+        discard_path_on_cancel: Optional[list[str]] = None,
+    ) -> None:
         external_ref = node.get("externalRef") or {}
         title = f"Select {external_ref.get('displayName') or '.'.join(node.get('path', []))}"
         self.push_screen(
@@ -1826,11 +1972,21 @@ class WorkflowTreeApp(App):
                 external_ref=external_ref,
                 clear_allowed=self._config_node_can_unset(node),
             ),
-            lambda choice: self._handle_external_resource_picker_choice(node, choice),
+            lambda choice: self._handle_external_resource_picker_choice(
+                node,
+                choice,
+                discard_path_on_cancel=discard_path_on_cancel,
+            ),
         )
 
-    def _handle_external_resource_picker_choice(self, node: Dict, choice: Optional[Dict]) -> None:
+    def _handle_external_resource_picker_choice(
+        self,
+        node: Dict,
+        choice: Optional[Dict],
+        discard_path_on_cancel: Optional[list[str]] = None,
+    ) -> None:
         if not choice:
+            self._discard_config_edit_added_item(discard_path_on_cancel)
             return
         action = choice.get("action")
         if action == "create":
@@ -1982,7 +2138,11 @@ class WorkflowTreeApp(App):
         if name:
             self._apply_external_resource_value(node, name)
 
-    def _show_config_variant_picker(self, node: Dict) -> None:
+    def _show_config_variant_picker(
+        self,
+        node: Dict,
+        discard_path_on_cancel: Optional[list[str]] = None,
+    ) -> None:
         variants = node.get("variants") or []
         if not variants:
             return
@@ -1994,10 +2154,18 @@ class WorkflowTreeApp(App):
                 node.get("value"),
                 documentation=self._edit_node_documentation(node),
             ),
-            lambda value: self._handle_config_variant_choice(node, value),
+            lambda value: self._handle_config_variant_choice(
+                node,
+                value,
+                discard_path_on_cancel=discard_path_on_cancel,
+            ),
         )
 
-    def _show_boolean_config_picker(self, node: Dict) -> None:
+    def _show_boolean_config_picker(
+        self,
+        node: Dict,
+        discard_path_on_cancel: Optional[list[str]] = None,
+    ) -> None:
         choices = self._choices_with_unset(node, [
             {"label": "true", "value": True},
             {"label": "false", "value": False},
@@ -2010,11 +2178,23 @@ class WorkflowTreeApp(App):
                 node.get("value"),
                 documentation=self._edit_node_documentation(node),
             ),
-            lambda value: self._handle_boolean_config_value(node, value),
+            lambda value: self._handle_boolean_config_value(
+                node,
+                value,
+                discard_path_on_cancel=discard_path_on_cancel,
+            ),
         )
 
-    def _handle_boolean_config_value(self, node: Dict, value) -> None:
-        if value is None or value == node.get("value"):
+    def _handle_boolean_config_value(
+        self,
+        node: Dict,
+        value,
+        discard_path_on_cancel: Optional[list[str]] = None,
+    ) -> None:
+        if value is None:
+            self._discard_config_edit_added_item(discard_path_on_cancel)
+            return
+        if value == node.get("value"):
             return
         if value is CLEAR_VALUE:
             self._unset_config_node(node)
@@ -2048,8 +2228,16 @@ class WorkflowTreeApp(App):
             and node.get("valueKind") in {"scalar", "boolean", "object", "array"}
         )
 
-    def _handle_config_variant_choice(self, node: Dict, value) -> None:
-        if value is None or value == node.get("value"):
+    def _handle_config_variant_choice(
+        self,
+        node: Dict,
+        value,
+        discard_path_on_cancel: Optional[list[str]] = None,
+    ) -> None:
+        if value is None:
+            self._discard_config_edit_added_item(discard_path_on_cancel)
+            return
+        if value == node.get("value"):
             return
         if value is CLEAR_VALUE:
             self._unset_config_node(node)
@@ -2065,14 +2253,25 @@ class WorkflowTreeApp(App):
         if not name:
             return
         self._cancel_config_edit_validation()
+        added_path = [str(part) for part in (node.get("path") or [])] + [name]
+        command = node.get("command") or {}
         self._apply_config_edit_operation({
             "op": "add",
             "path": node.get("path"),
             "value": {"name": name},
-        })
+        },
+            post_apply_edit_id=self._edit_id_for_path(added_path) if command.get("editAdded") else None,
+            discard_path_on_cancel=added_path if command.get("editAdded") else None,
+        )
 
-    def _handle_scalar_config_value(self, node: Dict, value: Optional[Any]) -> None:
+    def _handle_scalar_config_value(
+        self,
+        node: Dict,
+        value: Optional[Any],
+        discard_path_on_cancel: Optional[list[str]] = None,
+    ) -> None:
         if value is None:
+            self._discard_config_edit_added_item(discard_path_on_cancel)
             return
         if value is CLEAR_VALUE:
             self._unset_config_node(node)
@@ -2285,6 +2484,11 @@ class WorkflowTreeApp(App):
             }
         return validation
 
+    @staticmethod
+    def _edit_node_regex_help(node: Dict) -> Optional[Dict]:
+        input_hint = node.get("inputHint") or {}
+        return dict(input_hint) if input_hint.get("kind") == "javaRegex" else None
+
     @classmethod
     def _config_edit_enter_description(cls, node: Optional[Dict]) -> str:
         if not node:
@@ -2316,11 +2520,19 @@ class WorkflowTreeApp(App):
             "path": path,
         })
 
+    def _discard_config_edit_added_item(self, path: Optional[list[str]]) -> None:
+        if not path:
+            return
+        self._cancel_config_edit_validation()
+        self._remove_config_node(path)
+
     def _apply_config_edit_operation(
         self,
         operation: Dict,
         selected_id: Optional[str] = None,
         auto_edit_required_child: bool = False,
+        post_apply_edit_id: Optional[str] = None,
+        discard_path_on_cancel: Optional[list[str]] = None,
     ) -> None:
         if self._edit_draft_yaml is None:
             self.notify("No edit draft loaded", severity="error")
@@ -2330,7 +2542,13 @@ class WorkflowTreeApp(App):
             if node and node.data:
                 selected_id = node.data.get("id")
         self.run_worker(
-            lambda: self._apply_config_edit_operation_worker(operation, selected_id, auto_edit_required_child),
+            lambda: self._apply_config_edit_operation_worker(
+                operation,
+                selected_id,
+                auto_edit_required_child,
+                post_apply_edit_id,
+                discard_path_on_cancel,
+            ),
             thread=True,
             name="apply_config_edit_operation",
         )
@@ -2340,6 +2558,8 @@ class WorkflowTreeApp(App):
         operation: Dict,
         selected_id: Optional[str],
         auto_edit_required_child: bool,
+        post_apply_edit_id: Optional[str],
+        discard_path_on_cancel: Optional[list[str]],
     ) -> None:
         try:
             service = self._config_edit_service_or_default()
@@ -2349,6 +2569,8 @@ class WorkflowTreeApp(App):
                 result,
                 selected_id,
                 auto_edit_required_child,
+                post_apply_edit_id,
+                discard_path_on_cancel,
             )
         except Exception as e:
             logger.exception("Failed to apply config edit operation")
@@ -2359,6 +2581,8 @@ class WorkflowTreeApp(App):
         result,
         selected_id: Optional[str],
         auto_edit_required_child: bool = False,
+        post_apply_edit_id: Optional[str] = None,
+        discard_path_on_cancel: Optional[list[str]] = None,
     ) -> None:
         raw_yaml = getattr(result, "raw_yaml", None)
         if raw_yaml is None:
@@ -2372,6 +2596,8 @@ class WorkflowTreeApp(App):
             self._first_required_edit_target_id(edit_state, selected_id)
             if auto_edit_required_child and selected_id else None
         )
+        if post_apply_edit_id:
+            auto_edit_id = self._preferred_edit_target_id(edit_state, post_apply_edit_id) or post_apply_edit_id
         self._edit_state = edit_state
         self._edit_draft_yaml = raw_yaml
         self._edit_dirty = True
@@ -2381,12 +2607,16 @@ class WorkflowTreeApp(App):
             edit_state,
             self._edit_value_mode,
             self._edit_status_mode,
-            self._edit_show_optional,
-            self._edit_show_expert,
+            self._edit_field_visibility,
             expansion_state=expansion_state,
         )
         if auto_edit_id:
-            self.call_after_refresh(lambda: self._select_and_edit_config_node(auto_edit_id))
+            self.call_after_refresh(
+                lambda: self._select_and_edit_config_node(
+                    auto_edit_id,
+                    discard_path_on_cancel=discard_path_on_cancel,
+                )
+            )
         elif selected_id:
             self.call_after_refresh(lambda: self._restore_config_edit_selection(selected_id))
         self._update_edit_help()
@@ -2437,14 +2667,23 @@ class WorkflowTreeApp(App):
             stack.extend(reversed(node.children))
         return fallback
 
-    def _select_and_edit_config_node(self, selected_id: str) -> None:
-        self._select_tree_node_by_id(selected_id)
+    def _select_and_edit_config_node(
+        self,
+        selected_id: str,
+        discard_path_on_cancel: Optional[list[str]] = None,
+    ) -> None:
+        if not self._select_tree_node_by_id(selected_id):
+            self._focus_config_edit_tree()
+            self._update_edit_help()
+            self.update_pod_status()
+            self._update_dynamic_bindings()
+            return
         self._update_edit_help()
         self.update_pod_status()
         self._update_dynamic_bindings()
         node = selected_edit_node(self.tree_root_widget)
         if node:
-            self._edit_config_node(node)
+            self._edit_config_node(node, discard_path_on_cancel=discard_path_on_cancel)
 
     @classmethod
     def _first_required_edit_target_id(cls, edit_state: Dict, parent_id: Optional[str]) -> Optional[str]:
@@ -2488,6 +2727,50 @@ class WorkflowTreeApp(App):
                 return node
             stack.extend(node.get("children") or [])
         return None
+
+    def _array_add_auto_edit_target(self, node: Dict) -> tuple[Optional[str], Optional[list[str]]]:
+        path = [str(part) for part in (node.get("path") or [])]
+        if not path:
+            return None, None
+        parent = self._find_edit_node_by_id((self._edit_state or {}).get("nodes") or [], self._edit_id_for_path(path))
+        if not parent or parent.get("valueKind") != "array":
+            return None, None
+        next_index = 0
+        for child in parent.get("children") or []:
+            child_path = [str(part) for part in (child.get("path") or [])]
+            if child.get("valueKind") == "command":
+                continue
+            if len(child_path) != len(path) + 1 or child_path[:len(path)] != path:
+                continue
+            if child_path[-1].isdigit():
+                next_index = max(next_index, int(child_path[-1]) + 1)
+        added_path = [*path, str(next_index)]
+        return self._edit_id_for_path(added_path), added_path
+
+    @classmethod
+    def _preferred_edit_target_id(cls, edit_state: Dict, selected_id: Optional[str]) -> Optional[str]:
+        selected = cls._find_edit_node_by_id(edit_state.get("nodes") or [], selected_id)
+        if not selected:
+            return None
+        if cls._opens_config_edit_dialog(selected):
+            return selected.get("id")
+        for target in cls._required_edit_targets(selected.get("children") or []):
+            if target.get("id"):
+                return target.get("id")
+        return selected.get("id")
+
+    @staticmethod
+    def _opens_config_edit_dialog(node: Dict) -> bool:
+        kind = node.get("valueKind")
+        return (
+            bool(node.get("externalRef"))
+            or kind in {"scalar", "boolean", "union"}
+            or (kind in {"object", "array"} and not node.get("children"))
+        )
+
+    @staticmethod
+    def _edit_id_for_path(path: list[str]) -> str:
+        return f"edit:{'.'.join(str(part) for part in path)}"
 
 
 # --- Utilities ---

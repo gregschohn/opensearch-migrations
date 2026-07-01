@@ -71,6 +71,7 @@ import {
     optionalSingleKeyUnionNode,
     recordKeyHint,
     resolveJsonSchemaRef,
+    schemaArrayElement,
     schemaFieldDescription,
     schemaFieldNode,
     schemaFieldNodeFor,
@@ -82,6 +83,7 @@ import {
     uiHintAt,
     uiHintOf,
     unwrapSchema,
+    zodEnumValues,
 } from "./schemaEditModel";
 
 type EditOption = NonNullable<EditInputHint["options"]>[number];
@@ -147,6 +149,7 @@ interface RecordGroupSpec {
     label: string;
     description?: string;
     inputHint?: EditInputHint;
+    expert?: boolean;
     config: Record<string, any> | undefined;
     itemNode: (name: string, value: any) => EditNode;
     addLabel: string;
@@ -165,6 +168,7 @@ function recordGroupNode(spec: RecordGroupSpec): EditNode {
         spec.addDescription,
         spec.addRequiresName ?? true,
         spec.addInputHint,
+        spec.expert ?? false,
     ));
     return finalizeNode({
         id: `edit:${spec.path.join(".")}`,
@@ -172,6 +176,7 @@ function recordGroupNode(spec: RecordGroupSpec): EditNode {
         label: spec.label,
         valueKind: "record",
         description: spec.description,
+        expert: spec.expert ?? false,
         inputHint: spec.inputHint,
         status: "ok",
         children,
@@ -496,13 +501,14 @@ function trafficGroupNode(traffic: any, ctx: EditContext): EditNode {
                 description: schemaFieldDescription(
                     TRAFFIC_CONFIG,
                     "s3Sources",
-                    "Captured traffic buffers and pre-recorded traffic archives loaded into Kafka for replay.",
+                    "Optional S3 archives loaded into Kafka for replay when you already have captured traffic and do not need a live capture proxy.",
                 ),
                 inputHint: TRAFFIC_S3_SOURCES_RECORD_HINT,
+                expert: true,
                 config: traffic?.s3Sources,
                 itemNode: (name, value) => s3CapturedTrafficSourceNode(name, value, ctx),
-                addLabel: "S3 captured traffic source",
-                addDescription: "Create a pre-recorded traffic source from an S3 archive in pending workflow YAML.",
+                addLabel: "optional S3 archive source (no capture proxy)",
+                addDescription: "Create an optional pre-recorded traffic source from an S3 archive instead of configuring a live capture proxy.",
                 addInputHint: recordKeyHint(TRAFFIC_S3_SOURCES_RECORD_HINT),
             }),
             recordGroupNode({
@@ -914,6 +920,10 @@ function setAtPath(config: any, path: string[], value: unknown): void {
         delete parent[key];
         return;
     }
+    if (schema && zodEnumValues(schema).length > 0 && value === "unset") {
+        delete parent[key];
+        return;
+    }
     parent[key] = value;
 }
 
@@ -945,11 +955,20 @@ function unsetAtPath(config: any, path: string[]): void {
     delete parent[key];
 }
 
-function defaultConfigForPath(path: string[]): Record<string, unknown> {
+function defaultConfigForPath(path: string[]): unknown {
     const key = path.join(".");
     const factory = DEFAULT_CONFIG_FACTORIES[key];
     if (factory) {
         return factory();
+    }
+    const recordSchema = resolveJsonSchemaRef(jsonSchemaForConfigPath(path)) as {additionalProperties?: unknown} | undefined;
+    const additionalSchema = resolveJsonSchemaRef(
+        typeof recordSchema?.additionalProperties === "object" && recordSchema.additionalProperties !== null
+            ? recordSchema.additionalProperties as any
+            : undefined
+    );
+    if (additionalSchema) {
+        return defaultJsonValueForSchema(additionalSchema);
     }
     throw new Error(`Add is not supported at path ${path.join(".")}`);
 }
@@ -971,6 +990,17 @@ function addAtPath(config: any, path: string[], value: unknown): void {
         }
         const itemSchema = resolveJsonSchemaRef(arraySchema?.items);
         parent[key].push(defaultJsonValueForSchema(itemSchema));
+        return;
+    }
+
+    const zodArraySchema = schemaForConfigPath(path);
+    const itemSchema = schemaArrayElement(zodArraySchema);
+    if (itemSchema) {
+        const {parent, key} = parentAtPath(config, path);
+        if (!Array.isArray(parent[key])) {
+            parent[key] = [];
+        }
+        parent[key].push(defaultValueForSchema(itemSchema) ?? "");
         return;
     }
 

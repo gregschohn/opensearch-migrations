@@ -1,4 +1,4 @@
-import {OVERALL_MIGRATION_CONFIG, zodSchemaToJsonSchema} from "../src";
+import {DNS_NAME_PATTERN, OVERALL_MIGRATION_CONFIG, zodSchemaToJsonSchema} from "../src";
 
 function findExternalRefSchema(root: any, purpose: string): any | undefined {
     const stack = [root];
@@ -65,6 +65,35 @@ describe("workflow schema UI hints", () => {
         });
     });
 
+    it("exports Java regex hints for capture suppression patterns", () => {
+        const proxyConfig = schema.properties.traffic.properties.proxies.additionalProperties.properties.proxyConfig;
+
+        expect(proxyConfig.properties.suppressCaptureForHeaderMatch["x-ui-hint"]).toMatchObject({
+            kind: "record",
+            addLabel: "header match",
+        });
+        expect(proxyConfig.properties.suppressCaptureForHeaderMatch.additionalProperties["x-ui-hint"]).toMatchObject({
+            kind: "javaRegex",
+            examples: ["healthcheck", "Bearer .*", ".*OpenSearch.*"],
+            testStrings: ["healthcheck", "Mozilla/5.0 healthcheck", "curl/8.6.0", "Bearer eyJhbGciOi...", "application/json"],
+        });
+        expect(proxyConfig.properties.suppressCaptureForMethod["x-ui-hint"]).toMatchObject({
+            kind: "javaRegex",
+            examples: ["GET", "GET|HEAD", "POST|PUT|PATCH"],
+            testStrings: ["GET", "HEAD", "POST", "PUT", "DELETE"],
+        });
+        expect(proxyConfig.properties.suppressCaptureForUriPath["x-ui-hint"]).toMatchObject({
+            kind: "javaRegex",
+            examples: ["/_cluster/health", "/_cat/.*", ".*/_search"],
+            testStrings: ["/_cluster/health", "/_cat/indices?v", "/my-index/_search", "/_bulk", "/favicon.ico"],
+        });
+        expect(proxyConfig.properties.suppressMethodAndPath["x-ui-hint"]).toMatchObject({
+            kind: "javaRegex",
+            examples: ["GET /_cluster/health", "(GET|HEAD) /.*", "POST .*/_search"],
+            testStrings: ["GET /_cluster/health", "HEAD /", "POST /my-index/_search", "GET /_cat/indices?v", "POST /_bulk"],
+        });
+    });
+
     it("exports external reference hints for HTTP basic auth secrets", () => {
         const authConfig = schema.properties.sourceClusters.additionalProperties.properties.authConfig;
         const basicSecret = authConfig.anyOf
@@ -104,6 +133,28 @@ describe("workflow schema UI hints", () => {
                     {group: "cert-manager.io", version: "v1", kind: "ClusterIssuer", namespaced: false},
                     {group: "awspca.cert-manager.io", version: "v1beta1", kind: "AWSPCAClusterIssuer", namespaced: false},
                 ],
+            },
+        });
+    });
+
+    it("exports scalar item hints for DNS name arrays", () => {
+        const proxyConfig = schema.properties.traffic.properties.proxies.additionalProperties.properties.proxyConfig;
+        const certManagerTls = proxyConfig.properties.tls.oneOf
+            .find((branch: any) => branch.properties?.mode?.enum?.includes("certManager"));
+        const dnsNameItem = certManagerTls.properties.dnsNames.items;
+
+        expect(certManagerTls.properties.dnsNames["x-ui-hint"]).toMatchObject({
+            kind: "array",
+            addLabel: "DNS name",
+        });
+        expect(dnsNameItem).toMatchObject({
+            type: "string",
+            pattern: DNS_NAME_PATTERN,
+            maxLength: 253,
+            "x-ui-hint": {
+                kind: "text",
+                pattern: DNS_NAME_PATTERN,
+                message: expect.stringContaining("Use a DNS name"),
             },
         });
     });

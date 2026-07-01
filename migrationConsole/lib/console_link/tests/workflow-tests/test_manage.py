@@ -2,9 +2,11 @@ import base64
 import copy
 import time
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from unittest.mock import MagicMock, patch
+from rich.markup import render
 from textual.app import App, ComposeResult
 from textual.widgets import Button, Input, Static, TextArea
 
@@ -947,7 +949,66 @@ def edit_state_with_editable_source_fields():
     }
 
 
-def edit_state_with_array_items():
+def edit_state_with_array_items(include_provisional_item=False):
+    children = [
+        {
+            "id": "edit:roles.0",
+            "path": ["roles", "0"],
+            "label": "[OK] item 1: configured",
+            "valueKind": "object",
+            "description": "Kafka node role.",
+            "status": "ok",
+            "statusCounts": {},
+            "collapsed": True,
+            "children": [
+                {
+                    "id": "edit:roles.0.name",
+                    "path": ["roles", "0", "name"],
+                    "label": "[OK] name: broker",
+                    "value": "broker",
+                    "valueKind": "scalar",
+                    "presence": "required",
+                    "description": "Role name.",
+                    "status": "ok",
+                    "statusCounts": {},
+                },
+            ],
+        },
+    ]
+    if include_provisional_item:
+        children.append({
+            "id": "edit:roles.1",
+            "path": ["roles", "1"],
+            "label": "[REQ 1] item 2: configured",
+            "valueKind": "object",
+            "description": "Kafka node role.",
+            "status": "required",
+            "statusCounts": {"required": 1},
+            "collapsed": True,
+            "children": [
+                {
+                    "id": "edit:roles.1.name",
+                    "path": ["roles", "1", "name"],
+                    "label": "[REQ] name: <required>",
+                    "valueKind": "scalar",
+                    "presence": "required",
+                    "required": True,
+                    "description": "Role name.",
+                    "status": "required",
+                    "statusCounts": {"required": 1},
+                },
+            ],
+        })
+    children.append({
+        "id": "edit:roles:add",
+        "path": ["roles"],
+        "label": "[OK] + Add item",
+        "valueKind": "command",
+        "description": "Create a new array item in pending workflow YAML.",
+        "status": "ok",
+        "statusCounts": {},
+        "command": {"requiresName": False},
+    })
     return {
         "formatVersion": 1,
         "provenance": {"source": "pending-yaml", "lossy": False, "warnings": []},
@@ -955,46 +1016,12 @@ def edit_state_with_array_items():
             {
                 "id": "edit:roles",
                 "path": ["roles"],
-                "label": "[OK] roles: 1 item",
+                "label": f"[OK] roles: {'2 items' if include_provisional_item else '1 item'}",
                 "valueKind": "array",
                 "description": "Kafka node roles.",
                 "status": "ok",
                 "statusCounts": {},
-                "children": [
-                    {
-                        "id": "edit:roles.0",
-                        "path": ["roles", "0"],
-                        "label": "[OK] item 1: configured",
-                        "valueKind": "object",
-                        "description": "Kafka node role.",
-                        "status": "ok",
-                        "statusCounts": {},
-                        "collapsed": True,
-                        "children": [
-                            {
-                                "id": "edit:roles.0.name",
-                                "path": ["roles", "0", "name"],
-                                "label": "[OK] name: broker",
-                                "value": "broker",
-                                "valueKind": "scalar",
-                                "presence": "required",
-                                "description": "Role name.",
-                                "status": "ok",
-                                "statusCounts": {},
-                            },
-                        ],
-                    },
-                    {
-                        "id": "edit:roles:add",
-                        "path": ["roles"],
-                        "label": "[OK] + Add item",
-                        "valueKind": "command",
-                        "description": "Create a new array item in pending workflow YAML.",
-                        "status": "ok",
-                        "statusCounts": {},
-                        "command": {"requiresName": False},
-                    },
-                ],
+                "children": children,
             },
         ],
         "pendingSubmitChanges": [],
@@ -1395,6 +1422,7 @@ def edit_state_with_field_visibility():
                                 "path": ["sourceClusters", "legacy", "allowInsecure"],
                                 "label": "[OK] allowInsecure: false",
                                 "value": False,
+                                "valueAuthored": True,
                                 "valueKind": "boolean",
                                 "description": "Optional TLS verification toggle.",
                                 "presence": "optional",
@@ -1406,12 +1434,67 @@ def edit_state_with_field_visibility():
                                 "path": ["sourceClusters", "legacy", "serviceType"],
                                 "label": "[OK] serviceType: LoadBalancer",
                                 "value": "LoadBalancer",
+                                "valueDefaulted": True,
                                 "valueKind": "scalar",
                                 "description": "Expert setting for exposure.",
                                 "presence": "optional",
                                 "expert": True,
                                 "status": "ok",
                                 "statusCounts": {},
+                            },
+                            {
+                                "id": "edit:sourceClusters.legacy.description",
+                                "path": ["sourceClusters", "legacy", "description"],
+                                "label": "[OK] description: <unset>",
+                                "valueKind": "scalar",
+                                "description": "Optional display description.",
+                                "presence": "optional",
+                                "status": "ok",
+                                "statusCounts": {},
+                            },
+                            {
+                                "id": "edit:sourceClusters.legacy.aliases",
+                                "path": ["sourceClusters", "legacy", "aliases"],
+                                "label": "[OK] aliases: 0 items",
+                                "value": [],
+                                "valueKind": "array",
+                                "description": "Optional source aliases.",
+                                "presence": "optional",
+                                "status": "ok",
+                                "statusCounts": {},
+                                "children": [
+                                    {
+                                        "id": "edit:sourceClusters.legacy.aliases:add",
+                                        "path": ["sourceClusters", "legacy", "aliases"],
+                                        "label": "+ Add alias",
+                                        "valueKind": "command",
+                                        "description": "Add an alias.",
+                                        "status": "ok",
+                                    }
+                                ],
+                            },
+                            {
+                                "id": "edit:sourceClusters.legacy.expertAliases",
+                                "path": ["sourceClusters", "legacy", "expertAliases"],
+                                "label": "[OK] expertAliases: 0 items",
+                                "value": [],
+                                "valueKind": "array",
+                                "description": "Expert source aliases.",
+                                "presence": "optional",
+                                "expert": True,
+                                "status": "ok",
+                                "statusCounts": {},
+                                "children": [
+                                    {
+                                        "id": "edit:sourceClusters.legacy.expertAliases:add",
+                                        "path": ["sourceClusters", "legacy", "expertAliases"],
+                                        "label": "+ Add expert alias",
+                                        "valueKind": "command",
+                                        "description": "Add an expert alias.",
+                                        "expert": True,
+                                        "status": "ok",
+                                    }
+                                ],
                             },
                         ],
                     }
@@ -1436,6 +1519,57 @@ def test_structured_value_modal_parses_yaml_objects_and_arrays():
 
     with pytest.raises(ValueError, match="YAML object"):
         object_modal._parse_value("- not\n- an\n- object\n")
+
+    with pytest.raises(ValueError, match="YAML array"):
+        array_modal._parse_value("key: value\n")
+
+
+def test_text_input_modal_builds_regex101_url_with_multiline_samples():
+    url = TextInputModal._regex101_url("GET|HEAD", ["GET", "HEAD", "POST"])
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query)
+
+    assert parsed.scheme == "https"
+    assert parsed.netloc == "regex101.com"
+    assert query["regex"] == ["GET|HEAD"]
+    assert query["testString"] == ["GET\nHEAD\nPOST"]
+
+
+def test_text_input_modal_regex101_help_markup_avoids_wrapped_url():
+    url = TextInputModal._regex101_url("", ["GET", "HEAD", "POST"])
+    markup = TextInputModal._regex_help_markup("Java regex used by the capture proxy.")
+
+    rendered = render(markup)
+
+    assert "Test (t)" in rendered.plain
+    assert url not in rendered.plain
+
+
+@pytest.mark.asyncio
+async def test_text_input_modal_test_regex_opens_regex101_url():
+    class TestApp(App):
+        def compose(self) -> ComposeResult:
+            yield Button("placeholder")
+
+    app = TestApp()
+    async with app.run_test() as pilot:
+        modal = TextInputModal(
+            "Edit regex",
+            initial_value="GET|HEAD",
+            regex_help={"testStrings": ["GET", "HEAD", "POST"]},
+        )
+        await app.push_screen(modal)
+        app.open_url = MagicMock()
+
+        await pilot.click("#test")
+
+        app.open_url.assert_called_once()
+        opened_url = app.open_url.call_args.args[0]
+        parsed = urlparse(opened_url)
+        query = parse_qs(parsed.query)
+        assert parsed.netloc == "regex101.com"
+        assert query["regex"] == ["GET|HEAD"]
+        assert query["testString"] == ["GET\nHEAD\nPOST"]
 
 
 def resource_sections_for_manage_tests():
@@ -2901,6 +3035,14 @@ async def test_resource_view_edit_mode_proxy_console_client_secret_picker_create
 
             await pilot.press("e")
             assert await wait_until(pilot, lambda: get_clean_text_label(tree.root) == "Workflow Config Edit")
+            await pilot.press("f")
+            assert await wait_until(
+                pilot,
+                lambda: find_tree_node_by_id(
+                    tree.root,
+                    "edit:traffic.proxies.cap.proxyConfig.tls.clientAuth.consoleClientSecretName",
+                ) is not None,
+            )
             app._select_tree_node_by_id(
                 "edit:traffic.proxies.cap.proxyConfig.tls.clientAuth.consoleClientSecretName"
             )
@@ -3475,7 +3617,7 @@ def test_workflow_config_value_state_uses_schema_default_only_when_parent_exists
         {"traffic": {"proxies": {"cap": {"source": "source"}}}},
         node,
         allow_node_default=True,
-    ) == {"present": True, "value": "default"}
+    ) == {"present": True, "value": "default", "defaulted": True}
     assert WorkflowTreeApp._workflow_config_value_state(
         {},
         node,
@@ -3538,11 +3680,12 @@ async def test_resource_view_edit_mode_renders_defaulted_capture_kafka_value(moc
             await pilot.press("e")
             assert await wait_until(pilot, lambda: get_clean_text_label(tree.root) == "Workflow Config Edit")
 
+            assert find_tree_node_by_id(tree.root, "edit:traffic.proxies.cap.kafka") is None
+
+            await pilot.press("f")
             kafka = find_tree_node_by_id(tree.root, "edit:traffic.proxies.cap.kafka")
             assert kafka is not None
-            assert get_clean_text_label(kafka) == (
-                "kafka: deployed/workflow=<absent> | pending=default (changed)"
-            )
+            assert get_clean_text_label(kafka) == "kafka: deployed/workflow=<absent> | pending=default"
 
 
 @pytest.mark.asyncio
@@ -3676,6 +3819,14 @@ async def test_resource_view_edit_mode_collapses_unset_blocks_one_level_at_a_tim
 
             await pilot.press("e")
             assert await wait_until(pilot, lambda: get_clean_text_label(tree.root) == "Workflow Config Edit")
+            await pilot.press("f")
+            assert await wait_until(
+                pilot,
+                lambda: find_tree_node_by_id(
+                    tree.root,
+                    "edit:kafkaClusterConfiguration.kafka.autoCreate.clusterSpecOverrides",
+                ) is not None,
+            )
 
             cluster_overrides = find_tree_node_by_id(
                 tree.root,
@@ -3703,7 +3854,7 @@ async def test_resource_view_edit_mode_collapses_unset_blocks_one_level_at_a_tim
 
 @pytest.mark.asyncio
 async def test_resource_view_edit_mode_optional_and_expert_visibility(mock_workflow_with_two_pods):
-    """Edit mode can hide optional rows, keep required rows, and reveal expert rows independently."""
+    """Edit mode cycles field visibility from essential to standard to all fields."""
 
     class FakeConfigEditService:
         def load_edit_session(self):
@@ -3742,44 +3893,49 @@ async def test_resource_view_edit_mode_optional_and_expert_visibility(mock_workf
 
             assert find_tree_node_by_id(tree.root, "edit:sourceClusters.legacy.endpoint") is not None
             assert find_tree_node_by_id(tree.root, "edit:sourceClusters.legacy.allowInsecure") is not None
+            assert find_tree_node_by_id(tree.root, "edit:sourceClusters.legacy.description") is None
+            assert find_tree_node_by_id(tree.root, "edit:sourceClusters.legacy.aliases") is None
+            assert find_tree_node_by_id(tree.root, "edit:sourceClusters.legacy.expertAliases") is None
             assert find_tree_node_by_id(tree.root, "edit:sourceClusters.legacy.serviceType") is None
-            assert binding_descriptions(app, "o") == ["Hide Optional"]
-            assert binding_descriptions(app, "O") == ["Hide Optional"]
-            assert binding_descriptions(app, "x") == ["Show Expert"]
-            assert binding_descriptions(app, "X") == ["Show Expert"]
+            assert "Fields: Essential" in str(app.query_one("#pod-status").content)
+            assert binding_descriptions(app, "f") == ["Show Standard Fields"]
+            assert binding_descriptions(app, "o") == []
+            assert binding_descriptions(app, "O") == []
+            assert binding_descriptions(app, "x") == []
+            assert binding_descriptions(app, "X") == []
             assert binding_descriptions(app, "v") == []
             assert binding_descriptions(app, "t") == []
 
-            await pilot.press("o")
-            assert await wait_until(
-                pilot,
-                lambda: find_tree_node_by_id(tree.root, "edit:sourceClusters.legacy.allowInsecure") is None,
-            )
+            await pilot.press("f")
             assert find_tree_node_by_id(tree.root, "edit:sourceClusters.legacy.endpoint") is not None
-            assert "optional off" in str(app.query_one("#pod-status").content)
-            assert binding_descriptions(app, "o") == ["Show Optional"]
-            assert binding_descriptions(app, "O") == ["Show Optional"]
+            assert find_tree_node_by_id(tree.root, "edit:sourceClusters.legacy.allowInsecure") is not None
+            assert find_tree_node_by_id(tree.root, "edit:sourceClusters.legacy.description") is not None
+            assert find_tree_node_by_id(tree.root, "edit:sourceClusters.legacy.aliases") is not None
+            assert find_tree_node_by_id(tree.root, "edit:sourceClusters.legacy.expertAliases") is None
+            assert find_tree_node_by_id(tree.root, "edit:sourceClusters.legacy.serviceType") is None
+            assert "Fields: Standard" in str(app.query_one("#pod-status").content)
+            assert binding_descriptions(app, "f") == ["Show All Fields"]
 
-            await pilot.press("X")
+            await pilot.press("f")
             assert await wait_until(
                 pilot,
                 lambda: find_tree_node_by_id(tree.root, "edit:sourceClusters.legacy.serviceType") is not None,
             )
-            assert find_tree_node_by_id(tree.root, "edit:sourceClusters.legacy.allowInsecure") is None
-            assert "expert on" in str(app.query_one("#pod-status").content)
-            assert binding_descriptions(app, "x") == ["Hide Expert"]
-            assert binding_descriptions(app, "X") == ["Hide Expert"]
+            assert find_tree_node_by_id(tree.root, "edit:sourceClusters.legacy.allowInsecure") is not None
+            assert find_tree_node_by_id(tree.root, "edit:sourceClusters.legacy.description") is not None
+            assert find_tree_node_by_id(tree.root, "edit:sourceClusters.legacy.expertAliases") is not None
+            assert "Fields: All" in str(app.query_one("#pod-status").content)
+            assert binding_descriptions(app, "f") == ["Show Essential"]
 
-            await pilot.press("o")
+            await pilot.press("f")
             assert await wait_until(
                 pilot,
                 lambda: find_tree_node_by_id(tree.root, "edit:sourceClusters.legacy.allowInsecure") is not None,
             )
-            await pilot.press("X")
-            assert await wait_until(
-                pilot,
-                lambda: find_tree_node_by_id(tree.root, "edit:sourceClusters.legacy.serviceType") is None,
-            )
+            assert find_tree_node_by_id(tree.root, "edit:sourceClusters.legacy.description") is None
+            assert find_tree_node_by_id(tree.root, "edit:sourceClusters.legacy.serviceType") is None
+            assert find_tree_node_by_id(tree.root, "edit:sourceClusters.legacy.expertAliases") is None
+            assert "Fields: Essential" in str(app.query_one("#pod-status").content)
 
 
 @pytest.mark.asyncio
@@ -4314,9 +4470,14 @@ async def test_resource_view_edit_mode_array_items_expand_add_and_delete(mock_wo
 
         def apply_operation(self, raw_yaml, operation):
             self.apply_calls.append((raw_yaml, operation))
+            include_provisional_item = operation == {
+                "op": "add",
+                "path": ["roles"],
+                "value": {},
+            }
             return {
                 "raw_yaml": f"updated-yaml-{len(self.apply_calls)}",
-                "edit_state": edit_state_with_array_items(),
+                "edit_state": edit_state_with_array_items(include_provisional_item=include_provisional_item),
             }
 
     service = FakeConfigEditService()
@@ -4374,6 +4535,18 @@ async def test_resource_view_edit_mode_array_items_expand_add_and_delete(mock_wo
                     "value": {},
                 },
             )
+            assert await wait_until(pilot, lambda: isinstance(app.screen, TextInputModal))
+            assert app.screen.query_one("#value").value == ""
+            assert "Role name." in str(app.screen.query_one("#documentation").content)
+            await pilot.press("escape")
+            assert await wait_until(pilot, lambda: len(service.apply_calls) == 2)
+            assert service.apply_calls[1] == (
+                "updated-yaml-1",
+                {
+                    "op": "removeConfig",
+                    "path": ["roles", "1"],
+                },
+            )
 
             app._select_tree_node_by_id("edit:roles.0")
             app._update_dynamic_bindings()
@@ -4382,9 +4555,9 @@ async def test_resource_view_edit_mode_array_items_expand_add_and_delete(mock_wo
             assert await wait_until(pilot, lambda: isinstance(app.screen, ConfirmModal))
             await pilot.press("y")
 
-            assert await wait_until(pilot, lambda: len(service.apply_calls) == 2)
-            assert service.apply_calls[1] == (
-                "updated-yaml-1",
+            assert await wait_until(pilot, lambda: len(service.apply_calls) == 3)
+            assert service.apply_calls[2] == (
+                "updated-yaml-2",
                 {
                     "op": "removeConfig",
                     "path": ["roles", "0"],
@@ -4444,6 +4617,14 @@ async def test_resource_view_edit_mode_edits_leaf_object_fields_as_yaml(mock_wor
 
             await pilot.press("e")
             assert await wait_until(pilot, lambda: get_clean_text_label(tree.root) == "Workflow Config Edit")
+            await pilot.press("f")
+            assert await wait_until(
+                pilot,
+                lambda: find_tree_node_by_id(
+                    tree.root,
+                    "edit:kafkaClusterConfiguration.kafka.autoCreate.clusterSpecOverrides",
+                ) is not None,
+            )
 
             app._select_tree_node_by_id("edit:kafkaClusterConfiguration.kafka.autoCreate.clusterSpecOverrides")
             app._update_dynamic_bindings()
@@ -4695,6 +4876,35 @@ async def test_show_output_falls_back_to_artifact_s3_key(mock_workflow_with_pod_
                 ("snapshotmigration.migration-0 / metadataEvaluate", "archived s3 output")
             ]
             assert mock_output_pager.call_args.kwargs == {"clean": True}
+
+
+def test_managed_output_ref_map_indexes_all_patch_steps(mock_workflow_with_pod_and_suspend):
+    workflow = copy.deepcopy(mock_workflow_with_pod_and_suspend)
+    workflow["status"]["nodes"]["node-3-patch"] = {
+        "id": "node-3-patch",
+        "displayName": "patchMetadataMigrateOutput",
+        "type": "Pod",
+        "phase": PHASE_SUCCEEDED,
+        "children": [],
+        "inputs": {"parameters": [{"name": "resourceName", "value": "migration-1"}]},
+    }
+
+    app = WorkflowTreeApp(
+        namespace="default",
+        name="test-wf",
+        argo_service=MagicMock(spec=ArgoService(None, None)),
+        pod_scraper=MagicMock(spec=PodScraperInterface(None, None, None)),
+        workflow_waiter=FAILING_WAITER,
+        refresh_interval=100.0,
+    )
+    app._tree_state._workflow_data = workflow
+
+    assert app._find_output_refs_in_workflow_data("migration-0") == [
+        ("snapshotmigration.migration-0", "metadataEvaluate")
+    ]
+    assert app._find_output_refs_in_workflow_data("migration-1") == [
+        ("snapshotmigration.migration-1", "metadataMigrate")
+    ]
 
 
 @pytest.mark.asyncio

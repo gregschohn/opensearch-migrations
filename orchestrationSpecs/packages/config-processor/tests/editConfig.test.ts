@@ -1,6 +1,6 @@
 import {applyEditOperationToObject, buildEditStateFromObject} from "../src/editConfig";
 import type {EditNode} from "../src/schemaEditModel";
-import {buildUnifiedSchema, USER_PROXY_PROCESS_OPTION_KEYS, USER_PROXY_WORKFLOW_OPTION_KEYS} from "@opensearch-migrations/schemas";
+import {buildUnifiedSchema, DNS_NAME_PATTERN, USER_PROXY_PROCESS_OPTION_KEYS, USER_PROXY_WORKFLOW_OPTION_KEYS} from "@opensearch-migrations/schemas";
 import {parse} from "yaml";
 import {spawnSync} from "child_process";
 import path from "path";
@@ -72,6 +72,13 @@ describe("editConfig state", () => {
             "Buffer",
             "Replay",
         ]);
+        expect(findNode(state.nodes, "edit:traffic.s3Sources")).toMatchObject({
+            expert: true,
+        });
+        expect(findNode(state.nodes, "edit:traffic.s3Sources:add")).toMatchObject({
+            expert: true,
+            label: "+ Add optional S3 archive source (no capture proxy)",
+        });
     });
 
     it("shows missing basic auth children as required on the branch and parent", () => {
@@ -318,6 +325,33 @@ describe("editConfig state", () => {
         expect(toggleResult.yaml).toContain("allowInsecure: true");
     });
 
+    it("applies and clears enum choices", () => {
+        const config = {
+            sourceClusters: {source: {endpoint: "", version: "ES 7.10.2"}},
+            targetClusters: {},
+            traffic: {
+                proxies: {
+                    cap: {source: "source", proxyConfig: {listenPort: 9201}},
+                },
+            },
+            snapshotMigrationConfigs: [],
+        };
+
+        const clusterIp = applyEditOperationToObject(config, {
+            op: "set",
+            path: ["traffic", "proxies", "cap", "proxyConfig", "serviceType"],
+            value: "ClusterIP",
+        });
+        const reset = applyEditOperationToObject(parse(clusterIp.yaml), {
+            op: "set",
+            path: ["traffic", "proxies", "cap", "proxyConfig", "serviceType"],
+            value: "unset",
+        });
+
+        expect(parse(clusterIp.yaml).traffic.proxies.cap.proxyConfig.serviceType).toBe("ClusterIP");
+        expect(parse(reset.yaml).traffic.proxies.cap.proxyConfig.serviceType).toBeUndefined();
+    });
+
     it("unsets scalar values without creating missing parent objects", () => {
         const config = {
             sourceClusters: {
@@ -487,6 +521,8 @@ describe("editConfig state", () => {
         expect(findNode(state.nodes, "edit:kafkaClusterConfiguration.default.autoCreate.auth")).toMatchObject({
             valueKind: "union",
             value: "unset",
+            presence: "optional",
+            status: "ok",
             effectiveDefault: {
                 label: "scram-sha-512",
                 source: "workflow policy",
@@ -512,6 +548,27 @@ describe("editConfig state", () => {
             presence: "optional",
         });
         expect(cleanLabel(findNode(state.nodes, "edit:traffic.proxies.capture"))).toBe("capture");
+        expect(findNode(state.nodes, "edit:traffic.proxies.capture.proxyConfig.resources")).toMatchObject({
+            valueKind: "object",
+            valueDefaulted: true,
+        });
+        expect(findNode(state.nodes, "edit:traffic.proxies.capture.proxyConfig.resources.limits.cpu")).toMatchObject({
+            valueKind: "scalar",
+            status: "ok",
+            valueDefaulted: true,
+        });
+        expect(findNode(state.nodes, "edit:traffic.proxies.capture.proxyConfig.resources.limits.cpu")?.valueAuthored).toBeUndefined();
+        expect(findNode(state.nodes, "edit:traffic.proxies.capture.proxyConfig.resources.requests.memory")).toMatchObject({
+            valueKind: "scalar",
+            status: "ok",
+            valueDefaulted: true,
+        });
+        expect(findNode(state.nodes, "edit:traffic.s3Sources")).toMatchObject({
+            expert: true,
+        });
+        expect(findNode(state.nodes, "edit:traffic.s3Sources:add")?.label).toBe(
+            "+ Add optional S3 archive source (no capture proxy)"
+        );
         expect(cleanLabel(findNode(state.nodes, "edit:traffic.s3Sources.archive"))).toBe("archive");
         expect(cleanLabel(findNode(state.nodes, "edit:traffic.replayers.replay"))).toBe("replay");
         expect(findNode(state.nodes, "edit:snapshotMigrationConfigs.0")?.label).toContain("snapshot migration: legacy -> prod");
@@ -659,6 +716,10 @@ describe("editConfig state", () => {
         const serviceType = findNode(state.nodes, "edit:traffic.proxies.cap.proxyConfig.serviceType");
         const tls = findNode(state.nodes, "edit:traffic.proxies.cap.proxyConfig.tls");
         const setHeader = findNode(state.nodes, "edit:traffic.proxies.cap.proxyConfig.setHeader");
+        const suppressHeaderMatch = findNode(state.nodes, "edit:traffic.proxies.cap.proxyConfig.suppressCaptureForHeaderMatch");
+        const suppressMethod = findNode(state.nodes, "edit:traffic.proxies.cap.proxyConfig.suppressCaptureForMethod");
+        const suppressUriPath = findNode(state.nodes, "edit:traffic.proxies.cap.proxyConfig.suppressCaptureForUriPath");
+        const suppressMethodAndPath = findNode(state.nodes, "edit:traffic.proxies.cap.proxyConfig.suppressMethodAndPath");
         const addProxy = findNode(state.nodes, "edit:traffic.proxies:add");
 
         const expectedOptionKeys = [
@@ -676,20 +737,115 @@ describe("editConfig state", () => {
         expect(proxyConfig?.presence).toBe("required");
         expect(kafka).toMatchObject({status: "ok", presence: "optional", value: "default", valueDefaulted: true});
         expect(kafka?.label).toContain("kafka: default");
-        expect(kafkaTopic?.valueDefaulted).toBeUndefined();
+        expect(kafkaTopic?.valueDefaulted).toBe(true);
+        expect(kafkaTopic?.valueAuthored).toBeUndefined();
         expect(listenPort?.status).toBe("required");
         expect(listenPort?.presence).toBe("required");
         expect(listenPort?.valueType).toBe("number");
         expect(listenPort?.label).toContain("listenPort: <required>");
         expect(podReplicas).toMatchObject({status: "ok", presence: "optional", expert: false, valueType: "number"});
-        expect(serviceType).toMatchObject({status: "ok", presence: "optional", expert: true});
+        expect(serviceType).toMatchObject({
+            status: "ok",
+            presence: "optional",
+            expert: true,
+            valueKind: "union",
+            value: "LoadBalancer",
+            valueDefaulted: true,
+        });
+        expect(serviceType?.variants?.map(variant => variant.value)).toEqual([
+            "unset",
+            "LoadBalancer",
+            "ClusterIP",
+        ]);
         expect(tls).toMatchObject({presence: "optional", valueKind: "union", value: "unset"});
         expect(setHeader).toMatchObject({presence: "optional", valueKind: "array"});
+        expect(suppressHeaderMatch).toMatchObject({
+            presence: "optional",
+            valueKind: "record",
+            inputHint: {
+                kind: "record",
+                addLabel: "header match",
+            },
+        });
+        expect(findNode(state.nodes, "edit:traffic.proxies.cap.proxyConfig.suppressCaptureForHeaderMatch:add")).toMatchObject({
+            label: "+ Add header match",
+            command: {
+                requiresName: true,
+                editAdded: true,
+            },
+            inputHint: {
+                kind: "text",
+            },
+        });
+        expect(suppressMethod?.inputHint).toMatchObject({
+            kind: "javaRegex",
+            testStrings: ["GET", "HEAD", "POST", "PUT", "DELETE"],
+        });
+        expect(suppressUriPath?.inputHint).toMatchObject({
+            kind: "javaRegex",
+            testStrings: ["/_cluster/health", "/_cat/indices?v", "/my-index/_search", "/_bulk", "/favicon.ico"],
+        });
+        expect(suppressMethodAndPath?.inputHint).toMatchObject({
+            kind: "javaRegex",
+            testStrings: ["GET /_cluster/health", "HEAD /", "POST /my-index/_search", "GET /_cat/indices?v", "POST /_bulk"],
+        });
         expect(kafkaTopic?.status).toBe("ok");
         expect(kafkaTopic?.label).toContain("kafkaTopic: <unset>");
         expect(captureGroup?.statusCounts?.required).toBe(1);
         expect(addProxy?.status).toBe("ok");
         expect(addProxy?.label).toContain("+ Add capture proxy");
+    });
+
+    it("edits capture header suppression as a map of header names to regex values", () => {
+        const added = applyEditOperationToObject({
+            sourceClusters: {source: {endpoint: "", version: "ES 7.10.2"}},
+            targetClusters: {},
+            kafkaClusterConfiguration: {
+                default: {autoCreate: {}},
+            },
+            traffic: {
+                proxies: {
+                    cap: {source: "source", proxyConfig: {listenPort: 9201}},
+                },
+                replayers: {},
+            },
+            snapshotMigrationConfigs: [],
+        }, {
+            op: "add",
+            path: ["traffic", "proxies", "cap", "proxyConfig", "suppressCaptureForHeaderMatch"],
+            value: {name: "User-Agent"},
+        });
+
+        const addedHeader = findNode(
+            added.editState.nodes,
+            "edit:traffic.proxies.cap.proxyConfig.suppressCaptureForHeaderMatch.User-Agent"
+        );
+        expect(parse(added.yaml).traffic.proxies.cap.proxyConfig.suppressCaptureForHeaderMatch).toEqual({
+            "User-Agent": "",
+        });
+        expect(addedHeader).toMatchObject({
+            label: "User-Agent: <required>",
+            status: "required",
+            valueKind: "scalar",
+            inputHint: {
+                kind: "javaRegex",
+                testStrings: ["healthcheck", "Mozilla/5.0 healthcheck", "curl/8.6.0", "Bearer eyJhbGciOi...", "application/json"],
+            },
+        });
+
+        const set = applyEditOperationToObject(parse(added.yaml), {
+            op: "set",
+            path: ["traffic", "proxies", "cap", "proxyConfig", "suppressCaptureForHeaderMatch", "User-Agent"],
+            value: ".*healthcheck.*",
+        });
+
+        expect(parse(set.yaml).traffic.proxies.cap.proxyConfig.suppressCaptureForHeaderMatch).toEqual({
+            "User-Agent": ".*healthcheck.*",
+        });
+        expect(findNode(
+            set.editState.nodes,
+            "edit:traffic.proxies.cap.proxyConfig.suppressCaptureForHeaderMatch.User-Agent"
+        )?.label).toBe("User-Agent: .*healthcheck.*");
     });
 
     it("does not require replay config when traffic capture is configured alone", () => {
@@ -789,6 +945,9 @@ describe("editConfig state", () => {
         });
 
         const issuerRef = findNode(state.nodes, "edit:traffic.proxies.cap.proxyConfig.tls.issuerRef");
+        const dnsNames = findNode(state.nodes, "edit:traffic.proxies.cap.proxyConfig.tls.dnsNames");
+        const dnsName = findNode(state.nodes, "edit:traffic.proxies.cap.proxyConfig.tls.dnsNames.0");
+        const addDnsName = findNode(state.nodes, "edit:traffic.proxies.cap.proxyConfig.tls.dnsNames:add");
 
         expect(issuerRef).toMatchObject({
             valueKind: "object",
@@ -807,6 +966,61 @@ describe("editConfig state", () => {
             },
         });
         expect(issuerRef?.label).toContain("issuerRef: migrations-ca (ClusterIssuer)");
+        expect(dnsNames).toMatchObject({
+            valueKind: "array",
+            required: true,
+            status: "ok",
+        });
+        expect(dnsNames?.label).toContain("dnsNames: 1 item");
+        expect(dnsName).toMatchObject({
+            valueKind: "scalar",
+            value: "cap.default.svc.cluster.local",
+            valueType: "string",
+            collapsed: true,
+            validation: {
+                pattern: DNS_NAME_PATTERN,
+                message: expect.stringContaining("Use a DNS name"),
+            },
+        });
+        expect(dnsName?.label).toContain("DNS name 1: cap.default.svc.cluster.local");
+        expect(addDnsName).toMatchObject({
+            valueKind: "command",
+            label: "+ Add DNS name",
+            command: {requiresName: false},
+        });
+
+        const invalidState = buildEditStateFromObject({
+            sourceClusters: {source: {endpoint: "", version: "ES 7.10.2"}},
+            targetClusters: {},
+            traffic: {
+                proxies: {
+                    cap: {
+                        source: "source",
+                        proxyConfig: {
+                            listenPort: 9201,
+                            tls: {
+                                mode: "certManager",
+                                issuerRef: {name: "migrations-ca", kind: "ClusterIssuer"},
+                                dnsNames: ["https://cap.default.svc.cluster.local:9201"],
+                            },
+                        },
+                    },
+                },
+            },
+            snapshotMigrationConfigs: [],
+        });
+        const invalidDnsName = findNode(invalidState.nodes, "edit:traffic.proxies.cap.proxyConfig.tls.dnsNames.0");
+        expect(invalidDnsName).toMatchObject({
+            valueKind: "scalar",
+            status: "error",
+            validation: {pattern: DNS_NAME_PATTERN},
+            diagnostics: expect.arrayContaining([
+                expect.objectContaining({
+                    severity: "error",
+                    message: expect.stringContaining("Use a DNS name"),
+                }),
+            ]),
+        });
     });
 
     it("applies proxy TLS mode changes and refreshes required children", () => {
@@ -832,6 +1046,64 @@ describe("editConfig state", () => {
         expect(result.yaml).toContain("secretName: \"\"");
         expect(tls?.label).toContain("tls: < existingSecret >");
         expect(secretName?.status).toBe("required");
+    });
+
+    it("edits cert-manager DNS names as a schema-driven string list", () => {
+        const certManager = applyEditOperationToObject({
+            sourceClusters: {source: {endpoint: "", version: "ES 7.10.2"}},
+            targetClusters: {},
+            traffic: {
+                proxies: {
+                    cap: {source: "source", proxyConfig: {listenPort: 9201}},
+                },
+            },
+            snapshotMigrationConfigs: [],
+        }, {
+            op: "set",
+            path: ["traffic", "proxies", "cap", "proxyConfig", "tls"],
+            value: "certManager",
+        });
+
+        const emptyDnsNames = findNode(certManager.editState.nodes, "edit:traffic.proxies.cap.proxyConfig.tls.dnsNames");
+        const addDnsName = findNode(certManager.editState.nodes, "edit:traffic.proxies.cap.proxyConfig.tls.dnsNames:add");
+
+        expect(parse(certManager.yaml).traffic.proxies.cap.proxyConfig.tls.dnsNames).toEqual([]);
+        expect(emptyDnsNames).toMatchObject({
+            valueKind: "array",
+            status: "required",
+            diagnostics: expect.arrayContaining([
+                expect.objectContaining({severity: "required"}),
+            ]),
+        });
+        expect(addDnsName?.label).toBe("+ Add DNS name");
+
+        const added = applyEditOperationToObject(parse(certManager.yaml), {
+            op: "add",
+            path: ["traffic", "proxies", "cap", "proxyConfig", "tls", "dnsNames"],
+            value: {},
+        });
+        const addedItem = findNode(added.editState.nodes, "edit:traffic.proxies.cap.proxyConfig.tls.dnsNames.0");
+
+        expect(parse(added.yaml).traffic.proxies.cap.proxyConfig.tls.dnsNames).toEqual([""]);
+        expect(addedItem).toMatchObject({
+            valueKind: "scalar",
+            status: "required",
+            value: "",
+        });
+        expect(addedItem?.label).toContain("DNS name 1: <required>");
+
+        const set = applyEditOperationToObject(parse(added.yaml), {
+            op: "set",
+            path: ["traffic", "proxies", "cap", "proxyConfig", "tls", "dnsNames", "0"],
+            value: "cap.default.svc.cluster.local",
+        });
+        expect(parse(set.yaml).traffic.proxies.cap.proxyConfig.tls.dnsNames).toEqual(["cap.default.svc.cluster.local"]);
+
+        const removed = applyEditOperationToObject(parse(set.yaml), {
+            op: "removeConfig",
+            path: ["traffic", "proxies", "cap", "proxyConfig", "tls", "dnsNames", "0"],
+        });
+        expect(parse(removed.yaml).traffic.proxies.cap.proxyConfig.tls.dnsNames).toEqual([]);
     });
 
     it("renders proxy clientAuth with console client certificate Secret reference", () => {
@@ -997,6 +1269,52 @@ describe("editConfig state", () => {
         expect(findNode(scramKafka.editState.nodes, "edit:kafkaClusterConfiguration.default.existing.auth.secretName")).toMatchObject({
             status: "required",
             required: true,
+            externalRef: {
+                kind: "kubernetesResource",
+                purpose: "kafka-scram-password",
+                matchProfiles: ["kafka-scram-password-secret"],
+                selection: {target: "scalarName"},
+                k8s: {
+                    resourceTypes: [{group: "", version: "v1", kind: "Secret", namespaced: true}],
+                    match: {
+                        requiredKeys: ["password"],
+                    },
+                },
+                create: {
+                    label: "Kafka SCRAM Password Secret",
+                    apply: {target: "scalarName", nameField: "secretName"},
+                },
+            },
+        });
+        expect(findNode(scramKafka.editState.nodes, "edit:kafkaClusterConfiguration.default.existing.auth.caSecretName")).toMatchObject({
+            status: "ok",
+            required: false,
+            presence: "optional",
+            externalRef: {
+                kind: "kubernetesResource",
+                purpose: "kafka-ca",
+                matchProfiles: ["kafka-ca-secret"],
+                selection: {target: "scalarName"},
+                k8s: {
+                    resourceTypes: [{group: "", version: "v1", kind: "Secret", namespaced: true}],
+                    match: {
+                        requiredKeys: ["ca.crt"],
+                        contentValidationIds: ["pem-certificate-chain"],
+                    },
+                },
+                create: {
+                    label: "Kafka CA Secret",
+                    apply: {target: "scalarName", nameField: "secretName"},
+                },
+            },
+        });
+        expect(findNode(scramKafka.editState.nodes, "edit:kafkaClusterConfiguration.default.existing.auth.kafkaUserName")).toMatchObject({
+            status: "required",
+            required: true,
+            inputHint: {
+                kind: "text",
+                format: "k8s-name",
+            },
         });
         expect(defaultAuthKafka.yaml).toContain("auth:");
         expect(defaultAuthKafka.yaml).toContain("type: scram-sha-512");

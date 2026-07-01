@@ -14,6 +14,12 @@ export type UiHint =
         examples?: string[];
     }
     | {
+        kind: 'javaRegex';
+        message?: string;
+        examples?: string[];
+        testStrings?: string[];
+    }
+    | {
         kind: 'reference';
         sourcePath: string[];
         allowCustom?: boolean;
@@ -55,6 +61,8 @@ export type ExternalRefPurpose =
 export type KubernetesExternalRefMatchProfile =
     | 'http-basic-auth-secret'
     | 'tls-secret'
+    | 'kafka-scram-password-secret'
+    | 'kafka-ca-secret'
     | 'log4j-configmap';
 export interface KubernetesResourceType {
     group: string;
@@ -218,6 +226,30 @@ const LOGGING_CONFIG_OVERRIDE_DESC = "Name of a Kubernetes ConfigMap containing 
     "The ConfigMap should have a single key whose value is the Log4j2 properties file content. " +
     "When set, it is mounted into the container and passed via -Dlog4j2.configurationFile. " +
     "See https://logging.apache.org/log4j/2.x/manual/configuration.html#properties for format reference.";
+const PROXY_METHOD_REGEX_HINT: UiHint = {
+    kind: 'javaRegex',
+    message: "Java regex matched against the full HTTP method string; use alternatives like GET|HEAD for multiple methods.",
+    examples: ["GET", "GET|HEAD", "POST|PUT|PATCH"],
+    testStrings: ["GET", "HEAD", "POST", "PUT", "DELETE"],
+};
+const PROXY_URI_PATH_REGEX_HINT: UiHint = {
+    kind: 'javaRegex',
+    message: "Java regex matched against the full request URI path; include .* when you want a contains-style match.",
+    examples: ["/_cluster/health", "/_cat/.*", ".*/_search"],
+    testStrings: ["/_cluster/health", "/_cat/indices?v", "/my-index/_search", "/_bulk", "/favicon.ico"],
+};
+const PROXY_METHOD_AND_PATH_REGEX_HINT: UiHint = {
+    kind: 'javaRegex',
+    message: "Java regex matched against '<METHOD> <URI path>'; include both method and path in the pattern.",
+    examples: ["GET /_cluster/health", "(GET|HEAD) /.*", "POST .*/_search"],
+    testStrings: ["GET /_cluster/health", "HEAD /", "POST /my-index/_search", "GET /_cat/indices?v", "POST /_bulk"],
+};
+const PROXY_HEADER_VALUE_REGEX_HINT: UiHint = {
+    kind: 'javaRegex',
+    message: "Java regex matched against the full value for the named header; header names are matched case-insensitively.",
+    examples: ["healthcheck", "Bearer .*", ".*OpenSearch.*"],
+    testStrings: ["healthcheck", "Mozilla/5.0 healthcheck", "curl/8.6.0", "Bearer eyJhbGciOi...", "application/json"],
+};
 
 const CORE_V1_SECRET: KubernetesResourceType = {group: "", version: "v1", kind: "Secret", namespaced: true};
 const CORE_V1_CONFIG_MAP: KubernetesResourceType = {group: "", version: "v1", kind: "ConfigMap", namespaced: true};
@@ -237,6 +269,14 @@ const KUBERNETES_EXTERNAL_REF_MATCH_PROFILES: Record<KubernetesExternalRefMatchP
         acceptedSecretTypes: ['kubernetes.io/tls', 'Opaque'],
         requiredKeys: ['tls.crt', 'tls.key'],
         contentValidationIds: ['tls-certificate-key-pair'],
+    },
+    'kafka-scram-password-secret': {
+        requiredKeys: ['password'],
+        contentValidationIds: ['non-empty-keys'],
+    },
+    'kafka-ca-secret': {
+        requiredKeys: ['ca.crt'],
+        contentValidationIds: ['pem-certificate-chain'],
     },
     'log4j-configmap': {
         requiredKeys: ['log4j2.properties'],
@@ -387,6 +427,86 @@ const PROXY_CONSOLE_CLIENT_TLS_EXTERNAL_REF: ExternalRefHint = {
         label: 'Proxy Client Certificate Secret',
     },
 };
+const KAFKA_SCRAM_PASSWORD_EXTERNAL_REF: ExternalRefHint = {
+    ...kubernetesResourceRef({
+        purpose: 'kafka-scram-password',
+        displayName: 'Kafka SCRAM Password Secret',
+        description: "Kubernetes Secret containing the SCRAM password for an existing Kafka user. The workflow reads the 'password' key.",
+        resourceTypes: [CORE_V1_SECRET],
+        matchProfiles: ['kafka-scram-password-secret'],
+    }),
+    create: {
+        label: 'Kafka SCRAM Password Secret',
+        fields: [
+            {
+                name: 'secretName',
+                label: 'Secret name',
+                input: 'name',
+                required: true,
+                validationIds: ['k8s-name'],
+            },
+            {
+                name: 'password',
+                label: 'Password',
+                input: 'password',
+                required: true,
+                sensitive: true,
+                validationIds: ['non-empty'],
+                confirm: true,
+            },
+        ],
+        output: {
+            kind: 'Secret',
+            type: 'Opaque',
+            stringData: {
+                password: {fromField: 'password'},
+            },
+        },
+        apply: {
+            target: 'scalarName',
+            nameField: 'secretName',
+        },
+    },
+};
+const KAFKA_CA_EXTERNAL_REF: ExternalRefHint = {
+    ...kubernetesResourceRef({
+        purpose: 'kafka-ca',
+        displayName: 'Kafka CA Secret',
+        description: "Kubernetes Secret containing the Kafka cluster CA certificate. The workflow mounts the 'ca.crt' key.",
+        resourceTypes: [CORE_V1_SECRET],
+        matchProfiles: ['kafka-ca-secret'],
+    }),
+    create: {
+        label: 'Kafka CA Secret',
+        fields: [
+            {
+                name: 'secretName',
+                label: 'Secret name',
+                input: 'name',
+                required: true,
+                validationIds: ['k8s-name'],
+            },
+            {
+                name: 'certificate',
+                label: 'CA certificate PEM',
+                input: 'multilineText',
+                required: true,
+                validationIds: ['non-empty', 'pem-certificate-chain'],
+            },
+        ],
+        output: {
+            kind: 'Secret',
+            type: 'Opaque',
+            stringData: {
+                'ca.crt': {fromField: 'certificate'},
+            },
+        },
+        apply: {
+            target: 'scalarName',
+            nameField: 'secretName',
+        },
+    },
+};
 import deepmerge from "deepmerge";
 
 export function getZodKeys<T extends z.ZodRawShape>(schema: z.ZodObject<T>): readonly (keyof T)[] {
@@ -502,7 +622,10 @@ export const HTTP_ENDPOINT_PATTERN = `^https?:\\/\\/${HOSTNAME_PATTERN}${OPTIONA
 export const OPTIONAL_HTTP_ENDPOINT_PATTERN = `^(?:https?:\\/\\/${HOSTNAME_PATTERN}${OPTIONAL_PORT_PATTERN}(?:\\/)?)?$`;
 
 export const GENERIC_JSON_OBJECT = z.record(z.string(), z.any());
+export const HTTP_HEADER_NAME_PATTERN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 export const K8S_NAMING_PATTERN = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/;
+export const DNS_LABEL_PATTERN = "[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?";
+export const DNS_NAME_PATTERN = `^(?:\\*\\.)?${DNS_LABEL_PATTERN}(?:\\.${DNS_LABEL_PATTERN})*$`;
 export const K8S_IMAGE_PULL_POLICY = z.enum(["Always", "Never", "IfNotPresent"]);
 
 const K8S_NAME_UI_HINT: UiHint = {
@@ -523,6 +646,11 @@ const OPTIONAL_HTTP_ENDPOINT_UI_HINT: UiHint = {
     pattern: OPTIONAL_HTTP_ENDPOINT_PATTERN,
     message: "Leave empty or use an http:// or https:// endpoint with an optional port and trailing slash.",
 };
+const DNS_NAME_UI_HINT: UiHint = {
+    kind: 'text',
+    pattern: DNS_NAME_PATTERN,
+    message: "Use a DNS name without a scheme, port, path, or spaces. Wildcards are allowed only as the leftmost label, like *.example.com.",
+};
 
 export const FILE_RELATIVE_PATH = z.string()
     .regex(/^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$)).+$/)
@@ -531,6 +659,13 @@ export const FILE_RELATIVE_PATH = z.string()
 export const CONFIGMAP_FILE_KEY = z.string()
     .regex(/^(?!\.{1,2}$)(?!\.\.)[A-Za-z0-9._-]+$/)
     .describe("ConfigMap key to expose as a mounted file. Nested paths are not supported for ConfigMap-backed file refs.");
+
+export const CERTIFICATE_DNS_NAME = z.string()
+    .min(1)
+    .max(253)
+    .regex(new RegExp(DNS_NAME_PATTERN))
+    .uiHint(DNS_NAME_UI_HINT)
+    .describe("DNS name to include as a Subject Alternative Name on the proxy TLS certificate. Use a bare DNS name, not a URL.");
 
 export const FILE_REF_FROM_IMAGE = z.object({
     image: z.string().min(1)
@@ -683,13 +818,23 @@ export const KAFKA_CLIENT_CONFIG = z.object({
 
 export const KAFKA_EXISTING_AUTH_CONFIG = z.discriminatedUnion("type", [
     z.object({
-        type: z.literal("none"),
+        type: z.literal("none")
+            .describe("Do not use Kafka client authentication."),
     }),
     z.object({
-        type: z.literal("scram-sha-512"),
-        secretName: z.string().regex(K8S_NAMING_PATTERN),
-        caSecretName: z.string().regex(K8S_NAMING_PATTERN),
-        kafkaUserName: z.string().regex(K8S_NAMING_PATTERN).optional(),
+        type: z.literal("scram-sha-512")
+            .describe("Use SASL/SCRAM-SHA-512 authentication for the existing Kafka cluster."),
+        secretName: z.string().regex(K8S_NAMING_PATTERN)
+            .describe("Name of a Kubernetes Secret containing the Kafka SCRAM password in the 'password' key.")
+            .uiHint(K8S_NAME_UI_HINT)
+            .externalRef(KAFKA_SCRAM_PASSWORD_EXTERNAL_REF),
+        caSecretName: z.string().regex(K8S_NAMING_PATTERN).optional()
+            .describe("Optional Kubernetes Secret containing the Kafka cluster CA certificate in the 'ca.crt' key. Omit to use the client runtime's default trust store.")
+            .uiHint(K8S_NAME_UI_HINT)
+            .externalRef(KAFKA_CA_EXTERNAL_REF),
+        kafkaUserName: z.string().regex(K8S_NAMING_PATTERN)
+            .uiHint(K8S_NAME_UI_HINT)
+            .describe("Kafka SCRAM principal name used by migration clients. The password is read from secretName; this username is not read from the Secret."),
     }),
 ]);
 
@@ -873,7 +1018,8 @@ export const PROXY_TLS_CONFIG = z.discriminatedUnion("mode", [
         issuerRef: CERT_MANAGER_ISSUER_REF,
         commonName: z.string().optional()
             .describe("Optional common name (CN) for the TLS certificate subject."),
-        dnsNames: z.array(z.string()).min(1)
+        dnsNames: z.array(CERTIFICATE_DNS_NAME).min(1)
+            .uiHint({kind: 'array', addLabel: 'DNS name'})
             .describe("DNS Subject Alternative Names for the certificate. Must include the proxy's Kubernetes service DNS name (e.g. 'my-proxy.default.svc.cluster.local')."),
         duration: z.string().default("2160h").optional()
             .describe("Requested certificate validity duration in Go duration format (e.g. '2160h' = 90 days)."),
@@ -923,6 +1069,7 @@ export const USER_PROXY_PROCESS_OPTIONS = z.object({
     otelTraceCollectorEndpoint: OTEL_TRACE_COLLECTOR_ENDPOINT,
     otelMetricsCollectorEndpoint: OTEL_METRICS_COLLECTOR_ENDPOINT,
     setHeader: z.array(z.string()).optional()
+        .uiHint({kind: 'array', addLabel: 'header'})
         .describe("List of static headers to add to proxied requests, each in 'Header-Name: value' format.")
         .checksumFor('snapshot', 'replayer')
         .changeRestriction('gated'),
@@ -953,20 +1100,33 @@ export const USER_PROXY_PROCESS_OPTIONS = z.object({
     enableMSKAuth: z.boolean().default(false).optional()
         .describe("Enable SASL/IAM authentication for the proxy's Kafka producer when connecting to Amazon MSK. Uses the pod's IAM role via EKS Pod Identity.")
         .changeRestriction('gated'),
-    suppressCaptureForHeaderMatch: z.array(z.string()).default([]).optional()
-        .describe("List of header patterns. Requests matching any of these header patterns will be forwarded but not captured to Kafka.")
+    suppressCaptureForHeaderMatch: z.record(
+        z.string().regex(HTTP_HEADER_NAME_PATTERN),
+        z.string().min(1).uiHint(PROXY_HEADER_VALUE_REGEX_HINT)
+            .describe("Java regex pattern to test against the named header's value. The proxy uses full-string matching. Matching requests are forwarded but not recorded.")
+    ).default({}).optional()
+        .uiHint({
+            kind: 'record',
+            addLabel: 'header match',
+            keyPattern: HTTP_HEADER_NAME_PATTERN.source,
+            message: "Use an HTTP header name, such as User-Agent, Authorization, or x-amz-security-token.",
+        })
+        .describe("Map of HTTP header names to Java regex patterns. Header names are matched case-insensitively. When a request has a matching header value, the request is forwarded but not recorded.")
         .checksumFor('snapshot', 'replayer')
         .changeRestriction('gated'),
     suppressCaptureForMethod: z.string().default("").optional()
-        .describe("HTTP method to suppress from capture (e.g. 'HEAD'). Requests with this method are forwarded but not recorded.")
+        .uiHint(PROXY_METHOD_REGEX_HINT)
+        .describe("Java regex pattern to test against the HTTP method of the incoming request (for example, 'HEAD' or 'GET|HEAD'). The proxy uses full-string matching. Matching requests are forwarded but not recorded.")
         .checksumFor('snapshot', 'replayer')
         .changeRestriction('gated'),
     suppressCaptureForUriPath: z.string().default("").optional()
-        .describe("URI path pattern to suppress from capture. Requests matching this path are forwarded but not recorded.")
+        .uiHint(PROXY_URI_PATH_REGEX_HINT)
+        .describe("Java regex pattern to test against the URI path of the incoming request. The proxy uses full-string matching. Matching requests are forwarded but not recorded.")
         .checksumFor('snapshot', 'replayer')
         .changeRestriction('gated'),
     suppressMethodAndPath: z.string().default("").optional()
-        .describe("Combined method and path pattern for capture suppression in 'METHOD /path' format.")
+        .uiHint(PROXY_METHOD_AND_PATH_REGEX_HINT)
+        .describe("Java regex pattern to test against the combined 'METHOD /path' value of the incoming request. The proxy uses full-string matching. Matching requests are forwarded but not recorded.")
         .checksumFor('snapshot', 'replayer')
         .changeRestriction('gated'),
 }).describe("Process-level configuration options for the capture proxy application. These are passed as command-line arguments to the proxy container.");
@@ -1011,6 +1171,7 @@ export const USER_REPLAYER_PROCESS_OPTIONS = z.object({
     numClientThreads: z.number().default(0).optional()
         .describe("Number of threads used to send replayed requests to the target. 0 uses the Netty event loop (typically number of available processors)."),
     nonRetryableDocExceptionTypes: z.array(z.string()).optional()
+        .uiHint({kind: 'array', addLabel: 'exception type'})
         .describe("List of document-level exception types that should not be retried during bulk replay. " +
             "These errors still count as failures in the output but are not retried because they are " +
             "deterministic client or mapping errors that will produce the same result on every attempt. " +
@@ -1133,6 +1294,7 @@ export const USER_CREATE_SNAPSHOT_PROCESS_OPTIONS = z.object({
     otelTraceCollectorEndpoint: OTEL_TRACE_COLLECTOR_ENDPOINT,
     otelMetricsCollectorEndpoint: OTEL_METRICS_COLLECTOR_ENDPOINT,
     indexAllowlist: z.array(z.string()).default([]).optional()
+        .uiHint({kind: 'array', addLabel: 'index pattern'})
         .describe("Filters which indices are captured at the snapshot layer — evaluated by the source cluster when the snapshot is created. " +
             "Entries use the cluster's native multi-index expression syntax (the same format accepted by the _snapshot API's 'indices' field): " +
             "exact names (e.g. 'logs-2024-01'), wildcards (e.g. 'logs-*'), and exclusions via a leading '-' (e.g. '-*-archive'). " +
@@ -1173,15 +1335,18 @@ export const USER_METADATA_WORKFLOW_OPTIONS = z.object({
 
 export const USER_METADATA_PROCESS_OPTIONS = z.object({
     componentTemplateAllowlist: z.array(z.string()).default([]).optional()
+        .uiHint({kind: 'array', addLabel: 'component template'})
         .describe("List of component template names to include in the metadata migration. " +
             "Each entry is either an exact name or a regex pattern prefixed with 'regex:'. " +
             "An empty list includes all non-system component templates."),
     indexAllowlist: z.array(z.string()).default([]).optional()
+        .uiHint({kind: 'array', addLabel: 'index pattern'})
         .describe("Filters which indices are migrated at the metadata stage — evaluated client-side on the snapshot contents after the snapshot has been taken. " +
             "Each entry is either an exact index name (e.g. 'my-index') or a regex pattern prefixed with 'regex:' (e.g. 'regex:logs-.*'). " +
             "Applies only among indices already captured in the snapshot; to exclude an index from the snapshot itself, use the CreateSnapshot indexAllowlist. " +
             "An empty list includes all non-system indices."),
     indexTemplateAllowlist: z.array(z.string()).default([]).optional()
+        .uiHint({kind: 'array', addLabel: 'index template'})
         .describe("List of index template names to include in the metadata migration. " +
             "Each entry is either an exact name or a regex pattern prefixed with 'regex:'. " +
             "An empty list includes all non-system index templates."),
@@ -1265,6 +1430,7 @@ export const USER_RFS_WORKFLOW_OPTIONS = z.object({
 
 export const USER_RFS_PROCESS_OPTIONS = z.object({
     indexAllowlist: z.array(z.string()).default([]).optional()
+        .uiHint({kind: 'array', addLabel: 'index pattern'})
         .describe("Filters which indices are migrated by the document backfill (RFS) — evaluated client-side on the snapshot contents after the snapshot has been taken. " +
             "Each entry is either an exact index name or a regex pattern prefixed with 'regex:' (e.g. 'regex:logs-.*'). " +
             "Applies only among indices already captured in the snapshot; to exclude an index from the snapshot itself, use the CreateSnapshot indexAllowlist. " +
@@ -1324,6 +1490,7 @@ export const USER_RFS_PROCESS_OPTIONS = z.object({
         .checksumFor('replayer')
         .changeRestriction('impossible'),
     allowedDocExceptionTypes: z.array(z.string()).default([]).optional()
+        .uiHint({kind: 'array', addLabel: 'exception type'})
         .describe("List of document-level exception types to treat as successful operations during bulk migration. " +
             "Documents that fail with these errors are not retried and not counted as failures — they are silently accepted. " +
             "Use this for idempotent migrations where certain errors are expected and harmless. " +
@@ -1660,15 +1827,15 @@ export const TRAFFIC_CONFIG = z.object({
             message: "Use a valid Kubernetes DNS name for the capture proxy.",
         }),
     s3Sources: z.record(z.string().regex(K8S_NAMING_PATTERN), S3_CAPTURED_TRAFFIC_SOURCE).default({}).optional()
-        .describe("Map of pre-recorded traffic source names to their S3 archive configurations. " +
+        .describe("[Expert] Optional map of pre-recorded traffic source names to their S3 archive configurations. " +
             "Each entry triggers a one-time load from S3 onto a Kafka topic; no live capture proxy is created. " +
             "Keys must not collide with traffic.proxies keys (replayer.fromCapturedTraffic resolves across both maps).")
         .uiHint({
             kind: 'record',
-            addLabel: 'S3 captured traffic source',
+            addLabel: 'optional S3 archive source (no capture proxy)',
             keyFormat: 'k8s-name',
             keyPattern: K8S_NAMING_PATTERN.source,
-            message: "Use a valid Kubernetes DNS name for the S3 captured traffic source.",
+            message: "Use a valid Kubernetes DNS name for the optional S3 archive source.",
         }),
     replayers: z.record(z.string(), REPLAYER_CONFIG).default({}).optional()
         .describe("Map of replayer names to their replay configurations. Each replayer consumes from a Kafka topic and replays to a target cluster.")
