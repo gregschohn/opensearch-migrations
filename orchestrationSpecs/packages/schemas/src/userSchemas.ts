@@ -42,7 +42,6 @@ export interface EffectiveDefaultHint {
     label: string;
     value?: unknown;
     description?: string;
-    source?: string;
 }
 
 export type ExternalRefKind = 'kubernetesResource' | 'image' | 'secret' | 'configMap' | 'certManagerIssuer';
@@ -51,6 +50,7 @@ export type ExternalRefPurpose =
     | 'proxy-server-tls'
     | 'proxy-console-client-tls'
     | 'proxy-client-ca'
+    | 'file-ref-config-map'
     | 'kafka-scram-password'
     | 'kafka-ca'
     | 'log4j-config'
@@ -361,6 +361,14 @@ const LOGGING_CONFIG_MAP_EXTERNAL_REF: ExternalRefHint = {
         },
     },
 };
+
+const FILE_REF_CONFIG_MAP_EXTERNAL_REF: ExternalRefHint = kubernetesResourceRef({
+    purpose: 'file-ref-config-map',
+    displayName: 'ConfigMap',
+    description: 'Kubernetes ConfigMap containing the referenced file key.',
+    resourceTypes: [CORE_V1_CONFIG_MAP],
+});
+
 const TLS_SECRET_EXTERNAL_REF: ExternalRefHint = {
     ...kubernetesResourceRef({
         purpose: 'proxy-server-tls',
@@ -677,6 +685,7 @@ export const FILE_REF_FROM_IMAGE = z.object({
 
 export const FILE_REF_FROM_CONFIGMAP = z.object({
     configMap: z.string().min(1)
+        .externalRef(FILE_REF_CONFIG_MAP_EXTERNAL_REF)
         .describe("Name of a pre-existing Kubernetes ConfigMap."),
     path: CONFIGMAP_FILE_KEY
 }).strict();
@@ -995,8 +1004,6 @@ export const PROXY_TLS_CLIENT_AUTH_CONFIG = z.object({
         .describe("Name of a Kubernetes TLS Secret containing the client certificate and private key that migration-console commands use when connecting to this mTLS-enabled proxy.")
         .uiHint(K8S_NAME_UI_HINT)
         .externalRef(PROXY_CONSOLE_CLIENT_TLS_EXTERNAL_REF),
-    required: z.boolean().default(true).optional()
-        .describe("When true, clients must present a certificate signed by the configured trusted client CA. Defaults to true.")
 }).strict().superRefine((value, ctx) => {
     const trustSourceCount = [
         value.trustedClientCaFile !== undefined,
@@ -1096,6 +1103,10 @@ export const USER_PROXY_PROCESS_OPTIONS = z.object({
         .describe("Number of Netty worker threads for the proxy to handle concurrent connections."),
     tls: PROXY_TLS_CONFIG.optional()
         .describe("TLS certificate configuration for HTTPS termination at the proxy. When configured, the proxy serves HTTPS and the TLS secret is mounted at /etc/proxy-tls/.")
+        .effectiveDefault({
+            label: "cert-manager self-signed",
+            description: "When omitted, the workflow creates a cert-manager certificate using the cluster's preconfigured self-signed issuer and generated proxy service DNS names.",
+        })
         .changeRestriction('gated'),
     enableMSKAuth: z.boolean().default(false).optional()
         .describe("Enable SASL/IAM authentication for the proxy's Kafka producer when connecting to Amazon MSK. Uses the pod's IAM role via EKS Pod Identity.")
@@ -1596,7 +1607,6 @@ export const KAFKA_CLUSTER_CREATION_CONFIG = z.preprocess(
             .effectiveDefault({
                 label: "scram-sha-512",
                 value: {type: "scram-sha-512"},
-                source: "workflow policy",
                 description: "Omitting this field uses workflow-managed Kafka SCRAM-SHA-512 authentication.",
             }),
         // Intended contract: users provide Strimzi-shaped partial Kafka.spec values and

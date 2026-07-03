@@ -50,7 +50,7 @@ import {
     childSchemaAtPath,
     defaultJsonValueForSchema,
     defaultValueForSchema,
-    discriminatedUnionBranches,
+    discriminatedUnionNode,
     descriptionOf,
     discriminatedUnionOption,
     discriminatedUnionValueForVariant,
@@ -67,6 +67,8 @@ import {
     jsonSchemaType,
     jsonDiscriminatedUnionValueForVariant,
     objectChildrenFromValue,
+    objectUnionBranches,
+    objectUnionValueForVariant,
     optionalObjectToggleNode,
     optionalSingleKeyUnionNode,
     recordKeyHint,
@@ -260,44 +262,29 @@ function proxyTlsChildren(path: string[], mode: ReturnType<typeof proxyTlsMode>,
 
 function proxyTlsNode(
     path: string[],
+    schema: any,
     value: unknown,
+    hasValue: boolean,
     description: string,
+    required: boolean,
     expert: boolean,
     presence: EditNode["presence"],
 ): EditNode {
     const mode = proxyTlsMode(value);
-    const diagnostics: EditDiagnostic[] = mode === "unknown"
-        ? [{severity: "error", message: "Unknown TLS mode. Expected certManager, existingSecret, plaintext, or omitted.", path}]
-        : [];
-    return finalizeNode({
-        id: `edit:${path.join(".")}`,
-        path,
-        label: `tls: < ${mode === "unset" ? "default" : mode} >`,
-        value: mode,
-        valueKind: "union",
-        presence,
-        expert,
-        description,
-        status: mode === "unknown" ? "error" : "ok",
-        diagnostics,
-        variants: [
-            {
-                label: "default",
-                value: "unset",
-                description: "Use the workflow's secure-by-default proxy TLS behavior.",
-            },
-            ...discriminatedUnionBranches(PROXY_TLS_CONFIG, "mode")
-                .sort((left, right) =>
-                    PROXY_TLS_VARIANT_ORDER.indexOf(String(left.value)) -
-                    PROXY_TLS_VARIANT_ORDER.indexOf(String(right.value)))
-                .map(branch => ({
-                    label: String(branch.value),
-                    value: branch.value,
-                    description: branch.description,
-                })),
-        ],
-        children: proxyTlsChildren(path, mode, value),
-    });
+    const node = discriminatedUnionNode(path, "tls", schema, value, hasValue, description, required, expert, presence);
+    if (!node) {
+        return genericDisplayNode(path, "tls", value, presence, expert, description);
+    }
+    node.variants = [
+        ...(node.variants ?? []).filter(variant => variant.value === "unset"),
+        ...(node.variants ?? [])
+            .filter(variant => variant.value !== "unset")
+            .sort((left, right) =>
+                PROXY_TLS_VARIANT_ORDER.indexOf(String(left.value)) -
+                PROXY_TLS_VARIANT_ORDER.indexOf(String(right.value))),
+    ];
+    node.children = proxyTlsChildren(path, mode, value);
+    return finalizeNode(node);
 }
 
 function snapshotInfoNode(path: string[], snapshotInfo: unknown): EditNode {
@@ -367,10 +354,14 @@ function captureProxyConfigFieldNode(
     }
     const description = schemaDescription(schema);
     const required = isRequiredSchema(schema);
+    const hasValue = Object.hasOwn(proxyConfig, key);
     return proxyTlsNode(
         [...rootPath, key],
-        Object.hasOwn(proxyConfig, key) ? proxyConfig[key] : defaultValueForSchema(schema),
+        schema,
+        hasValue ? proxyConfig[key] : defaultValueForSchema(schema),
+        hasValue,
         description,
+        required,
         isExpertDescription(description),
         required ? "required" : "optional",
     );
@@ -854,7 +845,7 @@ function proxyClientAuthForVariant(existing: any, variant: unknown): unknown {
         return undefined;
     }
     if (variant === "enabled") {
-        return isPlainObject(existing) ? existing : {required: true};
+        return isPlainObject(existing) ? existing : {};
     }
     throw new Error(`Unknown proxy clientAuth mode: ${String(variant)}`);
 }
@@ -905,6 +896,17 @@ function setAtPath(config: any, path: string[], value: unknown): void {
             parent[key] = next;
         }
         return;
+    }
+    if (schema && objectUnionBranches(schema).length) {
+        const next = objectUnionValueForVariant(schema, parent[key], value);
+        if (next !== undefined || value === "unset") {
+            if (next === undefined) {
+                delete parent[key];
+            } else {
+                parent[key] = next;
+            }
+            return;
+        }
     }
     const jsonSchema = jsonSchemaForConfigPath(path);
     if (jsonSchema && jsonSchemaDiscriminator(jsonSchema)) {

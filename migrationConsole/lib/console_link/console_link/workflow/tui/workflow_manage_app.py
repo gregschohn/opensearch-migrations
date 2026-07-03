@@ -815,6 +815,9 @@ class WorkflowTreeApp(App):
             if self._is_removable_edit_node(node):
                 self.bind("delete", "remove_config_node", description="Remove")
                 self.bind("backspace", "remove_config_node", show=False)
+            elif self._config_node_can_unset(node or {}):
+                self.bind("delete", "clear_config_node", description="Clear")
+                self.bind("backspace", "clear_config_node", description="Clear", show=False)
             self.refresh_bindings()
             return
 
@@ -856,6 +859,7 @@ class WorkflowTreeApp(App):
                 (node or {}).get("valueKind"),
                 bool((node or {}).get("command")),
                 self._is_removable_edit_node(node),
+                self._config_node_can_unset(node or {}),
             )
 
         node = node or {}
@@ -2225,7 +2229,7 @@ class WorkflowTreeApp(App):
         return (
             node.get("presence") == "optional"
             and not node.get("required")
-            and node.get("valueKind") in {"scalar", "boolean", "object", "array"}
+            and node.get("valueKind") in {"scalar", "boolean", "object", "array", "union"}
         )
 
     def _handle_config_variant_choice(
@@ -2442,6 +2446,12 @@ class WorkflowTreeApp(App):
             ConfirmModal(f"Remove config entry '{'.'.join(path)}' from pending YAML?"),
             lambda confirmed: self._remove_config_node(path) if confirmed else None,
         )
+
+    def action_clear_config_node(self) -> None:
+        node = selected_edit_node(self.tree_root_widget)
+        if not node or not self._config_node_can_unset(node):
+            return
+        self._unset_config_node(node)
 
     @staticmethod
     def _is_removable_config_path(path: list[str]) -> bool:
@@ -2695,7 +2705,12 @@ class WorkflowTreeApp(App):
             for node in cls._required_edit_targets(parent.get("children") or [])
             if node.get("id")
         ]
-        return candidates[0] if len(candidates) == 1 else None
+        if len(candidates) == 1:
+            return candidates[0]
+        if not candidates and cls._is_required_edit_target(parent):
+            descendants = cls._editable_descendant_ids(parent.get("children") or [])
+            return descendants[0] if len(descendants) == 1 else None
+        return None
 
     @classmethod
     def _required_edit_targets(cls, nodes) -> list[Dict]:
@@ -2727,6 +2742,15 @@ class WorkflowTreeApp(App):
                 return node
             stack.extend(node.get("children") or [])
         return None
+
+    @classmethod
+    def _editable_descendant_ids(cls, nodes) -> list[str]:
+        descendants = []
+        for node in nodes or []:
+            if cls._opens_config_edit_dialog(node) and node.get("id"):
+                descendants.append(node.get("id"))
+            descendants.extend(cls._editable_descendant_ids(node.get("children") or []))
+        return descendants
 
     def _array_add_auto_edit_target(self, node: Dict) -> tuple[Optional[str], Optional[list[str]]]:
         path = [str(part) for part in (node.get("path") or [])]

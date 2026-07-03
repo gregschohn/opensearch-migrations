@@ -525,7 +525,6 @@ describe("editConfig state", () => {
             status: "ok",
             effectiveDefault: {
                 label: "scram-sha-512",
-                source: "workflow policy",
             },
         });
         expect(findNode(state.nodes, "edit:kafkaClusterConfiguration.default.autoCreate.auth")?.variants?.map(variant => variant.value)).toEqual([
@@ -757,7 +756,21 @@ describe("editConfig state", () => {
             "LoadBalancer",
             "ClusterIP",
         ]);
-        expect(tls).toMatchObject({presence: "optional", valueKind: "union", value: "unset"});
+        expect(tls).toMatchObject({
+            presence: "optional",
+            valueKind: "union",
+            value: "unset",
+            effectiveDefault: {
+                label: "cert-manager self-signed",
+                description: expect.stringContaining("preconfigured self-signed issuer"),
+            },
+        });
+        expect(tls?.label).toContain("tls: < default: cert-manager self-signed >");
+        expect(tls?.variants?.[0]).toMatchObject({
+            label: "default (cert-manager self-signed)",
+            value: "unset",
+            description: expect.stringContaining("preconfigured self-signed issuer"),
+        });
         expect(setHeader).toMatchObject({presence: "optional", valueKind: "array"});
         expect(suppressHeaderMatch).toMatchObject({
             presence: "optional",
@@ -1195,9 +1208,72 @@ describe("editConfig state", () => {
 
         expect(result.yaml).toContain("mode: existingSecret");
         expect(result.yaml).toContain("clientAuth:");
-        expect(result.yaml).toContain("required: true");
+        expect(result.yaml).not.toContain("required:");
         expect(tls?.label).toContain("tls: < existingSecret >");
         expect(clientAuth).toMatchObject({valueKind: "union", value: "enabled"});
+    });
+
+    it("renders proxy clientAuth file refs as object unions", () => {
+        const enabled = applyEditOperationToObject({
+            sourceClusters: {source: {endpoint: "", version: "ES 7.10.2"}},
+            targetClusters: {},
+            traffic: {
+                proxies: {
+                    cap: {
+                        source: "source",
+                        proxyConfig: {
+                            listenPort: 9201,
+                            tls: {mode: "existingSecret", secretName: "proxy-tls"},
+                        },
+                    },
+                },
+            },
+            snapshotMigrationConfigs: [],
+        }, {
+            op: "set",
+            path: ["traffic", "proxies", "cap", "proxyConfig", "tls", "clientAuth"],
+            value: "enabled",
+        });
+
+        const fileRef = findNode(
+            enabled.editState.nodes,
+            "edit:traffic.proxies.cap.proxyConfig.tls.clientAuth.trustedClientCaFile"
+        );
+        expect(fileRef).toMatchObject({
+            valueKind: "union",
+            value: "unset",
+        });
+        expect(fileRef?.variants?.map(variant => variant.value)).toEqual(["unset", "image", "configMap"]);
+
+        const configMapRef = applyEditOperationToObject(parse(enabled.yaml), {
+            op: "set",
+            path: ["traffic", "proxies", "cap", "proxyConfig", "tls", "clientAuth", "trustedClientCaFile"],
+            value: "configMap",
+        });
+        const parsed = parse(configMapRef.yaml);
+        expect(parsed.traffic.proxies.cap.proxyConfig.tls.clientAuth.trustedClientCaFile).toEqual({
+            configMap: "",
+            path: "",
+        });
+        expect(findNode(
+            configMapRef.editState.nodes,
+            "edit:traffic.proxies.cap.proxyConfig.tls.clientAuth.trustedClientCaFile.configMap"
+        )).toMatchObject({
+            valueKind: "scalar",
+            required: true,
+            externalRef: {
+                kind: "kubernetesResource",
+                purpose: "file-ref-config-map",
+                selection: {target: "scalarName"},
+                k8s: {
+                    resourceTypes: [{group: "", version: "v1", kind: "ConfigMap", namespaced: true}],
+                },
+            },
+        });
+        expect(findNode(
+            configMapRef.editState.nodes,
+            "edit:traffic.proxies.cap.proxyConfig.tls.clientAuth.trustedClientCaFile.path"
+        )).toMatchObject({valueKind: "scalar", required: true});
     });
 
     it("adds/removes nested traffic resources and switches Kafka mode", () => {
