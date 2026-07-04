@@ -3340,6 +3340,16 @@ exports[`test schemas matches expected argo schema matches expected 1`] = `
                           "description": "Minimum guaranteed resources for the container. Used by the Kubernetes scheduler for pod placement."
                         }
                       },
+                      "default": {
+                        "limits": {
+                          "cpu": "3500m",
+                          "memory": "3500Mi"
+                        },
+                        "requests": {
+                          "cpu": "3500m",
+                          "memory": "3500Mi"
+                        }
+                      },
                       "required": [
                         "limits",
                         "requests"
@@ -7524,7 +7534,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                   "description": "Reference to a specific snapshot from a specific source cluster, used to express dependencies."
                 },
                 "default": [],
-                "description": "List of snapshot migrations that must complete before this replayer starts. Ensures data consistency when replaying traffic that depends on backfilled data."
+                "description": "List of snapshot migrations that must complete before this replayer starts. Ensures data consistency when replaying traffic that depends on backfilled data.",
+                "x-essential": true
               },
               "replayerConfig": {
                 "type": "object",
@@ -7676,6 +7687,16 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                         "description": "Minimum guaranteed resources for the container. Used by the Kubernetes scheduler for pod placement."
                       }
                     },
+                    "default": {
+                      "limits": {
+                        "cpu": "3500m",
+                        "memory": "3500Mi"
+                      },
+                      "requests": {
+                        "cpu": "3500m",
+                        "memory": "3500Mi"
+                      }
+                    },
                     "required": [
                       "limits",
                       "requests"
@@ -7725,7 +7746,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                   "observedPacketConnectionTimeout": {
                     "type": "number",
                     "default": 360,
-                    "description": "Seconds of inactivity on a captured connection before assuming it was terminated in the original traffic stream. Must be strictly less than lookaheadTimeSeconds."
+                    "description": "Seconds of inactivity on a captured connection before assuming it was terminated in the original traffic stream. Must be strictly less than lookaheadTimeSeconds.",
+                    "x-essential": true
                   },
                   "otelTraceCollectorEndpoint": {
                     "anyOf": [
@@ -7771,12 +7793,14 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                   "speedupFactor": {
                     "type": "number",
                     "default": 1.1,
-                    "description": "Multiplier to accelerate replay timing relative to the original captured traffic. 1.0 = real-time, 2.0 = double speed."
+                    "description": "Multiplier to accelerate replay timing relative to the original captured traffic. 1.0 = real-time, 2.0 = double speed.",
+                    "x-essential": true
                   },
                   "targetServerResponseTimeoutSeconds": {
                     "type": "number",
                     "default": 150,
-                    "description": "Maximum seconds to wait for a response from the target cluster before timing out a replayed request."
+                    "description": "Maximum seconds to wait for a response from the target cluster before timing out a replayed request.",
+                    "x-essential": true
                   },
                   "transformerConfig": {
                     "type": "string",

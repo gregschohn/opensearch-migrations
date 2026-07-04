@@ -54,6 +54,8 @@ FIELD_VISIBILITY_LABELS = {
     FIELD_VISIBILITY_STANDARD: "Standard",
     FIELD_VISIBILITY_ALL: "All",
 }
+EXPERT_LABEL = "[expert]"
+EXPERT_LABEL_STYLE = "dim cyan"
 _STATE_LABELS = {
     EDIT_MODE_DEPLOYED: "deployed",
     EDIT_MODE_CURRENT_WORKFLOW: "workflow",
@@ -367,11 +369,26 @@ def _should_expand_edit_node(
     status, counts = _effective_status(edit_node, status_mode)
     if _has_attention_status(status, counts):
         return True
-    if _has_only_changed_status(status, counts):
-        return False
+    if _has_essential_visible_descendant(visible_children):
+        return True
     if _is_optional_unset_block(edit_node, visible_children):
         return False
+    if _has_only_changed_status(status, counts) and not _changed_container_should_expand(
+        edit_node,
+        visible_children,
+    ):
+        return False
     return True
+
+
+def _has_essential_visible_descendant(children: list[Dict[str, Any]]) -> bool:
+    stack = list(children)
+    while stack:
+        child = stack.pop()
+        if child.get("essential") and child.get("valueKind") != "command":
+            return True
+        stack.extend(child.get("children") or [])
+    return False
 
 
 def _has_attention_status(status: str, counts: Dict[str, Any]) -> bool:
@@ -408,6 +425,14 @@ def _is_optional_unset_block(edit_node: Dict[str, Any], visible_children: list[D
     return value_present and value in (None, "", "unset")
 
 
+def _changed_container_should_expand(edit_node: Dict[str, Any], visible_children: list[Dict[str, Any]]) -> bool:
+    if len(edit_node.get("path") or []) < 3:
+        return False
+    if edit_node.get("valueKind") not in {"array", "object", "record", "union"}:
+        return False
+    return any(child.get("valueKind") != "command" for child in visible_children)
+
+
 def _should_render_edit_node(
     edit_node: Dict[str, Any],
     status_mode: str,
@@ -437,6 +462,8 @@ def _should_render_edit_node(
         return True
     if _has_authored_edit_value(edit_node):
         return True
+    if edit_node.get("essential"):
+        return True
     is_expert = bool(edit_node.get("expert"))
     if field_visibility == FIELD_VISIBILITY_ESSENTIAL:
         return False
@@ -460,13 +487,13 @@ def _has_authored_edit_value(edit_node: Dict[str, Any]) -> bool:
         return False
     if edit_node.get("valueDefaulted"):
         return False
-    if edit_node.get("valueKind") in {"array", "object", "record"}:
-        return False
     if "value" not in edit_node:
         return False
     value = edit_node.get("value")
     if value in (None, "", "unset"):
         return False
+    if edit_node.get("valueKind") in {"array", "object", "record"}:
+        return bool(value)
     return True
 
 
@@ -474,8 +501,14 @@ def _node_label(edit_node: Dict[str, Any], value_mode: str, status_mode: str) ->
     status, counts = _effective_status(edit_node, status_mode)
     body = _label_body(edit_node, value_mode)
     badge = format_status_badge(status, counts)
-    label = f"{body} {badge}" if badge else body
-    return Text(label, style=STATUS_STYLE.get(status, ""))
+    status_style = STATUS_STYLE.get(status, "")
+    label = Text(body, style=status_style)
+    if edit_node.get("expert"):
+        label.append(" ", style=status_style)
+        label.append(EXPERT_LABEL, style=status_style or EXPERT_LABEL_STYLE)
+    if badge:
+        label.append(f" {badge}", style=status_style)
+    return label
 
 
 def _label_body(edit_node: Dict[str, Any], value_mode: str) -> str:

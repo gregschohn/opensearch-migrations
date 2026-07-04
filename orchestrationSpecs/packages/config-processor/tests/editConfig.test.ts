@@ -587,6 +587,44 @@ describe("editConfig state", () => {
             sourcePath: ["targetClusters"],
             options: [{label: "prod", value: "prod"}],
         });
+        expect(findNode(state.nodes, "edit:traffic.replayers.replay.dependsOnSnapshotMigrations")).toMatchObject({
+            valueKind: "array",
+            presence: "optional",
+            essential: true,
+        });
+        expect(findNode(state.nodes, "edit:traffic.replayers.replay.replayerConfig")).toMatchObject({
+            valueKind: "object",
+            presence: "optional",
+        });
+        expect(findNode(state.nodes, "edit:traffic.replayers.replay.replayerConfig.speedupFactor")).toMatchObject({
+            valueKind: "scalar",
+            valueType: "number",
+            essential: true,
+        });
+        expect(findNode(state.nodes, "edit:traffic.replayers.replay.replayerConfig.observedPacketConnectionTimeout")).toMatchObject({
+            valueKind: "scalar",
+            valueType: "number",
+            essential: true,
+        });
+        expect(findNode(state.nodes, "edit:traffic.replayers.replay.replayerConfig.targetServerResponseTimeoutSeconds")).toMatchObject({
+            valueKind: "scalar",
+            valueType: "number",
+            essential: true,
+        });
+        expect(findNode(state.nodes, "edit:traffic.replayers.replay.replayerConfig.removeAuthHeader")).toMatchObject({
+            valueKind: "boolean",
+        });
+        expect(findNode(state.nodes, "edit:traffic.replayers.replay.replayerConfig.resources")).toMatchObject({
+            valueKind: "object",
+            presence: "optional",
+            status: "ok",
+            valueDefaulted: true,
+        });
+        expect(findNode(state.nodes, "edit:traffic.replayers.replay.replayerConfig.resources.limits.cpu")).toMatchObject({
+            valueKind: "scalar",
+            status: "ok",
+        });
+        expect(findNode(state.nodes, "edit:traffic.replayers.replay.replayerConfig.resources.limits.cpu")?.required).not.toBe(true);
     });
 
     it("renders generic object override fields from the unified JSON schema", () => withUnifiedSchemaFixture(() => {

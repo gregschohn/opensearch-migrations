@@ -170,6 +170,8 @@ export interface FieldMeta {
     checksumFor?: ChecksumDependency[];
     /** Change restriction category for VAP generation. Omit for 'safe'. */
     changeRestriction?: 'impossible' | 'gated';
+    /** Optional field that should still appear in the first-pass guided editor. */
+    essential?: boolean;
     /** UI editing hint exported into JSON schema and edit-state DTOs. */
     uiHint?: UiHint;
     /** External resource reference hint exported into JSON schema and edit-state DTOs. */
@@ -184,6 +186,7 @@ declare module "zod" {
     interface ZodType {
         checksumFor(...deps: ChecksumDependency[]): this;
         changeRestriction(restriction: 'impossible' | 'gated'): this;
+        essential(): this;
         uiHint(hint: UiHint): this;
         externalRef(hint: ExternalRefHint): this;
         effectiveDefault(hint: EffectiveDefaultHint): this;
@@ -198,6 +201,11 @@ z.ZodType.prototype.checksumFor = function(...deps: ChecksumDependency[]) {
 z.ZodType.prototype.changeRestriction = function(restriction: 'impossible' | 'gated') {
     const existing = (this.meta() ?? {}) as FieldMeta;
     return this.meta({ ...existing, changeRestriction: restriction });
+};
+
+z.ZodType.prototype.essential = function() {
+    const existing = (this.meta() ?? {}) as FieldMeta;
+    return this.meta({ ...existing, essential: true });
 };
 
 z.ZodType.prototype.uiHint = function(hint: UiHint) {
@@ -1165,7 +1173,8 @@ export const USER_REPLAYER_WORKFLOW_OPTIONS = z.object({
         .describe("Kubernetes resource limits and requests for the replayer container. " +
             "Partial overrides are deep-merged with the built-in defaults. " +
             "By default, limits equal requests, giving the pod 'Guaranteed' QoS (least likely to be evicted). " +
-            "Setting requests lower than limits results in 'Burstable' QoS, allowing the pod to use less resources when idle but burst up to the limit."),
+            "Setting requests lower than limits results in 'Burstable' QoS, allowing the pod to use less resources when idle but burst up to the limit.")
+        .default(DEFAULT_RESOURCES.REPLAYER),
 }).describe("Kubernetes deployment-level options for the traffic replayer.");
 
 export const USER_REPLAYER_PROCESS_OPTIONS = z.object({
@@ -1192,7 +1201,8 @@ export const USER_REPLAYER_PROCESS_OPTIONS = z.object({
             "Common values: version_conflict_engine_exception, mapper_parsing_exception, " +
             "illegal_argument_exception, resource_already_exists_exception."),
     observedPacketConnectionTimeout: z.number().default(360).optional()
-        .describe("Seconds of inactivity on a captured connection before assuming it was terminated in the original traffic stream. Must be strictly less than lookaheadTimeSeconds."),
+        .describe("Seconds of inactivity on a captured connection before assuming it was terminated in the original traffic stream. Must be strictly less than lookaheadTimeSeconds.")
+        .essential(),
     otelTraceCollectorEndpoint: OTEL_TRACE_COLLECTOR_ENDPOINT,
     otelMetricsCollectorEndpoint: OTEL_METRICS_COLLECTOR_ENDPOINT,
     quiescentPeriodMs: z.number().default(5000).optional()
@@ -1201,9 +1211,11 @@ export const USER_REPLAYER_PROCESS_OPTIONS = z.object({
         .describe("Remove the Authorization header from replayed requests without replacing it. Useful when the target uses a different auth mechanism (e.g. SigV4) configured separately.")
         .changeRestriction('gated'),
     speedupFactor: z.number().default(1.1).optional()
-        .describe("Multiplier to accelerate replay timing relative to the original captured traffic. 1.0 = real-time, 2.0 = double speed."),
+        .describe("Multiplier to accelerate replay timing relative to the original captured traffic. 1.0 = real-time, 2.0 = double speed.")
+        .essential(),
     targetServerResponseTimeoutSeconds: z.number().default(150).optional()
-        .describe("Maximum seconds to wait for a response from the target cluster before timing out a replayed request."),
+        .describe("Maximum seconds to wait for a response from the target cluster before timing out a replayed request.")
+        .essential(),
     transformerConfig: z.string().optional()
         .describe("Inline request transformer configuration as a JSON string." + REQUEST_TRANSFORMER_SUFFIX)
         .changeRestriction('gated'),
@@ -1821,7 +1833,8 @@ export const REPLAYER_CONFIG = z.object({
             message: "Choose one target cluster from targetClusters.",
         }),
     dependsOnSnapshotMigrations: z.array(SNAPSHOT_MIGRATION_FILTER).default([]).optional()
-        .describe("List of snapshot migrations that must complete before this replayer starts. Ensures data consistency when replaying traffic that depends on backfilled data."),
+        .describe("List of snapshot migrations that must complete before this replayer starts. Ensures data consistency when replaying traffic that depends on backfilled data.")
+        .essential(),
     replayerConfig: USER_REPLAYER_OPTIONS.optional()
         .describe("Optional replayer configuration overrides. If omitted, replayer runs with schema defaults.")
 }).describe("Configuration for a single traffic replayer instance, binding a captured-traffic source (live proxy or S3 dump) to a target cluster.");
