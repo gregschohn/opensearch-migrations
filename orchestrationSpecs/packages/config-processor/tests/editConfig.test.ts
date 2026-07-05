@@ -571,6 +571,12 @@ describe("editConfig state", () => {
         expect(cleanLabel(findNode(state.nodes, "edit:traffic.s3Sources.archive"))).toBe("archive");
         expect(cleanLabel(findNode(state.nodes, "edit:traffic.replayers.replay"))).toBe("replay");
         expect(findNode(state.nodes, "edit:snapshotMigrationConfigs.0")?.label).toContain("snapshot migration: legacy -> prod");
+        expect(findNode(state.nodes, "edit:snapshotMigrationConfigs.0.perSnapshotConfig")).toMatchObject({
+            valueKind: "record",
+            presence: "required",
+            essential: true,
+        });
+        expect(findNode(state.nodes, "edit:snapshotMigrationConfigs.0.perSnapshotConfig:add")?.label).toBe("+ Add snapshot name");
         expect(findNode(state.nodes, "edit:snapshotMigrationConfigs:add")?.label).toContain("+ Add snapshot migration");
         expect(findNode(state.nodes, "edit:traffic.proxies.capture.source")?.inputHint).toMatchObject({
             kind: "reference",
@@ -625,6 +631,138 @@ describe("editConfig state", () => {
             status: "ok",
         });
         expect(findNode(state.nodes, "edit:traffic.replayers.replay.replayerConfig.resources.limits.cpu")?.required).not.toBe(true);
+    });
+
+    it("renders nested snapshot migration pass configuration", () => {
+        const state = buildEditStateFromObject({
+            sourceClusters: {legacy: {endpoint: "https://legacy.example.com:9200", version: "ES 7.10.2"}},
+            targetClusters: {prod: {endpoint: "https://prod.example.com:9200"}},
+            kafkaClusterConfiguration: {},
+            snapshotMigrationConfigs: [{
+                fromSource: "legacy",
+                toTarget: "prod",
+                perSnapshotConfig: {
+                    snap1: [{metadataMigrationConfig: {}, documentBackfillConfig: {}}],
+                },
+            }],
+            traffic: {proxies: {}, s3Sources: {}, replayers: {}},
+        });
+
+        expect(findNode(state.nodes, "edit:snapshotMigrationConfigs.0.perSnapshotConfig")).toMatchObject({
+            valueKind: "record",
+            presence: "required",
+            essential: true,
+        });
+        expect(findNode(state.nodes, "edit:snapshotMigrationConfigs.0.perSnapshotConfig:add")?.label).toBe("+ Add snapshot name");
+        expect(findNode(state.nodes, "edit:snapshotMigrationConfigs.0.perSnapshotConfig.snap1")).toMatchObject({
+            valueKind: "array",
+            presence: "required",
+            essential: true,
+        });
+        expect(findNode(state.nodes, "edit:snapshotMigrationConfigs.0.perSnapshotConfig.snap1:add")?.label).toBe("+ Add migration pass");
+        expect(findNode(state.nodes, "edit:snapshotMigrationConfigs.0.perSnapshotConfig.snap1.0")).toMatchObject({
+            valueKind: "object",
+            presence: "required",
+            essential: true,
+        });
+        expect(findNode(state.nodes, "edit:snapshotMigrationConfigs.0.perSnapshotConfig.snap1.0")?.label).toContain("metadata + documents");
+        expect(findNode(state.nodes, "edit:snapshotMigrationConfigs.0.perSnapshotConfig.snap1.0.metadataMigrationConfig")).toMatchObject({
+            valueKind: "object",
+            presence: "optional",
+        });
+        expect(findNode(state.nodes, "edit:snapshotMigrationConfigs.0.perSnapshotConfig.snap1.0.documentBackfillConfig")).toMatchObject({
+            valueKind: "object",
+            presence: "optional",
+            essential: true,
+        });
+        expect(findNode(state.nodes, "edit:snapshotMigrationConfigs.0.perSnapshotConfig.snap1.0.documentBackfillConfig.podReplicas")).toMatchObject({
+            valueKind: "scalar",
+            valueType: "number",
+            essential: true,
+            value: 1,
+            valueDefaulted: true,
+        });
+    });
+
+    it("adds snapshot migration snapshot names without replacing the migration list", () => {
+        const addedSnapshotName = applyEditOperationToObject({
+            sourceClusters: {legacy: {endpoint: "https://legacy.example.com:9200", version: "ES 7.10.2"}},
+            targetClusters: {prod: {endpoint: "https://prod.example.com:9200"}},
+            kafkaClusterConfiguration: {},
+            snapshotMigrationConfigs: [{fromSource: "legacy", toTarget: "prod", perSnapshotConfig: {}}],
+            traffic: {proxies: {}, s3Sources: {}, replayers: {}},
+        }, {
+            op: "add",
+            path: ["snapshotMigrationConfigs", "0", "perSnapshotConfig"],
+            value: {name: "all"},
+        });
+        const addedSnapshotConfig = parse(addedSnapshotName.yaml);
+
+        expect(Array.isArray(addedSnapshotConfig.snapshotMigrationConfigs)).toBe(true);
+        expect(addedSnapshotConfig.snapshotMigrationConfigs[0].perSnapshotConfig).toEqual({all: []});
+        expect(findNode(addedSnapshotName.editState.nodes, "edit:snapshotMigrationConfigs.0.perSnapshotConfig.all")).toMatchObject({
+            valueKind: "array",
+            presence: "required",
+            essential: true,
+        });
+
+        const addedMigrationPass = applyEditOperationToObject(addedSnapshotConfig, {
+            op: "add",
+            path: ["snapshotMigrationConfigs", "0", "perSnapshotConfig", "all"],
+            value: {},
+        });
+        const addedMigrationPassConfig = parse(addedMigrationPass.yaml);
+
+        expect(addedMigrationPassConfig.snapshotMigrationConfigs[0].perSnapshotConfig.all).toEqual([{}]);
+        expect(findNode(addedMigrationPass.editState.nodes, "edit:snapshotMigrationConfigs.0.perSnapshotConfig.all.0")).toMatchObject({
+            valueKind: "object",
+            presence: "required",
+            essential: true,
+            status: "required",
+            label: "migration pass 1: choose metadata and/or document backfill",
+        });
+        expect(findNode(addedMigrationPass.editState.nodes, "edit:snapshotMigrationConfigs.0.perSnapshotConfig.all.0.metadataMigrationConfig:add")).toMatchObject({
+            valueKind: "command",
+            label: "+ Add metadata migration",
+            command: {
+                requiresName: false,
+                autoEditAdded: false,
+            },
+        });
+        expect(findNode(addedMigrationPass.editState.nodes, "edit:snapshotMigrationConfigs.0.perSnapshotConfig.all.0.documentBackfillConfig:add")).toMatchObject({
+            valueKind: "command",
+            label: "+ Add document backfill",
+            command: {
+                requiresName: false,
+                autoEditAdded: false,
+            },
+        });
+
+        const addedMetadataMigration = applyEditOperationToObject(addedMigrationPassConfig, {
+            op: "add",
+            path: ["snapshotMigrationConfigs", "0", "perSnapshotConfig", "all", "0", "metadataMigrationConfig"],
+            value: {},
+        });
+        const addedMetadataMigrationConfig = parse(addedMetadataMigration.yaml);
+
+        expect(addedMetadataMigrationConfig.snapshotMigrationConfigs[0].perSnapshotConfig.all).toEqual([
+            {metadataMigrationConfig: {}},
+        ]);
+        expect(findNode(addedMetadataMigration.editState.nodes, "edit:snapshotMigrationConfigs.0.perSnapshotConfig.all.0")).toMatchObject({
+            valueKind: "object",
+            essential: true,
+            status: "ok",
+            label: "migration pass 1: metadata",
+        });
+        expect(findNode(addedMetadataMigration.editState.nodes, "edit:snapshotMigrationConfigs.0.perSnapshotConfig.all.0.metadataMigrationConfig")).toMatchObject({
+            valueKind: "object",
+            presence: "optional",
+            essential: true,
+        });
+        expect(findNode(addedMetadataMigration.editState.nodes, "edit:snapshotMigrationConfigs.0.perSnapshotConfig.all.0.documentBackfillConfig:add")).toMatchObject({
+            valueKind: "command",
+            label: "+ Add document backfill",
+        });
     });
 
     it("renders generic object override fields from the unified JSON schema", () => withUnifiedSchemaFixture(() => {

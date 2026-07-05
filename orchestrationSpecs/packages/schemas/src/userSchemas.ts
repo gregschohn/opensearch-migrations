@@ -1421,8 +1421,9 @@ export const USER_METADATA_OPTIONS = z.object({
 
 export const USER_RFS_WORKFLOW_OPTIONS = z.object({
     podReplicas: z.number().default(1).optional()
-        .describe("Number of RFS worker pod replicas. Each replica independently acquires and processes snapshot shards in parallel —" + 
-            " throughput scales linearly up to the total number of source shards."),
+        .describe("Number of RFS worker pod replicas. Each replica independently acquires and processes snapshot shards in parallel —" +
+            " throughput scales linearly up to the total number of source shards.")
+        .essential(),
     jvmArgs: z.string().default("").optional()
         .describe(JVM_ARGS_DESC),
     loggingConfigurationOverrideConfigMap: z.string().default("").optional()
@@ -2042,13 +2043,21 @@ export const USER_PER_INDICES_SNAPSHOT_MIGRATION_CONFIG = z.object({
 
 export const SNAPSHOT_MIGRATION_CONFIG_ARRAY =
     z.array(USER_PER_INDICES_SNAPSHOT_MIGRATION_CONFIG)
+    .min(1)
+    .uiHint({kind: 'array', addLabel: 'migration pass'})
     .describe("List of migrations to execute for a single snapshot. " +
         " Each migration must configure metadata migration, document backfill, or both." +
         " These migrations will execute concurrently as dependent snapshots finish.");
 
 export const PER_SNAPSHOT_MIGRATION_CONFIG_RECORD =
     z.record(z.string().regex(/^[a-zA-Z][a-zA-Z0-9]*/),
-        SNAPSHOT_MIGRATION_CONFIG_ARRAY.min(1))
+        SNAPSHOT_MIGRATION_CONFIG_ARRAY)
+    .uiHint({
+        kind: 'record',
+        addLabel: 'snapshot name',
+        keyPattern: '^[a-zA-Z][a-zA-Z0-9]*',
+        message: "Use a snapshot name defined under the selected source cluster's snapshotInfo.snapshots.",
+    })
     .describe("Map of snapshot names to their migration configurations. Keys must match snapshot names defined in the source cluster's snapshotInfo.snapshots.");
 
 export const NORMALIZED_PARAMETERIZED_MIGRATION_CONFIG = z.object({
@@ -2069,7 +2078,8 @@ export const NORMALIZED_PARAMETERIZED_MIGRATION_CONFIG = z.object({
             message: "Choose one target cluster from targetClusters.",
         }),
     perSnapshotConfig: PER_SNAPSHOT_MIGRATION_CONFIG_RECORD
-        .describe("Per-snapshot migration configurations. Each entry maps a snapshot name to one or more migration passes (metadata + document backfill)."),
+        .describe("Per-snapshot migration configurations. Each entry maps a snapshot name to one or more migration passes (metadata + document backfill).")
+        .essential(),
 }).describe("A snapshot-based migration configuration binding a source cluster to a target cluster with per-snapshot migration settings.").superRefine((data, ctx) => {
     if (!data.perSnapshotConfig) return;
     for (const [snapName, migrations] of Object.entries(data.perSnapshotConfig)) {
