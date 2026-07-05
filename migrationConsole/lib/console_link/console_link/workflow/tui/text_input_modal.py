@@ -9,6 +9,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Static
 from rich.markup import escape
 
+from .doc_markup import documentation_markup
 from .modal_button_navigation import BUTTON_ARROW_BINDINGS, ButtonArrowNavigationMixin, ModalButton
 from .modal_results import CLEAR_VALUE
 
@@ -16,13 +17,13 @@ from .modal_results import CLEAR_VALUE
 class TextInputModal(ButtonArrowNavigationMixin, ModalScreen[Optional[Any]]):
     CSS = """
     TextInputModal { align: center middle; background: $background 60%; }
-    #dialog { width: 72; height: auto; border: thick $primary; background: $surface; padding: 0 1; }
-    #prompt { margin-bottom: 0; }
+    #dialog { width: 72; height: auto; border: thick $primary; background: $surface; padding: 1 2; }
+    #prompt { margin-bottom: 1; }
     #documentation { color: gray; margin-bottom: 1; }
-    #value { margin-bottom: 0; }
+    #value { margin-bottom: 1; }
     #validation { color: $error; margin-bottom: 0; min-height: 1; }
     #remote-validation { margin-bottom: 1; min-height: 1; }
-    #regex-help { color: gray; margin-bottom: 0; }
+    #regex-help { color: gray; margin-top: 1; margin-bottom: 0; }
     #regex-samples { color: gray; margin-bottom: 1; }
     #buttons { align: center middle; height: 1; }
     Button { margin: 0 1 0 0; min-width: 5; height: 1; min-height: 1; border: none; padding: 0 1; }
@@ -62,7 +63,7 @@ class TextInputModal(ButtonArrowNavigationMixin, ModalScreen[Optional[Any]]):
     def compose(self) -> ComposeResult:
         with Container(id="dialog"):
             yield Static(escape(self.prompt), id="prompt")
-            yield Static(escape(self.documentation), id="documentation")
+            yield Static(documentation_markup(self.documentation), id="documentation")
             yield Input(value=self.initial_value, id="value", select_on_focus=False)
             yield Static("", id="validation")
             yield Static("", id="remote-validation")

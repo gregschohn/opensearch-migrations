@@ -65,8 +65,10 @@ import {
     jsonSchemaDiscriminator,
     jsonSchemaEnumValues,
     jsonSchemaForConfigPath,
+    jsonSchemaObjectUnionBranches,
     jsonSchemaType,
     jsonDiscriminatedUnionValueForVariant,
+    jsonObjectUnionValueForVariant,
     objectChildrenFromValue,
     objectUnionBranches,
     objectUnionValueForVariant,
@@ -165,7 +167,11 @@ interface RecordGroupSpec {
 function recordGroupNode(spec: RecordGroupSpec): EditNode {
     const children = Object.entries(spec.config ?? {})
         .sort(([a], [b]) => a.localeCompare(b))
-        .map(([name, value]) => spec.itemNode(name, value));
+        .map(([name, value]) => {
+            const node = spec.itemNode(name, value);
+            node.removable = true;
+            return node;
+        });
     children.push(addRow(
         spec.path,
         spec.addLabel,
@@ -540,6 +546,7 @@ function snapshotMigrationNode(index: number, value: any, ctx: EditContext): Edi
         path: rootPath,
         label: `snapshot migration: ${fromSource || "<source>"} -> ${toTarget || "<target>"}`,
         valueKind: "object",
+        removable: true,
         description: SNAPSHOT_MIGRATION_DESCRIPTION,
         status: "ok",
         children,
@@ -550,7 +557,11 @@ function snapshotPerConfigNode(path: string[], value: unknown): EditNode {
     const recordValue = isPlainObject(value) ? value : {};
     const children = Object.entries(recordValue)
         .sort(([a], [b]) => a.localeCompare(b))
-        .map(([snapshotName, migrations]) => snapshotMigrationPassArrayNode([...path, snapshotName], snapshotName, migrations));
+        .map(([snapshotName, migrations]) => {
+            const node = snapshotMigrationPassArrayNode([...path, snapshotName], snapshotName, migrations);
+            node.removable = true;
+            return node;
+        });
     children.push(addRow(
         path,
         "snapshot name",
@@ -638,6 +649,7 @@ function snapshotMigrationPassNode(path: string[], index: number, value: unknown
         valueKind: "object",
         presence: "required",
         essential: true,
+        removable: true,
         description: schemaDescription(USER_PER_INDICES_SNAPSHOT_MIGRATION_CONFIG),
         required: true,
         status: missingMigrationType ? "required" : "ok",
@@ -1049,6 +1061,15 @@ function setAtPath(config: any, path: string[], value: unknown): void {
         }
         return;
     }
+    if (jsonSchema && jsonSchemaObjectUnionBranches(jsonSchema).length) {
+        const next = jsonObjectUnionValueForVariant(jsonSchema, parent[key], value);
+        if (next === undefined) {
+            delete parent[key];
+        } else {
+            parent[key] = next;
+        }
+        return;
+    }
     if (jsonSchema && jsonSchemaEnumValues(jsonSchema).length > 0 && value === "unset") {
         delete parent[key];
         return;
@@ -1125,7 +1146,12 @@ function defaultConfigValueForSchema(schema: any): unknown {
     if (schemaArrayElement(schema)) {
         return [];
     }
-    if (schemaShape(schema) || zodRecordValueSchema(schema)) {
+    if (
+        schemaShape(schema)
+        || zodRecordValueSchema(schema)
+        || objectUnionBranches(schema).length > 0
+        || discriminatorForSchema(schema)
+    ) {
         return {};
     }
     return "";

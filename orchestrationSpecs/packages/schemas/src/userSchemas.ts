@@ -4,8 +4,10 @@ import { DEFAULT_RESOURCES, parseK8sQuantity } from "./schemaUtilities";
 // ── Schema field metadata ────────────────────────────────────────────
 // Downstream dependency names used in checksumFor annotations.
 export type ChecksumDependency = 'snapshot' | 'snapshotMigration' | 'replayer';
-export type UiTextFormat = 'text' | 'http-endpoint' | 'optional-http-endpoint' | 'cluster-version' | 'k8s-name';
-export type UiHint =
+export type UiTextFormat = 'text' | 'http-endpoint' | 'optional-http-endpoint' | 'cluster-version' | 'k8s-name' | 'oci-image-reference';
+export type UiHint = {
+    label?: string;
+} & (
     | {
         kind: 'text';
         format?: UiTextFormat;
@@ -36,7 +38,8 @@ export type UiHint =
     | {
         kind: 'array';
         addLabel: string;
-    };
+    }
+);
 
 export interface EffectiveDefaultHint {
     label: string;
@@ -190,6 +193,7 @@ declare module "zod" {
         uiHint(hint: UiHint): this;
         externalRef(hint: ExternalRefHint): this;
         effectiveDefault(hint: EffectiveDefaultHint): this;
+        expert(): this;
     }
 }
 
@@ -221,6 +225,11 @@ z.ZodType.prototype.externalRef = function(hint: ExternalRefHint) {
 z.ZodType.prototype.effectiveDefault = function(hint: EffectiveDefaultHint) {
     const existing = (this.meta() ?? {}) as FieldMeta;
     return this.meta({ ...existing, effectiveDefault: hint });
+};
+
+z.ZodType.prototype.expert = function() {
+    const existing = (this.meta() ?? {}) as FieldMeta;
+    return this.meta({ ...existing, expert: true });
 };
 
 const REQUEST_TRANSFORMER_SUFFIX = " Request transformers modify each captured HTTP request before it is replayed to the target cluster.";
@@ -667,6 +676,14 @@ const DNS_NAME_UI_HINT: UiHint = {
     pattern: DNS_NAME_PATTERN,
     message: "Use a DNS name without a scheme, port, path, or spaces. Wildcards are allowed only as the leftmost label, like *.example.com.",
 };
+export const OCI_IMAGE_REFERENCE_PATTERN = /^(?=.{1,255}$)(?:(?:localhost|[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*)(?::[0-9]+)?\/)?[a-z0-9]+(?:(?:[._]|__|[-]+)[a-z0-9]+)*(?:\/[a-z0-9]+(?:(?:[._]|__|[-]+)[a-z0-9]+)*)*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?(?:@[A-Za-z][A-Za-z0-9]*(?:[+._-][A-Za-z][A-Za-z0-9]*)*:[0-9a-fA-F]{32,})?$/;
+const OCI_IMAGE_REFERENCE_MESSAGE = "Use an OCI image reference like repo/name:tag, registry:5000/repo/name:tag, or repo/name@sha256:<digest>; spaces and extra colons are not allowed.";
+const OCI_IMAGE_REFERENCE_UI_HINT: UiHint = {
+    kind: 'text',
+    format: 'oci-image-reference',
+    pattern: OCI_IMAGE_REFERENCE_PATTERN.source,
+    message: OCI_IMAGE_REFERENCE_MESSAGE,
+};
 
 export const FILE_RELATIVE_PATH = z.string()
     .regex(/^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$)).+$/)
@@ -685,18 +702,20 @@ export const CERTIFICATE_DNS_NAME = z.string()
 
 export const FILE_REF_FROM_IMAGE = z.object({
     image: z.string().min(1)
+        .regex(OCI_IMAGE_REFERENCE_PATTERN, OCI_IMAGE_REFERENCE_MESSAGE)
+        .uiHint(OCI_IMAGE_REFERENCE_UI_HINT)
         .describe("OCI image reference (preferably with digest) whose mounted filesystem contains the requested file."),
     pullPolicy: K8S_IMAGE_PULL_POLICY.default("IfNotPresent").optional()
         .describe("Kubernetes image pull policy. Use 'Always' for mutable tags like 'latest'; leave as 'IfNotPresent' for immutable tags or digests."),
     path: FILE_RELATIVE_PATH
-}).strict();
+}).strict().describe("Load one file from a mountable OCI image.");
 
 export const FILE_REF_FROM_CONFIGMAP = z.object({
     configMap: z.string().min(1)
         .externalRef(FILE_REF_CONFIG_MAP_EXTERNAL_REF)
         .describe("Name of a pre-existing Kubernetes ConfigMap."),
     path: CONFIGMAP_FILE_KEY
-}).strict();
+}).strict().describe("Load one file from a Kubernetes ConfigMap key.");
 
 export const FILE_REF = z.union([
     FILE_REF_FROM_IMAGE,
@@ -709,55 +728,80 @@ export const INLINE_JSON_VALUE = z.any()
 export const TRANSFORM_CONTEXT_VALUE_DIRECTORY = z.union([
     z.object({
         configMap: z.string().min(1)
-    }).strict(),
+            .externalRef(FILE_REF_CONFIG_MAP_EXTERNAL_REF)
+            .describe("Name of a pre-existing Kubernetes ConfigMap. Each key becomes one transform context value.")
+    }).strict().describe("Load transform context values from every key in a ConfigMap."),
     z.object({
-        image: z.string().min(1),
+        image: z.string().min(1)
+            .regex(OCI_IMAGE_REFERENCE_PATTERN, OCI_IMAGE_REFERENCE_MESSAGE)
+            .uiHint(OCI_IMAGE_REFERENCE_UI_HINT)
+            .describe("OCI image reference whose mounted filesystem contains transform context files."),
         pullPolicy: K8S_IMAGE_PULL_POLICY.default("IfNotPresent").optional(),
         path: FILE_RELATIVE_PATH.optional()
-    }).strict()
+    }).strict().describe("Load transform context values from files under a directory in a mountable OCI image.")
 ]).describe("Directory whose immediate files become transform context values.");
 
 export const CONFIG_VALUE_FROM_FILE = z.object({
-    fromFile: FILE_REF
-}).strict();
+    fromFile: FILE_REF.describe("File source for one named transform context value.")
+}).strict().describe("Load this named context value from a single ConfigMap key or mountable OCI image file.");
 
 export const TRANSFORM_CONTEXT_VALUE = z.union([
-    z.object({value: INLINE_JSON_VALUE}).strict(),
+    z.object({
+        value: INLINE_JSON_VALUE
+            .describe("Inline JSON-compatible value made available to the transform under this context name.")
+    }).strict().describe("Inline context value stored directly in workflow YAML."),
     CONFIG_VALUE_FROM_FILE
-]);
+]).describe("One named transform context value. Choose an inline JSON-compatible value or a file-backed value.");
 
 export const TRANSFORM_CONTEXT = z.union([
     z.string(),
     z.object({
-        valueDirectories: z.array(TRANSFORM_CONTEXT_VALUE_DIRECTORY).default([]).optional(),
-        values: z.record(z.string(), TRANSFORM_CONTEXT_VALUE).default({}).optional()
+        valueDirectories: z.array(TRANSFORM_CONTEXT_VALUE_DIRECTORY)
+            .uiHint({kind: "array", label: "value directories", addLabel: "context value directory"})
+            .default([])
+            .optional()
+            .essential()
+            .describe("Directories of context values. Each ConfigMap key or immediate file under the mounted directory becomes a named context value."),
+        values: z.record(z.string(), TRANSFORM_CONTEXT_VALUE)
+            .uiHint({
+                kind: "record",
+                label: "named values",
+                addLabel: "context value",
+                message: "Name used by transform code to read this context value."
+            })
+            .default({})
+            .optional()
+            .essential()
+            .describe("Named transform context values. Add a context name, then choose an inline value or a single file source for that name.")
     }).strict()
 ]).describe("Optional transform provider context. Values are either inline or loaded at runtime from mounted files.");
 
 export const SCRIPT_TRANSFORM_ENTRY_POINT = z.union([
-    z.object({javascript: z.string().min(1)}).strict(),
-    z.object({javascriptFile: FILE_REF}).strict(),
-    z.object({python: z.string().min(1)}).strict(),
-    z.object({pythonFile: FILE_REF}).strict()
-]);
+    z.object({javascript: z.string().min(1).essential()}).strict()
+        .describe("**Inline JavaScript** transform source. The script body is stored directly in workflow YAML."),
+    z.object({javascriptFile: FILE_REF.essential()}).strict()
+        .describe("**External JavaScript file** loaded from a ConfigMap key or mountable OCI image. Use this when package-transforms.sh produced an image reference."),
+    z.object({python: z.string().min(1).essential()}).strict()
+        .describe("**Inline Python** transform source. The script body is stored directly in workflow YAML."),
+    z.object({pythonFile: FILE_REF.essential()}).strict()
+        .describe("**External Python file** loaded from a ConfigMap key or mountable OCI image. Use this when package-transforms.sh produced an image reference.")
+]).describe("Script transform entry point. Choose **javascript/python** for inline source code, or **javascriptFile/pythonFile** for a script loaded from a ConfigMap key or mountable OCI image.");
 
-export const TRANSFORM_SPEC = z.object({
-    entryPoint: SCRIPT_TRANSFORM_ENTRY_POINT.optional(),
-    transformName: z.string().optional(),
-    context: TRANSFORM_CONTEXT.optional()
-}).strict().superRefine((value, ctx) => {
-    const selectorCount = [
-        value.entryPoint !== undefined,
-        value.transformName !== undefined
-    ].filter(Boolean).length;
-
-    if (selectorCount !== 1) {
-        ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: "Exactly one of entryPoint or transformName is required"
-        });
-    }
-});
+export const TRANSFORM_SPEC = z.union([
+    z.object({
+        entryPoint: SCRIPT_TRANSFORM_ENTRY_POINT
+            .describe("Script transform entry point. Choose **javascript/python** for inline source code, or **javascriptFile/pythonFile** for a script loaded from a ConfigMap key or mountable OCI image.")
+            .essential(),
+        context: TRANSFORM_CONTEXT.optional().essential()
+    }).strict().describe("Run a JavaScript/Python transform from inline source code or from an external file source."),
+    z.object({
+        transformName: z.string().min(1)
+            .describe("Name of a built-in transform provider to run.")
+            .essential(),
+        context: TRANSFORM_CONTEXT.optional().essential()
+    }).strict().describe("Run a named built-in transform provider."),
+], {error: "Exactly one of entryPoint or transformName is required"})
+    .describe("Transform specification. Choose exactly one of entryPoint or transformName.");
 
 export const TRANSFORM_PIPELINE = z.preprocess(
     v => v === undefined || Array.isArray(v) ? v : [v],
@@ -1218,27 +1262,35 @@ export const USER_REPLAYER_PROCESS_OPTIONS = z.object({
         .essential(),
     transformerConfig: z.string().optional()
         .describe("Inline request transformer configuration as a JSON string." + REQUEST_TRANSFORMER_SUFFIX)
+        .expert()
         .changeRestriction('gated'),
     transformerConfigEncoded: z.string().optional()
         .describe("Base64-encoded request transformer configuration, for configurations that would be cumbersome to otherwise encode in a JSON field." + REQUEST_TRANSFORMER_SUFFIX)
+        .expert()
         .changeRestriction('gated'),
     transformerConfigFile: z.string().optional()
         .describe("Path to a JSON file containing request transformer configuration." + REQUEST_TRANSFORMER_SUFFIX + EXPERT_FILE_SUFFIX)
+        .expert()
         .changeRestriction('gated'),
     requestTransforms: TRANSFORM_PIPELINE.optional()
         .describe("Request transform pipeline. Generates the existing transformerConfig inline JSON option.")
+        .essential()
         .changeRestriction('gated'),
     tupleTransformerConfig: z.string().optional()
         .describe("Inline tuple transformer configuration as a JSON string." + TUPLE_TRANSFORMER_SUFFIX)
+        .expert()
         .changeRestriction('gated'),
     tupleTransformerConfigBase64: z.string().optional()
         .describe("Base64-encoded tuple transformer configuration." + TUPLE_TRANSFORMER_SUFFIX)
+        .expert()
         .changeRestriction('gated'),
     tupleTransformerConfigFile: z.string().optional()
         .describe("Path to a JSON file containing tuple transformer configuration." + TUPLE_TRANSFORMER_SUFFIX + EXPERT_FILE_SUFFIX)
+        .expert()
         .changeRestriction('gated'),
     tupleTransforms: TRANSFORM_PIPELINE.optional()
         .describe("Tuple transform pipeline. Generates the existing tupleTransformerConfig inline JSON option.")
+        .essential()
         .changeRestriction('gated'),
     tupleS3Bucket: z.string().optional()
         .describe("S3 bucket for tuple output. When set, tuples are written directly to S3.")
@@ -1361,18 +1413,21 @@ export const USER_METADATA_PROCESS_OPTIONS = z.object({
         .uiHint({kind: 'array', addLabel: 'component template'})
         .describe("List of component template names to include in the metadata migration. " +
             "Each entry is either an exact name or a regex pattern prefixed with 'regex:'. " +
-            "An empty list includes all non-system component templates."),
+            "An empty list includes all non-system component templates.")
+        .essential(),
     indexAllowlist: z.array(z.string()).default([]).optional()
         .uiHint({kind: 'array', addLabel: 'index pattern'})
         .describe("Filters which indices are migrated at the metadata stage — evaluated client-side on the snapshot contents after the snapshot has been taken. " +
             "Each entry is either an exact index name (e.g. 'my-index') or a regex pattern prefixed with 'regex:' (e.g. 'regex:logs-.*'). " +
             "Applies only among indices already captured in the snapshot; to exclude an index from the snapshot itself, use the CreateSnapshot indexAllowlist. " +
-            "An empty list includes all non-system indices."),
+            "An empty list includes all non-system indices.")
+        .essential(),
     indexTemplateAllowlist: z.array(z.string()).default([]).optional()
         .uiHint({kind: 'array', addLabel: 'index template'})
         .describe("List of index template names to include in the metadata migration. " +
             "Each entry is either an exact name or a regex pattern prefixed with 'regex:'. " +
-            "An empty list includes all non-system index templates."),
+            "An empty list includes all non-system index templates.")
+        .essential(),
 
     allowLooseVersionMatching: z.boolean().default(true).optional()
         .describe("[Expert] Allows migration between clusters with non-exact version compatibility (e.g. ES 7.x to OS 2.x). " +
@@ -1384,13 +1439,17 @@ export const USER_METADATA_PROCESS_OPTIONS = z.object({
     output: z.enum(["HUMAN_READABLE", "JSON"]).default("HUMAN_READABLE").optional()
         .describe("Output format for the metadata migration evaluation report. 'HUMAN_READABLE' for formatted text, 'JSON' for machine-parseable output."),
     transformerConfigBase64: z.string().default("").optional()
-        .describe("Base64-encoded JSON transformer configuration." + METADATA_TRANSFORMER_SUFFIX),
+        .describe("Base64-encoded JSON transformer configuration." + METADATA_TRANSFORMER_SUFFIX)
+        .expert(),
     transformerConfig: z.string().optional()
-        .describe("Inline JSON transformer configuration. Keys are transformer names and values are their configuration." + METADATA_TRANSFORMER_SUFFIX),
+        .describe("Inline JSON transformer configuration. Keys are transformer names and values are their configuration." + METADATA_TRANSFORMER_SUFFIX)
+        .expert(),
     transformerConfigFile: z.string().optional()
-        .describe("Path to a JSON file containing transformer configuration." + METADATA_TRANSFORMER_SUFFIX + EXPERT_FILE_SUFFIX),
+        .describe("Path to a JSON file containing transformer configuration." + METADATA_TRANSFORMER_SUFFIX + EXPERT_FILE_SUFFIX)
+        .expert(),
     metadataTransforms: TRANSFORM_PIPELINE.optional()
         .describe("Metadata transform pipeline. Generates the existing transformerConfig inline JSON option.")
+        .essential()
         .checksumFor('snapshot', 'replayer')
         .changeRestriction('impossible'),
     enableSourcelessMigrations: z.boolean().default(false).optional()
@@ -1459,6 +1518,7 @@ export const USER_RFS_PROCESS_OPTIONS = z.object({
             "Each entry is either an exact index name or a regex pattern prefixed with 'regex:' (e.g. 'regex:logs-.*'). " +
             "Applies only among indices already captured in the snapshot; to exclude an index from the snapshot itself, use the CreateSnapshot indexAllowlist. " +
             "An empty list includes all non-system indices from the snapshot.")
+        .essential()
         .checksumFor('replayer')
         .changeRestriction('impossible'),
     allowLooseVersionMatching: z.boolean().default(true).optional()
@@ -1468,18 +1528,22 @@ export const USER_RFS_PROCESS_OPTIONS = z.object({
         .changeRestriction('impossible'),
     docTransformerConfigBase64: z.string().default("").optional()
         .describe("Base64-encoded JSON transformer configuration." + DOC_TRANSFORMER_SUFFIX)
+        .expert()
         .checksumFor('replayer')
         .changeRestriction('impossible'),
     docTransformerConfig: z.string().optional()
         .describe("Inline JSON transformer configuration. Keys are transformer names and values are their configuration." + DOC_TRANSFORMER_SUFFIX)
+        .expert()
         .checksumFor('replayer')
         .changeRestriction('impossible'),
     docTransformerConfigFile: z.string().optional()
         .describe("Path to a JSON file containing transformer configuration." + DOC_TRANSFORMER_SUFFIX + EXPERT_FILE_SUFFIX)
+        .expert()
         .checksumFor('replayer')
         .changeRestriction('impossible'),
     documentTransforms: TRANSFORM_PIPELINE.optional()
         .describe("Document transform pipeline. Generates the existing docTransformerConfig inline JSON option.")
+        .essential()
         .checksumFor('replayer')
         .changeRestriction('impossible'),
     documentsPerBulkRequest: z.number().default(0x7fffffff).optional()

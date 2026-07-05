@@ -617,6 +617,26 @@ describe("editConfig state", () => {
             valueType: "number",
             essential: true,
         });
+        expect(findNode(state.nodes, "edit:traffic.replayers.replay.replayerConfig.requestTransforms")).toMatchObject({
+            expert: false,
+            essential: true,
+        });
+        expect(findNode(state.nodes, "edit:traffic.replayers.replay.replayerConfig.tupleTransforms")).toMatchObject({
+            expert: false,
+            essential: true,
+        });
+        for (const field of [
+            "transformerConfig",
+            "transformerConfigEncoded",
+            "transformerConfigFile",
+            "tupleTransformerConfig",
+            "tupleTransformerConfigBase64",
+            "tupleTransformerConfigFile",
+        ]) {
+            expect(findNode(state.nodes, `edit:traffic.replayers.replay.replayerConfig.${field}`)).toMatchObject({
+                expert: true,
+            });
+        }
         expect(findNode(state.nodes, "edit:traffic.replayers.replay.replayerConfig.removeAuthHeader")).toMatchObject({
             valueKind: "boolean",
         });
@@ -670,11 +690,49 @@ describe("editConfig state", () => {
             valueKind: "object",
             presence: "optional",
         });
+        expect(findNode(state.nodes, "edit:snapshotMigrationConfigs.0.perSnapshotConfig.snap1.0.metadataMigrationConfig.metadataTransforms")).toMatchObject({
+            expert: false,
+            essential: true,
+        });
+        for (const field of ["componentTemplateAllowlist", "indexAllowlist", "indexTemplateAllowlist"]) {
+            expect(findNode(
+                state.nodes,
+                `edit:snapshotMigrationConfigs.0.perSnapshotConfig.snap1.0.metadataMigrationConfig.${field}`,
+            )).toMatchObject({
+                essential: true,
+            });
+        }
+        for (const field of ["transformerConfigBase64", "transformerConfig", "transformerConfigFile"]) {
+            expect(findNode(
+                state.nodes,
+                `edit:snapshotMigrationConfigs.0.perSnapshotConfig.snap1.0.metadataMigrationConfig.${field}`,
+            )).toMatchObject({
+                expert: true,
+            });
+        }
         expect(findNode(state.nodes, "edit:snapshotMigrationConfigs.0.perSnapshotConfig.snap1.0.documentBackfillConfig")).toMatchObject({
             valueKind: "object",
             presence: "optional",
             essential: true,
         });
+        expect(findNode(state.nodes, "edit:snapshotMigrationConfigs.0.perSnapshotConfig.snap1.0.documentBackfillConfig.documentTransforms")).toMatchObject({
+            expert: false,
+            essential: true,
+        });
+        expect(findNode(
+            state.nodes,
+            "edit:snapshotMigrationConfigs.0.perSnapshotConfig.snap1.0.documentBackfillConfig.indexAllowlist",
+        )).toMatchObject({
+            essential: true,
+        });
+        for (const field of ["docTransformerConfigBase64", "docTransformerConfig", "docTransformerConfigFile"]) {
+            expect(findNode(
+                state.nodes,
+                `edit:snapshotMigrationConfigs.0.perSnapshotConfig.snap1.0.documentBackfillConfig.${field}`,
+            )).toMatchObject({
+                expert: true,
+            });
+        }
         expect(findNode(state.nodes, "edit:snapshotMigrationConfigs.0.perSnapshotConfig.snap1.0.documentBackfillConfig.podReplicas")).toMatchObject({
             valueKind: "scalar",
             valueType: "number",
@@ -1035,6 +1093,225 @@ describe("editConfig state", () => {
             set.editState.nodes,
             "edit:traffic.proxies.cap.proxyConfig.suppressCaptureForHeaderMatch.User-Agent"
         )?.label).toBe("User-Agent: .*healthcheck.*");
+    });
+
+    it("renders transform specs as mutually exclusive selector trees", () => {
+        const baseConfig = {
+            sourceClusters: {source: {endpoint: "https://source.example.com:9200", version: "ES 7.10.2"}},
+            targetClusters: {target: {endpoint: "https://target.example.com:9200"}},
+            traffic: {
+                proxies: {
+                    cap: {
+                        source: "source",
+                        proxyConfig: {listenPort: 9201},
+                    },
+                },
+                replayers: {
+                    replay: {
+                        fromCapturedTraffic: "cap",
+                        toTarget: "target",
+                        replayerConfig: {
+                            requestTransforms: [{}],
+                        },
+                    },
+                },
+            },
+            snapshotMigrationConfigs: [],
+        };
+        const transformPath = ["traffic", "replayers", "replay", "replayerConfig", "requestTransforms", "0"];
+        const state = buildEditStateFromObject(baseConfig);
+
+        const transform = findNode(state.nodes, "edit:traffic.replayers.replay.replayerConfig.requestTransforms.0");
+        expect(transform).toMatchObject({
+            valueKind: "union",
+            status: "required",
+            removable: true,
+            variants: [
+                expect.objectContaining({value: "entryPoint"}),
+                expect.objectContaining({value: "transformName"}),
+            ],
+        });
+
+        const entryPointSelected = applyEditOperationToObject(baseConfig, {
+            op: "set",
+            path: transformPath,
+            value: "entryPoint",
+        });
+        expect(parse(entryPointSelected.yaml).traffic.replayers.replay.replayerConfig.requestTransforms[0]).toEqual({
+            entryPoint: {},
+        });
+        const entryPoint = findNode(
+            entryPointSelected.editState.nodes,
+            "edit:traffic.replayers.replay.replayerConfig.requestTransforms.0.entryPoint"
+        );
+        expect(entryPoint).toMatchObject({
+            valueKind: "union",
+            status: "required",
+            essential: true,
+            variants: [
+                expect.objectContaining({label: "inline JavaScript", value: "javascript"}),
+                expect.objectContaining({label: "external JavaScript file", value: "javascriptFile"}),
+                expect.objectContaining({label: "inline Python", value: "python"}),
+                expect.objectContaining({label: "external Python file", value: "pythonFile"}),
+            ],
+        });
+        const context = findNode(
+            entryPointSelected.editState.nodes,
+            "edit:traffic.replayers.replay.replayerConfig.requestTransforms.0.context"
+        );
+        expect(context).toMatchObject({
+            valueKind: "object",
+            label: "context: <unset>",
+            essential: true,
+            children: [
+                expect.objectContaining({
+                    id: "edit:traffic.replayers.replay.replayerConfig.requestTransforms.0.context.valueDirectories",
+                    valueKind: "array",
+                    label: "value directories: 0 items",
+                    essential: true,
+                }),
+                expect.objectContaining({
+                    id: "edit:traffic.replayers.replay.replayerConfig.requestTransforms.0.context.values",
+                    valueKind: "record",
+                    label: "named values: 0 items",
+                    essential: true,
+                    children: [
+                        expect.objectContaining({
+                            label: "+ Add context value",
+                            inputHint: expect.objectContaining({
+                                kind: "text",
+                                message: "Name used by transform code to read this context value.",
+                            }),
+                        }),
+                    ],
+                }),
+            ],
+        });
+
+        const contextValueAdded = applyEditOperationToObject(parse(entryPointSelected.yaml), {
+            op: "add",
+            path: [...transformPath, "context", "values"],
+            value: {name: "tenantConfig"},
+        });
+        expect(parse(contextValueAdded.yaml).traffic.replayers.replay.replayerConfig.requestTransforms[0]).toEqual({
+            entryPoint: {},
+            context: {
+                values: {
+                    tenantConfig: {},
+                },
+            },
+        });
+        expect(findNode(
+            contextValueAdded.editState.nodes,
+            "edit:traffic.replayers.replay.replayerConfig.requestTransforms.0.context.values.tenantConfig"
+        )).toMatchObject({
+            valueKind: "union",
+            variants: [
+                expect.objectContaining({label: "inline value", value: "value"}),
+                expect.objectContaining({label: "external file", value: "fromFile"}),
+            ],
+        });
+
+        const javascriptSelected = applyEditOperationToObject(parse(entryPointSelected.yaml), {
+            op: "set",
+            path: [...transformPath, "entryPoint"],
+            value: "javascript",
+        });
+        expect(parse(javascriptSelected.yaml).traffic.replayers.replay.replayerConfig.requestTransforms[0]).toEqual({
+            entryPoint: {javascript: ""},
+        });
+        expect(findNode(
+            javascriptSelected.editState.nodes,
+            "edit:traffic.replayers.replay.replayerConfig.requestTransforms.0.entryPoint.javascript"
+        )).toMatchObject({
+            valueKind: "scalar",
+            status: "required",
+            essential: true,
+        });
+
+        const javascriptFileSelected = applyEditOperationToObject(parse(entryPointSelected.yaml), {
+            op: "set",
+            path: [...transformPath, "entryPoint"],
+            value: "javascriptFile",
+        });
+        expect(parse(javascriptFileSelected.yaml).traffic.replayers.replay.replayerConfig.requestTransforms[0]).toEqual({
+            entryPoint: {javascriptFile: {}},
+        });
+        const javascriptFile = findNode(
+            javascriptFileSelected.editState.nodes,
+            "edit:traffic.replayers.replay.replayerConfig.requestTransforms.0.entryPoint.javascriptFile"
+        );
+        expect(javascriptFile).toMatchObject({
+            valueKind: "union",
+            status: "required",
+            essential: true,
+            variants: [
+                expect.objectContaining({label: "mountable image", value: "image"}),
+                expect.objectContaining({label: "ConfigMap key", value: "configMap"}),
+            ],
+        });
+
+        const transformConfigMapRef = applyEditOperationToObject(parse(javascriptFileSelected.yaml), {
+            op: "set",
+            path: [...transformPath, "entryPoint", "javascriptFile"],
+            value: "configMap",
+        });
+        expect(parse(transformConfigMapRef.yaml).traffic.replayers.replay.replayerConfig.requestTransforms[0]).toEqual({
+            entryPoint: {javascriptFile: {configMap: "", path: ""}},
+        });
+        expect(findNode(
+            transformConfigMapRef.editState.nodes,
+            "edit:traffic.replayers.replay.replayerConfig.requestTransforms.0.entryPoint.javascriptFile.configMap"
+        )).toMatchObject({
+            valueKind: "scalar",
+            required: true,
+            externalRef: {
+                kind: "kubernetesResource",
+                purpose: "file-ref-config-map",
+                selection: {target: "scalarName"},
+                k8s: {
+                    resourceTypes: [{group: "", version: "v1", kind: "ConfigMap", namespaced: true}],
+                },
+            },
+        });
+
+        const transformImageRef = applyEditOperationToObject(parse(javascriptFileSelected.yaml), {
+            op: "set",
+            path: [...transformPath, "entryPoint", "javascriptFile"],
+            value: "image",
+        });
+        expect(parse(transformImageRef.yaml).traffic.replayers.replay.replayerConfig.requestTransforms[0]).toEqual({
+            entryPoint: {javascriptFile: {image: "", pullPolicy: "IfNotPresent", path: ""}},
+        });
+        expect(findNode(
+            transformImageRef.editState.nodes,
+            "edit:traffic.replayers.replay.replayerConfig.requestTransforms.0.entryPoint.javascriptFile.image"
+        )).toMatchObject({
+            valueKind: "scalar",
+            required: true,
+            validation: {
+                pattern: expect.any(String),
+            },
+            inputHint: {
+                kind: "text",
+                format: "oci-image-reference",
+            },
+        });
+
+        const transformNameSelected = applyEditOperationToObject(parse(javascriptSelected.yaml), {
+            op: "set",
+            path: transformPath,
+            value: "transformName",
+        });
+        expect(parse(transformNameSelected.yaml).traffic.replayers.replay.replayerConfig.requestTransforms[0]).toEqual({
+            transformName: "",
+        });
+        expect(findNode(
+            transformNameSelected.editState.nodes,
+            "edit:traffic.replayers.replay.replayerConfig.requestTransforms.0.transformName"
+        )).toMatchObject({
+            essential: true,
+        });
     });
 
     it("does not require replay config when traffic capture is configured alone", () => {
