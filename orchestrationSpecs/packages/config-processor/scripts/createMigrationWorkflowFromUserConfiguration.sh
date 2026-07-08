@@ -1,6 +1,9 @@
 #!/bin/bash
 
-set -e -x # Exit on any error
+set -euo pipefail
+if [[ "${WORKFLOW_SUBMIT_TRACE:-}" == "1" ]]; then
+    set -x
+fi
 
 # Check if config filename argument is provided
 if [ $# -eq 0 ]; then

@@ -5,6 +5,7 @@ import { DEFAULT_RESOURCES, parseK8sQuantity } from "./schemaUtilities";
 // Downstream dependency names used in checksumFor annotations.
 export type ChecksumDependency = 'snapshot' | 'snapshotMigration' | 'replayer';
 export type UiTextFormat = 'text' | 'http-endpoint' | 'optional-http-endpoint' | 'cluster-version' | 'k8s-name' | 'oci-image-reference';
+export type UiReferencePathTemplateSegment = string | { valueFrom: string[] };
 export type UiHint = {
     label?: string;
 } & (
@@ -23,7 +24,9 @@ export type UiHint = {
     }
     | {
         kind: 'reference';
-        sourcePath: string[];
+        sourcePath?: string[];
+        sourcePaths?: string[][];
+        sourcePathTemplate?: UiReferencePathTemplateSegment[];
         allowCustom?: boolean;
         emptyMeansDefault?: string;
         message?: string;
@@ -1822,6 +1825,10 @@ export const TARGET_CLUSTER_CONFIG = CLUSTER_CONFIG.extend({
 
 export const SOURCE_CLUSTER_REPOS_RECORD =
     z.record(z.string(), S3_REPO_CONFIG)
+    .uiHint({
+        kind: 'record',
+        addLabel: 'snapshot repository',
+    })
     .describe("Map of snapshot repository names to their S3 configurations. Keys are the repository names as registered in the source cluster.");
 
 export const CAPTURE_CONFIG = z.object({
@@ -1857,7 +1864,13 @@ export const S3_CAPTURED_TRAFFIC_SOURCE = z.object({
         .describe("Override the S3 endpoint URL. Supports http://, https://, localstack://, and localstacks:// schemes. " +
             "LocalStack endpoints are automatically resolved to IP addresses during config transformation."),
     kafka: z.string().regex(K8S_NAMING_PATTERN).default("default").optional()
-        .describe("Label of the Kafka cluster to load captured traffic into. Must match a key in kafkaClusterConfiguration."),
+        .describe("Label of the Kafka cluster to load captured traffic into. Must match a key in kafkaClusterConfiguration.")
+        .uiHint({
+            kind: 'reference',
+            sourcePath: ['kafkaClusterConfiguration'],
+            emptyMeansDefault: 'default',
+            message: "Choose one Kafka cluster from kafkaClusterConfiguration.",
+        }),
     kafkaTopic: z.string().regex(K8S_NAMING_PATTERN).default("").optional()
         .describe("Kafka topic name to load captured traffic into. If empty, defaults to the s3Source name (the key in the s3Sources record)."),
     sourceLabel: z.string()
@@ -1879,6 +1892,16 @@ export const SNAPSHOT_MIGRATION_FILTER = z.object({
         }),
     snapshot: z.string()
         .describe("Name of the snapshot. Must match a key in the source cluster's snapshotInfo.snapshots.")
+        .uiHint({
+            kind: 'reference',
+            sourcePathTemplate: [
+                'sourceClusters',
+                {valueFrom: ['..', 'source']},
+                'snapshotInfo',
+                'snapshots',
+            ],
+            message: "Choose a snapshot defined under the selected source cluster's snapshotInfo.snapshots.",
+        })
 }).describe("Reference to a specific snapshot from a specific source cluster, used to express dependencies.");
 
 export const REPLAYER_CONFIG = z.object({
@@ -1886,7 +1909,10 @@ export const REPLAYER_CONFIG = z.object({
         .describe("Name of the captured-traffic source to replay from. Must match a key in either traffic.proxies (live capture) or traffic.s3Sources (pre-recorded S3 dump).")
         .uiHint({
             kind: 'reference',
-            sourcePath: ['traffic', 'proxies'],
+            sourcePaths: [
+                ['traffic', 'proxies'],
+                ['traffic', 's3Sources'],
+            ],
             allowCustom: true,
             message: "Choose one captured-traffic source from traffic.proxies or traffic.s3Sources.",
         }),
@@ -1925,11 +1951,14 @@ export const TRAFFIC_CONFIG = z.object({
             keyPattern: K8S_NAMING_PATTERN.source,
             message: "Use a valid Kubernetes DNS name for the optional S3 archive source.",
         }),
-    replayers: z.record(z.string(), REPLAYER_CONFIG).default({}).optional()
+    replayers: z.record(z.string().regex(K8S_NAMING_PATTERN), REPLAYER_CONFIG).default({}).optional()
         .describe("Map of replayer names to their replay configurations. Each replayer consumes from a Kafka topic and replays to a target cluster.")
         .uiHint({
             kind: 'record',
             addLabel: 'traffic replay',
+            keyFormat: 'k8s-name',
+            keyPattern: K8S_NAMING_PATTERN.source,
+            message: "Replay names become Kubernetes TrafficReplay resource names and must use lower-case RFC 1123 syntax.",
         })
 }).superRefine((data, ctx) => {
     const proxies = data.proxies ?? {};
@@ -2014,7 +2043,10 @@ export const NORMALIZED_DYNAMIC_SNAPSHOT_CONFIG = z.object({
 export const SNAPSHOT_CONFIGS_MAP = z.record(
     z.string(),
     NORMALIZED_DYNAMIC_SNAPSHOT_CONFIG
-).describe("Map of snapshot names to their configurations. Keys are used as labels and in snapshot name generation.");
+).uiHint({
+    kind: 'record',
+    addLabel: 'source snapshot',
+}).describe("Map of snapshot names to their configurations. Keys are used as labels and in snapshot name generation.");
 
 export const SNAPSHOT_INFO = z.object({
     repos: SOURCE_CLUSTER_REPOS_RECORD.optional()
@@ -2036,6 +2068,7 @@ const AWS_MANAGED_ENDPOINT_PATTERN = /(?:\.es\.amazonaws\.com|\.aos\.[a-z0-9-]+\
 export const SOURCE_CLUSTER_CONFIG = CLUSTER_CONFIG.extend({
     version: CLUSTER_VERSION_STRING,
     snapshotInfo: SNAPSHOT_INFO.optional()
+        .essential()
         .describe("Snapshot repository and snapshot configurations for this source cluster. Required if any snapshot-based migrations reference this source.")
 }).describe("Connection and snapshot configuration for a source cluster.").superRefine((data, ctx) => {
     const repos = data.snapshotInfo?.repos;
@@ -2205,6 +2238,16 @@ export const OVERALL_MIGRATION_CONFIG = //validateOptionalDefaultConsistency
     }).describe("Top-level migration configuration defining source clusters, target clusters, snapshot migrations, and optional traffic capture/replay.").superRefine((data, ctx) => {
         const duplicateClusterNames = Object.keys(data.sourceClusters)
             .filter(name => name in data.targetClusters);
+        const sourcesRequiringEndpoint = new Map<string, Set<string>>();
+        const addSourceEndpointRequirement = (sourceName: string, reason: string) => {
+            if (!sourceName || !(sourceName in data.sourceClusters)) {
+                return;
+            }
+            if (!sourcesRequiringEndpoint.has(sourceName)) {
+                sourcesRequiringEndpoint.set(sourceName, new Set());
+            }
+            sourcesRequiringEndpoint.get(sourceName)!.add(reason);
+        };
         for (const name of duplicateClusterNames) {
             ctx.addIssue({
                 code: z.ZodIssueCode.custom,
@@ -2222,6 +2265,8 @@ export const OVERALL_MIGRATION_CONFIG = //validateOptionalDefaultConsistency
                     message: `snapshotMigrationConfigs[${i}] references unknown source '${mc.fromSource}'. Available: ${Object.keys(data.sourceClusters).join(', ')}`,
                     path: ['snapshotMigrationConfigs', i, 'fromSource']
                 });
+            } else {
+                addSourceEndpointRequirement(mc.fromSource, `snapshotMigrationConfigs[${i}]`);
             }
 
             if (!(mc.toTarget in data.targetClusters)) {
@@ -2237,9 +2282,15 @@ export const OVERALL_MIGRATION_CONFIG = //validateOptionalDefaultConsistency
                 const availableSnapshots = sourceCluster?.snapshotInfo?.snapshots ?? {};
                 for (const snapName of Object.keys(mc.perSnapshotConfig)) {
                     if (!(snapName in availableSnapshots)) {
+                        const available = Object.keys(availableSnapshots);
                         ctx.addIssue({
                             code: z.ZodIssueCode.custom,
-                            message: `perSnapshotConfig references unknown snapshot '${snapName}' in source '${mc.fromSource}'. Available: ${Object.keys(availableSnapshots).join(', ') || '(none)'}`,
+                            message: `perSnapshotConfig references unknown snapshot '${snapName}' in source '${mc.fromSource}'. ` +
+                                `Define sourceClusters.${mc.fromSource}.snapshotInfo.snapshots.${snapName}, ` +
+                                (available.length
+                                    ? `rename this entry to one of: ${available.join(', ')}, `
+                                    : "define at least one source snapshot, ") +
+                                "or remove this perSnapshotConfig entry.",
                             path: ['snapshotMigrationConfigs', i, 'perSnapshotConfig', snapName]
                         });
                     }
@@ -2258,6 +2309,8 @@ export const OVERALL_MIGRATION_CONFIG = //validateOptionalDefaultConsistency
                         message: `Proxy '${proxyName}' references unknown source '${proxyConfig.source}'. Available: ${Object.keys(data.sourceClusters).join(', ')}`,
                         path: ['traffic', 'proxies', proxyName, 'source']
                     });
+                } else {
+                    addSourceEndpointRequirement(proxyConfig.source, `traffic.proxies.${proxyName}`);
                 }
                 const kafkaRef = proxyConfig.kafka ?? 'default';
                 if (Object.keys(kafkaClusters).length > 0 && !(kafkaRef in kafkaClusters)) {
@@ -2316,6 +2369,18 @@ export const OVERALL_MIGRATION_CONFIG = //validateOptionalDefaultConsistency
                     }
                 }
             }
+        }
+
+        for (const [sourceName, reasons] of sourcesRequiringEndpoint.entries()) {
+            const source = data.sourceClusters[sourceName];
+            if (typeof source.endpoint === 'string' && source.endpoint.trim()) {
+                continue;
+            }
+            ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                message: `Source endpoint is required because ${Array.from(reasons).join(', ')} references this source.`,
+                path: ['sourceClusters', sourceName, 'endpoint']
+            });
         }
     })
 );

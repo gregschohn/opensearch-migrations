@@ -119,7 +119,8 @@ def _remove_existing_workflow(workflow_name, namespace):
          'snapshotName downstream)'
 )
 @click.pass_context
-def submit_command(ctx, namespace, wait, timeout, wait_interval, session, workflow_name, unique_run_nonce):
+def submit_command(
+        ctx, namespace, wait, timeout, wait_interval, session, workflow_name, unique_run_nonce):
     """Submit a migration workflow using the config processor.
 
     If a workflow already exists, it is automatically stopped, deleted, and
