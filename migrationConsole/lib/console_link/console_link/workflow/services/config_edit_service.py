@@ -44,6 +44,7 @@ STATUS_COUNT_KEY = {
     "error": "errors",
     "blocked": "blocked",
 }
+YAML_SUFFIX = ".yaml"
 
 
 @dataclass
@@ -85,11 +86,11 @@ class ConfigEditService:
         return self.load_edit_session().edit_state
 
     def apply_operation(self, raw_yaml: str, operation: Dict[str, Any]) -> ConfigEditApplyResult:
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=True) as operation_file:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=YAML_SUFFIX, delete=True) as operation_file:
             json.dump(operation, operation_file)
             operation_file.flush()
 
-            with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=True) as config_file:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=YAML_SUFFIX, delete=True) as config_file:
                 config_file.write(raw_yaml)
                 config_file.flush()
                 output = self._run_config_processor_node_script(
@@ -113,11 +114,11 @@ class ConfigEditService:
 
     def validate_operation(self, raw_yaml: str, operation: Dict[str, Any]) -> ConfigEditApplyResult:
         """Preview one operation through TS validation without saving the result."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=True) as operation_file:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=YAML_SUFFIX, delete=True) as operation_file:
             json.dump(operation, operation_file)
             operation_file.flush()
 
-            with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=True) as config_file:
+            with tempfile.NamedTemporaryFile(mode="w", suffix=YAML_SUFFIX, delete=True) as config_file:
                 config_file.write(raw_yaml)
                 config_file.flush()
                 output = self._run_config_processor_node_script(
@@ -222,7 +223,10 @@ class ConfigEditService:
             return self._save_external_config_map(external_ref, output, values, name)
         raise ValueError(f"External resource output kind is not supported: {output.get('kind')}")
 
-    def load_resource_config_snapshots(self, workflow_name: Optional[str] = None) -> Dict[str, Optional[Dict[str, Any]]]:
+    def load_resource_config_snapshots(
+        self,
+        workflow_name: Optional[str] = None,
+    ) -> Dict[str, Optional[Dict[str, Any]]]:
         """Load resolved resource snapshots for current submitted and saved config."""
         submitted = self.load_latest_submitted_resolved_config(workflow_name)
         pending = self.load_pending_resolved_config(workflow_name, validation_mode="loose")
@@ -307,7 +311,7 @@ class ConfigEditService:
         raise ValueError(_format_submit_validation_error(validation))
 
     def _run_edit_state(self, raw_yaml: str, validate_external_refs: bool = False) -> Dict[str, Any]:
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=True) as temp_file:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=YAML_SUFFIX, delete=True) as temp_file:
             temp_file.write(raw_yaml)
             temp_file.flush()
             output = self._run_config_processor_node_script(
@@ -396,7 +400,7 @@ class ConfigEditService:
         workflow_name: Optional[str] = None,
         validation_mode: str = "strict",
     ) -> Dict[str, Any]:
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=True) as temp_file:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=YAML_SUFFIX, delete=True) as temp_file:
             temp_file.write(input_data)
             temp_file.flush()
             args = [
@@ -911,9 +915,10 @@ def _add_diagnostic_with_counts(
 
 
 def _diagnostic_exists(existing: list[Dict[str, Any]], diagnostic: Dict[str, Any]) -> bool:
+    diagnostic_path = [str(part) for part in (diagnostic.get("path") or [])]
     return any(
         item.get("message") == diagnostic.get("message")
-        and [str(part) for part in (item.get("path") or [])] == [str(part) for part in (diagnostic.get("path") or [])]
+        and [str(part) for part in (item.get("path") or [])] == diagnostic_path
         for item in existing
     )
 

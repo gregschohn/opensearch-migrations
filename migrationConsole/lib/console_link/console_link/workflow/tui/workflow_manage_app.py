@@ -81,6 +81,10 @@ ACTIVE_WORKFLOW_PHASES = {"Pending", PHASE_RUNNING}
 TERMINAL_WORKFLOW_PHASES = {PHASE_SUCCEEDED, "Failed", "Error"}
 LOADING_ROOT_LABEL = "[yellow]⏳ Waiting for Workflow to be created...[/]"
 DESC_SHOW_OUTPUT = "Show Output"
+DESC_VIEW_LOGS = "View Logs"
+DESC_TAIL_LOGS = "Tail Logs"
+EDIT_HELP_SELECTOR = "#edit-help"
+EDIT_NODE_ID_PREFIX = "edit:"
 PATCH_OUTPUT_STEPS = {
     "patchMetadataEvaluateOutput": ("snapshotmigrations", "metadataEvaluate"),
     "patchMetadataMigrateOutput": ("snapshotmigrations", "metadataMigrate"),
@@ -94,12 +98,17 @@ def _single_line(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _submit_error_excerpt(text: str) -> str:
+    text = text.split("\nstdout:", 1)[0]
+    return text.split("\n\n", 1)[0]
+
+
 def _format_workflow_submit_error(error: Exception) -> str:
     """Return a concise submit error suitable for a TUI toast."""
     text = str(error)
-    denial = re.search(r"denied request:\s*(?P<reason>.+?)(?:\nstdout:|\Z)", text, flags=re.DOTALL)
+    denial = re.search(r"denied request:\s*", text)
     if denial:
-        reason = _single_line(denial.group("reason"))
+        reason = _single_line(_submit_error_excerpt(text[denial.end():]))
         kind_match = re.search(r"Kind=([A-Za-z0-9]+)", text)
         name_match = re.search(r'Name:\s+"([^"]+)"', text)
         policy_match = re.search(r"ValidatingAdmissionPolicy\s+'([^']+)'", text)
@@ -109,9 +118,9 @@ def _format_workflow_submit_error(error: Exception) -> str:
         policy = f" by {policy_match.group(1)}" if policy_match else ""
         return f"Workflow submit failed: {target}denied{policy}: {reason}"
 
-    invalid = re.search(r'((?:The )?[A-Za-z][A-Za-z0-9]* "[^"]+" is invalid: .+?)(?:\n|stdout:|\Z)', text)
+    invalid = re.search(r'(?:The )?[A-Za-z][A-Za-z0-9]* "[^"]+" is invalid: [^\n]*', text)
     if invalid:
-        return f"Workflow submit failed: {_single_line(invalid.group(1))}"
+        return f"Workflow submit failed: {_single_line(invalid.group(0))}"
 
     return f"Workflow submit failed: {text}"
 
@@ -926,7 +935,8 @@ class WorkflowTreeApp(App):
             "Commit command:",
             shlex.join(command),
             "",
-            "The commit uses the exact resource set above. If a new dependent resource exists, reset will fail and you must dry-run again.",
+            "The commit uses the exact resource set above. If a new dependent resource exists, "
+            "reset will fail and you must dry-run again.",
         ])
         return "\n".join(lines)
 
@@ -1068,7 +1078,12 @@ class WorkflowTreeApp(App):
         """Reconfigures the Footer and keys based on the currently selected node."""
         tree_node = self.tree_root_widget.cursor_node
         edit_node = selected_edit_node(self.tree_root_widget) if self._edit_mode else None
-        node = edit_node if self._edit_mode else (tree_node.data if tree_node and tree_node.data else None)
+        if self._edit_mode:
+            node = edit_node
+        elif tree_node and tree_node.data:
+            node = tree_node.data
+        else:
+            node = None
         output_available = (
             False
             if self._edit_mode or not node
@@ -1208,25 +1223,25 @@ class WorkflowTreeApp(App):
         ntype = node.get('type')
 
         if node_id.startswith(RESOURCE_ID_PREFIX):
-            self.bind("l", "view_resource_logs", description="View Logs")
-            self.bind("t", "tail_resource_logs", description="Tail Logs")
+            self.bind("l", "view_resource_logs", description=DESC_VIEW_LOGS)
+            self.bind("t", "tail_resource_logs", description=DESC_TAIL_LOGS)
             if self._approval_node_for_action(node):
                 self.bind("a", "approve_step", description="Approve")
             if output_available:
                 self.bind("o", "view_output", description=DESC_SHOW_OUTPUT)
         elif ntype == NODE_TYPE_POD and self._pods.get_name(node_id) and not is_approval_node(node):
-            self.bind("l", "view_logs", description="View Logs")
+            self.bind("l", "view_logs", description=DESC_VIEW_LOGS)
             if output_available:
                 self.bind("o", "view_output", description=DESC_SHOW_OUTPUT)
             if node.get('phase') == PHASE_RUNNING:
                 self.bind("f", "follow_logs", description="Follow Logs")
-                self.bind("t", "follow_logs", description="Tail Logs")
+                self.bind("t", "follow_logs", description=DESC_TAIL_LOGS)
             self.bind("c", "copy_pod_name", description="Copy Pod Name")
         elif is_approval_node(node) and node.get('phase') == PHASE_RUNNING:
             self.bind("a", "approve_step", description="Approve")
         elif node.get('resource_path'):
-            self.bind("l", "view_resource_logs", description="View Logs")
-            self.bind("t", "tail_resource_logs", description="Tail Logs")
+            self.bind("l", "view_resource_logs", description=DESC_VIEW_LOGS)
+            self.bind("t", "tail_resource_logs", description=DESC_TAIL_LOGS)
         elif output_available:
             self.bind("o", "view_output", description=DESC_SHOW_OUTPUT)
 
@@ -1387,7 +1402,7 @@ class WorkflowTreeApp(App):
         self.title = "Workflow Config Edit"
         tree = self.tree_root_widget
         tree.disabled = True
-        help_panel = self.query_one("#edit-help", Static)
+        help_panel = self.query_one(EDIT_HELP_SELECTOR, Static)
         help_panel.display = True
         help_panel.update("[bold]Workflow Config Edit[/]\nLoading configuration editor...")
         self.update_pod_status()
@@ -1434,7 +1449,7 @@ class WorkflowTreeApp(App):
         self.title = "Migration Status"
         tree = self.tree_root_widget
         tree.disabled = False
-        self.query_one("#edit-help", Static).display = False
+        self.query_one(EDIT_HELP_SELECTOR, Static).display = False
         self.update_pod_status()
         self._update_dynamic_bindings()
         self.notify(f"Config edit unavailable: {error}", severity="error")
@@ -1482,7 +1497,7 @@ class WorkflowTreeApp(App):
             self.call_after_refresh(lambda: self._restore_config_edit_selection(selected_id))
         else:
             self._focus_config_edit_tree()
-        help_panel = self.query_one("#edit-help", Static)
+        help_panel = self.query_one(EDIT_HELP_SELECTOR, Static)
         help_panel.display = True
         self._update_edit_help()
         self.update_pod_status()
@@ -1964,7 +1979,8 @@ class WorkflowTreeApp(App):
     def _config_edit_exit_status_message(self) -> str:
         count = self._config_edit_validation_issue_count()
         if count:
-            return f"Validation still reports {count} issue{'s' if count != 1 else ''}. You can save anyway, discard, or return."
+            issue_label = "issues" if count != 1 else "issue"
+            return f"Validation still reports {count} {issue_label}. You can save anyway, discard, or return."
         return "No validation errors are currently reported. You can save, discard, or return."
 
     def _config_edit_validation_issue_count(self) -> int:
@@ -2007,7 +2023,7 @@ class WorkflowTreeApp(App):
         self._set_resource_value_mode(EDIT_MODE_ALL)
         self._restore_resource_collapsed_ids_on_next_render = collapsed_ids_after_edit
         self._resource_collapsed_ids_before_edit = None
-        self.query_one("#edit-help", Static).display = False
+        self.query_one(EDIT_HELP_SELECTOR, Static).display = False
         self.action_manual_refresh()
 
     def _expand_changed_resource_nodes(self, sections) -> None:
@@ -2021,7 +2037,7 @@ class WorkflowTreeApp(App):
 
     def _edit_expansion_state_for_render(self, edit_state: Optional[Dict[str, Any]] = None) -> Dict[str, bool]:
         current = self._tree_expansion_state()
-        if any(node_id.startswith("edit:") for node_id in current):
+        if any(node_id.startswith(EDIT_NODE_ID_PREFIX) for node_id in current):
             return current
         return self._resource_expansion_state_for_edit(current, edit_state or self._edit_state or {})
 
@@ -2060,7 +2076,7 @@ class WorkflowTreeApp(App):
         """Map edit-tree expansion back onto resource-tree ids for returning to status."""
         collapsed = set(self._resource_collapsed_ids_before_edit or set())
         current = self._tree_expansion_state()
-        if not any(node_id.startswith("edit:") for node_id in current):
+        if not any(node_id.startswith(EDIT_NODE_ID_PREFIX) for node_id in current):
             return collapsed
 
         for edit_id, expanded in current.items():
@@ -2182,7 +2198,7 @@ class WorkflowTreeApp(App):
             self.notify(description, timeout=8)
 
     def _update_edit_help(self) -> None:
-        help_panel = self.query_one("#edit-help", Static)
+        help_panel = self.query_one(EDIT_HELP_SELECTOR, Static)
         update_help_panel(help_panel, selected_edit_node(self.tree_root_widget), self._edit_status_mode)
 
     def action_cycle_config_value_mode(self) -> None:
@@ -2319,7 +2335,6 @@ class WorkflowTreeApp(App):
             )
         elif node.get("externalRef"):
             self._show_external_resource_picker(node, discard_path_on_cancel=discard_path_on_cancel)
-            return
         elif kind == "scalar":
             input_hint = node.get("inputHint") or {}
             options = input_hint.get("options") or []
@@ -2889,7 +2904,13 @@ class WorkflowTreeApp(App):
         }
         raw_yaml = self._edit_draft_yaml or ""
         self.run_worker(
-            lambda: self._validate_config_edit_operation_worker(raw_yaml, operation, generation, node.get("path") or [], modal),
+            lambda: self._validate_config_edit_operation_worker(
+                raw_yaml,
+                operation,
+                generation,
+                node.get("path") or [],
+                modal,
+            ),
             thread=True,
             name="validate_config_edit_operation",
         )
@@ -2925,7 +2946,10 @@ class WorkflowTreeApp(App):
         edit_state = getattr(result, "edit_state", None) or result["edit_state"]
         diagnostic = self._diagnostic_for_path(edit_state, path)
         if diagnostic:
-            modal.set_remote_validation(str(diagnostic.get("message") or ""), str(diagnostic.get("severity") or "error"))
+            modal.set_remote_validation(
+                str(diagnostic.get("message") or ""),
+                str(diagnostic.get("severity") or "error"),
+            )
         else:
             modal.set_remote_validation("No validation issues found.", "ok")
 
@@ -3064,7 +3088,8 @@ class WorkflowTreeApp(App):
         ):
             return {
                 "pattern": r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$",
-                "message": "Use a valid Kubernetes DNS name: lowercase letters, numbers, '-' or '.', starting and ending with an alphanumeric character.",
+                "message": "Use a valid Kubernetes DNS name: lowercase letters, numbers, '-' or '.', "
+                           "starting and ending with an alphanumeric character.",
             }
         return None
 
@@ -3274,7 +3299,11 @@ class WorkflowTreeApp(App):
         if is_approval_node(node) and node.get('phase') == PHASE_RUNNING:
             return node
         approval_node = node.get('approval_node')
-        if isinstance(approval_node, dict) and is_approval_node(approval_node) and approval_node.get('phase') == PHASE_RUNNING:
+        if (
+            isinstance(approval_node, dict)
+            and is_approval_node(approval_node)
+            and approval_node.get('phase') == PHASE_RUNNING
+        ):
             return approval_node
         return None
 
@@ -3512,10 +3541,20 @@ class WorkflowTreeApp(App):
                 migration_path = ["snapshotMigrationConfigs", str(index)]
                 from_source = str(migration.get("fromSource") or "")
                 if from_source:
-                    add(migration_path, [*migration_path, "fromSource"], ["sourceClusters", from_source], f"fromSource={from_source}")
+                    add(
+                        migration_path,
+                        [*migration_path, "fromSource"],
+                        ["sourceClusters", from_source],
+                        f"fromSource={from_source}",
+                    )
                 to_target = str(migration.get("toTarget") or "")
                 if to_target:
-                    add(migration_path, [*migration_path, "toTarget"], ["targetClusters", to_target], f"toTarget={to_target}")
+                    add(
+                        migration_path,
+                        [*migration_path, "toTarget"],
+                        ["targetClusters", to_target],
+                        f"toTarget={to_target}",
+                    )
                 per_snapshot = migration.get("perSnapshotConfig")
                 if from_source and isinstance(per_snapshot, dict):
                     for snapshot_name in per_snapshot:
@@ -3557,7 +3596,12 @@ class WorkflowTreeApp(App):
                 else:
                     to_path = None
                 if to_path:
-                    add(replayer_path, [*replayer_path, "fromCapturedTraffic"], to_path, f"fromCapturedTraffic={from_captured_traffic}")
+                    add(
+                        replayer_path,
+                        [*replayer_path, "fromCapturedTraffic"],
+                        to_path,
+                        f"fromCapturedTraffic={from_captured_traffic}",
+                    )
             to_target = str(replayer.get("toTarget") or "")
             if to_target:
                 add(replayer_path, [*replayer_path, "toTarget"], ["targetClusters", to_target], f"toTarget={to_target}")
@@ -3569,7 +3613,12 @@ class WorkflowTreeApp(App):
                     dependency_path = [*replayer_path, "dependsOnSnapshotMigrations", str(index)]
                     source = str(dependency.get("source") or "")
                     if source:
-                        add(dependency_path, [*dependency_path, "source"], ["sourceClusters", source], f"source={source}")
+                        add(
+                            dependency_path,
+                            [*dependency_path, "source"],
+                            ["sourceClusters", source],
+                            f"source={source}",
+                        )
                     snapshot = str(dependency.get("snapshot") or "")
                     if source and snapshot:
                         add(
@@ -3593,7 +3642,13 @@ class WorkflowTreeApp(App):
                     continue
                 repo_name = str(snapshot.get("repoName") or "")
                 if repo_name:
-                    snapshot_path = ["sourceClusters", str(source_name), "snapshotInfo", "snapshots", str(snapshot_name)]
+                    snapshot_path = [
+                        "sourceClusters",
+                        str(source_name),
+                        "snapshotInfo",
+                        "snapshots",
+                        str(snapshot_name),
+                    ]
                     add(
                         snapshot_path,
                         [*snapshot_path, "repoName"],
@@ -3765,11 +3820,11 @@ class WorkflowTreeApp(App):
         if base_id.endswith(":add"):
             base_id = base_id.removesuffix(":add")
             add(base_id)
-        if base_id.startswith("edit:"):
-            path = base_id.removeprefix("edit:")
+        if base_id.startswith(EDIT_NODE_ID_PREFIX):
+            path = base_id.removeprefix(EDIT_NODE_ID_PREFIX)
             parts = path.split(".") if path else []
             for length in range(len(parts) - 1, 0, -1):
-                add(f"edit:{'.'.join(parts[:length])}")
+                add(f"{EDIT_NODE_ID_PREFIX}{'.'.join(parts[:length])}")
         return candidates
 
     def _select_tree_node_by_id(self, selected_id: str) -> bool:
@@ -3933,7 +3988,7 @@ class WorkflowTreeApp(App):
 
     @staticmethod
     def _edit_id_for_path(path: list[str]) -> str:
-        return f"edit:{'.'.join(str(part) for part in path)}"
+        return f"{EDIT_NODE_ID_PREFIX}{'.'.join(str(part) for part in path)}"
 
 
 # --- Utilities ---

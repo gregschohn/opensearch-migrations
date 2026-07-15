@@ -87,7 +87,11 @@ class ExternalResourcePickerModal(ButtonArrowNavigationMixin, ModalScreen[Option
             with Vertical(id="actions"):
                 with Horizontal(classes="action-row"):
                     yield MouseOnlyModalButton("Select (<Enter>)", id="select", variant="primary")
-                    yield MouseOnlyModalButton("Update (u)", id="update", disabled=not self.can_update or not bool(self.rows))
+                    yield MouseOnlyModalButton(
+                        "Update (u)",
+                        id="update",
+                        disabled=not self.can_update or not bool(self.rows),
+                    )
                     if self.clear_allowed:
                         yield MouseOnlyModalButton("Clear", id="clear")
                     yield MouseOnlyModalButton("Cancel", id="cancel", variant="error")
@@ -281,9 +285,11 @@ class ExternalResourcePickerModal(ButtonArrowNavigationMixin, ModalScreen[Option
         entry = self._focused_entry()
         if not self.show_all or not entry:
             return
-        if entry.get("type") == "group" and entry.get("group") == "nonmatching":
-            self._set_nonmatching_expanded(False)
-        elif entry.get("type") == "resource" and self._is_nonmatching_row(entry.get("row")):
+        if (
+            entry.get("type") == "group" and entry.get("group") == "nonmatching"
+        ) or (
+            entry.get("type") == "resource" and self._is_nonmatching_row(entry.get("row"))
+        ):
             self._set_nonmatching_expanded(False)
 
     def _focus_nonmatching_group(self) -> None:
@@ -308,7 +314,12 @@ class ExternalResourcePickerModal(ButtonArrowNavigationMixin, ModalScreen[Option
         message = ""
         if entry and entry.get("type") == "resource":
             message = _row_hint_markup(entry.get("row") or {})
-        elif entry and entry.get("type") == "group" and entry.get("group") == "nonmatching" and self._nonmatching_rows():
+        elif (
+            entry
+            and entry.get("type") == "group"
+            and entry.get("group") == "nonmatching"
+            and self._nonmatching_rows()
+        ):
             message = escape("Press Enter or Right to show resources that may not satisfy this reference.")
         doc = self.query_one("#row-doc", Static)
         doc.update(message)
@@ -336,7 +347,10 @@ class ExternalResourcePickerModal(ButtonArrowNavigationMixin, ModalScreen[Option
         matching_rows = self._matching_rows()
         if matching_rows:
             entries.append({"type": "group", "group": "matching", "label": "Matching"})
-            entries.extend({"type": "resource", "row": row, "label": f"  {_row_label(row, False)}"} for row in matching_rows)
+            entries.extend(
+                {"type": "resource", "row": row, "label": f"  {_row_label(row, False)}"}
+                for row in matching_rows
+            )
         nonmatching_rows = self._nonmatching_rows()
         if nonmatching_rows:
             marker = "▼" if self.show_all else "▶"
@@ -346,7 +360,10 @@ class ExternalResourcePickerModal(ButtonArrowNavigationMixin, ModalScreen[Option
                 "label": f"{marker} Non-Matching {_resource_kind_plural(self.external_ref, self.rows)}",
             })
             if self.show_all:
-                entries.extend({"type": "resource", "row": row, "label": f"  {_row_label(row, True)}"} for row in nonmatching_rows)
+                entries.extend(
+                    {"type": "resource", "row": row, "label": f"  {_row_label(row, True)}"}
+                    for row in nonmatching_rows
+                )
         return entries
 
     def _displayed_entries(self) -> List[Dict[str, Any]]:
@@ -360,7 +377,7 @@ class ExternalResourcePickerModal(ButtonArrowNavigationMixin, ModalScreen[Option
         ]
 
     def _nonmatching_rows(self) -> List[Dict[str, Any]]:
-        matching = set(id(row) for row in self._matching_rows())
+        matching = {id(row) for row in self._matching_rows()}
         return [row for row in self.rows if id(row) not in matching]
 
     def _is_nonmatching_row(self, row: Optional[Dict[str, Any]]) -> bool:
@@ -529,7 +546,8 @@ class ExternalResourceFormModal(ButtonArrowNavigationMixin, ModalScreen[Optional
         create = self.external_ref.get("create") or {}
         verb = "Update" if self.mode == "update" else "Create"
         with Container(id="dialog"):
-            yield Static(escape(f"{verb} {create.get('label') or self.external_ref.get('displayName') or 'Resource'}"), id="title")
+            title = create.get('label') or self.external_ref.get('displayName') or 'Resource'
+            yield Static(escape(f"{verb} {title}"), id="title")
             yield Static(documentation_markup(self.notice), id="notice")
             yield Static(documentation_markup(self.documentation), id="documentation")
             for index, field in enumerate(self.fields):
