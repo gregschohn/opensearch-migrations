@@ -1,6 +1,7 @@
 import {z} from "zod";
 import {
     COMPLETE_SNAPSHOT_CONFIG,
+    DEFAULT_RESOURCES,
     ARGO_METADATA_OPTIONS,
     ARGO_METADATA_WORKFLOW_OPTION_KEYS,
     NAMED_TARGET_CLUSTER_CONFIG,
@@ -16,7 +17,6 @@ import {
     InputParamDef,
     InputParamsToExpressions,
     INTERNAL,
-    PodSpecPatchOverlay,
     selectInputsForRegister,
     Serialized,
     typeToken,
@@ -202,23 +202,21 @@ type RunMetadataTemplateInputDefs = typeof runMetadataInputs & {
     taskK8sLabel: InputParamDef<string, false>;
 };
 
-function makeMetadataPodSpecPatch(
-    inputs: InputParamsToExpressions<RunMetadataTemplateInputDefs, InputParameterSource>
-) {
+function makeMetadataPodSpecPatch(inputs: InputParamsToExpressions<RunMetadataTemplateInputDefs, InputParameterSource>) {
     const metadataConfig = expr.deserializeRecord(inputs.metadataMigrationConfig);
-    return {
+    return expr.asString(expr.serialize(expr.makeDict({
         volumes: expr.concatArrays(
             expr.templateValue(METADATA_STATIC_VOLUMES),
             expr.dig(metadataConfig, ["fileSourceVolumes"], [])
         ),
-        mainContainer: {
+        containers: expr.toArray(expr.makeDict({
+            name: "main",
             volumeMounts: expr.concatArrays(
                 expr.templateValue(METADATA_STATIC_VOLUME_MOUNTS),
                 expr.dig(metadataConfig, ["fileSourceVolumeMounts"], [])
             ),
-            resources: expr.get(metadataConfig, "resources"),
-        },
-    } satisfies PodSpecPatchOverlay;
+        }))
+    })));
 }
 
 function buildMetadataContainer<
@@ -240,6 +238,7 @@ function buildMetadataContainer<
             expr.dig(expr.deserializeRecord(inputs.metadataMigrationConfig), ["jvmArgs"], "")
         )
         .addEnvVarsFromRecord(getTargetHttpAuthCreds(getHttpAuthSecretName(inputs.targetConfig)))
+        .addResources(DEFAULT_RESOURCES.JAVA_MIGRATION_CONSOLE_CLI)
         .addCommand(["/root/metadataMigration/bin/MetadataMigration"])
         .addArgs([
             inputs.commandMode,

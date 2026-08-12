@@ -224,11 +224,9 @@ export const ARGO_METADATA_OPTIONS = makeOptionalDefaultedFieldsRequired(
         skipMigrateApproval: z.boolean(),
     })
 );
-
 export const ARGO_METADATA_WORKFLOW_OPTION_KEYS = [
     "jvmArgs",
     "loggingConfigurationOverrideConfigMap",
-    "resources",
     "skipEvaluateApproval",
     "skipMigrateApproval",
     "fileSourceVolumes",

@@ -182,16 +182,8 @@ public class CreateSnapshot {
         );
 
         var parsedRepoUri = RepoUri.parse(arguments.repoUri);
-        switch (parsedRepoUri) {
-            case RepoUri.S3RepoUri s -> {
-                if (arguments.s3Region == null) {
-                    throw new ParameterException("If an s3 repo is being used, --s3-region must be set");
-                }
-            }
-            // Snapshot creation writes to the repo, so unlike the read paths in
-            // ClusterReaderExtractor and RfsMigrateDocuments it needs no --local-dir.
-            case RepoUri.GcsRepoUri g -> { /* no additional arguments required */ }
-            case RepoUri.FileRepoUri f -> { /* no additional arguments required */ }
+        if (parsedRepoUri instanceof RepoUri.S3RepoUri && arguments.s3Region == null) {
+            throw new ParameterException("If an s3 repo is being used, --s3-region must be set");
         }
         try {
             SnapshotMode.fromString(arguments.mode);
