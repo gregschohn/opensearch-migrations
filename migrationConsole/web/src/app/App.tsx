@@ -8,6 +8,7 @@ import {
   Menu,
   Pencil,
   RefreshCw,
+  Send,
   X,
 } from "lucide-react";
 
@@ -15,11 +16,13 @@ import {
   getConfigDraft,
   getHealth,
   getManageState,
+  getOperations,
   reconcileManageState,
   type ConfigDraft,
   type ManageSnapshot,
 } from "../api/client";
 import { useManageEvents } from "../api/useManageEvents";
+import { useOperationEvents } from "../api/useOperationEvents";
 import { ActivityPanel } from "../features/activity/ActivityPanel";
 import { ConfigEditor } from "../features/configuration/ConfigEditor";
 import {
@@ -32,6 +35,7 @@ import type {
   PendingResourceRename,
   ResourceAddController,
 } from "../features/configuration/resourceAdds";
+import { SubmitConfigDialog } from "../features/submission/SubmitConfigDialog";
 import { ResourceTree } from "../features/tree/ResourceTree";
 import { ResourceWorkspace } from "../features/workspace/ResourceWorkspace";
 
@@ -69,6 +73,33 @@ function draftHasEditTarget(
 }
 
 
+function hasPendingConfiguration(snapshot: ManageSnapshot): boolean {
+  return Object.values(snapshot.nodes).some((node) => {
+    if (node.kind !== "resource") return false;
+    if (node.comparisons.some((comparison) => comparison.pendingChanged)) {
+      return true;
+    }
+    const summary = (node.valueSummary ?? "").toLocaleLowerCase();
+    return (
+      summary.includes("pending submission")
+      || /changes? to submit/.test(summary)
+    );
+  });
+}
+
+
+function isExpectedWorkflowReplacementProblem(
+  problem: { source: string; message: string },
+  submitActive: boolean,
+): boolean {
+  if (!submitActive || problem.source.toLocaleLowerCase() !== "argo") {
+    return false;
+  }
+  const message = problem.message.toLocaleLowerCase();
+  return message.includes("not found") || /\b404\b/.test(message);
+}
+
+
 export function App() {
   const queryClient = useQueryClient();
   const health = useQuery({
@@ -83,9 +114,24 @@ export function App() {
       reconcileManageState(previous, incoming),
   });
   const eventConnection = useManageEvents(queryClient);
+  useOperationEvents(queryClient);
+  const operations = useQuery({
+    queryKey: ["operations"],
+    queryFn: getOperations,
+    refetchInterval: (query) => (
+      query.state.data?.some((operation) => (
+        operation.status === "queued"
+        || operation.status === "running"
+        || operation.status === "waiting"
+      ))
+        ? 2_000
+        : false
+    ),
+  });
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [treeOpen, setTreeOpen] = useState(false);
   const [editContext, setEditContext] = useState<EditContext | null>(null);
+  const [submitOpen, setSubmitOpen] = useState(false);
   const [resourceAdds, setResourceAdds] =
     useState<ResourceAddController | null>(null);
   const [pendingResourceAdditions, setPendingResourceAdditions] =
@@ -93,10 +139,14 @@ export function App() {
   const [pendingResourceRenames, setPendingResourceRenames] =
     useState<PendingResourceRename[]>([]);
   const editExitRef = useRef<(() => void) | null>(null);
+  const pendingConfiguration = useMemo(
+    () => state.data ? hasPendingConfiguration(state.data) : false,
+    [state.data],
+  );
   const configDraft = useQuery({
     queryKey: ["config-draft"],
     queryFn: getConfigDraft,
-    enabled: editContext !== null,
+    enabled: editContext !== null || pendingConfiguration,
     staleTime: Infinity,
   });
 
@@ -198,6 +248,69 @@ export function App() {
     ),
     [selectedId, state.data],
   );
+  const submitActive = operations.data?.some((operation) => (
+    operation.kind === "submit"
+    && (
+      operation.status === "queued"
+      || operation.status === "running"
+      || operation.status === "waiting"
+    )
+  )) ?? false;
+  const visibleProblems = state.data?.problems.filter(
+    (problem) => !isExpectedWorkflowReplacementProblem(
+      problem,
+      submitActive,
+    ),
+  ) ?? [];
+  const submitValidation = configDraft.data?.editState.validation;
+  const blockingDiagnosticCount = submitValidation?.diagnostics?.filter(
+    (diagnostic) => (
+      diagnostic.severity === "error"
+      || diagnostic.severity === "required"
+    ),
+  ).length ?? 0;
+  const submitErrorCount = Math.max(
+    submitValidation?.errors?.length ?? 0,
+    blockingDiagnosticCount,
+  );
+  const submitValidationBlocked = (
+    pendingConfiguration
+    && (
+      configDraft.isPending
+      || configDraft.isError
+      || submitValidation?.valid === false
+    )
+  );
+  const submitBlockedReason = submitActive
+    ? "Submission in progress"
+    : configDraft.isPending
+      ? "Checking configuration"
+      : configDraft.isError
+        ? "Configuration validation unavailable"
+        : submitValidation?.valid === false
+          ? (
+            submitErrorCount > 0
+              ? `${submitErrorCount} configuration ${
+                submitErrorCount === 1 ? "error" : "errors"
+              }`
+              : "Configuration has validation errors"
+          )
+          : null;
+  const submitTitle = submitActive
+    ? "A configuration submission is already in progress"
+    : configDraft.isPending
+      ? "Checking configuration before submission"
+      : configDraft.isError
+        ? "Configuration validation is unavailable"
+        : submitValidation?.valid === false
+          ? (
+            submitErrorCount > 0
+              ? `Resolve ${submitErrorCount} configuration ${
+                submitErrorCount === 1 ? "error" : "errors"
+              } before submitting`
+              : "Resolve configuration errors before submitting"
+          )
+          : "Review and submit pending configuration";
 
   const registerEditExit = useCallback((handler: (() => void) | null) => {
     editExitRef.current = handler;
@@ -360,6 +473,33 @@ export function App() {
               : <Pencil aria-hidden="true" />}
             <span>{editContext ? "Exit editing" : "Edit configuration"}</span>
           </button>
+          {!editContext && pendingConfiguration ? (
+            <div className="submit-mode-control">
+              <button
+                aria-describedby={
+                  submitBlockedReason ? "submit-blocked-reason" : undefined
+                }
+                aria-label="Review and submit"
+                className="edit-mode-button submit-mode-button"
+                disabled={submitActive || submitValidationBlocked}
+                onClick={() => setSubmitOpen(true)}
+                title={submitTitle}
+                type="button"
+              >
+                <Send aria-hidden="true" />
+                <span>Review and submit</span>
+              </button>
+              {submitBlockedReason ? (
+                <span
+                  className="submit-blocked-reason"
+                  id="submit-blocked-reason"
+                  role="status"
+                >
+                  {submitBlockedReason}
+                </span>
+              ) : null}
+            </div>
+          ) : null}
           <span className="revision" title="Manage state revision">
             {state.data?.revision ?? "waiting"}
           </span>
@@ -410,6 +550,12 @@ export function App() {
           )}
         </div>
       </header>
+      {submitOpen ? (
+        <SubmitConfigDialog
+          onClose={() => setSubmitOpen(false)}
+          onSubmitted={() => setSubmitOpen(false)}
+        />
+      ) : null}
       {state.isPending ? (
         <main className="shell-loading">
           <LoaderCircle className="spin" aria-hidden="true" />
@@ -432,7 +578,7 @@ export function App() {
               <span>{state.data.refreshError?.message}</span>
             </div>
           ) : null}
-          {state.data.problems.map((problem) => (
+          {visibleProblems.map((problem) => (
             <div className="state-banner problem-banner" key={`${problem.source}-${problem.message}`} role="status">
               <CircleAlert aria-hidden="true" />
               <strong>{problem.source}</strong>
@@ -493,6 +639,9 @@ export function App() {
                   onSubmitted={() => {
                     setEditContext(null);
                     void queryClient.invalidateQueries({
+                      queryKey: ["operations"],
+                    });
+                    void queryClient.invalidateQueries({
                       queryKey: ["manage-state"],
                     });
                   }}
@@ -515,6 +664,7 @@ export function App() {
                 </section>
               )}
               <ActivityPanel
+                operations={operations.data ?? []}
                 selectedNode={observedSelectedNode}
                 snapshot={state.data}
               />

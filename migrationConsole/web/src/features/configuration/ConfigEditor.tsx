@@ -29,12 +29,12 @@ import {
   getConfigDraft,
   getConfigRemovalImpact,
   saveConfigDraft,
-  submitConfigDraft,
   type ConfigDraft,
   type ConfigRemovalImpact,
   type EditNode,
   type EditOperation,
 } from "../../api/client";
+import { SubmitConfigDialog } from "../submission/SubmitConfigDialog";
 import { ExternalResourceEditor } from "./ExternalResourceEditor";
 import {
   pendingResourceAddition,
@@ -2001,27 +2001,11 @@ export function ConfigEditor({
     }
   };
 
-  const submit = async () => {
+  const openSubmitReview = async () => {
     if (!await waitForPendingCommit()) return;
     const current = queryClient.getQueryData<ConfigDraft>(["config-draft"]);
     if (!current) return;
-    setBusy(true);
-    setProblem("");
-    try {
-      const submission = await submitConfigDraft(current.draftRevision);
-      queryClient.setQueryData(["config-draft"], submission.draft);
-      setLocallyEditedIds(new Set());
-      setConfirmSubmit(false);
-      onSubmitted();
-    } catch (error) {
-      if (error instanceof ConfigApiError && error.current) {
-        queryClient.setQueryData(["config-draft"], error.current);
-      }
-      setProblem(error instanceof Error ? error.message : String(error));
-      setConfirmSubmit(false);
-    } finally {
-      setBusy(false);
-    }
+    setConfirmSubmit(true);
   };
 
   const requestRemoval = async (node: EditNode) => {
@@ -2278,7 +2262,7 @@ export function ConfigEditor({
               || (busy && !hasLocalEdits)
               || draft.editState.validation.valid === false
             }
-            onClick={() => setConfirmSubmit(true)}
+            onClick={() => void openSubmitReview()}
             title={
               draft.editState.validation.valid === false
                 ? "Resolve validation errors before submitting"
@@ -2579,48 +2563,16 @@ export function ConfigEditor({
           </section>
         </div>
       ) : null}
-      {confirmSubmit ? (
-        <div className="modal-backdrop">
-          <section
-            aria-labelledby="submit-dialog-title"
-            aria-modal="true"
-            className="confirmation-dialog"
-            role="dialog"
-          >
-            <header>
-              <Send aria-hidden="true" />
-              <div>
-                <span>Workflow submission</span>
-                <h2 id="submit-dialog-title">Submit configuration?</h2>
-              </div>
-            </header>
-            <p>
-              The current configuration will be saved, the workflow will be
-              replaced, and editing will close after submission succeeds.
-            </p>
-            <footer>
-              <button
-                disabled={busy}
-                onClick={() => setConfirmSubmit(false)}
-                type="button"
-              >
-                Cancel
-              </button>
-              <button
-                aria-label="Confirm submit"
-                className="primary-button"
-                disabled={busy}
-                onClick={() => void submit()}
-                type="button"
-              >
-                {busy
-                  ? <LoaderCircle className="spin" aria-hidden="true" />
-                  : <Send aria-hidden="true" />}
-                Save and submit
-              </button>
-            </footer>
-          </section>
-        </div>
+      {confirmSubmit && draft ? (
+        <SubmitConfigDialog
+          draftRevision={draft.draftRevision}
+          onClose={() => setConfirmSubmit(false)}
+          onSubmitted={() => {
+            setLocallyEditedIds(new Set());
+            setConfirmSubmit(false);
+            onSubmitted();
+          }}
+        />
       ) : null}
     </section>
   );

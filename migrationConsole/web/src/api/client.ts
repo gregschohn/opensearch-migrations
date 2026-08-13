@@ -9,6 +9,21 @@ export type ConfigDraft = components["schemas"]["ConfigDraftV1"];
 export type ConfigRemovalImpact =
   components["schemas"]["ConfigRemovalImpactV1"];
 export type ConfigSubmission = components["schemas"]["ConfigSubmissionV1"];
+export type ConfigReview = components["schemas"]["ConfigReviewV1"];
+export type Operation = components["schemas"]["OperationV1"];
+export type ApprovalReview = components["schemas"]["ApprovalReviewV1"];
+export type ResetPlan = components["schemas"]["ResetPlanV1"];
+export type OutputInventory = components["schemas"]["OutputInventoryV1"];
+export type OutputDescriptor = components["schemas"]["OutputDescriptorV1"];
+export type OutputContent = components["schemas"]["OutputContentV1"];
+export type LogTargetInventory =
+  components["schemas"]["LogTargetInventoryV1"];
+export type LogTarget = components["schemas"]["LogTargetV1"];
+export type LogStream = components["schemas"]["LogStreamV1"];
+export type LogStreamStatus =
+  components["schemas"]["LogStreamStatusV1"];
+export type LogPage = components["schemas"]["LogPageV1"];
+export type LogEvent = components["schemas"]["LogEventV1"];
 export type EditNode = components["schemas"]["EditNodeV1"];
 export type EditOperation =
   components["schemas"]["ApplyEditOperationRequestV1"]["operation"];
@@ -182,7 +197,7 @@ export async function getConfigRemovalImpact(
 
 export async function submitConfigDraft(
   draftRevision: string,
-): Promise<ConfigSubmission> {
+): Promise<Operation> {
   const { data, error, response } = await client.POST(
     "/api/v1/config/submit",
     { body: { expectedDraftRevision: draftRevision } },
@@ -195,6 +210,259 @@ export async function submitConfigDraft(
     );
   }
   return data;
+}
+
+
+export async function getConfigReview(
+  draftRevision: string,
+): Promise<ConfigReview> {
+  const { data, error, response } = await client.POST(
+    "/api/v1/config/review",
+    { body: { expectedDraftRevision: draftRevision } },
+  );
+  if (!response.ok || error || !data) {
+    throw new ConfigApiError(
+      response.status,
+      "The pending changes could not be reviewed",
+      error,
+    );
+  }
+  return data;
+}
+
+
+export async function getOperations(): Promise<Operation[]> {
+  const { data, error, response } = await client.GET(
+    "/api/v1/operations",
+  );
+  if (!response.ok || error || !data) {
+    throw new Error("Recent operations are unavailable");
+  }
+  return data.operations;
+}
+
+
+export async function getApprovalReview(
+  targetId: string,
+): Promise<ApprovalReview> {
+  const { data, error, response } = await client.GET(
+    "/api/v1/approvals/review",
+    { params: { query: { targetId } } },
+  );
+  if (!response.ok || error || !data) {
+    throw new ConfigApiError(
+      response.status,
+      "Approval details are unavailable",
+      error,
+    );
+  }
+  return data;
+}
+
+
+export async function approveTarget(
+  targetId: string,
+  expectedGateRevision: string,
+): Promise<Operation> {
+  const { data, error, response } = await client.POST(
+    "/api/v1/approvals",
+    { body: { targetId, expectedGateRevision } },
+  );
+  if (!response.ok || error || !data) {
+    throw new ConfigApiError(
+      response.status,
+      "Approval could not be started",
+      error,
+    );
+  }
+  return data;
+}
+
+
+export async function getResetPlan(targetId: string): Promise<ResetPlan> {
+  const { data, error, response } = await client.POST(
+    "/api/v1/resets/plan",
+    { body: { targetId } },
+  );
+  if (!response.ok || error || !data) {
+    throw new ConfigApiError(
+      response.status,
+      "A reset plan could not be created",
+      error,
+    );
+  }
+  return data;
+}
+
+
+export async function executeReset(planToken: string): Promise<Operation> {
+  const { data, error, response } = await client.POST(
+    "/api/v1/resets",
+    { body: { planToken } },
+  );
+  if (!response.ok || error || !data) {
+    throw new ConfigApiError(
+      response.status,
+      "Reset could not be started",
+      error,
+    );
+  }
+  return data;
+}
+
+
+export async function getOutputs(
+  targetId: string,
+): Promise<OutputInventory> {
+  const { data, error, response } = await client.GET("/api/v1/outputs", {
+    params: { query: { targetId } },
+  });
+  if (!response.ok || error || !data) {
+    throw new ConfigApiError(
+      response.status,
+      "Managed output is unavailable",
+      error,
+    );
+  }
+  return data;
+}
+
+
+export async function getOutputContent(
+  outputId: string,
+): Promise<OutputContent> {
+  const { data, error, response } = await client.GET(
+    "/api/v1/outputs/content",
+    {
+      params: { query: { outputId } },
+    },
+  );
+  if (!response.ok || error || !data) {
+    throw new ConfigApiError(
+      response.status,
+      "Managed output could not be read",
+      error,
+    );
+  }
+  return data;
+}
+
+
+export function outputDownloadUrl(outputId: string): string {
+  const params = new URLSearchParams({ outputId });
+  return `/api/v1/outputs/download?${params.toString()}`;
+}
+
+
+export async function getLogTargets(
+  nodeId: string,
+): Promise<LogTargetInventory> {
+  const { data, error, response } = await client.GET(
+    "/api/v1/nodes/{node_id}/log-targets",
+    { params: { path: { node_id: nodeId } } },
+  );
+  if (!response.ok || error || !data) {
+    throw new ConfigApiError(
+      response.status,
+      "Log targets are unavailable",
+      error,
+    );
+  }
+  return data;
+}
+
+
+export async function startLogStream(
+  targetId: string,
+  options: {
+    tailLines: number;
+    follow: boolean;
+    pageSize?: number;
+  },
+): Promise<LogStream> {
+  const { data, error, response } = await client.POST(
+    "/api/v1/log-streams",
+    {
+      body: {
+        targetId,
+        tailLines: options.tailLines,
+        follow: options.follow,
+        pageSize: options.pageSize ?? 200,
+      },
+    },
+  );
+  if (!response.ok || error || !data) {
+    throw new ConfigApiError(
+      response.status,
+      "Logs could not be started",
+      error,
+    );
+  }
+  return data;
+}
+
+
+export async function getLogPage(
+  streamId: string,
+  options: {
+    before?: string;
+    after?: string;
+    limit?: number;
+  } = {},
+): Promise<LogPage> {
+  const { data, error, response } = await client.GET(
+    "/api/v1/log-streams/{stream_id}/pages",
+    {
+      params: {
+        path: { stream_id: streamId },
+        query: {
+          before: options.before,
+          after: options.after,
+          limit: options.limit ?? 200,
+        },
+      },
+    },
+  );
+  if (!response.ok || error || !data) {
+    throw new ConfigApiError(
+      response.status,
+      "Buffered logs could not be read",
+      error,
+    );
+  }
+  return data;
+}
+
+
+export async function stopLogStream(
+  streamId: string,
+): Promise<LogStreamStatus> {
+  const { data, error, response } = await client.DELETE(
+    "/api/v1/log-streams/{stream_id}",
+    { params: { path: { stream_id: streamId } } },
+  );
+  if (!response.ok || error || !data) {
+    throw new ConfigApiError(
+      response.status,
+      "The log stream could not be stopped",
+      error,
+    );
+  }
+  return data;
+}
+
+
+export function logEventsUrl(
+  streamId: string,
+  afterSequence: number,
+): string {
+  const params = new URLSearchParams({
+    after: String(afterSequence),
+  });
+  return (
+    `/api/v1/log-streams/${encodeURIComponent(streamId)}/events?`
+    + params.toString()
+  );
 }
 
 

@@ -1,6 +1,16 @@
-import { Activity, CheckCircle2, CircleDashed } from "lucide-react";
+import {
+  Activity,
+  CheckCircle2,
+  CircleDashed,
+  CircleX,
+  LoaderCircle,
+} from "lucide-react";
 
-import type { ManageNode, ManageSnapshot } from "../../api/client";
+import type {
+  ManageNode,
+  ManageSnapshot,
+  Operation,
+} from "../../api/client";
 
 
 function workflowSteps(
@@ -23,18 +33,32 @@ function workflowSteps(
 export function ActivityPanel({
   snapshot,
   selectedNode,
+  operations,
 }: {
   snapshot: ManageSnapshot;
   selectedNode: ManageNode | null;
+  operations: Operation[];
 }) {
   const steps = workflowSteps(snapshot, selectedNode);
+  const activeSubmit = operations.find((operation) => (
+    operation.kind === "submit"
+    && (
+      operation.status === "queued"
+      || operation.status === "running"
+      || operation.status === "waiting"
+    )
+  ));
   return (
     <aside className="activity-panel">
       <header>
         <Activity aria-hidden="true" />
         <div>
           <h2>Activity</h2>
-          <span>Current workflow</span>
+          <span>
+            {operations.length > 0
+              ? "Workflow and operations"
+              : "Current workflow"}
+          </span>
         </div>
       </header>
       {snapshot.workflow ? (
@@ -46,9 +70,36 @@ export function ActivityPanel({
           </div>
         </div>
       ) : (
-        <p className="activity-empty">No active Argo workflow.</p>
+        <p className="activity-empty">
+          {activeSubmit?.status === "waiting"
+            ? "Waiting for submitted workflow."
+            : activeSubmit
+              ? "Submitting workflow."
+              : "No active Argo workflow."}
+        </p>
       )}
       <div className="activity-steps">
+        {operations.map((operation) => (
+          <div
+            className={`activity-step operation operation-${operation.status}`}
+            key={operation.id}
+          >
+            {operation.status === "failed" ? (
+              <CircleX aria-hidden="true" />
+            ) : operation.status === "succeeded" ? (
+              <CheckCircle2 aria-hidden="true" />
+            ) : operation.status === "waiting" ? (
+              <CircleDashed aria-hidden="true" />
+            ) : (
+              <LoaderCircle className="spin" aria-hidden="true" />
+            )}
+            <div>
+              <strong>{operation.label}</strong>
+              <span>{operation.message}</span>
+              {operation.detail ? <small>{operation.detail}</small> : null}
+            </div>
+          </div>
+        ))}
         {steps.map((step) => (
           <div className="activity-step" key={step.id}>
             {step.status === "ok" ? (
@@ -62,7 +113,7 @@ export function ActivityPanel({
             </div>
           </div>
         ))}
-        {selectedNode && steps.length === 0 ? (
+        {selectedNode && steps.length === 0 && operations.length === 0 ? (
           <p className="activity-empty">No active steps for this selection.</p>
         ) : null}
       </div>

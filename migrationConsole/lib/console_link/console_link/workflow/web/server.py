@@ -9,6 +9,12 @@ import uvicorn
 from ..application.manage_state import ManageStateService
 from ..application.observations import ObservationCoordinator
 from ..application.config_drafts import ConfigDraftService
+from ..application.outputs import OutputService
+from ..application.logs import KubernetesLogSource, LogStreamService
+from ..application.operations import OperationManager
+from ..application.actions import ApprovalService
+from ..application.resets import ResetService
+from ..commands.autocomplete_workflows import DEFAULT_WORKFLOW_NAME
 from ..models.utils import load_k8s_config
 from ..services.argo_observation_service import make_argo_observation_service
 from ..services.config_edit_service import ConfigEditService
@@ -28,20 +34,40 @@ def run_server(
     refresh_interval: float = 3.0,
 ) -> None:
     load_k8s_config()
+    argo_service = make_argo_observation_service(
+        argo_server,
+        insecure,
+        token,
+    )
     state_service = ManageStateService(
         namespace=namespace,
         workflow_name=workflow_name,
-        argo_service=make_argo_observation_service(
-            argo_server,
-            insecure,
-            token,
-        ),
+        argo_service=argo_service,
         config_service_provider=lambda: ConfigEditService(namespace=namespace),
     )
     coordinator = ObservationCoordinator(
         state_service,
         refresh_interval=refresh_interval,
     )
+    operation_manager = OperationManager()
+    log_streams = LogStreamService(
+        KubernetesLogSource(
+            namespace=namespace,
+            workflow_name=workflow_name,
+        )
+    )
+
+    def load_workflow():
+        result, workflow = argo_service.get_workflow(
+            workflow_name,
+            namespace,
+        )
+        if not result.get("success"):
+            raise RuntimeError(
+                str(result.get("error") or "Workflow is unavailable")
+            )
+        return workflow
+
     app = create_app(
         static_dir=static_dir,
         coordinator=coordinator,
@@ -49,6 +75,15 @@ def run_server(
         config_drafts=ConfigDraftService(
             ConfigEditService(namespace=namespace),
         ),
+        outputs=OutputService(namespace=namespace),
+        operations=operation_manager,
+        approvals=ApprovalService(
+            namespace=namespace,
+            workflow_name=workflow_name,
+            workflow_loader=load_workflow,
+        ),
+        resets=ResetService(namespace=namespace),
+        logs=log_streams,
     )
     uvicorn.run(
         app,
@@ -61,7 +96,7 @@ def run_server(
 def main(argv: Optional[Sequence[str]] = None) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--namespace", default="ma")
-    parser.add_argument("--workflow-name", default="migration")
+    parser.add_argument("--workflow-name", default=DEFAULT_WORKFLOW_NAME)
     parser.add_argument(
         "--argo-server",
         default="http://argo-server:2746",
