@@ -2,23 +2,46 @@
 
 from contextlib import asynccontextmanager
 import json
+import logging
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, Optional
+from typing import Annotated, Any, AsyncIterator, Dict, Optional
 
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..application.observations import ObservationCoordinator, ObservationEvent
-from .contracts import HealthV1, ManageSnapshotV1
+from ..application.config_drafts import (
+    ConfigDraftConflict,
+    ExternalResourceSelectionWarning,
+    SavedConfigConflict,
+)
+from .contracts import (
+    ApplyEditOperationRequestV1,
+    ConfigDraftV1,
+    ConfigRemovalImpactRequestV1,
+    ConfigRemovalImpactV1,
+    ConfigSubmissionV1,
+    DraftRevisionRequestV1,
+    ExternalResourceDetailsV1,
+    ExternalResourceInventoryV1,
+    ExternalResourceMutationV1,
+    HealthV1,
+    ManageSnapshotV1,
+    SaveExternalResourceRequestV1,
+    SelectExternalResourceRequestV1,
+)
 
 
 DEFAULT_STATIC_DIR = Path(__file__).with_name("static")
+logger = logging.getLogger(__name__)
 
 
 def create_app(
     static_dir: Optional[Path] = None,
     coordinator: Optional[ObservationCoordinator] = None,
+    config_drafts: Optional[Any] = None,
+    workflow_name: str = "migration",
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI):
@@ -69,6 +92,275 @@ def create_app(
                 if observation.refresh_error else None
             ),
         )
+
+    def draft_service():
+        if config_drafts is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Configuration editing is not configured",
+            )
+        return config_drafts
+
+    @app.get(
+        "/api/v1/config",
+        response_model=ConfigDraftV1,
+        response_model_exclude_none=True,
+        tags=["configuration"],
+    )
+    def open_config() -> ConfigDraftV1:
+        try:
+            return ConfigDraftV1.from_domain(draft_service().open())
+        except HTTPException:
+            raise
+        except Exception as error:
+            logger.exception("Failed to open the workflow configuration")
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "configuration_unavailable",
+                    "message": str(error) or type(error).__name__,
+                },
+            ) from error
+
+    @app.post(
+        "/api/v1/config/operations",
+        response_model=ConfigDraftV1,
+        response_model_exclude_none=True,
+        tags=["configuration"],
+    )
+    def apply_config_operation(
+        request_body: ApplyEditOperationRequestV1,
+    ) -> ConfigDraftV1:
+        operation = request_body.operation.model_dump(
+            by_alias=True,
+            exclude_none=True,
+        )
+        try:
+            draft = draft_service().apply(
+                request_body.expected_draft_revision,
+                operation,
+            )
+        except ConfigDraftConflict as error:
+            raise _draft_conflict(error) from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return ConfigDraftV1.from_domain(draft)
+
+    @app.post(
+        "/api/v1/config/save",
+        response_model=ConfigDraftV1,
+        response_model_exclude_none=True,
+        tags=["configuration"],
+    )
+    def save_config(request_body: DraftRevisionRequestV1) -> ConfigDraftV1:
+        try:
+            draft = draft_service().save(request_body.expected_draft_revision)
+        except ConfigDraftConflict as error:
+            raise _draft_conflict(error) from error
+        except SavedConfigConflict as error:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "saved_config_conflict",
+                    "message": str(error),
+                    "persistedRevision": error.persisted_revision,
+                    "current": ConfigDraftV1.from_domain(error.current).model_dump(
+                        by_alias=True,
+                        exclude_none=True,
+                        mode="json",
+                    ),
+                },
+            ) from error
+        return ConfigDraftV1.from_domain(draft)
+
+    @app.post(
+        "/api/v1/config/discard",
+        response_model=ConfigDraftV1,
+        response_model_exclude_none=True,
+        tags=["configuration"],
+    )
+    def discard_config(request_body: DraftRevisionRequestV1) -> ConfigDraftV1:
+        try:
+            draft = draft_service().discard(request_body.expected_draft_revision)
+        except ConfigDraftConflict as error:
+            raise _draft_conflict(error) from error
+        return ConfigDraftV1.from_domain(draft)
+
+    @app.post(
+        "/api/v1/config/removal-impact",
+        response_model=ConfigRemovalImpactV1,
+        response_model_exclude_none=True,
+        tags=["configuration"],
+    )
+    def config_removal_impact(
+        request_body: ConfigRemovalImpactRequestV1,
+    ) -> ConfigRemovalImpactV1:
+        try:
+            impact = draft_service().removal_impact(
+                request_body.expected_draft_revision,
+                request_body.path,
+            )
+        except ConfigDraftConflict as error:
+            raise _draft_conflict(error) from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return ConfigRemovalImpactV1.from_domain(impact)
+
+    @app.post(
+        "/api/v1/config/submit",
+        response_model=ConfigSubmissionV1,
+        response_model_exclude_none=True,
+        tags=["configuration"],
+    )
+    def submit_config(
+        request_body: DraftRevisionRequestV1,
+    ) -> ConfigSubmissionV1:
+        try:
+            submission = draft_service().submit(
+                request_body.expected_draft_revision,
+                workflow_name,
+            )
+        except ConfigDraftConflict as error:
+            raise _draft_conflict(error) from error
+        except SavedConfigConflict as error:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "saved_config_conflict",
+                    "message": str(error),
+                    "persistedRevision": error.persisted_revision,
+                    "current": ConfigDraftV1.from_domain(error.current).model_dump(
+                        by_alias=True,
+                        exclude_none=True,
+                        mode="json",
+                    ),
+                },
+            ) from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        except Exception as error:
+            logger.exception("Failed to submit workflow configuration")
+            current = draft_service().open()
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "code": "workflow_submit_failed",
+                    "message": str(error) or type(error).__name__,
+                    "current": ConfigDraftV1.from_domain(current).model_dump(
+                        by_alias=True,
+                        exclude_none=True,
+                        mode="json",
+                    ),
+                },
+            ) from error
+        return ConfigSubmissionV1.from_domain(submission)
+
+    @app.get(
+        "/api/v1/external-resources",
+        response_model=ExternalResourceInventoryV1,
+        response_model_exclude_none=True,
+        tags=["configuration"],
+    )
+    def external_resources(
+        node_id: Annotated[str, Query(alias="nodeId")],
+        expected_revision: Annotated[
+            str,
+            Query(alias="expectedDraftRevision"),
+        ],
+    ) -> ExternalResourceInventoryV1:
+        try:
+            inventory = draft_service().list_external_resources(
+                expected_revision,
+                node_id,
+            )
+        except ConfigDraftConflict as error:
+            raise _draft_conflict(error) from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return ExternalResourceInventoryV1.from_domain(inventory)
+
+    @app.post(
+        "/api/v1/external-resources/select",
+        response_model=ConfigDraftV1,
+        response_model_exclude_none=True,
+        tags=["configuration"],
+    )
+    def select_external_resource(
+        request_body: SelectExternalResourceRequestV1,
+    ) -> ConfigDraftV1:
+        try:
+            draft = draft_service().select_external_resource(
+                expected_revision=request_body.expected_draft_revision,
+                node_id=request_body.node_id,
+                name=request_body.name,
+                kind=request_body.kind,
+                group=request_body.group,
+                key=request_body.key,
+                accept_warning=request_body.accept_warning,
+                manual=request_body.manual,
+            )
+        except ConfigDraftConflict as error:
+            raise _draft_conflict(error) from error
+        except ExternalResourceSelectionWarning as error:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "external_selection_warning",
+                    "message": error.message,
+                },
+            ) from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return ConfigDraftV1.from_domain(draft)
+
+    @app.get(
+        "/api/v1/external-resources/details",
+        response_model=ExternalResourceDetailsV1,
+        response_model_exclude_none=True,
+        tags=["configuration"],
+    )
+    def external_resource_details(
+        node_id: Annotated[str, Query(alias="nodeId")],
+        expected_revision: Annotated[
+            str,
+            Query(alias="expectedDraftRevision"),
+        ],
+        name: str,
+    ) -> ExternalResourceDetailsV1:
+        try:
+            details = draft_service().read_external_resource(
+                expected_revision,
+                node_id,
+                name,
+            )
+        except ConfigDraftConflict as error:
+            raise _draft_conflict(error) from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return ExternalResourceDetailsV1.from_domain(details)
+
+    @app.post(
+        "/api/v1/external-resources/save",
+        response_model=ExternalResourceMutationV1,
+        response_model_exclude_none=True,
+        tags=["configuration"],
+    )
+    def save_external_resource(
+        request_body: SaveExternalResourceRequestV1,
+    ) -> ExternalResourceMutationV1:
+        try:
+            mutation = draft_service().save_external_resource(
+                expected_revision=request_body.expected_draft_revision,
+                node_id=request_body.node_id,
+                values=request_body.values,
+                confirmations=request_body.confirmations,
+                existing_name=request_body.existing_name,
+            )
+        except ConfigDraftConflict as error:
+            raise _draft_conflict(error) from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return ExternalResourceMutationV1.from_domain(mutation)
 
     @app.get(
         "/api/v1/manage/events",
@@ -167,3 +459,18 @@ def _register_contract_schemas(app: FastAPI) -> None:
 
 
 app = create_app()
+
+
+def _draft_conflict(error: ConfigDraftConflict) -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={
+            "code": "draft_revision_conflict",
+            "message": str(error),
+            "current": ConfigDraftV1.from_domain(error.current).model_dump(
+                by_alias=True,
+                exclude_none=True,
+                mode="json",
+            ),
+        },
+    )

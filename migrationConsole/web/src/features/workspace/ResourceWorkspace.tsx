@@ -2,13 +2,12 @@ import {
   CheckCircle2,
   FileOutput,
   Logs,
-  Pencil,
   RotateCcw,
   ShieldCheck,
   TriangleAlert,
 } from "lucide-react";
 
-import type { ManageNode, ManageSnapshot } from "../../api/client";
+import type { ManageNode } from "../../api/client";
 
 
 function displayValue(value: { present: boolean; value?: unknown }): string {
@@ -20,7 +19,6 @@ function displayValue(value: { present: boolean; value?: unknown }): string {
 
 
 function capabilityIcon(kind: string) {
-  if (kind === "edit") return Pencil;
   if (kind === "logs") return Logs;
   if (kind === "reset") return RotateCcw;
   if (kind === "approve") return ShieldCheck;
@@ -29,10 +27,13 @@ function capabilityIcon(kind: string) {
 
 
 function ResourceActions({ node }: { node: ManageNode }) {
-  if (node.capabilities.length === 0) return null;
+  const capabilities = node.capabilities.filter(
+    (capability) => capability.kind !== "edit",
+  );
+  if (capabilities.length === 0) return null;
   return (
     <div className="resource-actions" aria-label="Available actions">
-      {node.capabilities.map((capability) => {
+      {capabilities.map((capability) => {
         const Icon = capabilityIcon(capability.kind);
         const label = capability.label ?? capability.kind;
         return (
@@ -40,7 +41,7 @@ function ResourceActions({ node }: { node: ManageNode }) {
             aria-label={label}
             disabled
             key={`${capability.kind}-${label}`}
-            title="This action is shown for parity and is enabled in a later phase"
+            title="This action is enabled in a later phase"
             type="button"
           >
             <Icon aria-hidden="true" />
@@ -126,7 +127,6 @@ export function ResourceWorkspace({
   node,
 }: {
   node: ManageNode;
-  snapshot: ManageSnapshot;
 }) {
   return (
     <article className="workspace">

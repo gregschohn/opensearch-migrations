@@ -7,9 +7,19 @@ import {
   useState,
   type KeyboardEvent,
 } from "react";
-import { ChevronDown, ChevronRight, Search } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  LoaderCircle,
+  Plus,
+  Search,
+} from "lucide-react";
 
 import type { ManageNode, ManageSnapshot } from "../../api/client";
+import type {
+  ResourceAddController,
+  ResourceAddOption,
+} from "../configuration/resourceAdds";
 
 
 interface VisibleRow {
@@ -22,6 +32,7 @@ interface ResourceTreeProps {
   snapshot: ManageSnapshot;
   selectedId: string | null;
   onSelect: (nodeId: string) => void;
+  resourceAdds: ResourceAddController | null;
 }
 
 
@@ -90,10 +101,15 @@ interface TreeRowProps {
   inserted: boolean;
   focused: boolean;
   selected: boolean;
+  addMenuOpen: boolean;
+  addOptions: ResourceAddOption[];
+  addPending: boolean;
+  onAddResource: (optionId: string) => void;
   onExpand: (nodeId: string) => void;
   onFocus: (nodeId: string) => void;
   onKeyDown: (event: KeyboardEvent<HTMLDivElement>, nodeId: string) => void;
   onSelect: (nodeId: string) => void;
+  onToggleAddMenu: (nodeId: string) => void;
   rowRef: (nodeId: string, element: HTMLDivElement | null) => void;
 }
 
@@ -104,18 +120,30 @@ const TreeRow = memo(function TreeRow({
   inserted,
   focused,
   selected,
+  addMenuOpen,
+  addOptions,
+  addPending,
+  onAddResource,
   onExpand,
   onFocus,
   onKeyDown,
   onSelect,
+  onToggleAddMenu,
   rowRef,
 }: TreeRowProps) {
   const { node, depth } = row;
   const expandable = node.childIds.length > 0;
+  const spokenState = node.status === "removed"
+    ? node.valueSummary ?? "Marked for removal"
+    : node.status === "syncing"
+      ? node.valueSummary ?? "Syncing"
+      : node.valueSummary === "Addition pending submission"
+        ? node.valueSummary
+        : node.phase ?? node.status;
   return (
     <div
       aria-expanded={expandable ? expanded : undefined}
-      aria-label={`${node.label}, ${node.phase ?? node.status}`}
+      aria-label={`${node.label}, ${spokenState}`}
       aria-level={depth}
       aria-selected={selected}
       className={[
@@ -149,16 +177,83 @@ const TreeRow = memo(function TreeRow({
       ) : (
         <span className="tree-expander-spacer" />
       )}
-      <span className="status-dot" aria-hidden="true" />
+      {node.status === "syncing" ? (
+        <LoaderCircle
+          aria-hidden="true"
+          className="tree-syncing-indicator spin"
+        />
+      ) : <span className="status-dot" aria-hidden="true" />}
       <span className="tree-row-copy">
         <strong>{node.label}</strong>
         <span>{node.valueSummary ?? node.phase ?? node.kind}</span>
       </span>
-      {node.diagnostics.length > 0 ? (
-        <span className="diagnostic-count" aria-label={`${node.diagnostics.length} diagnostics`}>
-          {node.diagnostics.length}
-        </span>
-      ) : null}
+      <span
+        className="tree-row-tools"
+        onClick={(event) => event.stopPropagation()}
+      >
+        {addOptions.length === 1 ? (
+          <button
+            aria-label={`Add ${addOptions[0].label}`}
+            className="tree-group-add"
+            disabled={addPending || addOptions[0].disabled}
+            onClick={() => onAddResource(addOptions[0].id)}
+            title={
+              addOptions[0].disabledReason
+              ?? `Add ${addOptions[0].label} to ${node.label}`
+            }
+            type="button"
+          >
+            <Plus aria-hidden="true" />
+          </button>
+        ) : addOptions.length > 1 ? (
+          <>
+            <button
+              aria-expanded={addMenuOpen}
+              aria-haspopup="menu"
+              aria-label={`Add resource to ${node.label}`}
+              className="tree-group-add"
+              disabled={
+                addPending
+                || addOptions.every((option) => option.disabled)
+              }
+              onClick={() => onToggleAddMenu(node.id)}
+              title={`Add resource to ${node.label}`}
+              type="button"
+            >
+              <Plus aria-hidden="true" />
+            </button>
+            {addMenuOpen ? (
+              <span
+                aria-label={`Resource types for ${node.label}`}
+                className="tree-group-add-menu"
+                role="menu"
+              >
+                {addOptions.map((option) => (
+                  <button
+                    disabled={addPending || option.disabled}
+                    key={option.id}
+                    onClick={() => onAddResource(option.id)}
+                    role="menuitem"
+                    title={option.disabledReason ?? `Add ${option.label}`}
+                    type="button"
+                  >
+                    <Plus aria-hidden="true" />
+                    <span>{option.label}</span>
+                  </button>
+                ))}
+              </span>
+            ) : null}
+          </>
+        ) : null}
+        {node.diagnostics.length > 0 ? (
+          <span
+            aria-label={`${node.diagnostics.length} diagnostics`}
+            className="diagnostic-count"
+          >
+            {node.diagnostics.length}
+          </span>
+        ) : null}
+      </span>
     </div>
   );
 });
@@ -168,6 +263,7 @@ export function ResourceTree({
   snapshot,
   selectedId,
   onSelect,
+  resourceAdds,
 }: ResourceTreeProps) {
   const [filter, setFilter] = useState("");
   const [expanded, setExpanded] = useState<Set<string>>(
@@ -175,6 +271,7 @@ export function ResourceTree({
   );
   const [focusedId, setFocusedId] = useState<string | null>(selectedId);
   const [insertedIds, setInsertedIds] = useState<Set<string>>(() => new Set());
+  const [addMenuGroupId, setAddMenuGroupId] = useState<string | null>(null);
   const knownIds = useRef<Set<string> | null>(null);
   const rowElements = useRef(new Map<string, HTMLDivElement>());
 
@@ -215,6 +312,28 @@ export function ResourceTree({
     () => visibleRows(snapshot, expanded, filter),
     [snapshot, expanded, filter],
   );
+  const addOptionsByGroup = useMemo(() => {
+    const result = new Map<string, ResourceAddOption[]>();
+    (resourceAdds?.options ?? []).forEach((option) => {
+      const exactGroup = snapshot.nodes[option.placement.groupId];
+      const matchingGroup = exactGroup?.kind === "group"
+        ? exactGroup
+        : Object.values(snapshot.nodes).find((node) => (
+          node.kind === "group"
+          && node.childIds.some(
+            (childId) => (
+              snapshot.nodes[childId]?.resourcePlural
+              === option.placement.resourcePlural
+            ),
+          )
+        ));
+      if (!matchingGroup) return;
+      const current = result.get(matchingGroup.id) ?? [];
+      current.push(option);
+      result.set(matchingGroup.id, current);
+    });
+    return result;
+  }, [resourceAdds?.options, snapshot]);
 
   useEffect(() => {
     if (focusedId && snapshot.nodes[focusedId]) return;
@@ -310,11 +429,21 @@ export function ResourceTree({
               expanded={expanded.has(row.node.id) || filter.length > 0}
               focused={focusedId === row.node.id}
               inserted={insertedIds.has(row.node.id)}
+              addMenuOpen={addMenuGroupId === row.node.id}
+              addOptions={addOptionsByGroup.get(row.node.id) ?? []}
+              addPending={resourceAdds?.busy ?? false}
               key={row.node.id}
+              onAddResource={(optionId) => {
+                setAddMenuGroupId(null);
+                resourceAdds?.add(optionId);
+              }}
               onExpand={toggleExpanded}
               onFocus={setFocusedId}
               onKeyDown={handleKeyDown}
               onSelect={onSelect}
+              onToggleAddMenu={(nodeId) => setAddMenuGroupId((current) => (
+                current === nodeId ? null : nodeId
+              ))}
               row={row}
               rowRef={rowRef}
               selected={selectedId === row.node.id}

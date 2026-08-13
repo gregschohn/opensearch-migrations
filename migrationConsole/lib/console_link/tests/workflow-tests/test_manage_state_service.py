@@ -170,6 +170,109 @@ def test_pending_only_resource_has_edit_but_no_cluster_actions():
     assert set(_capabilities(resource)) == {"edit"}
 
 
+def test_edit_capability_targets_the_config_processor_branch_from_provenance():
+    snapshots = {
+        "pending": {
+            "resources": [{
+                "kind": "CaptureProxy",
+                "name": "capture",
+                "parameters": {
+                    "source": "legacy",
+                    "listenPort": 9201,
+                },
+                "parameterProvenance": {
+                    "source": {
+                        "presence": "authored",
+                        "sourcePath": ["traffic", "proxies", "capture", "source"],
+                    },
+                    "listenPort": {
+                        "presence": "authored",
+                        "sourcePath": [
+                            "traffic",
+                            "proxies",
+                            "capture",
+                            "proxyConfig",
+                            "listenPort",
+                        ],
+                    },
+                },
+            }],
+        },
+        "pending_console": {},
+    }
+
+    snapshot = _service({}, snapshots=snapshots).observe()
+
+    resource = _node(snapshot, "captureproxies:capture")
+    assert _capabilities(resource)["edit"].target_id == (
+        "edit:traffic.proxies.capture"
+    )
+
+
+def test_edit_capability_ignores_inherited_provenance_outside_the_owner_branch():
+    snapshots = {
+        "pending": {
+            "resources": [{
+                "kind": "SnapshotMigration",
+                "name": "source-target-nightly-migrate",
+                "parameters": {
+                    "sourceLabel": "source",
+                    "targetLabel": "target",
+                    "snapshotLabel": "nightly",
+                    "sourceVersion": "2.17",
+                    "metadataMigrationEnabled": True,
+                },
+                "parameterProvenance": {
+                    "sourceLabel": {
+                        "presence": "inherited",
+                        "sourcePath": ["snapshotMigrationConfigs", "0", "fromSource"],
+                    },
+                    "targetLabel": {
+                        "presence": "inherited",
+                        "sourcePath": ["snapshotMigrationConfigs", "0", "toTarget"],
+                    },
+                    "snapshotLabel": {
+                        "presence": "inherited",
+                        "sourcePath": [
+                            "snapshotMigrationConfigs",
+                            "0",
+                            "perSnapshotConfig",
+                            "nightly",
+                        ],
+                    },
+                    "metadataMigrationEnabled": {
+                        "presence": "authored",
+                        "sourcePath": [
+                            "snapshotMigrationConfigs",
+                            "0",
+                            "perSnapshotConfig",
+                            "nightly",
+                            "0",
+                            "metadataMigrationConfig",
+                            "enabled",
+                        ],
+                    },
+                    "sourceVersion": {
+                        "presence": "inherited",
+                        "sourcePath": ["sourceClusters", "source", "version"],
+                    },
+                },
+            }],
+        },
+        "pending_console": {},
+    }
+
+    snapshot = _service({}, snapshots=snapshots).observe()
+
+    resource = _node(
+        snapshot,
+        "snapshotmigrations:source-target-nightly-migrate",
+    )
+    assert _capabilities(resource)["edit"].target_id == (
+        "edit:snapshotMigrationConfigs.0"
+    )
+
+
 def test_config_comparison_preserves_deployed_submitted_and_pending_values():
     snapshots = {
         "submitted": {
@@ -201,6 +304,37 @@ def test_config_comparison_preserves_deployed_submitted_and_pending_values():
     assert comparison.pending.value == 9203
     assert comparison.submitted_changed is True
     assert comparison.pending_changed is True
+    assert resource.config_presence == {
+        "deployed": True,
+        "submitted": True,
+        "pending": True,
+    }
+
+
+def test_saved_resource_removal_has_an_explicit_navigation_summary():
+    snapshots = {
+        "submitted_console": {
+            "sources": [{
+                "refName": "source",
+                "clientConfig": {"endpoint": "https://source.example.com"},
+            }],
+        },
+        "pending_console": {"sources": []},
+    }
+    workflow = {
+        "metadata": {"name": "migration"},
+        "status": {"phase": "Running"},
+    }
+
+    snapshot = _service({}, workflow=workflow, snapshots=snapshots).observe()
+
+    source = _node(snapshot, "sourceconfigs:source")
+    assert source.config_presence == {
+        "deployed": False,
+        "submitted": True,
+        "pending": False,
+    }
+    assert source.value_summary == "Removal pending submission"
 
 
 def test_approval_and_output_capabilities_name_exact_targets():
