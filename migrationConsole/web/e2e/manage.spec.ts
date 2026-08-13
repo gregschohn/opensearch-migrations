@@ -232,6 +232,80 @@ async function mockManageApi(page: Page) {
           : capability
       ));
     },
+    makeSourceValid() {
+      const sourceClusters = draft.editState.nodes.find(
+        (node) => node.id === "edit:sourceClusters",
+      );
+      const legacy = sourceClusters?.children.find(
+        (node) => node.id === "edit:sourceClusters.legacy",
+      );
+      if (!legacy) throw new Error("Missing source fixture");
+      sourceClusters.status = "ok";
+      sourceClusters.statusCounts = {
+        errors: 0,
+        warnings: 0,
+        required: 0,
+        changed: 0,
+        gated: 0,
+        blocked: 0,
+      };
+      legacy.status = "ok";
+      legacy.statusCounts = {
+        errors: 0,
+        warnings: 0,
+        required: 0,
+        changed: 0,
+        gated: 0,
+        blocked: 0,
+      };
+    },
+    makeSourceInvalid() {
+      const sourceClusters = draft.editState.nodes.find(
+        (node) => node.id === "edit:sourceClusters",
+      );
+      const legacy = sourceClusters?.children.find(
+        (node) => node.id === "edit:sourceClusters.legacy",
+      );
+      const authentication = legacy?.children.find(
+        (node) => node.id === "edit:sourceClusters.legacy.authConfig",
+      );
+      const secret = authentication?.children.find(
+        (node) => (
+          node.id
+          === "edit:sourceClusters.legacy.authConfig.basic.secretName"
+        ),
+      );
+      if (!sourceClusters || !legacy || !authentication || !secret) {
+        throw new Error("Missing nested source fixture");
+      }
+      [sourceClusters, legacy, authentication].forEach((node) => {
+        node.status = "ok";
+        node.statusCounts = {
+          errors: 0,
+          warnings: 0,
+          required: 0,
+          changed: 0,
+          gated: 0,
+          blocked: 0,
+        };
+      });
+      secret.status = "required";
+      secret.statusCounts = {
+        errors: 0,
+        warnings: 0,
+        required: 1,
+        changed: 0,
+        gated: 0,
+        blocked: 0,
+      };
+      secret.diagnostics = [{
+        severity: "required",
+        message: "Credentials secret is required.",
+        path: secret.path,
+      }];
+      secret.label = "Credentials secret";
+      secret.value = "";
+    },
     setCaptureEditTarget(targetId: string) {
       const capture = snapshot.nodes["resource:captureproxies:capture"];
       capture.capabilities = capture.capabilities.map((capability) => (
@@ -287,7 +361,11 @@ test("edits generic configuration and selects a ConfigMap key", async ({ page },
 
   await page.getByRole("checkbox", { name: "Show optional fields" }).check();
   await configTree.getByRole("row", { name: /Timeout/ }).click();
-  await expect(page.getByText("Generated value")).toBeVisible();
+  await expect(page.getByText("Generated")).toBeVisible();
+  await expect(page.getByText("runtime timeout")).toHaveCount(0);
+  await page.getByRole("checkbox", {
+    name: "Show field documentation",
+  }).check();
   await expect(page.getByText("runtime timeout")).toBeVisible();
 
   await configTree.getByRole("row", {
@@ -323,6 +401,9 @@ test("updates variant fields in place beneath their selector", async ({ page }, 
   ).toBeVisible();
   const config = page.getByRole("table", { name: "Configuration fields" });
   const auth = config.getByRole("row", { name: /Authentication/ });
+  await auth.scrollIntoViewIfNeeded();
+  const authBefore = await auth.boundingBox();
+  expect(authBefore).not.toBeNull();
   await auth.getByRole("combobox", { name: "Authentication" })
     .selectOption("sigv4");
 
@@ -332,6 +413,10 @@ test("updates variant fields in place beneath their selector", async ({ page }, 
     auth.locator("xpath=following-sibling::tr[1]"),
   ).toContainText("Signing region");
   await expect(region).toBeInViewport();
+  await page.waitForTimeout(450);
+  const authAfter = await auth.boundingBox();
+  expect(authAfter).not.toBeNull();
+  expect(Math.abs(authAfter!.y - authBefore!.y)).toBeLessThanOrEqual(1);
 });
 
 
@@ -361,6 +446,41 @@ test("pins ancestor rows while scrolling nested configuration", async ({ page },
 });
 
 
+test("animates collapsed rows without clamping the editor scroll position", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop scrolling coverage");
+  await mockManageApi(page);
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "Edit configuration" }).click();
+  await page.getByRole("checkbox", { name: "Show optional fields" }).check();
+  const config = page.getByRole("table", { name: "Configuration fields" });
+  const legacy = config.getByRole("row", { name: /Collapse legacy/ });
+  const panel = page.locator(".config-table-panel");
+  await page.addStyleTag({
+    content: ".config-table-panel { height: 260px; max-height: 260px; }",
+  });
+  await panel.evaluate((element: unknown) => {
+    (element as { scrollTop: number }).scrollTop = 180;
+  });
+  const scrollTopBefore = await panel.evaluate((element: unknown) =>
+    (element as { scrollTop: number }).scrollTop);
+  expect(scrollTopBefore).toBeGreaterThan(100);
+
+  await config.getByRole("button", {
+    name: "Collapse Source clusters",
+  }).dispatchEvent("click");
+
+  await expect(legacy).toHaveClass(/removing/);
+  await expect(legacy).toHaveCSS("animation-name", "row-remove");
+  await expect(legacy).toHaveCount(0);
+
+  const scrollTopAfter = await panel.evaluate((element: unknown) =>
+    (element as { scrollTop: number }).scrollTop);
+  expect(Math.abs(scrollTopAfter - scrollTopBefore)).toBeLessThanOrEqual(1);
+  await expect(page.locator(".config-scroll-space")).toBeAttached();
+});
+
+
 test("transitions scoped parents before their full row scrolls away", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop scrolling coverage");
   const api = await mockManageApi(page);
@@ -379,6 +499,9 @@ test("transitions scoped parents before their full row scrolls away", async ({ p
   const authentication = config.getByRole("row", { name: /Authentication/ });
   const columnHeader = config.getByRole("columnheader", { name: "Setting" });
   const panel = page.locator(".config-table-panel");
+  await page.addStyleTag({
+    content: ".config-table-panel { height: 260px; max-height: 260px; }",
+  });
   await panel.hover();
   const context = page.getByRole("navigation", {
     name: "Current configuration path",
@@ -388,7 +511,7 @@ test("transitions scoped parents before their full row scrolls away", async ({ p
   });
   for (
     let attempt = 0;
-    attempt < 20 && await pinnedAuthentication.count() === 0;
+    attempt < 40 && await pinnedAuthentication.count() === 0;
     attempt += 1
   ) {
     await page.mouse.wheel(0, 20);
@@ -422,6 +545,97 @@ test("keeps the resource overview visible during scoped editing", async ({ page 
   await expect(
     page.getByRole("table", { name: "Configuration fields" }),
   ).toBeVisible();
+});
+
+
+test("keeps valid status compact in navigation without an editor footer", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop layout coverage");
+  const api = await mockManageApi(page);
+  api.makeCaptureSource();
+  api.makeSourceValid();
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "Edit configuration" }).click();
+  const legacy = page.getByRole("treeitem", { name: /^legacy, Ready$/ });
+  const valid = legacy.getByLabel("Configuration valid");
+  await expect(valid).toBeVisible();
+  const validBox = await valid.boundingBox();
+  expect(validBox).not.toBeNull();
+  expect(validBox!.width).toBeLessThanOrEqual(24);
+  await expect(page.getByRole("heading", { name: "Validation" }))
+    .toHaveCount(0);
+  await page.waitForTimeout(450);
+  await expect(page.locator(".config-property-row.inserted")).toHaveCount(0);
+  await expect(page.locator(".config-property-row.context-transition"))
+    .toHaveCount(0);
+  const config = page.getByRole("table", { name: "Configuration fields" });
+  const allowInsecure = config.getByRole("row", { name: /Allow insecure/ });
+  const compactBox = await allowInsecure.boundingBox();
+  const statusBox = await allowInsecure.locator(".field-status").boundingBox();
+  const revertBox = await allowInsecure.getByRole("button", {
+    name: "Revert Allow insecure to default",
+  }).boundingBox();
+  expect(compactBox).not.toBeNull();
+  expect(statusBox).not.toBeNull();
+  expect(revertBox).not.toBeNull();
+  expect(compactBox!.height).toBeLessThanOrEqual(42);
+  expect(Math.abs(
+    statusBox!.y + statusBox!.height / 2
+    - revertBox!.y - revertBox!.height / 2,
+  )).toBeLessThanOrEqual(1);
+  const documentation = page.getByRole("checkbox", {
+    name: "Show field documentation",
+  });
+  await documentation.check();
+  await expect(page.getByText(
+    "Kubernetes Secret containing the HTTP credentials.",
+  )).toBeVisible();
+  await page.screenshot({
+    animations: "disabled",
+    path: testInfo.outputPath("field-documentation.png"),
+  });
+  await documentation.uncheck();
+  await expect(page.getByText(
+    "Kubernetes Secret containing the HTTP credentials.",
+  )).toHaveCount(0);
+  await expect(page.locator(".config-property-row.inserted")).toHaveCount(0);
+  await expect(page.locator(".config-property-row.context-transition"))
+    .toHaveCount(0);
+  await page.waitForTimeout(50);
+  await page.screenshot({
+    path: testInfo.outputPath("compact-valid-status.png"),
+  });
+});
+
+
+test("taints validation errors and their parent paths", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop layout coverage");
+  const api = await mockManageApi(page);
+  api.makeCaptureSource();
+  api.makeSourceInvalid();
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "Edit configuration" }).click();
+  const legacy = page.getByRole("treeitem", { name: /^legacy, Ready$/ });
+  const captureGroup = page.getByRole("treeitem", { name: /^Capture,/ });
+  const migrationSection = page.getByRole("treeitem", {
+    name: /^Live Traffic Migration,/,
+  });
+  await expect(legacy).toHaveClass(/validation-error-item/);
+  await expect(captureGroup).toHaveClass(/validation-error-ancestor/);
+  await expect(migrationSection).toHaveClass(/validation-error-ancestor/);
+
+  const config = page.getByRole("table", { name: "Configuration fields" });
+  await expect(config.getByRole("row", { name: /Authentication/ }))
+    .toHaveClass(/validation-error-ancestor/);
+  await expect(config.getByRole("row", { name: /Credentials secret/ }))
+    .toHaveClass(/validation-error-item/);
+  await expect(page.getByRole("heading", { name: "Validation" }))
+    .toHaveCount(0);
+  await page.screenshot({
+    path: testInfo.outputPath("validation-error-paths.png"),
+    fullPage: true,
+  });
 });
 
 
@@ -568,6 +782,11 @@ test("keeps configuration editing usable at narrow width", async ({ page }, test
   await page.getByRole("checkbox", { name: "Show optional fields" }).check();
   const configTree = page.getByRole("table", { name: "Configuration fields" });
   await configTree.getByRole("row", { name: /Timeout/ }).click();
+  await expect(page.getByText("Generated")).toBeVisible();
+  await expect(page.getByText("runtime timeout")).toHaveCount(0);
+  await page.getByRole("checkbox", {
+    name: "Show field documentation",
+  }).check();
   await expect(page.getByText("runtime timeout")).toBeVisible();
 
   const scrollWidth = await page.evaluate<number>(
@@ -577,6 +796,11 @@ test("keeps configuration editing usable at narrow width", async ({ page }, test
     "document.documentElement.clientWidth",
   );
   expect(scrollWidth > clientWidth).toBe(false);
+  await page.screenshot({
+    animations: "disabled",
+    path: testInfo.outputPath("narrow-configuration.png"),
+    fullPage: true,
+  });
 });
 
 

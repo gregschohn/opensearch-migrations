@@ -387,6 +387,30 @@ button {
   box-shadow: inset 0 0 0 1px var(--accent);
 }
 
+.tree-row.validation-error-ancestor {
+  border-color: #efd0cd;
+  background: #fff8f7;
+}
+
+.tree-row.validation-error-ancestor:hover {
+  background: #fff3f2;
+}
+
+.tree-row.validation-error-item {
+  border-color: #d98d86;
+  background: #fff0ef;
+}
+
+.tree-row.validation-error-item:hover,
+.tree-row.validation-error-item.selected {
+  border-color: #c86d65;
+  background: #fce7e5;
+}
+
+.tree-row.validation-error-item.selected {
+  box-shadow: inset 3px 0 var(--danger);
+}
+
 .tree-expander {
   display: grid;
   width: 22px;
@@ -479,6 +503,41 @@ button {
   font-weight: 700;
 }
 
+.tree-validation-indicator {
+  display: inline-flex;
+  min-width: 20px;
+  height: 20px;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 0 2px;
+  border-radius: 3px;
+}
+
+.tree-validation-indicator svg {
+  width: 15px;
+  height: 15px;
+}
+
+.tree-validation-indicator > span {
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.tree-validation-indicator.validation-valid {
+  color: #237a4b;
+}
+
+.tree-validation-indicator.validation-warning {
+  color: #9a5b0a;
+  background: #fff6df;
+}
+
+.tree-validation-indicator.validation-error {
+  color: #a33d36;
+  background: #fff0ef;
+}
+
 .tree-row-tools {
   position: relative;
   display: inline-flex;
@@ -488,7 +547,8 @@ button {
   min-width: 20px;
 }
 
-.tree-group-add {
+.tree-group-add,
+.tree-resource-rename {
   display: inline-grid;
   width: 24px;
   height: 24px;
@@ -501,18 +561,77 @@ button {
 }
 
 .tree-group-add:hover:not(:disabled),
-.tree-group-add:focus-visible {
+.tree-group-add:focus-visible,
+.tree-resource-rename:hover:not(:disabled),
+.tree-resource-rename:focus-visible {
   border-color: var(--border-strong);
   background: var(--surface);
 }
 
-.tree-group-add:disabled {
+.tree-group-add:disabled,
+.tree-resource-rename:disabled {
   opacity: 0.45;
 }
 
-.tree-group-add svg {
+.tree-group-add svg,
+.tree-resource-rename svg {
   width: 14px;
   height: 14px;
+}
+
+.tree-inline-name {
+  display: grid;
+  min-width: 0;
+  grid-column: 3 / -1;
+  grid-template-columns: minmax(72px, 1fr) 25px 25px;
+  align-items: center;
+  gap: 3px;
+}
+
+.tree-inline-name input {
+  width: 100%;
+  min-width: 0;
+  height: 26px;
+  padding: 2px 6px;
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  outline: none;
+  font-size: 12px;
+}
+
+.tree-inline-name input:focus {
+  box-shadow: 0 0 0 2px rgb(23 107 120 / 14%);
+}
+
+.tree-inline-name button {
+  display: grid;
+  width: 25px;
+  height: 25px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: var(--accent);
+  background: transparent;
+}
+
+.tree-inline-name button:hover:not(:disabled),
+.tree-inline-name button:focus-visible {
+  border-color: var(--border-strong);
+  background: var(--surface);
+}
+
+.tree-inline-name button:disabled {
+  opacity: 0.45;
+}
+
+.tree-inline-name button svg {
+  width: 14px;
+  height: 14px;
+}
+
+.tree-inline-create .status-dot {
+  background: var(--accent);
 }
 
 .tree-group-add-menu {
@@ -943,8 +1062,7 @@ button {
 .config-toolbar h2,
 .config-toolbar p,
 .config-toolbar span,
-.config-field-panel h3,
-.config-diagnostics h3 {
+.config-field-panel h3 {
   margin: 0;
 }
 
@@ -980,8 +1098,7 @@ button {
 .external-resource-form > header,
 .external-resource-view > header,
 .external-resource-view > header > div:last-child,
-.external-form-actions,
-.config-diagnostics header {
+.external-form-actions {
   display: flex;
   align-items: center;
 }
@@ -989,6 +1106,7 @@ button {
 .config-toolbar-filters {
   order: 3;
   width: 100%;
+  flex-wrap: wrap;
   gap: 14px;
   color: var(--text-muted);
   font-size: 11px;
@@ -1139,6 +1257,36 @@ button {
 
 .config-removal-workspace > button svg {
   width: 15px;
+}
+
+.config-syncing-workspace {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  align-items: flex-start;
+  justify-content: center;
+  flex-direction: column;
+  padding: clamp(28px, 6vw, 72px);
+  border-left: 4px solid var(--accent);
+  background: #f8fbfc;
+}
+
+.config-syncing-workspace > svg {
+  width: 26px;
+  height: 26px;
+  color: var(--accent);
+}
+
+.config-syncing-workspace h2 {
+  margin: 14px 0 6px;
+  font-size: 18px;
+}
+
+.config-syncing-workspace p {
+  max-width: 580px;
+  margin: 0;
+  color: var(--text-muted);
+  line-height: 1.5;
 }
 
 .config-removal-icon {
@@ -1339,7 +1487,7 @@ button {
 .config-layout {
   display: grid;
   flex: 1 1 auto;
-  grid-template-rows: minmax(0, 1fr) minmax(110px, 180px);
+  grid-template-rows: minmax(0, 1fr);
   min-height: 0;
   overflow: hidden;
 }
@@ -1354,7 +1502,11 @@ button {
   position: sticky;
   z-index: 4;
   top: 0;
+  display: flex;
   min-height: 53px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);
   background: var(--surface-subtle);
@@ -1363,6 +1515,28 @@ button {
 .config-outline-header strong,
 .config-outline-header span {
   display: block;
+}
+
+.config-outline-header > div {
+  min-width: 0;
+}
+
+.config-outline-header > .config-outline-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.config-outline-actions .secondary-button {
+  min-height: 28px;
+  padding: 4px 8px;
+  font-size: 10px;
+}
+
+.config-outline-actions .secondary-button svg {
+  width: 13px;
+  height: 13px;
 }
 
 .config-outline-header strong {
@@ -1378,6 +1552,34 @@ button {
   font-size: 10px;
 }
 
+.config-scope-remove {
+  display: grid;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid #e0aaa6;
+  border-radius: 3px;
+  color: #8b312d;
+  background: var(--surface);
+}
+
+.config-scope-remove:hover:not(:disabled),
+.config-scope-remove:focus-visible {
+  border-color: #a33d36;
+  background: #fff1f0;
+}
+
+.config-scope-remove:disabled {
+  opacity: 0.45;
+}
+
+.config-scope-remove svg {
+  width: 14px;
+  height: 14px;
+}
+
 .config-table {
   width: 100%;
   border-spacing: 0;
@@ -1391,7 +1593,7 @@ button {
 }
 
 .config-state-column {
-  width: 90px;
+  width: 104px;
 }
 
 .config-table thead {
@@ -1423,7 +1625,7 @@ button {
   display: grid;
   width: 100%;
   min-height: 32px;
-  grid-template-columns: 42% minmax(0, 1fr) 90px;
+  grid-template-columns: 42% minmax(0, 1fr) 104px;
   align-items: center;
   padding: 0;
   border: 0;
@@ -1438,6 +1640,18 @@ button {
 
 .pinned-context-row:hover {
   background: #e4eef1;
+}
+
+.pinned-context-row.validation-error-ancestor {
+  border-bottom-color: #efd0cd;
+  box-shadow: inset 3px 0 #d98d86;
+  background: #fff5f4;
+}
+
+.pinned-context-row.validation-error-item {
+  border-bottom-color: #d98d86;
+  box-shadow: inset 3px 0 var(--danger);
+  background: #fff0ef;
 }
 
 .pinned-context-row:focus-visible {
@@ -1485,9 +1699,9 @@ button {
 .config-table tbody th,
 .config-table tbody td {
   min-width: 0;
-  padding: 9px 10px;
+  padding: 5px 8px;
   border-bottom: 1px solid #e7ebee;
-  vertical-align: top;
+  vertical-align: middle;
 }
 
 .config-table tbody th {
@@ -1508,6 +1722,41 @@ button {
   background: #f3f8fa;
 }
 
+.config-property-row.validation-error-ancestor > th,
+.config-property-row.validation-error-ancestor > td {
+  border-top: 1px solid #efd0cd;
+  border-bottom-color: #efd0cd;
+  background: #fff5f4;
+}
+
+.config-property-row.validation-error-item > th,
+.config-property-row.validation-error-item > td {
+  border-top: 1px solid #d98d86;
+  border-bottom-color: #d98d86;
+  background: #fff0ef;
+}
+
+.config-property-row.validation-error-ancestor > :first-child,
+.config-property-row.validation-error-item > :first-child {
+  border-left: 1px solid #d98d86;
+}
+
+.config-property-row.validation-error-ancestor > :last-child,
+.config-property-row.validation-error-item > :last-child {
+  border-right: 1px solid #d98d86;
+}
+
+.config-property-row.validation-error-ancestor:hover > th,
+.config-property-row.validation-error-ancestor:hover > td,
+.config-property-row.validation-error-item:hover > th,
+.config-property-row.validation-error-item:hover > td {
+  background: #fcebea;
+}
+
+.config-property-row.validation-error-item.selected {
+  box-shadow: inset 3px 0 var(--danger);
+}
+
 .config-property-row:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
@@ -1515,6 +1764,23 @@ button {
 
 .config-property-row.inserted {
   animation: row-insert 380ms ease-out;
+}
+
+.config-property-row.removing,
+.config-property-detail.removing {
+  animation: row-remove 220ms ease-in forwards;
+  pointer-events: none;
+}
+
+@keyframes row-remove {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-5px);
+  }
 }
 
 .config-property-row.context-transition > th > *,
@@ -1528,11 +1794,20 @@ button {
   pointer-events: none;
 }
 
+.config-scroll-space {
+  width: 100%;
+  min-height: max(
+    240px,
+    calc(100% - 84px + var(--config-scroll-retention, 0px))
+  );
+  pointer-events: none;
+}
+
 .property-heading {
   display: grid;
-  grid-template-columns: 22px 9px minmax(0, 1fr);
-  align-items: start;
-  gap: 7px;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: center;
+  gap: 5px;
   min-width: 0;
   padding-left: calc((var(--config-depth) - 1) * 12px);
 }
@@ -1556,28 +1831,27 @@ button {
   width: 14px;
 }
 
-.property-heading .status-dot {
-  margin-top: 8px;
-}
-
-.property-heading > span:last-child {
+.property-heading-content {
   min-width: 0;
 }
 
-.property-heading strong,
-.property-heading small {
-  display: block;
-  overflow-wrap: anywhere;
+.property-label {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 3px 5px;
 }
 
 .property-heading strong {
-  padding-top: 4px;
+  overflow-wrap: anywhere;
   color: var(--text);
   font-size: 12px;
   font-weight: 650;
 }
 
 .property-heading small {
+  display: block;
   margin-top: 4px;
   color: var(--text-muted);
   font-size: 10px;
@@ -1586,11 +1860,11 @@ button {
 }
 
 .property-flags {
-  display: flex;
+  display: inline-flex;
   flex-wrap: wrap;
-  gap: 4px;
-  margin: 6px 0 0;
-  padding-left: calc(38px + (var(--config-depth) - 1) * 12px);
+  gap: 3px;
+  margin: 0;
+  padding: 0;
 }
 
 .property-flags:empty {
@@ -1598,13 +1872,14 @@ button {
 }
 
 .property-flags span {
-  padding: 2px 4px;
+  padding: 0 3px;
   border: 1px solid var(--border);
   border-radius: 3px;
   color: var(--text-muted);
   background: var(--surface-subtle);
   font-size: 8px;
   font-weight: 600;
+  line-height: 13px;
   text-transform: uppercase;
 }
 
@@ -1613,7 +1888,7 @@ button {
   align-items: flex-start;
   gap: 5px;
   margin-top: 6px;
-  padding-left: calc(38px + (var(--config-depth) - 1) * 12px);
+  padding-left: calc(27px + (var(--config-depth) - 1) * 12px);
   color: #724309;
   font-size: 10px;
   font-weight: 400;
@@ -1631,9 +1906,47 @@ button {
   gap: 6px;
 }
 
+.inline-add-actions {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.inline-add-actions button {
+  display: inline-flex;
+  min-height: 28px;
+  max-width: 100%;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  color: var(--accent);
+  background: var(--surface);
+  font-size: 11px;
+  line-height: 16px;
+  text-align: left;
+}
+
+.inline-add-actions button:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.inline-add-actions button:disabled {
+  opacity: 0.5;
+}
+
+.inline-add-actions button svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+}
+
 .property-summary {
   display: block;
-  padding-top: 7px;
+  padding-top: 5px;
   color: var(--text-muted);
   font-size: 11px;
 }
@@ -1669,7 +1982,7 @@ button {
 
 .inline-text-editor input {
   width: 100%;
-  min-height: 34px;
+  min-height: 30px;
   padding: 5px 7px;
   border: 1px solid var(--border-strong);
   border-radius: 3px;
@@ -1697,7 +2010,7 @@ button {
 
 .inline-choice-editor select {
   width: 100%;
-  min-height: 34px;
+  min-height: 30px;
   padding: 5px 7px;
   border: 1px solid var(--border-strong);
   border-radius: 3px;
@@ -1721,7 +2034,7 @@ button {
 
 .inline-boolean-editor {
   display: flex;
-  min-height: 34px;
+  min-height: 30px;
   align-items: center;
   gap: 7px;
 }
@@ -1748,7 +2061,7 @@ button {
 
 .inline-resource-button {
   display: grid;
-  min-height: 34px;
+  min-height: 30px;
   grid-template-columns: minmax(0, 1fr) 14px auto;
   align-items: center;
   gap: 6px;
@@ -1777,17 +2090,27 @@ button {
   text-align: right;
 }
 
+.property-state-content {
+  display: flex;
+  min-height: 28px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 3px;
+}
+
 .property-state-cell .field-status {
-  display: inline-block;
+  display: inline-flex;
+  flex: 0 0 auto;
   margin: 0;
 }
 
 .property-actions {
-  display: flex;
-  min-height: 30px;
+  display: inline-flex;
+  min-height: 28px;
+  flex: 0 0 auto;
   justify-content: flex-end;
   gap: 3px;
-  margin-top: 5px;
+  margin: 0;
 }
 
 .property-actions:empty {
@@ -1796,8 +2119,8 @@ button {
 
 .property-actions button {
   display: grid;
-  width: 28px;
-  height: 28px;
+  width: 26px;
+  height: 26px;
   padding: 0;
   place-items: center;
   border: 1px solid transparent;
@@ -2036,54 +2359,6 @@ button {
 
 .rename-form {
   margin-top: 18px;
-}
-
-.config-diagnostics {
-  grid-column: 1 / -1;
-  min-width: 0;
-  overflow: auto;
-  padding: 12px 14px 20px;
-  border-top: 1px solid var(--border);
-  background: var(--surface-subtle);
-  font-size: 11px;
-}
-
-.config-diagnostics header {
-  gap: 7px;
-  margin-bottom: 12px;
-}
-
-.config-diagnostics header svg {
-  width: 16px;
-  color: var(--warning);
-}
-
-.config-diagnostics > strong {
-  display: block;
-  margin-bottom: 7px;
-  font-size: 12px;
-}
-
-.config-diagnostics > p {
-  color: var(--text-muted);
-}
-
-.config-diagnostics > button {
-  display: block;
-  width: 100%;
-  margin-top: 7px;
-  padding: 8px;
-  border: 1px solid var(--border);
-  text-align: left;
-  background: var(--surface);
-}
-
-.config-diagnostics > button span {
-  display: block;
-  margin-bottom: 3px;
-  color: var(--warning);
-  font-size: 9px;
-  text-transform: uppercase;
 }
 
 .external-picker {
@@ -2365,18 +2640,6 @@ button {
     display: none;
   }
 
-  .config-layout {
-    grid-template-rows: minmax(0, 1fr) minmax(110px, 170px);
-  }
-
-  .config-diagnostics {
-    grid-column: 1 / -1;
-    border-top: 1px solid var(--border);
-  }
-
-  .config-toolbar-filters {
-    display: none;
-  }
 }
 
 @media (max-width: 760px) {
@@ -2555,7 +2818,6 @@ button {
     padding-left: calc((var(--config-depth) - 1) * 7px);
   }
 
-  .property-flags,
   .property-diagnostic {
     padding-left: calc(35px + (var(--config-depth) - 1) * 7px);
   }
@@ -2574,13 +2836,6 @@ button {
 
   .property-detail-content {
     padding-left: calc(42px + (var(--config-depth) - 1) * 7px);
-  }
-
-  .config-diagnostics {
-    max-height: none;
-    overflow: visible;
-    border-top: 1px solid var(--border);
-    border-left: 0;
   }
 
   .field-form:not(.inline-command-form),
@@ -2607,7 +2862,9 @@ button {
 
   .spin,
   .tree-row.inserted,
-  .config-property-row.inserted {
+  .config-property-row.inserted,
+  .config-property-row.removing,
+  .config-property-detail.removing {
     animation: none;
   }
 }
