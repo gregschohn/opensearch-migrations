@@ -35,6 +35,7 @@ from ..application.resets import (
 )
 from ..commands.autocomplete_workflows import DEFAULT_WORKFLOW_NAME
 from .contracts import (
+    AdmissionPreflightV1,
     ApplyEditOperationRequestV1,
     ApproveRequestV1,
     ApprovalReviewV1,
@@ -614,6 +615,26 @@ def create_app(
         )
         return OperationV1.from_domain(operation)
 
+    @app.post(
+        "/api/v1/config/preflight",
+        response_model=AdmissionPreflightV1,
+        response_model_exclude_none=True,
+        tags=["configuration"],
+    )
+    def preflight_config(
+        request_body: DraftRevisionRequestV1,
+    ) -> AdmissionPreflightV1:
+        try:
+            report = draft_service().preflight(
+                request_body.expected_draft_revision,
+                workflow_name,
+            )
+        except ConfigDraftConflict as error:
+            raise _draft_conflict(error) from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return AdmissionPreflightV1.from_domain(report)
+
     @app.get(
         "/api/v1/operations",
         response_model=OperationListV1,
@@ -730,8 +751,22 @@ def create_app(
         request_body: ResetPlanRequestV1,
     ) -> ResetPlanV1:
         try:
+            target_ids = list(request_body.target_ids)
+            if request_body.target_id:
+                target_ids.insert(0, request_body.target_id)
+            target_ids = list(dict.fromkeys(target_ids))
+            if not target_ids:
+                raise ResetUnavailable(
+                    "At least one reset target is required."
+                )
+            service = reset_service()
+            plan = (
+                service.plan_many(target_ids)
+                if len(target_ids) > 1
+                else service.plan(target_ids[0])
+            )
             return ResetPlanV1.from_domain(
-                reset_service().plan(request_body.target_id)
+                plan
             )
         except ResetUnavailable as error:
             raise _action_error(
@@ -747,7 +782,7 @@ def create_app(
         status_code=202,
         tags=["resets", "operations"],
     )
-    def execute_reset(
+    async def execute_reset(
         request_body: ExecuteResetRequestV1,
     ) -> OperationV1:
         try:
@@ -755,25 +790,87 @@ def create_app(
         except ResetPlanStale as error:
             raise _action_error(409, "reset_plan_stale", error) from error
 
+        resubmit = request_body.resubmit or bool(request_body.approvals)
+        if resubmit and config_drafts is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Configuration submission is not configured",
+            )
+        if request_body.expected_draft_revision:
+            if not resubmit:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "A draft revision is only valid for reset and "
+                        "resubmit."
+                    ),
+                )
+            try:
+                draft_service().prepare_submit(
+                    request_body.expected_draft_revision
+                )
+            except ConfigDraftConflict as error:
+                raise _draft_conflict(error) from error
+            except SavedConfigConflict as error:
+                raise _saved_config_conflict(error) from error
+            except ValueError as error:
+                raise HTTPException(
+                    status_code=400,
+                    detail=str(error),
+                ) from error
+
+        baseline_revision = ""
+        if coordinator is not None and resubmit:
+            try:
+                baseline_revision = (
+                    await coordinator.get_observation()
+                ).snapshot.revision
+            except Exception:
+                pass
+
         def reset_worker() -> OperationWorkResult:
             result = reset_service().execute(request_body.plan_token)
+            operation_result = {
+                "planToken": result.plan.token,
+                "targetCount": len(result.plan.targets),
+            }
+            submission = None
+            if resubmit:
+                submission = draft_service().submit_saved(workflow_name)
+                submitted_name = str(
+                    (submission or {}).get("workflow_name")
+                    or workflow_name
+                )
+                operation_result.update({
+                    "workflowName": submitted_name,
+                    "baselineRevision": baseline_revision,
+                })
             return OperationWorkResult(
-                waiting=False,
-                message=result.message,
+                waiting=resubmit,
+                message=(
+                    "Reset completed and configuration submitted; "
+                    "waiting for the replacement workflow"
+                    if resubmit else result.message
+                ),
                 detail=result.detail,
-                result={
-                    "planToken": result.plan.token,
-                    "targetCount": len(result.plan.targets),
-                },
+                result=operation_result,
             )
 
-        operation = operation_service().start(
-            kind="reset",
-            label=(
+        if resubmit:
+            label = (
+                f"Reset and resubmit {plan.targets[0].path}"
+                if len(plan.targets) == 1
+                else f"Reset and resubmit {len(plan.targets)} resources"
+            )
+        else:
+            label = (
                 f"Reset {plan.targets[0].path}"
                 if len(plan.targets) == 1
                 else f"Reset {len(plan.targets)} resources"
-            ),
+            )
+        operation = operation_service().start(
+            kind="reset",
+            label=label,
             target_ids=tuple(
                 f"resource:{target.plural}:{target.name}"
                 for target in plan.targets

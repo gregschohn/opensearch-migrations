@@ -5,11 +5,14 @@ import type { components, paths } from "./schema.generated";
 
 export type ManageSnapshot = components["schemas"]["ManageSnapshotV1"];
 export type ManageNode = components["schemas"]["ManageNodeV1"];
+export type ManageRelationship = components["schemas"]["RelationshipV1"];
 export type ConfigDraft = components["schemas"]["ConfigDraftV1"];
 export type ConfigRemovalImpact =
   components["schemas"]["ConfigRemovalImpactV1"];
 export type ConfigSubmission = components["schemas"]["ConfigSubmissionV1"];
 export type ConfigReview = components["schemas"]["ConfigReviewV1"];
+export type AdmissionPreflight =
+  components["schemas"]["AdmissionPreflightV1"];
 export type Operation = components["schemas"]["OperationV1"];
 export type ApprovalReview = components["schemas"]["ApprovalReviewV1"];
 export type ResetPlan = components["schemas"]["ResetPlanV1"];
@@ -230,6 +233,23 @@ export async function getConfigReview(
   return data;
 }
 
+export async function getConfigPreflight(
+  draftRevision: string,
+): Promise<AdmissionPreflight> {
+  const { data, error, response } = await client.POST(
+    "/api/v1/config/preflight",
+    { body: { expectedDraftRevision: draftRevision } },
+  );
+  if (!response.ok || error || !data) {
+    throw new ConfigApiError(
+      response.status,
+      "Admission preflight could not be completed",
+      error,
+    );
+  }
+  return data;
+}
+
 
 export async function getOperations(): Promise<Operation[]> {
   const { data, error, response } = await client.GET(
@@ -295,10 +315,34 @@ export async function getResetPlan(targetId: string): Promise<ResetPlan> {
 }
 
 
-export async function executeReset(planToken: string): Promise<Operation> {
+export async function getCombinedResetPlan(
+  targetIds: string[],
+): Promise<ResetPlan> {
+  const { data, error, response } = await client.POST(
+    "/api/v1/resets/plan",
+    { body: { targetIds } },
+  );
+  if (!response.ok || error || !data) {
+    throw new ConfigApiError(
+      response.status,
+      "A combined reset plan could not be created",
+      error,
+    );
+  }
+  return data;
+}
+
+
+export async function executeReset(
+  planToken: string,
+  options: {
+    resubmit?: boolean;
+    expectedDraftRevision?: string;
+  } = {},
+): Promise<Operation> {
   const { data, error, response } = await client.POST(
     "/api/v1/resets",
-    { body: { planToken } },
+    { body: { planToken, ...options } },
   );
   if (!response.ok || error || !data) {
     throw new ConfigApiError(

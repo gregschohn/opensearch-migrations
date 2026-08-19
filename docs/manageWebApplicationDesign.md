@@ -168,6 +168,16 @@ Before submit, show a review of relevant pending changes and validation results.
 then becomes a visible operation with understandable phases rather than a blocking command
 or a transient notification.
 
+Review also runs the config-processor's best-effort admission preflight against
+the pinned Kubernetes API. The initializer prepares one bundle containing the
+same final CR specs that the workflow later applies. Kubernetes server dry-run
+and package-owned projected-field policy classification produce a structured
+report. Explicit impossible changes, completed-resource seals, and definite CRD
+schema errors block direct submit. Approval-gated, deleting, unavailable, and
+otherwise state-dependent results are warnings because the workflow or cluster
+may make them valid later. Submission prepares and preflights the exact bundle
+before replacing Argo state, then commits it without regenerating.
+
 The first design does not need to solve every possible dependency visualization. A clear
 list of active work and its current phase is sufficient; richer dependency connections can
 follow.
@@ -177,6 +187,12 @@ follow.
 Approval dialogs should identify what is being approved and the resource or stage it
 affects. Reset should continue to use the existing dry-run plan followed by confirmation of
 the exact targets.
+
+An impossible VAP update is not retried inside its old Argo workflow. Its recovery action
+composes two existing boundaries as one tracked operation: execute the reviewed,
+version-bound reset plan, then submit the saved configuration as a new workflow. The
+initializer recreates deleted root CRs and enriches the replacement workflow with their new
+UIDs. Ordinary orphan cleanup remains a reset-only operation.
 
 Both actions should appear in the operation area while the backend and cluster converge.
 

@@ -28,6 +28,111 @@
         "title": "AddEditOperationV1",
         "type": "object"
       },
+      "AdmissionPreflightIssueV1": {
+        "additionalProperties": false,
+        "properties": {
+          "blocking": {
+            "title": "Blocking",
+            "type": "boolean"
+          },
+          "classification": {
+            "enum": [
+              "recreate-required",
+              "invalid",
+              "approval-required",
+              "warning"
+            ],
+            "title": "Classification",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "plural": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plural"
+          },
+          "resetTargetId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resettargetid"
+          },
+          "resourceId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resourceid"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "name",
+          "classification",
+          "message",
+          "source",
+          "blocking"
+        ],
+        "title": "AdmissionPreflightIssueV1",
+        "type": "object"
+      },
+      "AdmissionPreflightV1": {
+        "additionalProperties": false,
+        "properties": {
+          "allowed": {
+            "title": "Allowed",
+            "type": "boolean"
+          },
+          "checkedResources": {
+            "title": "Checkedresources",
+            "type": "integer"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/AdmissionPreflightIssueV1"
+            },
+            "title": "Issues",
+            "type": "array"
+          }
+        },
+        "required": [
+          "checkedResources",
+          "allowed",
+          "issues"
+        ],
+        "title": "AdmissionPreflightV1",
+        "type": "object"
+      },
       "ApplyEditOperationRequestV1": {
         "additionalProperties": false,
         "properties": {
@@ -178,6 +283,18 @@
           "approvalTargetId": {
             "title": "Approvaltargetid",
             "type": "string"
+          },
+          "disabledReason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Disabledreason"
           },
           "kind": {
             "const": "approve",
@@ -488,6 +605,18 @@
       "DiagnosticV1": {
         "additionalProperties": false,
         "properties": {
+          "code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Code"
+          },
           "message": {
             "title": "Message",
             "type": "string"
@@ -498,6 +627,18 @@
             },
             "title": "Path",
             "type": "array"
+          },
+          "remedy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Remedy"
           },
           "severity": {
             "title": "Severity",
@@ -514,6 +655,30 @@
             ],
             "default": null,
             "title": "Source"
+          },
+          "technicalDetail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Technicaldetail"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Title"
           }
         },
         "required": [
@@ -540,6 +705,18 @@
       "EditCapabilityV1": {
         "additionalProperties": false,
         "properties": {
+          "disabledReason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Disabledreason"
+          },
           "editTargetId": {
             "title": "Edittargetid",
             "type": "string"
@@ -1071,9 +1248,32 @@
       "ExecuteResetRequestV1": {
         "additionalProperties": false,
         "properties": {
+          "approvals": {
+            "items": {
+              "$ref": "#/components/schemas/ResetApprovalRequestV1"
+            },
+            "title": "Approvals",
+            "type": "array"
+          },
+          "expectedDraftRevision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expecteddraftrevision"
+          },
           "planToken": {
             "title": "Plantoken",
             "type": "string"
+          },
+          "resubmit": {
+            "default": false,
+            "title": "Resubmit",
+            "type": "boolean"
           }
         },
         "required": [
@@ -1676,6 +1876,18 @@
       "LogsCapabilityV1": {
         "additionalProperties": false,
         "properties": {
+          "disabledReason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Disabledreason"
+          },
           "kind": {
             "const": "logs",
             "title": "Kind",
@@ -1813,6 +2025,13 @@
             ],
             "default": null,
             "title": "Phase"
+          },
+          "relationships": {
+            "items": {
+              "$ref": "#/components/schemas/RelationshipV1"
+            },
+            "title": "Relationships",
+            "type": "array"
           },
           "resourceName": {
             "anyOf": [
@@ -2052,6 +2271,18 @@
       "OutputCapabilityV1": {
         "additionalProperties": false,
         "properties": {
+          "disabledReason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Disabledreason"
+          },
           "kind": {
             "const": "output",
             "title": "Kind",
@@ -2259,6 +2490,76 @@
         "title": "ProblemV1",
         "type": "object"
       },
+      "RelationshipV1": {
+        "additionalProperties": false,
+        "properties": {
+          "direction": {
+            "enum": [
+              "requires",
+              "required-by"
+            ],
+            "title": "Direction",
+            "type": "string"
+          },
+          "kind": {
+            "const": "runtime-dependency",
+            "title": "Kind",
+            "type": "string"
+          },
+          "targetId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Targetid"
+          },
+          "targetName": {
+            "title": "Targetname",
+            "type": "string"
+          },
+          "targetPhase": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Targetphase"
+          },
+          "targetPlural": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Targetplural"
+          },
+          "targetStatus": {
+            "title": "Targetstatus",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "direction",
+          "targetName",
+          "targetStatus"
+        ],
+        "title": "RelationshipV1",
+        "type": "object"
+      },
       "RemoveConfigEditOperationV1": {
         "additionalProperties": false,
         "properties": {
@@ -2310,9 +2611,40 @@
         "title": "RenameConfigEditOperationV1",
         "type": "object"
       },
+      "ResetApprovalRequestV1": {
+        "additionalProperties": false,
+        "properties": {
+          "expectedGateRevision": {
+            "title": "Expectedgaterevision",
+            "type": "string"
+          },
+          "targetId": {
+            "title": "Targetid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "targetId",
+          "expectedGateRevision"
+        ],
+        "title": "ResetApprovalRequestV1",
+        "type": "object"
+      },
       "ResetCapabilityV1": {
         "additionalProperties": false,
         "properties": {
+          "disabledReason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Disabledreason"
+          },
           "kind": {
             "const": "reset",
             "title": "Kind",
@@ -2339,13 +2671,24 @@
         "additionalProperties": false,
         "properties": {
           "targetId": {
-            "title": "Targetid",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Targetid"
+          },
+          "targetIds": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Targetids",
+            "type": "array"
           }
         },
-        "required": [
-          "targetId"
-        ],
         "title": "ResetPlanRequestV1",
         "type": "object"
       },
@@ -2923,6 +3266,47 @@
           }
         },
         "summary": "Apply Config Operation",
+        "tags": [
+          "configuration"
+        ]
+      }
+    },
+    "/api/v1/config/preflight": {
+      "post": {
+        "operationId": "preflight_config_api_v1_config_preflight_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DraftRevisionRequestV1"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdmissionPreflightV1"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preflight Config",
         "tags": [
           "configuration"
         ]

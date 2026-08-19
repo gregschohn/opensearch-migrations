@@ -22,8 +22,12 @@ from ..external_resource_validation import (
     looks_like_pem_private_key,
 )
 from ..models.config import WorkflowConfig
+from ..models.secret_store import SecretStore
 from ..models.utils import load_k8s_config
 from ..models.workflow_config_store import WorkflowConfigStore
+from .admission_preflight import (
+    AdmissionPreflightReport,
+)
 from .script_runner import ScriptRunner
 
 
@@ -60,6 +64,19 @@ class ConfigEditApplyResult:
     edit_state: Dict[str, Any]
 
 
+class AdmissionPreflightBlocked(ValueError):
+    def __init__(self, report: AdmissionPreflightReport):
+        self.report = report
+        details = "; ".join(
+            f"{issue.kind} {issue.name}: {issue.message}"
+            for issue in report.blocking_issues
+        )
+        super().__init__(
+            "Workflow submission is blocked by admission preflight"
+            + (f": {details}" if details else "")
+        )
+
+
 @dataclass
 class ConfigEditService:
     """Loads edit-state DTOs from config-processor.
@@ -73,6 +90,9 @@ class ConfigEditService:
     store: Optional[WorkflowConfigStore] = None
     runner: Optional[ScriptRunner] = None
     session_name: str = "default"
+    core_api: Optional[Any] = None
+    custom_api: Optional[Any] = None
+    secret_store: Optional[SecretStore] = None
 
     def load_edit_session(self) -> ConfigEditSession:
         store = self.store or WorkflowConfigStore(namespace=self.namespace)
@@ -262,7 +282,11 @@ class ConfigEditService:
         )
 
     def load_latest_submitted_resolved_config(self, workflow_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        runs = list_resources_full(self.namespace, ["migrationruns"]).get("migrationruns", [])
+        runs = list_resources_full(
+            self.namespace,
+            ["migrationruns"],
+            self.custom_api,
+        ).get("migrationruns", [])
         if workflow_name:
             runs = [
                 run for run in runs
@@ -278,33 +302,78 @@ class ConfigEditService:
         workflow_name: str = DEFAULT_WORKFLOW_NAME,
         unique_run_nonce: Optional[str] = None,
     ) -> Dict[str, Any]:
+        config = self.validate_saved_config_for_submit()
+
+        runner = self.runner or ScriptRunner()
+        prepared = runner.prepare_workflow(
+            config.raw_yaml,
+            [
+                "--workflow-name", workflow_name,
+                "--namespace", self.namespace,
+                "--unique-run-nonce", unique_run_nonce or str(int(time.time())),
+            ],
+        )
+        try:
+            report = AdmissionPreflightReport.from_payload(prepared.report)
+            if not report.allowed:
+                raise AdmissionPreflightBlocked(report)
+
+            if workflow_exists(self.namespace, workflow_name):
+                stop_workflow(self.namespace, workflow_name)
+                delete_workflow(self.namespace, workflow_name)
+                if not wait_until_workflow_deleted(
+                    self.namespace,
+                    workflow_name,
+                ):
+                    raise TimeoutError(
+                        "Timed out waiting for workflow "
+                        f"'{workflow_name}' to be deleted"
+                    )
+
+            result = runner.commit_prepared_workflow(prepared)
+            warnings = list(result.get("warnings") or ())
+            warnings.extend(
+                f"{issue.kind} {issue.name}: {issue.message}"
+                for issue in report.warning_issues
+            )
+            if warnings:
+                result["warnings"] = list(dict.fromkeys(warnings))
+            return result
+        finally:
+            prepared.cleanup()
+
+    def validate_saved_config_for_submit(self) -> WorkflowConfig:
+        """Validate the saved config and references before destructive work."""
         store = self.store or WorkflowConfigStore(namespace=self.namespace)
         config = store.load_config(self.session_name)
         if not config or not config.raw_yaml.strip():
             raise ValueError(f"No workflow configuration found for session '{self.session_name}'")
 
-        self._validate_raw_config_for_submit(config.raw_yaml)
+        self.validate_raw_config_for_submit(config.raw_yaml)
 
-        load_k8s_config()
-        secret_store = get_credentials_secret_store_for_namespace(self.namespace)
+        secret_store = (
+            self.secret_store
+            or get_credentials_secret_store_for_namespace(self.namespace)
+        )
         verify_configured_secrets_exist(secret_store, config.raw_yaml)
+        return config
 
-        if workflow_exists(self.namespace, workflow_name):
-            stop_workflow(self.namespace, workflow_name)
-            delete_workflow(self.namespace, workflow_name)
-            if not wait_until_workflow_deleted(self.namespace, workflow_name):
-                raise TimeoutError(f"Timed out waiting for workflow '{workflow_name}' to be deleted")
-
+    def preflight_raw_config(
+        self,
+        raw_yaml: str,
+        workflow_name: str = DEFAULT_WORKFLOW_NAME,
+    ) -> AdmissionPreflightReport:
         runner = self.runner or ScriptRunner()
-        return runner.submit_workflow(
-            config.raw_yaml,
+        payload = runner.preflight_workflow(
+            raw_yaml,
             [
                 "--workflow-name", workflow_name,
-                "--unique-run-nonce", unique_run_nonce or str(int(time.time())),
+                "--namespace", self.namespace,
             ],
         )
+        return AdmissionPreflightReport.from_payload(payload)
 
-    def _validate_raw_config_for_submit(self, raw_yaml: str) -> None:
+    def validate_raw_config_for_submit(self, raw_yaml: str) -> None:
         edit_state = self._run_edit_state(raw_yaml, validate_external_refs=True)
         validation = edit_state.get("validation") or {}
         if validation.get("valid", True):
@@ -400,6 +469,7 @@ class ConfigEditService:
         input_arg: str,
         workflow_name: Optional[str] = None,
         validation_mode: str = "strict",
+        include_parameter_policies: bool = False,
     ) -> Dict[str, Any]:
         with tempfile.NamedTemporaryFile(mode="w", suffix=YAML_SUFFIX, delete=True) as temp_file:
             temp_file.write(input_data)
@@ -411,6 +481,8 @@ class ConfigEditService:
             ]
             if workflow_name:
                 args.extend(["--workflow-name", workflow_name])
+            if include_parameter_policies:
+                args.append("--include-parameter-policies")
             if validation_mode != "strict":
                 args.extend(["--validation-mode", validation_mode])
             output = self._run_config_processor_node_script(*args)
@@ -441,11 +513,15 @@ class ConfigEditService:
             raise RuntimeError(_format_config_processor_error(e)) from e
 
     def _core_v1(self):
+        if self.core_api is not None:
+            return self.core_api
         load_k8s_config()
         api_client = client.ApiClient(client.Configuration.get_default_copy())
         return client.CoreV1Api(api_client)
 
     def _custom_objects(self):
+        if self.custom_api is not None:
+            return self.custom_api
         load_k8s_config()
         api_client = client.ApiClient(client.Configuration.get_default_copy())
         return client.CustomObjectsApi(api_client)

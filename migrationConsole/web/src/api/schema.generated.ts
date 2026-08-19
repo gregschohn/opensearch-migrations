@@ -89,6 +89,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/config/preflight": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Preflight Config */
+        post: operations["preflight_config_api_v1_config_preflight_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/config/removal-impact": {
         parameters: {
             query?: never;
@@ -496,6 +513,39 @@ export interface components {
             /** Value */
             value: unknown;
         };
+        /** AdmissionPreflightIssueV1 */
+        AdmissionPreflightIssueV1: {
+            /** Blocking */
+            blocking: boolean;
+            /**
+             * Classification
+             * @enum {string}
+             */
+            classification: "recreate-required" | "invalid" | "approval-required" | "warning";
+            /** Kind */
+            kind: string;
+            /** Message */
+            message: string;
+            /** Name */
+            name: string;
+            /** Plural */
+            plural?: string | null;
+            /** Resettargetid */
+            resetTargetId?: string | null;
+            /** Resourceid */
+            resourceId?: string | null;
+            /** Source */
+            source: string;
+        };
+        /** AdmissionPreflightV1 */
+        AdmissionPreflightV1: {
+            /** Allowed */
+            allowed: boolean;
+            /** Checkedresources */
+            checkedResources: number;
+            /** Issues */
+            issues: components["schemas"]["AdmissionPreflightIssueV1"][];
+        };
         /** ApplyEditOperationRequestV1 */
         ApplyEditOperationRequestV1: {
             /** Expecteddraftrevision */
@@ -534,6 +584,11 @@ export interface components {
         ApproveCapabilityV1: {
             /** Approvaltargetid */
             approvalTargetId: string;
+            /**
+             * Disabledreason
+             * @default null
+             */
+            disabledReason: string | null;
             /**
              * Kind
              * @constant
@@ -640,10 +695,20 @@ export interface components {
         };
         /** DiagnosticV1 */
         DiagnosticV1: {
+            /**
+             * Code
+             * @default null
+             */
+            code: string | null;
             /** Message */
             message: string;
             /** Path */
             path?: string[];
+            /**
+             * Remedy
+             * @default null
+             */
+            remedy: string | null;
             /** Severity */
             severity: string;
             /**
@@ -651,6 +716,16 @@ export interface components {
              * @default null
              */
             source: string | null;
+            /**
+             * Technicaldetail
+             * @default null
+             */
+            technicalDetail: string | null;
+            /**
+             * Title
+             * @default null
+             */
+            title: string | null;
         };
         /** DraftRevisionRequestV1 */
         DraftRevisionRequestV1: {
@@ -659,6 +734,11 @@ export interface components {
         };
         /** EditCapabilityV1 */
         EditCapabilityV1: {
+            /**
+             * Disabledreason
+             * @default null
+             */
+            disabledReason: string | null;
             /** Edittargetid */
             editTargetId: string;
             /**
@@ -845,8 +925,17 @@ export interface components {
         };
         /** ExecuteResetRequestV1 */
         ExecuteResetRequestV1: {
+            /** Approvals */
+            approvals?: components["schemas"]["ResetApprovalRequestV1"][];
+            /** Expecteddraftrevision */
+            expectedDraftRevision?: string | null;
             /** Plantoken */
             planToken: string;
+            /**
+             * Resubmit
+             * @default false
+             */
+            resubmit: boolean;
         };
         /** ExternalResourceDetailsV1 */
         ExternalResourceDetailsV1: {
@@ -1071,6 +1160,11 @@ export interface components {
         /** LogsCapabilityV1 */
         LogsCapabilityV1: {
             /**
+             * Disabledreason
+             * @default null
+             */
+            disabledReason: string | null;
+            /**
              * Kind
              * @constant
              */
@@ -1120,6 +1214,8 @@ export interface components {
              * @default null
              */
             phase: string | null;
+            /** Relationships */
+            relationships?: components["schemas"]["RelationshipV1"][];
             /**
              * Resourcename
              * @default null
@@ -1217,6 +1313,11 @@ export interface components {
         /** OutputCapabilityV1 */
         OutputCapabilityV1: {
             /**
+             * Disabledreason
+             * @default null
+             */
+            disabledReason: string | null;
+            /**
              * Kind
              * @constant
              */
@@ -1286,6 +1387,38 @@ export interface components {
             /** Source */
             source: string;
         };
+        /** RelationshipV1 */
+        RelationshipV1: {
+            /**
+             * Direction
+             * @enum {string}
+             */
+            direction: "requires" | "required-by";
+            /**
+             * Kind
+             * @constant
+             */
+            kind: "runtime-dependency";
+            /**
+             * Targetid
+             * @default null
+             */
+            targetId: string | null;
+            /** Targetname */
+            targetName: string;
+            /**
+             * Targetphase
+             * @default null
+             */
+            targetPhase: string | null;
+            /**
+             * Targetplural
+             * @default null
+             */
+            targetPlural: string | null;
+            /** Targetstatus */
+            targetStatus: string;
+        };
         /** RemoveConfigEditOperationV1 */
         RemoveConfigEditOperationV1: {
             /**
@@ -1308,8 +1441,20 @@ export interface components {
             /** Path */
             path: string[];
         };
+        /** ResetApprovalRequestV1 */
+        ResetApprovalRequestV1: {
+            /** Expectedgaterevision */
+            expectedGateRevision: string;
+            /** Targetid */
+            targetId: string;
+        };
         /** ResetCapabilityV1 */
         ResetCapabilityV1: {
+            /**
+             * Disabledreason
+             * @default null
+             */
+            disabledReason: string | null;
             /**
              * Kind
              * @constant
@@ -1323,7 +1468,9 @@ export interface components {
         /** ResetPlanRequestV1 */
         ResetPlanRequestV1: {
             /** Targetid */
-            targetId: string;
+            targetId?: string | null;
+            /** Targetids */
+            targetIds?: string[];
         };
         /** ResetPlanV1 */
         ResetPlanV1: {
@@ -1633,6 +1780,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ConfigDraftV1"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    preflight_config_api_v1_config_preflight_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DraftRevisionRequestV1"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdmissionPreflightV1"];
                 };
             };
             /** @description Validation Error */

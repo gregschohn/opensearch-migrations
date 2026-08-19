@@ -6,8 +6,9 @@ import os
 import shutil
 import subprocess
 import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Mapping
 
 logger = logging.getLogger(__name__)
 SAMPLE_CONFIG_PATH_ENV = "MIGRATION_SAMPLE_CONFIG_PATH"
@@ -24,10 +25,41 @@ def _format_subprocess_failure(label: str, error: subprocess.CalledProcessError)
     return "\n".join(details)
 
 
+@dataclass
+class PreparedWorkflowSubmission:
+    """One generated and admission-checked submission bundle."""
+
+    bundle_dir: Path
+    config_path: Path
+    report: Dict[str, Any]
+    quiet: bool
+    _cleanup: tempfile.TemporaryDirectory = field(repr=False)
+    _closed: bool = field(default=False, init=False, repr=False)
+
+    def cleanup(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self.config_path.unlink(missing_ok=True)
+        finally:
+            self._cleanup.cleanup()
+
+    def __enter__(self) -> "PreparedWorkflowSubmission":
+        return self
+
+    def __exit__(self, *_exc_info) -> None:
+        self.cleanup()
+
+
 class ScriptRunner:
     """Runs workflow scripts with standard interface."""
 
-    def __init__(self, script_dir: Optional[Path] = None):
+    def __init__(
+        self,
+        script_dir: Optional[Path] = None,
+        env: Optional[Mapping[str, str]] = None,
+    ):
         """
         Initialize with script directory path.
 
@@ -35,6 +67,8 @@ class ScriptRunner:
             script_dir: Optional path to scripts. If None, uses CONFIG_PROCESSOR_DIR environment variable.
                        Raises ValueError if neither is provided or if the directory doesn't exist.
         """
+        self.env = dict(env) if env is not None else None
+
         if script_dir is None:
             config_processor_dir = os.environ.get('CONFIG_PROCESSOR_DIR')
             if not config_processor_dir:
@@ -87,14 +121,16 @@ class ScriptRunner:
             logger.debug(f"Input data length: {len(input_data)} bytes")
 
         try:
-            result = subprocess.run(
-                cmd,
-                input=input_data,
-                capture_output=True,
-                text=True,
-                check=True,
-                cwd=str(self.script_dir)
-            )
+            run_options = {
+                "input": input_data,
+                "capture_output": True,
+                "text": True,
+                "check": True,
+                "cwd": str(self.script_dir),
+            }
+            if self.env is not None:
+                run_options["env"] = self.env
+            result = subprocess.run(cmd, **run_options)
 
             logger.debug("Script completed successfully")
             return result.stdout.strip()
@@ -239,34 +275,19 @@ class ScriptRunner:
             if not script_path.exists():
                 raise FileNotFoundError(f"Script not found: {script_path}")
 
+            run_options = {
+                "capture_output": True,
+                "text": True,
+                "check": True,
+                "cwd": str(self.script_dir),
+            }
+            if self.env is not None:
+                run_options["env"] = self.env
             result = subprocess.run(
                 [str(script_path), temp_file_path] + submit_args,
-                capture_output=True, text=True, check=True,
-                cwd=str(self.script_dir)
+                **run_options,
             )
-            output = result.stdout.strip()
-
-            # Extract initialization warnings from stderr
-            stderr_text = result.stderr if isinstance(result.stderr, str) else ""
-            warnings = [
-                line.removeprefix("INIT_WARNING: ")
-                for line in stderr_text.splitlines()
-                if line.startswith("INIT_WARNING: ")
-            ]
-
-            # Parse kubectl output to extract workflow information
-            # The script should output workflow creation details
-            logger.debug(f"Submission script output: {output}")
-
-            # Try to parse as JSON first (if script returns JSON)
-            try:
-                workflow_info = json.loads(output)
-            except json.JSONDecodeError:
-                workflow_info = {'workflow_name': self._parse_kubectl_output(output)}
-
-            workflow_info['warnings'] = warnings
-            logger.info(f"Workflow submitted successfully: {workflow_info.get('workflow_name', 'unknown')}")
-            return workflow_info
+            return self._submission_result(result)
         except subprocess.CalledProcessError as e:
             raise RuntimeError(_format_subprocess_failure("Workflow submit script", e)) from e
 
@@ -277,6 +298,162 @@ class ScriptRunner:
                 logger.debug(f"Cleaned up temporary file: {temp_file_path}")
             except OSError as e:
                 logger.warning(f"Failed to clean up temporary file {temp_file_path}: {e}")
+
+    def prepare_workflow(
+        self,
+        config_data: str,
+        args: list[str],
+        quiet: bool = True,
+    ) -> PreparedWorkflowSubmission:
+        """Generate and preflight a bundle without mutating Kubernetes."""
+        cleanup = tempfile.TemporaryDirectory(prefix="workflow-submission-")
+        bundle_dir = Path(cleanup.name)
+        config_file = tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=".yaml",
+            delete=False,
+        )
+        config_path = Path(config_file.name)
+        try:
+            config_file.write(config_data)
+            config_file.close()
+            submit_args = list(args)
+            if (
+                quiet
+                and "--quiet" not in submit_args
+                and "--verbose" not in submit_args
+            ):
+                submit_args.append("--quiet")
+            submit_args.extend(["--prepare-only", str(bundle_dir)])
+            result = subprocess.run(
+                [
+                    str(self._submission_script()),
+                    str(config_path),
+                    *submit_args,
+                ],
+                **self._submission_run_options(check=False),
+            )
+            report_path = bundle_dir / "submissionPreflight.json"
+            report = (
+                json.loads(report_path.read_text())
+                if report_path.exists()
+                else None
+            )
+            if result.returncode not in (0, 2) or report is None:
+                raise subprocess.CalledProcessError(
+                    result.returncode,
+                    result.args,
+                    output=result.stdout,
+                    stderr=result.stderr,
+                )
+            return PreparedWorkflowSubmission(
+                bundle_dir=bundle_dir,
+                config_path=config_path,
+                report=report,
+                quiet=quiet,
+                _cleanup=cleanup,
+            )
+        except Exception as error:
+            config_file.close()
+            config_path.unlink(missing_ok=True)
+            cleanup.cleanup()
+            if isinstance(error, subprocess.CalledProcessError):
+                raise RuntimeError(
+                    _format_subprocess_failure(
+                        "Workflow submission preparation",
+                        error,
+                    )
+                ) from error
+            raise
+
+    def preflight_workflow(
+        self,
+        config_data: str,
+        args: list[str],
+    ) -> Dict[str, Any]:
+        """Return the package-owned preflight report for a generated bundle."""
+        with self.prepare_workflow(config_data, args) as prepared:
+            return prepared.report
+
+    def commit_prepared_workflow(
+        self,
+        prepared: PreparedWorkflowSubmission,
+    ) -> Dict[str, Any]:
+        """Apply a previously generated bundle without regenerating it."""
+        if not prepared.report.get("allowed", False):
+            raise ValueError(
+                "Prepared workflow is blocked by admission preflight"
+            )
+        submit_args = [
+            "--commit-prepared",
+            str(prepared.bundle_dir),
+        ]
+        if prepared.quiet:
+            submit_args.append("--quiet")
+        try:
+            result = subprocess.run(
+                [
+                    str(self._submission_script()),
+                    str(prepared.config_path),
+                    *submit_args,
+                ],
+                **self._submission_run_options(check=True),
+            )
+            return self._submission_result(result)
+        except subprocess.CalledProcessError as error:
+            raise RuntimeError(
+                _format_subprocess_failure(
+                    "Workflow submit script",
+                    error,
+                )
+            ) from error
+
+    def _submission_script(self) -> Path:
+        script_path = (
+            self.script_dir
+            / "createMigrationWorkflowFromUserConfiguration.sh"
+        )
+        if not script_path.exists():
+            raise FileNotFoundError(f"Script not found: {script_path}")
+        return script_path
+
+    def _submission_run_options(self, *, check: bool) -> Dict[str, Any]:
+        options: Dict[str, Any] = {
+            "capture_output": True,
+            "text": True,
+            "check": check,
+            "cwd": str(self.script_dir),
+        }
+        if self.env is not None:
+            options["env"] = self.env
+        return options
+
+    def _submission_result(
+        self,
+        result: subprocess.CompletedProcess,
+    ) -> Dict[str, Any]:
+        output = (result.stdout or "").strip()
+        stderr_text = (
+            result.stderr if isinstance(result.stderr, str) else ""
+        )
+        warnings = [
+            line.removeprefix("INIT_WARNING: ")
+            for line in stderr_text.splitlines()
+            if line.startswith("INIT_WARNING: ")
+        ]
+        logger.debug(f"Submission script output: {output}")
+        try:
+            workflow_info = json.loads(output)
+        except json.JSONDecodeError:
+            workflow_info = {
+                "workflow_name": self._parse_kubectl_output(output)
+            }
+        workflow_info["warnings"] = warnings
+        logger.info(
+            "Workflow submitted successfully: %s",
+            workflow_info.get("workflow_name", "unknown"),
+        )
+        return workflow_info
 
     def _parse_kubectl_output(self, output: str) -> str:
         """Parse kubectl output to extract workflow name.

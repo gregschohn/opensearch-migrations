@@ -26,6 +26,10 @@ from ..application.config_drafts import (
 from ..application.operations import Operation
 from ..application.actions import ApprovalReview
 from ..application.resets import ResetPlan, ResetTarget
+from ..services.admission_preflight import (
+    AdmissionPreflightIssue,
+    AdmissionPreflightReport,
+)
 from ..application.outputs import (
     OutputContent,
     OutputDescriptor,
@@ -59,6 +63,10 @@ class DiagnosticV1(WebModel):
     message: str
     path: List[str] = Field(default_factory=list)
     source: Optional[str] = None
+    code: Optional[str] = None
+    title: Optional[str] = None
+    remedy: Optional[str] = None
+    technical_detail: Optional[str] = None
 
 
 class ProblemV1(WebModel):
@@ -71,30 +79,35 @@ class EditCapabilityV1(WebModel):
     kind: Literal["edit"]
     edit_target_id: str
     label: Optional[str] = None
+    disabled_reason: Optional[str] = None
 
 
 class ApproveCapabilityV1(WebModel):
     kind: Literal["approve"]
     approval_target_id: str
     label: str
+    disabled_reason: Optional[str] = None
 
 
 class ResetCapabilityV1(WebModel):
     kind: Literal["reset"]
     reset_target_id: str
     label: str
+    disabled_reason: Optional[str] = None
 
 
 class LogsCapabilityV1(WebModel):
     kind: Literal["logs"]
     log_target_id: str
     label: Optional[str] = None
+    disabled_reason: Optional[str] = None
 
 
 class OutputCapabilityV1(WebModel):
     kind: Literal["output"]
     output_target_id: str
     label: Optional[str] = None
+    disabled_reason: Optional[str] = None
 
 
 NodeCapabilityV1 = Union[
@@ -128,6 +141,16 @@ class DetailV1(WebModel):
     kind: str
 
 
+class RelationshipV1(WebModel):
+    kind: Literal["runtime-dependency"]
+    direction: Literal["requires", "required-by"]
+    target_id: Optional[str] = None
+    target_name: str
+    target_plural: Optional[str] = None
+    target_phase: Optional[str] = None
+    target_status: str
+
+
 class ManageNodeV1(WebModel):
     id: str
     revision: str
@@ -142,6 +165,7 @@ class ManageNodeV1(WebModel):
     diagnostics: List[DiagnosticV1] = Field(default_factory=list)
     capabilities: List[NodeCapabilityV1] = Field(default_factory=list)
     details: List[DetailV1] = Field(default_factory=list)
+    relationships: List[RelationshipV1] = Field(default_factory=list)
     comparisons: List[ComparisonV1] = Field(default_factory=list)
     resource_plural: Optional[str] = None
     resource_name: Optional[str] = None
@@ -429,6 +453,60 @@ class ConfigReviewV1(WebModel):
         )
 
 
+class AdmissionPreflightIssueV1(WebModel):
+    kind: str
+    name: str
+    plural: Optional[str] = None
+    classification: Literal[
+        "recreate-required",
+        "invalid",
+        "approval-required",
+        "warning",
+    ]
+    message: str
+    source: str
+    blocking: bool
+    resource_id: Optional[str] = None
+    reset_target_id: Optional[str] = None
+
+    @classmethod
+    def from_domain(
+        cls,
+        issue: AdmissionPreflightIssue,
+    ) -> "AdmissionPreflightIssueV1":
+        return cls(
+            kind=issue.kind,
+            name=issue.name,
+            plural=issue.plural,
+            classification=issue.classification,
+            message=issue.message,
+            source=issue.source,
+            blocking=issue.blocking,
+            resource_id=issue.resource_id,
+            reset_target_id=issue.reset_target_id,
+        )
+
+
+class AdmissionPreflightV1(WebModel):
+    checked_resources: int
+    allowed: bool
+    issues: List[AdmissionPreflightIssueV1]
+
+    @classmethod
+    def from_domain(
+        cls,
+        report: AdmissionPreflightReport,
+    ) -> "AdmissionPreflightV1":
+        return cls(
+            checked_resources=report.checked_resources,
+            allowed=report.allowed,
+            issues=[
+                AdmissionPreflightIssueV1.from_domain(issue)
+                for issue in report.issues
+            ],
+        )
+
+
 class OperationV1(WebModel):
     id: str
     kind: str
@@ -481,7 +559,8 @@ class ApproveRequestV1(WebModel):
 
 
 class ResetPlanRequestV1(WebModel):
-    target_id: str
+    target_id: Optional[str] = None
+    target_ids: List[str] = Field(default_factory=list)
 
 
 class ResetTargetV1(WebModel):
@@ -525,8 +604,18 @@ class ResetPlanV1(WebModel):
         )
 
 
+class ResetApprovalRequestV1(WebModel):
+    target_id: str
+    expected_gate_revision: str
+
+
 class ExecuteResetRequestV1(WebModel):
     plan_token: str
+    resubmit: bool = False
+    expected_draft_revision: Optional[str] = None
+    # Kept for one contract transition; legacy reset-and-retry clients now
+    # trigger resubmission and these old gate revisions are never approved.
+    approvals: List[ResetApprovalRequestV1] = Field(default_factory=list)
 
 
 class OutputDescriptorV1(WebModel):
@@ -823,4 +912,6 @@ def _capability_payload(capability: ManageCapability) -> Dict[str, Any]:
     }
     if capability.label:
         payload["label"] = capability.label
+    if capability.disabled_reason:
+        payload["disabledReason"] = capability.disabled_reason
     return payload
