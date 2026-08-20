@@ -21,15 +21,19 @@ import {
 
 interface SubmitConfigDialogProps {
   draftRevision?: string;
+  intent?: "submit" | "resubmit";
   onClose: () => void;
   onSubmitted: () => void;
+  reason?: string;
 }
 
 
 export function SubmitConfigDialog({
   draftRevision,
+  intent = "submit",
   onClose,
   onSubmitted,
+  reason,
 }: SubmitConfigDialogProps) {
   const queryClient = useQueryClient();
   const [sessionKey] = useState(() => Math.random().toString(36).slice(2));
@@ -77,6 +81,24 @@ export function SubmitConfigDialog({
     && (review.isPending || preflight.isPending)
   );
   const loadError = currentDraft.error ?? review.error ?? preflight.error;
+  const resubmitting = intent === "resubmit";
+  const resetActionCount = resetPlan.data?.targets.length
+    ?? resetTargetIds.length;
+  const directSubmitTitle = resetTargetIds.length > 0
+    && preflight.data?.allowed === false
+    ? (
+      "No workflow will be submitted while reset-required admission errors "
+      + "remain. The affected resources and their dependencies will stay "
+      + "blocked. Use Reset & resubmit."
+    )
+    : undefined;
+  const resetAndResubmitTitle = resetPlan.data
+    ? `Delete ${resetPlan.data.targets.length} ${
+      resetPlan.data.targets.length === 1 ? "resource" : "resources"
+    } before submitting a new workflow: ${
+      resetPlan.data.targets.map((target) => target.path).join("; ")
+    }.`
+    : "Building the dependency-safe reset plan.";
 
   const retry = () => {
     setProblem("");
@@ -144,7 +166,9 @@ export function SubmitConfigDialog({
           <Send aria-hidden="true" />
           <div>
             <span>Workflow submission</span>
-            <h2 id="submit-dialog-title">Submit configuration?</h2>
+            <h2 id="submit-dialog-title">
+              {resubmitting ? "Resubmit configuration?" : "Submit configuration?"}
+            </h2>
           </div>
         </header>
         {loading ? (
@@ -160,10 +184,22 @@ export function SubmitConfigDialog({
           </div>
         ) : review.data ? (
           <div className="submit-review">
-            <p>
-              The current pending configuration will be saved and workflow
-              replacement will continue as a tracked operation.
-            </p>
+            {resubmitting ? (
+              <>
+                <p>
+                  The saved configuration will be submitted again to recreate
+                  missing resources or retry failed workflow work.
+                </p>
+                {reason ? (
+                  <p className="submit-review-empty">{reason}</p>
+                ) : null}
+              </>
+            ) : (
+              <p>
+                The current pending configuration will be saved and workflow
+                replacement will continue as a tracked operation.
+              </p>
+            )}
             {review.data.changes.length > 0 ? (
               <ul className="submit-change-list">
                 {review.data.changes.map((change) => (
@@ -177,11 +213,7 @@ export function SubmitConfigDialog({
                   </li>
                 ))}
               </ul>
-            ) : (
-              <p className="submit-review-empty">
-                No field-level pending differences were reported.
-              </p>
-            )}
+            ) : null}
             {!review.data.valid ? (
               <div className="submit-review-invalid" role="alert">
                 <AlertTriangle aria-hidden="true" />
@@ -285,16 +317,17 @@ export function SubmitConfigDialog({
               className="danger-confirm"
               disabled={submitting || !resetPlan.data}
               onClick={() => void resetAndResubmit()}
+              title={resetAndResubmitTitle}
               type="button"
             >
               {submitting
                 ? <LoaderCircle className="spin" aria-hidden="true" />
                 : <RotateCcw aria-hidden="true" />}
-              Reset &amp; resubmit ({resetTargetIds.length})
+              Reset &amp; resubmit ({resetActionCount})
             </button>
           ) : null}
           <button
-            aria-label="Confirm submit"
+            aria-label={resubmitting ? "Confirm resubmit" : "Confirm submit"}
             className="primary-button"
             disabled={
               submitting
@@ -305,12 +338,15 @@ export function SubmitConfigDialog({
               || !preflight.data.allowed
             }
             onClick={() => void submit()}
+            title={directSubmitTitle}
             type="button"
           >
             {submitting
               ? <LoaderCircle className="spin" aria-hidden="true" />
               : <Send aria-hidden="true" />}
-            Submit configuration
+            {resubmitting
+              ? "Resubmit configuration"
+              : "Submit configuration"}
           </button>
         </footer>
       </section>

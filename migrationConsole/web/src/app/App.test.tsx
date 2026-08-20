@@ -1451,6 +1451,75 @@ test("taints validation errors and their configuration and navigation parents", 
 });
 
 
+test("highlights unsaved resources and fields with previous values", async () => {
+  const snapshot = structuredClone(manageSnapshot);
+  const source = snapshot.nodes["resource:captureproxies:capture"];
+  source.label = "legacy";
+  source.resourcePlural = "sourceconfigs";
+  source.resourceName = "legacy";
+  source.diagnostics = [];
+  source.parentId = "group:Sources:Sources";
+  source.capabilities = [{
+    kind: "edit",
+    editTargetId: "edit:sourceClusters.legacy",
+    label: "Edit legacy",
+    disabledReason: null,
+  }];
+  snapshot.nodes["group:Sources:Sources"].childIds = [source.id];
+  snapshot.nodes["group:Live Traffic Migration:Capture"].childIds = [];
+
+  const dirtyDraft = structuredClone(configDraft);
+  const sourceCollection = dirtyDraft.editState.nodes.find(
+    (node) => node.id === "edit:sourceClusters",
+  );
+  const sourceEdit = sourceCollection?.children?.find(
+    (node) => node.id === "edit:sourceClusters.legacy",
+  );
+  const endpoint = sourceEdit?.children?.find(
+    (node) => node.id === "edit:sourceClusters.legacy.endpoint",
+  );
+  if (!sourceEdit || !endpoint) throw new Error("Missing source fixture");
+  dirtyDraft.dirty = true;
+  dirtyDraft.draftRevision = "dirty-highlight";
+  sourceEdit.draftChangeCount = 1;
+  endpoint.value = "https://next.example.com:9200";
+  endpoint.label = "Endpoint: https://next.example.com:9200";
+  endpoint.draftChangeCount = 1;
+  endpoint.draftChange = {
+    kind: "modified",
+    previousValue: "https://legacy.example.com:9200",
+    previousValuePresent: true,
+  };
+
+  server.use(
+    http.get("*/api/v1/manage/state", () => HttpResponse.json(snapshot)),
+    http.get("*/api/v1/config", () => HttpResponse.json(dirtyDraft)),
+  );
+  renderApp();
+  await enterEditMode();
+
+  const tree = await screen.findByRole("tree", { name: "Workflow resources" });
+  const sourceSection = within(tree).getAllByRole("treeitem", {
+    name: /^Sources,/,
+  }).find((item) => item.getAttribute("aria-level") === "1");
+  const sourceRow = within(tree).getByRole("treeitem", {
+    name: /^legacy, Ready$/,
+  });
+  expect(sourceSection).toHaveClass("draft-change-ancestor");
+  expect(sourceRow).toHaveClass("draft-change-item");
+  expect(within(sourceRow).getByText("1 unsaved change")).toBeInTheDocument();
+
+  const config = screen.getByRole("table", { name: "Configuration fields" });
+  const endpointRow = within(config).getByRole("row", { name: /^Endpoint/ });
+  const expectedTitle = "Changed in this edit. Previous value: https://legacy.example.com:9200.";
+  expect(endpointRow).toHaveClass("draft-change-item");
+  expect(endpointRow.querySelector(".property-label"))
+    .toHaveAttribute("title", expectedTitle);
+  expect(within(endpointRow).getByText("Changed"))
+    .toHaveAttribute("title", expectedTitle);
+});
+
+
 test("identifies resources within a mixed-type navigation group", async () => {
   const snapshot = structuredClone(manageSnapshot);
   const section = snapshot.nodes["section:Live Traffic Migration"];
@@ -2994,34 +3063,110 @@ test("saves and discards explicit dirty drafts", async () => {
 });
 
 
-test("exiting a dirty edit session discards the draft before leaving", async () => {
-  let discardCalls = 0;
+test("exit offers continue or discard and reopening reloads saved values", async () => {
+  let getCalls = 0;
+  const closeRequests: unknown[] = [];
+  const reopenedDraft = structuredClone(configDraft);
+  reopenedDraft.baseRevision = "saved-after-close";
+  reopenedDraft.draftRevision = "reopened-after-close";
+  reopenedDraft.dirty = false;
   server.use(
-    http.get("*/api/v1/config", () =>
-      HttpResponse.json({
+    http.get("*/api/v1/config", () => {
+      getCalls += 1;
+      return HttpResponse.json(getCalls === 1 ? {
         ...configDraft,
         dirty: true,
         draftRevision: "dirty-close",
-      }),
-    ),
-    http.post("*/api/v1/config/discard", () => {
-      discardCalls += 1;
-      return HttpResponse.json(configDraft);
+      } : reopenedDraft);
+    }),
+    http.post("*/api/v1/config/close", async ({ request }) => {
+      closeRequests.push(await request.json());
+      return new HttpResponse(null, { status: 204 });
     }),
   );
-  const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
-  renderApp();
+  const { client } = renderApp();
   await enterEditMode();
 
   await userEvent.click(
     screen.getByRole("button", { name: "Exit editing" }),
   );
+  const firstPrompt = screen.getByRole("dialog", { name: "Leave editing?" });
+  expect(closeRequests).toEqual([]);
+  await userEvent.click(within(firstPrompt).getByRole("button", {
+    name: "Continue editing",
+  }));
+  expect(screen.getByText("Editing configuration")).toBeInTheDocument();
 
-  expect(discardCalls).toBe(1);
-  expect(confirm).toHaveBeenCalledOnce();
+  await userEvent.click(
+    screen.getByRole("button", { name: "Exit editing" }),
+  );
+  await userEvent.click(screen.getByRole("button", {
+    name: "Discard and exit",
+  }));
+
+  expect(closeRequests).toEqual([{
+    expectedDraftRevision: "dirty-close",
+  }]);
   expect(await screen.findByRole("button", { name: "Edit configuration" }))
     .toBeInTheDocument();
-  confirm.mockRestore();
+
+  await enterEditMode();
+  await waitFor(() => expect(getCalls).toBe(2));
+  expect(client.getQueryData(["config-draft"])).toMatchObject({
+    baseRevision: "saved-after-close",
+    draftRevision: "reopened-after-close",
+    dirty: false,
+  });
+
+  await userEvent.click(
+    screen.getByRole("button", { name: "Exit editing" }),
+  );
+  expect(closeRequests).toEqual([{
+    expectedDraftRevision: "dirty-close",
+  }, {
+    expectedDraftRevision: "reopened-after-close",
+  }]);
+});
+
+
+test("save and exit persists before closing the edit session", async () => {
+  let saveRequest: unknown;
+  let closeRequest: unknown;
+  const savedDraft = {
+    ...configDraft,
+    baseRevision: "saved-on-exit",
+    draftRevision: "saved-on-exit",
+    dirty: false,
+  };
+  server.use(
+    http.get("*/api/v1/config", () => HttpResponse.json({
+      ...configDraft,
+      dirty: true,
+      draftRevision: "dirty-save-exit",
+    })),
+    http.post("*/api/v1/config/save", async ({ request }) => {
+      saveRequest = await request.json();
+      return HttpResponse.json(savedDraft);
+    }),
+    http.post("*/api/v1/config/close", async ({ request }) => {
+      closeRequest = await request.json();
+      return new HttpResponse(null, { status: 204 });
+    }),
+  );
+  renderApp();
+  await enterEditMode();
+
+  await userEvent.click(screen.getByRole("button", { name: "Exit editing" }));
+  await userEvent.click(screen.getByRole("button", { name: "Save and exit" }));
+
+  expect(saveRequest).toEqual({
+    expectedDraftRevision: "dirty-save-exit",
+  });
+  expect(closeRequest).toEqual({
+    expectedDraftRevision: "saved-on-exit",
+  });
+  expect(await screen.findByRole("button", { name: "Edit configuration" }))
+    .toBeInTheDocument();
 });
 
 
@@ -3312,6 +3457,13 @@ test("offers one reset and resubmit action for immutable preflight failures", as
         path: "capturedtraffic.capture-topic",
         phase: "Ready",
         dependsOn: [],
+      }, {
+        plural: "captureproxies",
+        type: "captureproxy",
+        name: "p2",
+        path: "captureproxy.p2",
+        phase: "Ready",
+        dependsOn: ["capturedtraffic.capture-topic"],
       }],
       messages: [],
       warnings: [],
@@ -3347,12 +3499,28 @@ test("offers one reset and resubmit action for immutable preflight failures", as
   expect(within(dialog).getByText(
     "Impossible: sourceLabel cannot be changed.",
   )).toBeInTheDocument();
-  expect(within(dialog).getByRole("button", {
+  expect(within(dialog).queryByText(
+    "No field-level pending differences were reported.",
+  )).toBeNull();
+  const blockedSubmit = within(dialog).getByRole("button", {
     name: "Confirm submit",
-  })).toBeDisabled();
-  await userEvent.click(await within(dialog).findByRole("button", {
-    name: "Reset & resubmit (1)",
-  }));
+  });
+  expect(blockedSubmit).toBeDisabled();
+  expect(blockedSubmit).toHaveAttribute(
+    "title",
+    "No workflow will be submitted while reset-required admission errors "
+      + "remain. The affected resources and their dependencies will stay "
+      + "blocked. Use Reset & resubmit.",
+  );
+  const resetAndResubmit = await within(dialog).findByRole("button", {
+    name: "Reset & resubmit (2)",
+  });
+  expect(resetAndResubmit).toHaveAttribute(
+    "title",
+    "Delete 2 resources before submitting a new workflow: "
+      + "capturedtraffic.capture-topic; captureproxy.p2.",
+  );
+  await userEvent.click(resetAndResubmit);
 
   await waitFor(() => expect(resetRequest).toEqual({
     planToken: "preflight-reset-token",
@@ -3363,9 +3531,12 @@ test("offers one reset and resubmit action for immutable preflight failures", as
 });
 
 
-test("does not offer submission when the snapshot has no pending config", async () => {
+test("explains why submission is unavailable after validation state changes", async () => {
+  let response = structuredClone(manageSnapshot);
   const currentState = structuredClone(manageSnapshot);
+  currentState.revision = "snapshot-current";
   const capture = currentState.nodes["resource:captureproxies:capture"];
+  capture.revision = "capture-current";
   capture.valueSummary = "Deployed";
   capture.comparisons = capture.comparisons.map((comparison) => ({
     ...comparison,
@@ -3373,16 +3544,118 @@ test("does not offer submission when the snapshot has no pending config", async 
     pendingChanged: false,
   }));
   server.use(
+    http.get("*/api/v1/manage/state", () => HttpResponse.json(response)),
+  );
+  const { client } = renderApp();
+
+  expect(await screen.findByText("1 configuration error"))
+    .toBeInTheDocument();
+  response = currentState;
+  await client.invalidateQueries({ queryKey: ["manage-state"] });
+
+  expect(await screen.findByText(
+    "Configuration is current; no resources are missing or failed",
+  )).toHaveClass("sr-only");
+  const submit = screen.getByRole("button", {
+    name: "Review and submit",
+  });
+  expect(submit).toBeDisabled();
+  expect(submit).toHaveAttribute(
+    "title",
+    "Configuration is current; no resources are missing or failed",
+  );
+});
+
+
+test("offers resubmission when a configured resource is missing", async () => {
+  const currentState = structuredClone(manageSnapshot);
+  const capture = currentState.nodes["resource:captureproxies:capture"];
+  capture.status = "pending";
+  capture.phase = "Pending Config";
+  capture.valueSummary = "Addition in progress";
+  capture.configPresence = {
+    deployed: false,
+    submitted: true,
+    pending: true,
+  };
+  capture.comparisons = [];
+  const validDraft = structuredClone(configDraft);
+  validDraft.editState.validation = {
+    valid: true,
+    errors: [],
+    diagnostics: [],
+  };
+  server.use(
     http.get("*/api/v1/manage/state", () => HttpResponse.json(currentState)),
+    http.get("*/api/v1/config", () => HttpResponse.json(validDraft)),
+    http.post("*/api/v1/config/review", () => HttpResponse.json({
+      draftRevision: validDraft.draftRevision,
+      baseRevision: validDraft.baseRevision,
+      dirty: false,
+      valid: true,
+      validationMessages: [],
+      changes: [],
+    })),
   );
   renderApp();
 
-  expect(await screen.findByRole("button", {
-    name: "Edit configuration",
-  })).toBeInTheDocument();
-  expect(screen.queryByRole("button", {
-    name: "Review and submit",
-  })).toBeNull();
+  const resubmit = await screen.findByRole("button", {
+    name: "Review and resubmit",
+  });
+  await waitFor(() => expect(resubmit).toBeEnabled());
+  expect(resubmit).toHaveAttribute(
+    "title",
+    "Review and resubmit the saved configuration. "
+      + "1 configured resource is missing",
+  );
+  await userEvent.click(resubmit);
+  const dialog = await screen.findByRole("dialog", {
+    name: "Resubmit configuration?",
+  });
+  expect(within(dialog).queryByText(
+    "No configuration differences were reported; resubmission will retry the saved configuration.",
+  )).toBeNull();
+  await waitFor(() => {
+    expect(within(dialog).getByRole("button", {
+      name: "Confirm resubmit",
+    })).toBeEnabled();
+  });
+});
+
+
+test("offers resubmission when a managed resource has failed", async () => {
+  const currentState = structuredClone(manageSnapshot);
+  const capture = currentState.nodes["resource:captureproxies:capture"];
+  capture.status = "error";
+  capture.phase = "Failed";
+  capture.valueSummary = "Failed";
+  capture.configPresence = {
+    deployed: true,
+    submitted: true,
+    pending: true,
+  };
+  capture.comparisons = [];
+  const validDraft = structuredClone(configDraft);
+  validDraft.editState.validation = {
+    valid: true,
+    errors: [],
+    diagnostics: [],
+  };
+  server.use(
+    http.get("*/api/v1/manage/state", () => HttpResponse.json(currentState)),
+    http.get("*/api/v1/config", () => HttpResponse.json(validDraft)),
+  );
+  renderApp();
+
+  const resubmit = await screen.findByRole("button", {
+    name: "Review and resubmit",
+  });
+  await waitFor(() => expect(resubmit).toBeEnabled());
+  expect(resubmit).toHaveAttribute(
+    "title",
+    "Review and resubmit the saved configuration. "
+      + "1 managed resource has failed",
+  );
 });
 
 
@@ -3409,14 +3682,15 @@ test("offers submission for a pending resource addition without field diffs", as
 });
 
 
-test("blocks pending config submission with a visible validation reason", async () => {
+test("exposes a blocking validation reason through the submit tooltip", async () => {
   renderApp();
 
   const submit = await screen.findByRole("button", {
     name: "Review and submit",
   });
-  await waitFor(() => expect(submit).toBeDisabled());
-  expect(screen.getByText("1 configuration error")).toBeInTheDocument();
+  expect(submit).toBeDisabled();
+  expect(await screen.findByText("1 configuration error"))
+    .toBeInTheDocument();
   expect(submit).toHaveAttribute(
     "title",
     "Resolve 1 configuration error before submitting",
