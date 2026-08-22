@@ -304,32 +304,43 @@ class KubernetesLogSource:
         workers: Dict[Tuple[str, str, int], threading.Thread] = {}
         while not stop.is_set():
             for exact in self._current_container_selections(selection):
-                key = (
-                    exact.pod_uid or "",
-                    exact.container or "",
-                    exact.restart_count or 0,
+                self._start_follow_worker(
+                    workers,
+                    exact,
+                    emit,
+                    stop,
+                    register_response,
                 )
-                if key in workers:
-                    continue
-                worker = threading.Thread(
-                    target=self._follow_container,
-                    args=(
-                        exact,
-                        emit,
-                        stop,
-                        register_response,
-                    ),
-                    name=(
-                        f"log-follow-{exact.pod_name}-"
-                        f"{exact.container}-{exact.restart_count}"
-                    ),
-                    daemon=True,
-                )
-                workers[key] = worker
-                worker.start()
             stop.wait(self.discovery_interval)
         for worker in workers.values():
             worker.join(timeout=1)
+
+    def _start_follow_worker(
+        self,
+        workers: Dict[Tuple[str, str, int], threading.Thread],
+        selection: LogSelection,
+        emit: Callable[[LogRecord], None],
+        stop: threading.Event,
+        register_response: Callable[[Any], None],
+    ) -> None:
+        key = (
+            selection.pod_uid or "",
+            selection.container or "",
+            selection.restart_count or 0,
+        )
+        if key in workers:
+            return
+        worker = threading.Thread(
+            target=self._follow_container,
+            args=(selection, emit, stop, register_response),
+            name=(
+                f"log-follow-{selection.pod_name}-"
+                f"{selection.container}-{selection.restart_count}"
+            ),
+            daemon=True,
+        )
+        workers[key] = worker
+        worker.start()
 
     def _follow_container(
         self,
@@ -355,25 +366,13 @@ class KubernetesLogSource:
                 if stop.is_set():
                     break
                 timestamp, message = _split_timestamp(line)
-                emit(LogRecord(
-                    timestamp=timestamp,
-                    pod_name=selection.pod_name or "",
-                    pod_uid=selection.pod_uid or "",
-                    container=selection.container or "",
-                    restart_count=selection.restart_count or 0,
-                    previous=False,
-                    message=message,
-                ))
+                emit(_selection_record(selection, timestamp, message))
         except Exception as error:
             if not stop.is_set():
-                emit(LogRecord(
-                    timestamp=None,
-                    pod_name=selection.pod_name or "",
-                    pod_uid=selection.pod_uid or "",
-                    container=selection.container or "",
-                    restart_count=selection.restart_count or 0,
-                    previous=False,
-                    message=str(error) or type(error).__name__,
+                emit(_selection_record(
+                    selection,
+                    None,
+                    str(error) or type(error).__name__,
                     kind="error",
                 ))
         finally:
@@ -903,5 +902,24 @@ def _decode_cursor(cursor: str) -> int:
         if prefix != "log":
             raise ValueError
         return max(0, int(value))
-    except (ValueError, UnicodeDecodeError) as error:
+    except ValueError as error:
         raise LogUnavailable("The log cursor is invalid.") from error
+
+
+def _selection_record(
+    selection: LogSelection,
+    timestamp: Optional[str],
+    message: str,
+    *,
+    kind: str = "log",
+) -> LogRecord:
+    return LogRecord(
+        timestamp=timestamp,
+        pod_name=selection.pod_name or "",
+        pod_uid=selection.pod_uid or "",
+        container=selection.container or "",
+        restart_count=selection.restart_count or 0,
+        previous=False,
+        message=message,
+        kind=kind,
+    )

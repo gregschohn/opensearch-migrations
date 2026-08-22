@@ -69,7 +69,6 @@ class EventHistory:
     async def wait_after(
         self,
         last_event_id: int,
-        timeout: Optional[float] = None,
     ) -> EventBatch:
         while True:
             batch = self.events_after(last_event_id)
@@ -79,7 +78,7 @@ class EventHistory:
             batch = self.events_after(last_event_id)
             if batch.events or batch.history_gap:
                 return batch
-            await asyncio.wait_for(self._changed.wait(), timeout=timeout)
+            await self._changed.wait()
 
 
 class ObservationCoordinator:
@@ -93,6 +92,7 @@ class ObservationCoordinator:
         retry_max_interval: float = 30.0,
         heartbeat_interval: float = 15.0,
         event_history_size: int = 256,
+        initial_observation_timeout: float = 15.0,
     ):
         if refresh_interval <= 0:
             raise ValueError("refresh_interval must be positive")
@@ -100,10 +100,13 @@ class ObservationCoordinator:
             raise ValueError("retry_max_interval must be positive")
         if heartbeat_interval <= 0:
             raise ValueError("heartbeat_interval must be positive")
+        if initial_observation_timeout <= 0:
+            raise ValueError("initial_observation_timeout must be positive")
         self._state_service = state_service
         self._refresh_interval = refresh_interval
         self._retry_max_interval = retry_max_interval
         self._heartbeat_interval = heartbeat_interval
+        self._initial_observation_timeout = initial_observation_timeout
         self.events = EventHistory(event_history_size)
         self._executor: Optional[ThreadPoolExecutor] = None
         self._poll_task: Optional[asyncio.Task] = None
@@ -141,6 +144,7 @@ class ObservationCoordinator:
             self._heartbeat_loop(),
             name="manage-heartbeat-loop",
         )
+        await asyncio.sleep(0)
 
     async def stop(self) -> None:
         tasks = [
@@ -157,13 +161,11 @@ class ObservationCoordinator:
             self._executor.shutdown(wait=False, cancel_futures=True)
             self._executor = None
 
-    async def get_observation(
-        self,
-        timeout: Optional[float] = 15.0,
-    ) -> Observation:
+    async def get_observation(self) -> Observation:
         if self._observation is not None:
             return self._observation
-        await asyncio.wait_for(self._initial_complete.wait(), timeout=timeout)
+        async with asyncio.timeout(self._initial_observation_timeout):
+            await self._initial_complete.wait()
         if self._observation is not None:
             return self._observation
         if self._initial_error is not None:
