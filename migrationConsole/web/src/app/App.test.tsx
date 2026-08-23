@@ -48,8 +48,7 @@ test("renders real manage state with exact-node details and capabilities", async
   expect(
     screen.getByRole("heading", { name: "Workflow Manage" }),
   ).toBeInTheDocument();
-  expect(screen.getByText("Connecting to server")).toBeInTheDocument();
-  expect(await screen.findByText("Server ready")).toBeInTheDocument();
+  expect(screen.queryByText("Server ready")).toBeNull();
 
   const tree = await screen.findByRole("tree", { name: "Workflow resources" });
   expect(
@@ -80,6 +79,86 @@ test("renders real manage state with exact-node details and capabilities", async
 });
 
 
+test("does not expose the internal manage-state revision", async () => {
+  renderApp();
+
+  await screen.findByRole("tree", { name: "Workflow resources" });
+
+  expect(screen.queryByText(manageSnapshot.revision)).not.toBeInTheDocument();
+});
+
+
+test("switches the resource overview between rollout snapshots", async () => {
+  const rolloutSnapshot = structuredClone(manageSnapshot);
+  rolloutSnapshot.nodes["resource:captureproxies:capture"].configPresence = {
+    deployed: true,
+    submitted: false,
+    pending: false,
+  };
+  rolloutSnapshot.nodes["resource:trafficreplays:replay"].configPresence = {
+    deployed: false,
+    submitted: true,
+    pending: true,
+  };
+  server.use(
+    http.get(
+      "*/api/v1/manage/state",
+      () => HttpResponse.json(rolloutSnapshot),
+    ),
+  );
+  renderApp();
+
+  const views = await screen.findByRole("group", {
+    name: "Resource state view",
+  });
+  const tree = screen.getByRole("tree", { name: "Workflow resources" });
+  expect(within(tree).getByRole("treeitem", {
+    name: /^capture, Ready$/,
+  })).toBeInTheDocument();
+  expect(within(tree).getByRole("treeitem", {
+    name: /^replay, Running$/,
+  })).toBeInTheDocument();
+
+  await userEvent.click(within(views).getByRole("button", {
+    name: "Deployed",
+  }));
+  expect(within(tree).getByRole("treeitem", {
+    name: /^capture, Ready$/,
+  })).toBeInTheDocument();
+  expect(within(tree).queryByRole("treeitem", {
+    name: /^replay, Running$/,
+  })).toBeNull();
+
+  await userEvent.click(within(views).getByRole("button", {
+    name: "Submitted",
+  }));
+  expect(within(tree).queryByRole("treeitem", {
+    name: /^capture, Ready$/,
+  })).toBeNull();
+  expect(within(tree).getByRole("treeitem", {
+    name: /^replay, Running$/,
+  })).toBeInTheDocument();
+
+  await userEvent.click(within(views).getByRole("button", {
+    name: "Saved config",
+  }));
+  expect(within(tree).queryByRole("treeitem", {
+    name: /^capture, Ready$/,
+  })).toBeNull();
+  expect(within(tree).getByRole("treeitem", {
+    name: /^replay, Running$/,
+  })).toBeInTheDocument();
+
+  await userEvent.click(within(views).getByRole("button", { name: "All" }));
+  expect(within(tree).getByRole("treeitem", {
+    name: /^capture, Ready$/,
+  })).toBeInTheDocument();
+  expect(within(tree).getByRole("treeitem", {
+    name: /^replay, Running$/,
+  })).toBeInTheDocument();
+});
+
+
 test("separates runtime state from configuration state in the resource tree", async () => {
   renderApp();
 
@@ -93,6 +172,53 @@ test("separates runtime state from configuration state in the resource tree", as
   expect(within(capture).getByText("Needs attention")).toBeInTheDocument();
   expect(within(capture).getByText("1 change to submit")).toBeInTheDocument();
   expect(capture.querySelector(".status-dot")).toBeNull();
+});
+
+
+test("keeps the full dependency graph stable while selection changes", async () => {
+  renderApp();
+
+  expect(await screen.findByRole("heading", {
+    name: "Workflow dependencies",
+  })).toBeInTheDocument();
+  const graph = screen.getByRole("region", {
+    name: "Workflow dependency graph",
+  });
+  expect(within(graph).getByRole("button", {
+    name: "Open capture, Ready",
+  })).toBeInTheDocument();
+  expect(within(graph).getByRole("button", {
+    name: "Open replay, Running",
+  })).toBeInTheDocument();
+
+  await userEvent.click(within(graph).getByRole("button", {
+    name: "Open replay, Running",
+  }));
+
+  expect(within(graph).getByRole("button", {
+    name: "Open capture, Ready",
+  })).toBeInTheDocument();
+  expect(within(graph).getByRole("button", {
+    name: "Open replay, Running",
+  })).toHaveAttribute("aria-current", "true");
+  expect(within(graph).queryByText("Deploy replay")).toBeNull();
+});
+
+
+test("keeps workflow execution steps out of configuration navigation", async () => {
+  renderApp();
+  await enterEditMode();
+
+  const tree = screen.getByRole("tree", { name: "Workflow resources" });
+  const replay = within(tree).getByRole("treeitem", {
+    name: /^replay/,
+  });
+
+  expect(within(replay).queryByText("Running")).toBeNull();
+  expect(within(replay).queryByRole("button", {
+    name: "Expand replay",
+  })).toBeNull();
+  expect(within(tree).queryByText("Deploy replay")).toBeNull();
 });
 
 
@@ -192,14 +318,12 @@ test("surfaces failed prerequisites in navigation and workflow activity", async 
   expect(within(replay).getByRole("button", {
     name: "View blocker capture",
   })).toHaveTextContent("Blocked by capture");
-  expect(screen.getByText("Running with 1 failed resource")).toBeInTheDocument();
-  expect(screen.getByText("1 downstream resource waiting")).toBeInTheDocument();
-  expect(screen.getByText(
-    "Current blocker: capture / waitForProxyEndpointReady",
-  )).toBeInTheDocument();
+  expect(screen.getByText("1 action needs attention")).toBeInTheDocument();
+  expect(screen.getByText("1 downstream resource is waiting"))
+    .toBeInTheDocument();
 
-  await userEvent.click(within(replay).getByRole("button", {
-    name: "View blocker capture",
+  await userEvent.click(screen.getByRole("button", {
+    name: "Open capture, Error",
   }));
   expect(screen.getByRole("heading", { name: "capture" })).toBeInTheDocument();
 });
@@ -846,7 +970,9 @@ test("filters without destroying selection and preserves row focus across refres
     },
   };
   await client.invalidateQueries({ queryKey: ["manage-state"] });
-  await screen.findByText("snapshot-2");
+  await within(tree).findByRole("treeitem", {
+    name: /^capture, Failed$/,
+  });
 
   expect(
     within(tree).getByRole("treeitem", { name: /^replay, Running$/ }),
@@ -923,8 +1049,7 @@ test("marks only newly inserted rows without remounting existing rows", async ()
   };
 
   await client.invalidateQueries({ queryKey: ["manage-state"] });
-  await screen.findByText("snapshot-with-insertion");
-  const inserted = within(tree).getByRole(
+  const inserted = await within(tree).findByRole(
     "treeitem",
     { name: /^capture-next, Ready$/ },
   );
@@ -1009,7 +1134,7 @@ test("treats workflow absence during submit as tracked replacement progress", as
 
   renderApp();
 
-  expect(await screen.findByText("Waiting for submitted workflow."))
+  expect(await screen.findByText("Submit workflow configuration"))
     .toBeInTheDocument();
   expect(screen.getByText(
     "Workflow accepted; waiting for refreshed cluster state",
@@ -1238,7 +1363,7 @@ test("keeps resource context while scoping edit mode to the selected resource", 
     name: "Workflow resources",
   });
   expect(resources).toBeInTheDocument();
-  expect(screen.getByRole("heading", { name: "Activity" }))
+  expect(screen.getByRole("heading", { name: "Workflow dependencies" }))
     .toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "Edit capture" }))
     .toBeInTheDocument();
@@ -1259,7 +1384,7 @@ test("keeps resource context while scoping edit mode to the selected resource", 
   })).toBeNull();
 
   await userEvent.click(within(resources).getByRole("treeitem", {
-    name: /^replay, Running$/,
+    name: /^replay$/,
   }));
 
   expect(await screen.findByRole("heading", { name: "Edit replay" }))
@@ -1315,7 +1440,7 @@ test("shows compact resource validation in navigation and hides valid detail", a
 
   const tree = await screen.findByRole("tree", { name: "Workflow resources" });
   const sourceRow = within(tree).getByRole("treeitem", {
-    name: /^legacy, Ready$/,
+    name: /^legacy$/,
   });
   expect(within(sourceRow).getByLabelText("Configuration valid"))
     .toBeInTheDocument();
@@ -1340,7 +1465,7 @@ test("keeps warning detail inline without error taint or a validation section", 
   await enterEditMode();
   const tree = await screen.findByRole("tree", { name: "Workflow resources" });
   const replayRow = within(tree).getByRole("treeitem", {
-    name: /^replay, Running$/,
+    name: /^replay$/,
   });
   await userEvent.click(replayRow);
 
@@ -1424,13 +1549,13 @@ test("taints validation errors and their configuration and navigation parents", 
 
   const tree = await screen.findByRole("tree", { name: "Workflow resources" });
   const sourceSection = within(tree).getAllByRole("treeitem", {
-    name: /^Sources,/,
+    name: /^Sources$/,
   }).find((item) => item.getAttribute("aria-level") === "1");
   const sourceGroup = within(tree).getAllByRole("treeitem", {
-    name: /^Sources,/,
+    name: /^Sources$/,
   }).find((item) => item.getAttribute("aria-level") === "2");
   const sourceRow = within(tree).getByRole("treeitem", {
-    name: /^legacy, Ready$/,
+    name: /^legacy$/,
   });
   expect(sourceSection).toHaveClass("validation-error-ancestor");
   expect(sourceGroup).toHaveClass("validation-error-ancestor");
@@ -1500,10 +1625,10 @@ test("highlights unsaved resources and fields with previous values", async () =>
 
   const tree = await screen.findByRole("tree", { name: "Workflow resources" });
   const sourceSection = within(tree).getAllByRole("treeitem", {
-    name: /^Sources,/,
+    name: /^Sources$/,
   }).find((item) => item.getAttribute("aria-level") === "1");
   const sourceRow = within(tree).getByRole("treeitem", {
-    name: /^legacy, Ready$/,
+    name: /^legacy, 1 unsaved change$/,
   });
   expect(sourceSection).toHaveClass("draft-change-ancestor");
   expect(sourceRow).toHaveClass("draft-change-item");
@@ -1621,7 +1746,7 @@ test("offers top-level add actions in navigation during scoped editing", async (
     name: "Resource navigation",
   });
   const sourceGroup = within(resourceNavigation)
-    .getAllByRole("treeitem", { name: /^Sources,/ })
+    .getAllByRole("treeitem", { name: /^Sources$/ })
     .find((item) => item.getAttribute("aria-level") === "2");
   expect(sourceGroup).toBeDefined();
   if (!sourceGroup) throw new Error("Source group was not rendered");
@@ -1950,7 +2075,7 @@ test("adds a snapshot migration from its section without naming it first", async
 
   const tree = await screen.findByRole("tree", { name: "Workflow resources" });
   const section = within(tree).getByRole("treeitem", {
-    name: /^Snapshot Migration,/,
+    name: /^Snapshot Migration$/,
   });
   expect(within(section).getByRole("button", {
     name: "Add snapshot migration",
@@ -2069,7 +2194,7 @@ test("shows the server reason when configuration cannot be opened", async () => 
     .toBeInTheDocument();
   expect(screen.getByRole("tree", { name: "Workflow resources" }))
     .toBeInTheDocument();
-  expect(screen.getByRole("heading", { name: "Activity" }))
+  expect(screen.getByRole("heading", { name: "Workflow dependencies" }))
     .toBeInTheDocument();
 });
 
@@ -2653,12 +2778,12 @@ test("shows a newly added resource while the server operation is pending", async
 
   const tree = await screen.findByRole("tree", { name: "Workflow resources" });
   const sourceGroup = screen.getAllByRole("treeitem", {
-    name: /^Sources,/,
+    name: /^Sources$/,
   }).find((item) => item.getAttribute("aria-level") === "2");
   expect(sourceGroup).toBeDefined();
   if (!sourceGroup) throw new Error("Source group was not rendered");
   const previousSelection = screen.getByRole("treeitem", {
-    name: /^capture, Ready$/,
+    name: /^capture$/,
   });
   await userEvent.click(await within(sourceGroup).findByRole("button", {
     name: "Add source cluster",
@@ -2700,11 +2825,11 @@ test("cancels inline resource naming and restores tree selection and focus", asy
 
   const tree = await screen.findByRole("tree", { name: "Workflow resources" });
   const capture = within(tree).getByRole("treeitem", {
-    name: /^capture, Ready$/,
+    name: /^capture$/,
   });
   capture.focus();
   const sourceGroup = screen.getAllByRole("treeitem", {
-    name: /^Sources,/,
+    name: /^Sources$/,
   }).find((item) => item.getAttribute("aria-level") === "2");
   expect(sourceGroup).toBeDefined();
   if (!sourceGroup) throw new Error("Source group was not rendered");
@@ -2751,7 +2876,7 @@ test("abandons inline resource naming when focus moves elsewhere", async () => {
 
   const tree = await screen.findByRole("tree", { name: "Workflow resources" });
   const sourceGroup = screen.getAllByRole("treeitem", {
-    name: /^Sources,/,
+    name: /^Sources$/,
   }).find((item) => item.getAttribute("aria-level") === "2");
   expect(sourceGroup).toBeDefined();
   if (!sourceGroup) throw new Error("Source group was not rendered");
@@ -3415,6 +3540,62 @@ test("keeps submit enabled for admission warnings that may converge later", asyn
 });
 
 
+test("shows resources that submission will reconcile for checksum-only changes", async () => {
+  const savedDraft = structuredClone(configDraft);
+  savedDraft.dirty = false;
+  savedDraft.draftRevision = "checksum-impact";
+  savedDraft.editState.validation = {
+    valid: true,
+    errors: [],
+    diagnostics: [],
+  };
+  server.use(
+    http.get("*/api/v1/config", () => HttpResponse.json(savedDraft)),
+    http.post("*/api/v1/config/review", () => HttpResponse.json({
+      draftRevision: savedDraft.draftRevision,
+      baseRevision: savedDraft.baseRevision,
+      dirty: false,
+      valid: true,
+      validationMessages: [],
+      changes: [],
+    })),
+    http.post("*/api/v1/config/preflight", () => HttpResponse.json({
+      checkedResources: 1,
+      allowed: true,
+      issues: [],
+      deploymentActions: [{
+        kind: "CaptureProxy",
+        name: "p2",
+        plural: "captureproxies",
+        action: "reconcile",
+        reason: "checksum-only",
+        message: (
+          "The workflow will reconcile this resource because its generated "
+          + "checksum changed, although no projected fields changed."
+        ),
+        currentConfigChecksum: "old",
+        desiredConfigChecksum: "new",
+        resourceId: "resource:captureproxies:p2",
+      }],
+    })),
+  );
+  renderApp();
+
+  await userEvent.click(await screen.findByRole("button", {
+    name: "Review and submit",
+  }));
+  const dialog = await screen.findByRole("dialog", {
+    name: "Submit configuration?",
+  });
+  expect(within(dialog).getByText("Deployment impact")).toBeInTheDocument();
+  expect(within(dialog).getByText("p2")).toBeInTheDocument();
+  expect(within(dialog).getByText("Checksum-only reconcile")).toBeInTheDocument();
+  expect(within(dialog).getByText(
+    /although no projected fields changed/,
+  )).toBeInTheDocument();
+});
+
+
 test("offers one reset and resubmit action for immutable preflight failures", async () => {
   let resetRequest: unknown;
   let submitCalled = false;
@@ -3699,4 +3880,118 @@ test("exposes a blocking validation reason through the submit tooltip", async ()
     "title",
     "Resolve 1 configuration error before submitting",
   );
+});
+
+
+test("Escape invokes the active edit confirmation cancel action", async () => {
+  server.use(
+    http.get("*/api/v1/config", () => HttpResponse.json({
+      ...configDraft,
+      dirty: true,
+      draftRevision: "dirty-escape",
+    })),
+  );
+  renderApp();
+  await enterEditMode();
+
+  await userEvent.click(screen.getByRole("button", {
+    name: "Exit editing",
+  }));
+  expect(screen.getByRole("dialog", { name: "Leave editing?" }))
+    .toBeInTheDocument();
+
+  await userEvent.keyboard("{Escape}");
+
+  expect(screen.queryByRole("dialog", { name: "Leave editing?" })).toBeNull();
+  expect(screen.getByText("Editing configuration")).toBeInTheDocument();
+});
+
+
+test("Escape closes only the topmost submit dialog while editing", async () => {
+  const dirtyDraft = structuredClone(configDraft);
+  dirtyDraft.dirty = true;
+  dirtyDraft.draftRevision = "dirty-submit-escape";
+  dirtyDraft.editState.validation = {
+    valid: true,
+    errors: [],
+    diagnostics: [],
+  };
+  server.use(
+    http.get("*/api/v1/config", () => HttpResponse.json(dirtyDraft)),
+  );
+  renderApp();
+  await enterEditMode();
+
+  await userEvent.click(screen.getByRole("button", {
+    name: "Save and submit",
+  }));
+  expect(await screen.findByRole("dialog", {
+    name: "Submit configuration?",
+  })).toBeInTheDocument();
+
+  await userEvent.keyboard("{Escape}");
+
+  expect(screen.queryByRole("dialog", {
+    name: "Submit configuration?",
+  })).toBeNull();
+  expect(screen.getByText("Editing configuration")).toBeInTheDocument();
+});
+
+
+test("Escape invokes the reset dialog Cancel action", async () => {
+  renderApp();
+  const tree = await screen.findByRole("tree", {
+    name: "Workflow resources",
+  });
+  await userEvent.click(within(tree).getByRole("treeitem", {
+    name: /^capture, Ready$/,
+  }));
+  await userEvent.click(screen.getByRole("button", {
+    name: "Reset capture",
+  }));
+  expect(await screen.findByRole("dialog", {
+    name: "Review reset plan",
+  })).toBeInTheDocument();
+
+  await userEvent.keyboard("{Escape}");
+
+  expect(screen.queryByRole("dialog", {
+    name: "Review reset plan",
+  })).toBeNull();
+  expect(screen.getByRole("heading", { name: "capture" }))
+    .toBeInTheDocument();
+});
+
+
+test("shows structured admission preflight preparation failures", async () => {
+  const validDraft = structuredClone(configDraft);
+  validDraft.editState.validation = {
+    valid: true,
+    errors: [],
+    diagnostics: [],
+  };
+  server.use(
+    http.get("*/api/v1/config", () => HttpResponse.json(validDraft)),
+    http.post("*/api/v1/config/preflight", () => HttpResponse.json({
+      detail: {
+        code: "admission_preflight_unavailable",
+        message: (
+          "Admission preflight could not prepare the workflow: "
+          + "getaddrinfo ENOTFOUND localstack"
+        ),
+      },
+    }, { status: 502 })),
+  );
+  renderApp();
+
+  const submit = await screen.findByRole("button", {
+    name: "Review and submit",
+  });
+  await waitFor(() => expect(submit).toBeEnabled());
+  await userEvent.click(submit);
+
+  expect(await screen.findByText(
+    "Admission preflight could not prepare the workflow: "
+      + "getaddrinfo ENOTFOUND localstack",
+  )).toBeInTheDocument();
 });

@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   LoaderCircle,
+  RefreshCw,
   RotateCcw,
   Send,
 } from "lucide-react";
@@ -17,6 +18,7 @@ import {
   getConfigReview,
   submitConfigDraft,
 } from "../../api/client";
+import { useEscapeCancel } from "../../hooks/useEscapeCancel";
 
 
 interface SubmitConfigDialogProps {
@@ -62,6 +64,7 @@ export function SubmitConfigDialog({
     (issue) => issue.classification === "recreate-required"
       && issue.resetTargetId,
   ) ?? [];
+  const deploymentActions = preflight.data?.deploymentActions ?? [];
   const resetTargetIds = [...new Set(resetIssues.flatMap(
     (issue) => issue.resetTargetId ? [issue.resetTargetId] : [],
   ))];
@@ -99,6 +102,7 @@ export function SubmitConfigDialog({
       resetPlan.data.targets.map((target) => target.path).join("; ")
     }.`
     : "Building the dependency-safe reset plan.";
+  const dialogRef = useEscapeCancel<HTMLElement>(onClose, submitting);
 
   const retry = () => {
     setProblem("");
@@ -160,6 +164,8 @@ export function SubmitConfigDialog({
         aria-labelledby="submit-dialog-title"
         aria-modal="true"
         className="confirmation-dialog"
+        data-escape-cancel-layer
+        ref={dialogRef}
         role="dialog"
       >
         <header>
@@ -222,6 +228,46 @@ export function SubmitConfigDialog({
                     || "Resolve validation errors before submitting."}
                 </span>
               </div>
+            ) : null}
+            {deploymentActions.length > 0 ? (
+              <section
+                aria-label="Deployment impact"
+                className="submit-preflight deployment-impact"
+              >
+                <header>
+                  <RefreshCw aria-hidden="true" />
+                  <div>
+                    <strong>Deployment impact</strong>
+                    <span>
+                      {deploymentActions.length} {
+                        deploymentActions.length === 1
+                          ? "resource will change"
+                          : "resources will change"
+                      }
+                    </span>
+                  </div>
+                </header>
+                <ul>
+                  {deploymentActions.map((action) => (
+                    <li key={`${action.kind}-${action.name}-${action.reason}`}>
+                      <div>
+                        <strong>{action.name}</strong>
+                        <span>{action.kind}</span>
+                      </div>
+                      <p>{action.message}</p>
+                      <small>
+                        {action.reason === "checksum-only"
+                          ? "Checksum-only reconcile"
+                          : action.reason === "resource-missing"
+                            ? "Create missing resource"
+                            : action.reason === "resource-not-ready"
+                              ? "Retry incomplete resource"
+                              : "Configuration reconcile"}
+                      </small>
+                    </li>
+                  ))}
+                </ul>
+              </section>
             ) : null}
             {preflight.data ? (
               <section

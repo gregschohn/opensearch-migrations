@@ -1,10 +1,7 @@
 import {
-  Activity,
-  CheckCircle2,
-  CircleDashed,
-  CircleX,
+  CircleAlert,
+  GitBranch,
   LoaderCircle,
-  ShieldCheck,
 } from "lucide-react";
 
 import type {
@@ -13,23 +10,14 @@ import type {
   Operation,
 } from "../../api/client";
 import type { ApprovalCandidate } from "../actions/approvals";
-import { StatusIndicator } from "../status/StatusIndicator";
+import { WorkflowDependencyGraph } from "./WorkflowDependencyGraph";
 
 
-function workflowSteps(
-  snapshot: ManageSnapshot,
-  node: ManageNode | null,
-): ManageNode[] {
-  if (!node) return [];
-  const result: ManageNode[] = [];
-  const visit = (nodeId: string) => {
-    const current = snapshot.nodes[nodeId];
-    if (!current) return;
-    if (current.kind === "workflow-step") result.push(current);
-    current.childIds.forEach(visit);
-  };
-  node.childIds.forEach(visit);
-  return result;
+function exceptionalOperations(operations: Operation[]): Operation[] {
+  return operations.filter((operation) => (
+    operation.status !== "succeeded"
+    && operation.targetIds.length === 0
+  ));
 }
 
 
@@ -48,162 +36,89 @@ export function ActivityPanel({
   approvals: ApprovalCandidate[];
   onReviewApproval: (targetId: string) => void;
 }>) {
-  const steps = workflowSteps(snapshot, selectedNode);
   const resources = Object.values(snapshot.nodes).filter(
     (node) => node.kind === "resource",
   );
-  const failedResources = resources.filter((node) => (
-    node.phase === "Failed"
+  const blockerIds = new Set(resources.filter((node) => (
+    node.status === "error"
+    || node.status === "blocked"
     || node.phase === "Error"
-  ));
-  const waitingResources = resources.filter((node) => (
+    || node.phase === "Failed"
+  )).map((node) => node.id));
+  resources.forEach((node) => {
+    (node.relationships ?? []).forEach((relationship) => {
+      if (
+        relationship.direction === "requires"
+        && (
+          relationship.targetStatus === "error"
+          || relationship.targetStatus === "blocked"
+        )
+        && relationship.targetId
+      ) {
+        blockerIds.add(relationship.targetId);
+      }
+    });
+  });
+  const waiting = resources.filter((node) => (
     (node.relationships ?? []).some((relationship) => (
       relationship.direction === "requires"
       && relationship.targetStatus !== "ok"
     ))
   ));
-  const currentBlocker = failedResources[0] ?? null;
-  const blockerStep = currentBlocker
-    ? workflowSteps(snapshot, currentBlocker).find(
-      (step) => step.status === "error",
-    )
-    : null;
-  const activeSubmit = operations.find((operation) => (
-    operation.kind === "submit"
-    && (
-      operation.status === "queued"
-      || operation.status === "running"
-      || operation.status === "waiting"
-    )
-  ));
+  const actionCount = new Set([
+    ...blockerIds,
+    ...approvals.map((approval) => approval.nodeId),
+  ]).size;
+  const globalOperations = exceptionalOperations(operations);
   return (
     <aside className="activity-panel">
       <header>
-        <Activity aria-hidden="true" />
+        <GitBranch aria-hidden="true" />
         <div>
-          <h2>Activity</h2>
-          <span>
-            {operations.length > 0
-              ? "Workflow and operations"
-              : "Current workflow"}
-          </span>
+          <h2>Workflow dependencies</h2>
+          <span>All resources and blockers</span>
         </div>
       </header>
-      {snapshot.workflow ? (
-        <div className="workflow-summary">
-          <StatusIndicator status={snapshot.workflow.phase} />
-          <div>
-            <strong>{snapshot.workflow.name}</strong>
-            <span>{snapshot.workflow.phase}</span>
-          </div>
-        </div>
-      ) : (
-        <p className="activity-empty">
-          {activeSubmit?.status === "waiting"
-            ? "Waiting for submitted workflow."
-            : activeSubmit
-              ? "Submitting workflow."
-          : "No active Argo workflow."}
-        </p>
-      )}
-      {approvals.length > 0 ? (
-        <section
-          aria-label="Pending approvals"
-          className="approval-activity"
-        >
-          <ShieldCheck aria-hidden="true" />
-          <div>
-            <strong>Approval required</strong>
-            <span>
-              {approvals.length} {
-                approvals.length === 1 ? "gate is" : "gates are"
-              } waiting for an explicit decision.
-            </span>
-          </div>
-          <button
-            aria-label={`Review approval for ${approvals[0].nodeLabel}`}
-            onClick={() => onReviewApproval(approvals[0].targetId)}
-            type="button"
-          >
-            Review
-          </button>
-        </section>
-      ) : null}
-      {snapshot.workflow && (
-        failedResources.length > 0
-        || waitingResources.length > 0
-      ) ? (
+      {blockerIds.size > 0 || approvals.length > 0 || waiting.length > 0 ? (
         <section className="workflow-health" aria-label="Workflow blockers">
-          {failedResources.length > 0 ? (
-            <strong>
-              {snapshot.workflow.phase} with {failedResources.length} failed {
-                failedResources.length === 1 ? "resource" : "resources"
-              }
-            </strong>
-          ) : (
-            <strong>{snapshot.workflow.phase}</strong>
-          )}
-          {waitingResources.length > 0 ? (
+          <strong>
+            {actionCount} action{
+              actionCount === 1 ? "" : "s"
+            } {actionCount === 1 ? "needs" : "need"} attention
+          </strong>
+          {waiting.length > 0 ? (
             <span>
-              {waitingResources.length} downstream {
-                waitingResources.length === 1 ? "resource" : "resources"
+              {waiting.length} downstream {
+                waiting.length === 1 ? "resource is" : "resources are"
               } waiting
             </span>
           ) : null}
-          {currentBlocker ? (
-            <button
-              aria-label={`View blocker ${currentBlocker.label}`}
-              onClick={() => onSelectNode(currentBlocker.id)}
-              type="button"
-            >
-              <CircleX aria-hidden="true" />
-              <span>
-                Current blocker: {currentBlocker.label}
-                {blockerStep ? ` / ${blockerStep.label}` : ""}
-              </span>
-            </button>
-          ) : null}
         </section>
       ) : null}
-      <div className="activity-steps">
-        {operations.map((operation) => (
-          <div
-            className={`activity-step operation operation-${operation.status}`}
-            key={operation.id}
-          >
-            {operation.status === "failed" ? (
-              <CircleX aria-hidden="true" />
-            ) : operation.status === "succeeded" ? (
-              <CheckCircle2 aria-hidden="true" />
-            ) : operation.status === "waiting" ? (
-              <CircleDashed aria-hidden="true" />
-            ) : (
-              <LoaderCircle className="spin" aria-hidden="true" />
-            )}
-            <div>
-              <strong>{operation.label}</strong>
-              <span>{operation.message}</span>
-              {operation.detail ? <small>{operation.detail}</small> : null}
-            </div>
+      {globalOperations.map((operation) => (
+        <section
+          className={`workflow-global-operation operation-${operation.status}`}
+          key={operation.id}
+        >
+          {operation.status === "failed" ? (
+            <CircleAlert aria-hidden="true" />
+          ) : (
+            <LoaderCircle className="spin" aria-hidden="true" />
+          )}
+          <div>
+            <strong>{operation.label}</strong>
+            <span>{operation.message}</span>
           </div>
-        ))}
-        {steps.map((step) => (
-          <div className="activity-step" key={step.id}>
-            {step.status === "ok" ? (
-              <CheckCircle2 aria-hidden="true" />
-            ) : (
-              <CircleDashed aria-hidden="true" />
-            )}
-            <div>
-              <strong>{step.label}</strong>
-              <span>{step.phase ?? step.status}</span>
-            </div>
-          </div>
-        ))}
-        {selectedNode && steps.length === 0 && operations.length === 0 ? (
-          <p className="activity-empty">No active steps for this selection.</p>
-        ) : null}
-      </div>
+        </section>
+      ))}
+      <WorkflowDependencyGraph
+        approvals={approvals}
+        onReviewApproval={onReviewApproval}
+        onSelectNode={onSelectNode}
+        operations={operations}
+        selectedNodeId={selectedNode?.id ?? null}
+        snapshot={snapshot}
+      />
     </aside>
   );
 }

@@ -1,6 +1,87 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 
 import { configDraft, manageSnapshot } from "../src/test/fixtures";
+
+
+interface BrowserAnimation {
+  id: string;
+  playState: string;
+  effect: {
+    getKeyframes: () => Array<Record<string, unknown>>;
+    getTiming: () => { fill: string };
+  } | null;
+}
+
+
+interface BrowserAnimatedElement {
+  getAnimations: () => BrowserAnimation[];
+  getAttribute: (name: string) => string | null;
+}
+
+
+interface BrowserPositionedElement {
+  getBoundingClientRect: () => { top: number };
+}
+
+
+interface BrowserMotionWindow {
+  __treeMotionSamples?: number[];
+  performance: { now: () => number };
+  requestAnimationFrame: (callback: () => void) => number;
+}
+
+
+interface BrowserControlledMotionWindow extends BrowserMotionWindow {
+  __nativeTreeRequestAnimationFrame?: (callback: () => void) => number;
+  __queuedTreeAnimationFrames?: Array<() => void>;
+}
+
+
+interface BrowserButtonElement {
+  click: () => void;
+  ownerDocument: {
+    querySelector: (selector: string) => BrowserAnimatedElement | null;
+  };
+}
+
+
+async function beginTreeMotionSampling(row: Locator) {
+  await row.evaluate((element: BrowserPositionedElement) => {
+    const motion = globalThis as unknown as BrowserMotionWindow;
+    motion.__treeMotionSamples = [];
+    const startedAt = motion.performance.now();
+    const sample = () => {
+      motion.__treeMotionSamples?.push(
+        element.getBoundingClientRect().top,
+      );
+      if (motion.performance.now() - startedAt < 700) {
+        motion.requestAnimationFrame(sample);
+      }
+    };
+    motion.requestAnimationFrame(sample);
+  });
+}
+
+
+async function readTreeMotionSamples(page: Page) {
+  await page.waitForTimeout(725);
+  return page.evaluate(() => (
+    (globalThis as typeof globalThis & {
+      __treeMotionSamples?: number[];
+    }).__treeMotionSamples ?? []
+  ));
+}
+
+
+function largestFrameDelta(samples: number[]) {
+  return samples.slice(1).reduce(
+    (largest, position, index) => Math.max(
+      largest,
+      Math.abs(position - samples[index]),
+    ),
+    0,
+  );
+}
 
 
 async function mockManageApi(page: Page) {
@@ -506,6 +587,18 @@ async function mockManageApi(page: Page) {
         diagnostics: [],
       };
     },
+    configureRolloutViews() {
+      snapshot.nodes["resource:captureproxies:capture"].configPresence = {
+        deployed: true,
+        submitted: false,
+        pending: false,
+      };
+      snapshot.nodes["resource:trafficreplays:replay"].configPresence = {
+        deployed: false,
+        submitted: true,
+        pending: true,
+      };
+    },
     makeSourceInvalid() {
       const sourceClusters = draft.editState.nodes.find(
         (node) => node.id === "edit:sourceClusters",
@@ -642,6 +735,16 @@ test("updates variant fields in place beneath their selector", async ({ page }, 
   await page.goto("/");
 
   await page.getByRole("button", { name: "Edit configuration" }).click();
+  const addSource = page.getByRole("region", {
+    name: "Resource navigation",
+  }).getByRole("button", { name: "Add source cluster" });
+  await expect(
+    addSource,
+  ).toBeVisible();
+  await expect(addSource).toHaveCSS(
+    "animation-name",
+    "tree-icon-enter",
+  );
   await expect(
     page.getByRole("region", { name: "Resource navigation" })
       .getByRole("button", { name: "Add source cluster" }),
@@ -788,10 +891,17 @@ test("keeps the resource overview visible during scoped editing", async ({ page 
   await page.getByRole("button", { name: "Edit configuration" }).click();
 
   await expect(resources).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Activity" })).toBeVisible();
+  await expect(page.getByRole("heading", {
+    name: "Workflow dependencies",
+  })).toBeVisible();
   await expect(
     page.getByRole("table", { name: "Configuration fields" }),
   ).toBeVisible();
+  await expect(resources.getByText("Deploy replay")).toHaveCount(0);
+  await page.screenshot({
+    animations: "disabled",
+    path: testInfo.outputPath("configuration-only-navigation.png"),
+  });
 });
 
 
@@ -803,7 +913,7 @@ test("keeps valid status compact in navigation without an editor footer", async 
   await page.goto("/");
 
   await page.getByRole("button", { name: "Edit configuration" }).click();
-  const legacy = page.getByRole("treeitem", { name: /^legacy, Ready$/ });
+  const legacy = page.getByRole("treeitem", { name: /^legacy$/ });
   const valid = legacy.getByLabel("Configuration valid");
   await expect(valid).toBeVisible();
   const validBox = await valid.boundingBox();
@@ -863,10 +973,10 @@ test("taints validation errors and their parent paths", async ({ page }, testInf
   await page.goto("/");
 
   await page.getByRole("button", { name: "Edit configuration" }).click();
-  const legacy = page.getByRole("treeitem", { name: /^legacy, Ready$/ });
-  const captureGroup = page.getByRole("treeitem", { name: /^Capture,/ });
+  const legacy = page.getByRole("treeitem", { name: /^legacy$/ });
+  const captureGroup = page.getByRole("treeitem", { name: /^Capture$/ });
   const migrationSection = page.getByRole("treeitem", {
-    name: /^Live Traffic Migration,/,
+    name: /^Live Traffic Migration$/,
   });
   await expect(legacy).toHaveClass(/validation-error-item/);
   await expect(captureGroup).toHaveClass(/validation-error-ancestor/);
@@ -960,8 +1070,26 @@ test("supports the read-only resource workflow", async ({ page }, testInfo) => {
   await page.goto("/");
 
   const tree = page.getByRole("tree", { name: "Workflow resources" });
+  const resourceViews = page.getByRole("group", {
+    name: "Resource state view",
+  });
+  await expect(resourceViews.getByRole("button", { name: "All" }))
+    .toHaveAttribute("aria-pressed", "true");
+  await expect(resourceViews.getByRole("button", { name: "Deployed" }))
+    .toBeVisible();
+  await expect(resourceViews.getByRole("button", { name: "Submitted" }))
+    .toBeVisible();
+  await expect(resourceViews.getByRole("button", { name: "Saved config" }))
+    .toBeVisible();
   const capture = tree.getByRole("treeitem", { name: /^capture, Ready$/ });
   await expect(capture).toBeVisible();
+  await expect(page.getByRole("region", {
+    name: "Workflow dependency graph",
+  })).toBeVisible();
+  await page.screenshot({
+    animations: "disabled",
+    path: testInfo.outputPath("resource-state-and-dependencies.png"),
+  });
   await capture.click();
   await expect(page.getByRole("heading", { name: "capture" })).toBeVisible();
   await expect(page.getByText("Load balancer is unavailable in this cluster"))
@@ -1014,6 +1142,236 @@ test("submits pending config without entering edit mode", async ({ page }, testI
   await expect(page.getByRole("button", {
     name: "Review and submit",
   })).toBeDisabled();
+});
+
+
+test("animates resource filters and entry into configuration mode", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop motion coverage");
+  const api = await mockManageApi(page);
+  api.makeConfigValid();
+  api.configureRolloutViews();
+  await page.goto("/");
+
+  const tree = page.getByRole("tree", { name: "Workflow resources" });
+  const treeScroller = page.getByTestId("tree-scroller");
+  const resourceViews = page.getByRole("group", {
+    name: "Resource state view",
+  });
+  const filterInput = page.getByRole("searchbox", {
+    name: "Filter resources",
+  });
+  await expect(tree.getByRole("treeitem", {
+    name: /^replay, Running$/,
+  })).toBeVisible();
+  const [scrollerBox, resourceViewsBox] = await Promise.all([
+    treeScroller.boundingBox(),
+    resourceViews.boundingBox(),
+  ]);
+  expect(scrollerBox).not.toBeNull();
+  expect(resourceViewsBox).not.toBeNull();
+  expect(resourceViewsBox!.y).toBeGreaterThanOrEqual(
+    scrollerBox!.y + scrollerBox!.height - 1,
+  );
+  const filterY = (await filterInput.boundingBox())!.y;
+  const initialIds = await tree.locator(".tree-row").evaluateAll(
+    (elements: unknown[]) => (
+      (elements as BrowserAnimatedElement[]).flatMap((row) => {
+        const nodeId = row.getAttribute("data-node-id");
+        return nodeId ? [nodeId] : [];
+      })
+    ),
+  );
+  const movingRows = () => tree.locator(".tree-row").evaluateAll(
+    (elements: unknown[]) => (
+      (elements as BrowserAnimatedElement[]).flatMap((row) => {
+        const nodeId = row.getAttribute("data-node-id");
+        return nodeId && row.getAnimations().some(
+          (animation) => animation.id === "tree-layout-transition",
+        )
+          ? [nodeId]
+          : []
+      })
+    ),
+  );
+
+  await page.getByRole("button", { name: "Submitted" }).click();
+  await expect.poll(movingRows).not.toEqual([]);
+  await expect(tree.locator(".tree-row.layout-moving").first()).toBeVisible();
+  const filterAnchors = await movingRows();
+  expect(filterAnchors.every((nodeId) => initialIds.includes(nodeId))).toBe(true);
+  const transitionDetails = await tree.locator(".tree-row").evaluateAll(
+    (elements: unknown[]) => (
+      (elements as BrowserAnimatedElement[]).flatMap((row) => (
+        row.getAnimations().flatMap((animation) => {
+          if (animation.id !== "tree-layout-transition") return [];
+          const keyframes = animation.effect?.getKeyframes() ?? [];
+          const transform = keyframes[0]?.["transform"];
+          const verticalOffset = typeof transform === "string"
+            ? transform.match(
+              /^translate\([^,]+,\s*(-?[\d.]+)px\)$/,
+            )?.[1]
+            : undefined;
+          const yDistance = verticalOffset
+            ? Math.abs(Number(verticalOffset))
+            : 0;
+          return [{
+            fill: animation.effect?.getTiming().fill,
+            usesOpacity: keyframes.some(
+              (keyframe) => keyframe["opacity"] !== undefined,
+            ),
+            yDistance,
+          }];
+        })
+      ))
+    ),
+  );
+  expect(transitionDetails.length).toBeGreaterThan(0);
+  expect(transitionDetails.every(({ fill }) => fill === "both")).toBe(true);
+  expect(transitionDetails.some(({ usesOpacity }) => usesOpacity)).toBe(false);
+  expect(Math.max(...transitionDetails.map(({ yDistance }) => yDistance)))
+    .toBeGreaterThan(20);
+  const movingUnselectedRows = tree.locator(
+    ".tree-row.layout-moving:not(.selected)",
+  );
+  await expect(movingUnselectedRows.first()).toHaveCSS(
+    "background-color",
+    "rgb(255, 255, 255)",
+  );
+  await page.screenshot({
+    path: testInfo.outputPath("resource-layout-transition.png"),
+  });
+  await page.waitForTimeout(550);
+
+  const replayRow = tree.locator(
+    '[data-node-id="resource:trafficreplays:replay"]',
+  );
+  const replayLabel = replayRow.locator(".tree-row-copy > strong");
+  const runtimeRowBox = await replayRow.boundingBox();
+  expect(runtimeRowBox).not.toBeNull();
+  expect(runtimeRowBox!.height).toBe(42);
+  await page.evaluate(() => {
+    const motion = globalThis as unknown as BrowserControlledMotionWindow;
+    motion.__nativeTreeRequestAnimationFrame =
+      motion.requestAnimationFrame.bind(globalThis);
+    motion.__queuedTreeAnimationFrames = [];
+    motion.requestAnimationFrame = (callback) => {
+      motion.__queuedTreeAnimationFrames?.push(callback);
+      return 10_000 + (motion.__queuedTreeAnimationFrames?.length ?? 0);
+    };
+  });
+  const immediateAnimationStates = await page.getByRole(
+    "button",
+    { name: "Edit configuration" },
+  ).evaluate(async (button: BrowserButtonElement) => {
+    button.click();
+    await Promise.resolve();
+    const row = button.ownerDocument.querySelector(
+      '[data-node-id="resource:trafficreplays:replay"]',
+    );
+    return row?.getAnimations().flatMap((animation) => (
+      [
+        "tree-layout-transition",
+        "tree-size-transition",
+      ].includes(animation.id)
+        ? [{ id: animation.id, state: animation.playState }]
+        : []
+    )) ?? [];
+  });
+  await page.evaluate(() => {
+    const motion = globalThis as unknown as BrowserControlledMotionWindow;
+    const nativeFrame = motion.__nativeTreeRequestAnimationFrame;
+    const queuedFrames = motion.__queuedTreeAnimationFrames ?? [];
+    if (!nativeFrame) return;
+    motion.requestAnimationFrame = nativeFrame;
+    queuedFrames.forEach((callback) => nativeFrame(callback));
+  });
+  expect(immediateAnimationStates.map(({ id }) => id)).toEqual(
+    expect.arrayContaining([
+      "tree-layout-transition",
+      "tree-size-transition",
+    ]),
+  );
+  expect(immediateAnimationStates.every(({ state }) => state !== "paused"))
+    .toBe(true);
+  await expect.poll(movingRows).not.toEqual([]);
+  expect((await filterInput.boundingBox())!.y).toBeCloseTo(filterY, 0);
+  const rowAnimationDetails = await replayRow.evaluate(
+    (element: BrowserAnimatedElement) => (
+      element.getAnimations().flatMap((animation) => {
+        if (![
+          "tree-layout-transition",
+          "tree-size-transition",
+        ].includes(animation.id)) {
+          return [];
+        }
+        return [{
+          id: animation.id,
+          keyframes: animation.effect?.getKeyframes() ?? [],
+        }];
+      })
+    ),
+  );
+  expect(rowAnimationDetails.map(({ id }) => id)).toEqual(
+    expect.arrayContaining([
+      "tree-layout-transition",
+      "tree-size-transition",
+    ]),
+  );
+  const sizeFrames = rowAnimationDetails.find(
+    ({ id }) => id === "tree-size-transition",
+  )?.keyframes;
+  expect(sizeFrames?.[0]?.["height"]).toBe("42px");
+  expect(sizeFrames?.at(-1)?.["height"]).toBe("34px");
+
+  const labelFrames = await replayLabel.evaluate(
+    (element: BrowserAnimatedElement) => (
+      element.getAnimations().find(
+        (animation) => animation.id === "tree-label-transition",
+      )?.effect?.getKeyframes() ?? []
+    ),
+  );
+  const labelTransform = labelFrames[0]?.["transform"];
+  expect(typeof labelTransform).toBe("string");
+  expect(labelTransform).not.toBe("translate(0px, 0px)");
+
+  const statusOpacityFrames = await replayRow.locator(
+    ".tree-status-slot",
+  ).evaluate((element: BrowserAnimatedElement) => (
+    element.getAnimations().find(
+      (animation) => animation.id === "tree-icon-transition",
+    )?.effect?.getKeyframes() ?? []
+  ));
+  expect(statusOpacityFrames[0]?.["opacity"]).toBe("1");
+  expect(statusOpacityFrames.at(-1)?.["opacity"]).toBe("0");
+
+  await beginTreeMotionSampling(replayRow);
+  api.insertCapture();
+  await page.getByRole("button", { name: "Refresh state" }).click();
+  await expect(tree.getByRole("treeitem", {
+    name: /^capture-next/,
+  })).toBeVisible();
+  const motionSamples = await readTreeMotionSamples(page);
+  expect(motionSamples.length).toBeGreaterThan(10);
+  expect(
+    largestFrameDelta(motionSamples),
+    JSON.stringify(motionSamples),
+  ).toBeLessThan(20);
+
+  await page.screenshot({
+    path: testInfo.outputPath("configuration-layout-transition.png"),
+  });
+  expect((await replayRow.boundingBox())!.height).toBe(34);
+
+  await beginTreeMotionSampling(replayRow);
+  await page.getByRole("button", { name: "Exit editing" }).click();
+  await page.getByRole("button", { name: "Saved config" }).click();
+  const exitMotionSamples = await readTreeMotionSamples(page);
+  expect(exitMotionSamples.length).toBeGreaterThan(10);
+  expect(
+    largestFrameDelta(exitMotionSamples),
+    JSON.stringify(exitMotionSamples),
+  ).toBeLessThan(20);
+  expect((await replayRow.boundingBox())!.height).toBe(42);
 });
 
 
@@ -1100,8 +1458,17 @@ test("keeps tree and activity reachable at narrow width", async ({ page }, testI
 
   const activity = page.getByRole("complementary");
   await expect(activity).toBeInViewport();
-  await expect(activity.getByRole("heading", { name: "Activity" })).toBeVisible();
-  await expect(activity.getByText("Deploy replay")).toBeVisible();
+  await expect(activity.getByRole("heading", {
+    name: "Workflow dependencies",
+  })).toBeVisible();
+  await expect(activity.getByRole("button", {
+    name: "Open replay, Running",
+  })).toBeVisible();
+  await page.screenshot({
+    animations: "disabled",
+    fullPage: true,
+    path: testInfo.outputPath("narrow-run-and-dependencies.png"),
+  });
 
   const scrollWidth = await page.evaluate<number>(
     "document.documentElement.scrollWidth",
@@ -1156,6 +1523,7 @@ test("disables insertion motion when reduced motion is requested", async ({ page
   test.skip(testInfo.project.name !== "desktop", "one browser is sufficient");
   await page.emulateMedia({ reducedMotion: "reduce" });
   const api = await mockManageApi(page);
+  api.configureRolloutViews();
   await page.goto("/");
 
   api.insertCapture();
@@ -1166,4 +1534,22 @@ test("disables insertion motion when reduced motion is requested", async ({ page
   );
   await expect(inserted).toBeVisible();
   await expect(inserted).toHaveCSS("animation-name", "none");
+
+  const tree = page.getByRole("tree", {
+    name: "Workflow resources",
+  });
+  const layoutAnimationCount = () => tree.locator(".tree-row").evaluateAll(
+    (elements: unknown[]) => (
+      (elements as BrowserAnimatedElement[]).reduce((count, row) => (
+        count + row.getAnimations().filter(
+          (animation) => animation.id === "tree-layout-transition",
+        ).length
+      ), 0)
+    ),
+  );
+
+  await page.getByRole("button", { name: "Submitted" }).click();
+  expect(await layoutAnimationCount()).toBe(0);
+  await page.getByRole("button", { name: "Edit configuration" }).click();
+  expect(await layoutAnimationCount()).toBe(0);
 });

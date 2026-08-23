@@ -45,6 +45,11 @@ import type {
 } from "../features/configuration/resourceAdds";
 import { SubmitConfigDialog } from "../features/submission/SubmitConfigDialog";
 import { ResourceTree } from "../features/tree/ResourceTree";
+import {
+  projectResourceView,
+  RESOURCE_VIEW_OPTIONS,
+  type ResourceViewMode,
+} from "../features/tree/resourceView";
 import { ResourceWorkspace } from "../features/workspace/ResourceWorkspace";
 import { StatusIndicator } from "../features/status/StatusIndicator";
 import {
@@ -219,6 +224,8 @@ export function App() {
   });
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [treeOpen, setTreeOpen] = useState(false);
+  const [resourceViewMode, setResourceViewMode] =
+    useState<ResourceViewMode>("all");
   const [editContext, setEditContext] = useState<EditContext | null>(null);
   const [submitOpen, setSubmitOpen] = useState(false);
   const [approvalDialogTargetId, setApprovalDialogTargetId] =
@@ -304,6 +311,14 @@ export function App() {
     );
   }, []);
 
+  const overviewState = useMemo(
+    () => (
+      observedState
+        ? projectResourceView(observedState, resourceViewMode)
+        : observedState
+    ),
+    [observedState, resourceViewMode],
+  );
   const displayedState = useMemo(
     () => (
       observedState && editContext
@@ -313,15 +328,22 @@ export function App() {
           pendingResourceAdditions,
           pendingResourceRenames,
         )
-        : observedState
+        : overviewState
     ),
     [
       configDraft.data,
       editContext,
+      overviewState,
       pendingResourceAdditions,
       pendingResourceRenames,
       observedState,
     ],
+  );
+  const displayedResourceCount = useMemo(
+    () => Object.values(displayedState?.nodes ?? {}).filter(
+      (node) => node.kind === "resource",
+    ).length,
+    [displayedState],
   );
   const approvals = useMemo(
     () => approvalCandidates(state.data),
@@ -729,18 +751,6 @@ export function App() {
               </output>
             </>
           ) : null}
-          <span className="revision" title="Manage state revision">
-            {state.data?.revision ?? "waiting"}
-          </span>
-          <div className="server-state" aria-live="polite">
-            <span
-              className={`live-dot connection-${eventConnection}`}
-              aria-hidden="true"
-            />
-            {eventConnection === "live" ? "Live" : (
-              eventConnection === "reconnecting" ? "Reconnecting" : "Connecting"
-            )}
-          </div>
           <button
             aria-label="Refresh state"
             className="icon-button"
@@ -762,23 +772,6 @@ export function App() {
           >
             {treeOpen ? <X /> : <Menu />}
           </button>
-        </div>
-        <div className="server-state health-state" aria-live="polite">
-          {health.isPending ? (
-            <>
-              <LoaderCircle className="spin" aria-hidden="true" />
-              Connecting to server
-            </>
-          ) : health.isError ? (
-            <>
-              <CircleAlert aria-hidden="true" />
-              Server unavailable
-            </>
-          ) : (
-            <>
-              <span className="live-dot" aria-hidden="true" />{"Server ready"}
-            </>
-          )}
         </div>
       </header>
       {submitOpen ? (
@@ -815,6 +808,28 @@ export function App() {
         </main>
       ) : state.data ? (
         <>
+          {health.isError ? (
+            <output className="state-banner problem-banner">
+              <CircleAlert aria-hidden="true" />
+              <strong>Workflow Manage server unavailable</strong>
+              <span>Health checks are failing. State may be stale.</span>
+            </output>
+          ) : null}
+          {eventConnection !== "live" ? (
+            <output className="state-banner problem-banner">
+              <CircleAlert aria-hidden="true" />
+              <strong>
+                {eventConnection === "reconnecting"
+                  ? "Live updates interrupted"
+                  : "Connecting to live updates"}
+              </strong>
+              <span>
+                {eventConnection === "reconnecting"
+                  ? "Reconnecting; use refresh for the latest state."
+                  : "State will update automatically once connected."}
+              </span>
+            </output>
+          ) : null}
           {state.data.stale ? (
             <output className="state-banner stale-banner">
               <CircleAlert aria-hidden="true" />
@@ -891,18 +906,43 @@ export function App() {
                     <span>
                       {editContext
                         ? "Editing intended state"
-                        : `${Object.keys(state.data.nodes).length} observed`}
+                        : `${displayedResourceCount} resources`}
                     </span>
                   </div>
                 </header>
                 <ResourceTree
                   changeStates={resourceDraftChanges}
                   onSelect={selectNode}
+                  presentation={editContext ? "configuration" : "runtime"}
                   resourceAdds={editContext ? resourceAdds : null}
                   selectedId={selectedId}
                   snapshot={displayedState}
                   validationStates={resourceValidations}
+                  viewTransitionKey={
+                    editContext
+                      ? "configuration"
+                      : `overview:${resourceViewMode}`
+                  }
                 />
+                {!editContext ? (
+                  <div
+                    aria-label="Resource state view"
+                    className="resource-view-switcher"
+                    role="group"
+                  >
+                    {RESOURCE_VIEW_OPTIONS.map((option) => (
+                      <button
+                        aria-pressed={resourceViewMode === option.mode}
+                        key={option.mode}
+                        onClick={() => setResourceViewMode(option.mode)}
+                        title={option.description}
+                        type="button"
+                      >
+                        {option.label}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
               </section>
               {editContext ? (
                 <ConfigEditor

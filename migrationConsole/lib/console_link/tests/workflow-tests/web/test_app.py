@@ -42,6 +42,7 @@ from console_link.workflow.application.operations import (
 )
 from console_link.workflow.application.actions import ApprovalReview
 from console_link.workflow.services.admission_preflight import (
+    AdmissionDeploymentAction,
     AdmissionPreflightIssue,
     AdmissionPreflightReport,
 )
@@ -848,6 +849,21 @@ class _Drafts:
         self.expected_revision = expected_revision
         return AdmissionPreflightReport(
             checked_resources=2,
+            deployment_actions=(
+                AdmissionDeploymentAction(
+                    kind="CaptureProxy",
+                    name="capture",
+                    plural="captureproxies",
+                    action="reconcile",
+                    reason="checksum-only",
+                    message=(
+                        "The generated checksum changed, although no "
+                        "projected fields changed."
+                    ),
+                    current_config_checksum="old",
+                    desired_config_checksum="new",
+                ),
+            ),
             issues=(
                 AdmissionPreflightIssue(
                     kind="CapturedTraffic",
@@ -1132,6 +1148,22 @@ def test_config_preflight_reports_blocking_and_nonblocking_admission_results(
     assert response.json() == {
         "checkedResources": 2,
         "allowed": False,
+        "deploymentActions": [
+            {
+                "kind": "CaptureProxy",
+                "name": "capture",
+                "plural": "captureproxies",
+                "action": "reconcile",
+                "reason": "checksum-only",
+                "message": (
+                    "The generated checksum changed, although no projected "
+                    "fields changed."
+                ),
+                "resourceId": "resource:captureproxies:capture",
+                "currentConfigChecksum": "old",
+                "desiredConfigChecksum": "new",
+            },
+        ],
         "issues": [
             {
                 "kind": "CapturedTraffic",
@@ -1155,6 +1187,43 @@ def test_config_preflight_reports_blocking_and_nonblocking_admission_results(
                 "resourceId": "resource:trafficreplays:replay",
             },
         ],
+    }
+
+
+def test_config_preflight_reports_preparation_failures_without_plain_500(
+    tmp_path,
+):
+    drafts = _Drafts()
+
+    def fail_preflight(expected_revision, workflow_name):
+        raise RuntimeError(
+            "Workflow submission preparation failed with exit code 1\n"
+            "Error: getaddrinfo ENOTFOUND localstack"
+        )
+
+    drafts.preflight = fail_preflight
+    app = create_app(
+        static_dir=_static_bundle(tmp_path),
+        config_drafts=drafts,
+        workflow_name="migration-test",
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/config/preflight",
+            json={"expectedDraftRevision": "draft-1"},
+        )
+
+    assert response.status_code == 502
+    assert response.json() == {
+        "detail": {
+            "code": "admission_preflight_unavailable",
+            "message": (
+                "Admission preflight could not prepare the workflow: "
+                "Workflow submission preparation failed with exit code 1\n"
+                "Error: getaddrinfo ENOTFOUND localstack"
+            ),
+        },
     }
 
 
