@@ -6,8 +6,38 @@ import { DEFAULT_RESOURCES, parseK8sQuantity } from "./schemaUtilities";
 export type ChecksumDependency = 'snapshot' | 'snapshotMigration' | 'replayer';
 export type UiTextFormat = 'text' | 'http-endpoint' | 'optional-http-endpoint' | 'cluster-version' | 'k8s-name' | 'oci-image-reference';
 export type UiReferencePathTemplateSegment = string | { valueFrom: string[] };
+export interface ResourceNavigationHint {
+    sectionId: string;
+    sectionLabel: string;
+    sectionOrder: number;
+    groupId: string;
+    groupLabel: string;
+    groupOrder: number;
+    addControlId?: string;
+}
+export type ResourceIdentityHint =
+    | {
+        kind: 'named';
+        prefix?: string;
+        suffix?: string;
+    }
+    | {
+        kind: 'indexed-config';
+        prefix: string;
+        firstIndex: number;
+    };
+export interface ResourceCollectionHint {
+    navigation: ResourceNavigationHint;
+    resource: {
+        kind: string;
+        plural: string;
+        typeLabel: string;
+        identity: ResourceIdentityHint;
+    };
+}
 export type UiHint = {
     label?: string;
+    resourceCollection?: ResourceCollectionHint;
 } & (
     | {
         kind: 'text';
@@ -42,6 +72,83 @@ export type UiHint = {
         kind: 'array';
         addLabel: string;
     }
+    );
+
+function resourceNavigation(
+    sectionLabel: string,
+    sectionOrder: number,
+    groupLabel: string,
+    groupOrder: number,
+    addAtSection = false,
+): ResourceNavigationHint {
+    const sectionId = `section:${sectionLabel}`;
+    return {
+        sectionId,
+        sectionLabel,
+        sectionOrder,
+        groupId: `group:${sectionLabel}:${groupLabel}`,
+        groupLabel,
+        groupOrder,
+        ...(addAtSection ? {addControlId: sectionId} : {}),
+    };
+}
+
+function resourceCollection(
+    navigation: ResourceNavigationHint,
+    kind: string,
+    plural: string,
+    typeLabel: string,
+    identity: ResourceIdentityHint = {kind: 'named'},
+): ResourceCollectionHint {
+    return {
+        navigation,
+        resource: {kind, plural, typeLabel, identity},
+    };
+}
+
+const SOURCE_RESOURCE_COLLECTION = resourceCollection(
+    resourceNavigation('Sources', 0, 'Sources', 0),
+    'SourceConfig',
+    'sourceconfigs',
+    'Source cluster',
+);
+const TARGET_RESOURCE_COLLECTION = resourceCollection(
+    resourceNavigation('Targets', 1, 'Targets', 0),
+    'TargetConfig',
+    'targetconfigs',
+    'Target cluster',
+);
+const SNAPSHOT_MIGRATION_RESOURCE_COLLECTION = resourceCollection(
+    resourceNavigation('Snapshot Migration', 2, 'Backfill', 1, true),
+    'SnapshotMigration',
+    'snapshotmigrations',
+    'Snapshot migration',
+    {kind: 'indexed-config', prefix: 'migration-', firstIndex: 1},
+);
+const KAFKA_RESOURCE_COLLECTION = resourceCollection(
+    resourceNavigation('Live Traffic Migration', 3, 'Buffer', 0),
+    'Kafka',
+    'kafkaclusters',
+    'Kafka cluster',
+);
+const S3_SOURCE_RESOURCE_COLLECTION = resourceCollection(
+    resourceNavigation('Live Traffic Migration', 3, 'Buffer', 0),
+    'CapturedTraffic',
+    'capturedtraffics',
+    'S3 source',
+    {kind: 'named', suffix: '-topic'},
+);
+const CAPTURE_PROXY_RESOURCE_COLLECTION = resourceCollection(
+    resourceNavigation('Live Traffic Migration', 3, 'Capture', 1),
+    'CaptureProxy',
+    'captureproxies',
+    'Capture proxy',
+);
+const TRAFFIC_REPLAY_RESOURCE_COLLECTION = resourceCollection(
+    resourceNavigation('Live Traffic Migration', 3, 'Replay', 2),
+    'TrafficReplay',
+    'trafficreplays',
+    'Traffic replay',
 );
 
 export interface EffectiveDefaultHint {
@@ -691,6 +798,23 @@ export const REPO_CONFIG = z.object({
     "The URI scheme in repoPathUri determines whether the backend is S3 or GCS. " +
     "For GCS, authentication is expected to be provided to the source cluster out-of-band " +
     "(e.g. via a service-account key loaded into the cluster keystore, or via Workload Identity).");
+
+// OpenSearch and Elasticsearch both reject empty repository names, '#', and their
+// shared invalid-filename set: \ / * ? " < > | space and comma.
+// https://docs.opensearch.org/latest/api-reference/snapshots/create-repository/
+// https://www.elastic.co/docs/api/doc/elasticsearch/operation/operation-snapshot-create-repository
+export const SNAPSHOT_REPOSITORY_NAME_PATTERN = /^[^\\/*?"<>| ,#]+$/;
+export const SNAPSHOT_REPOSITORY_NAME_MESSAGE =
+    "Use a non-empty repository name without spaces or any of these characters: \\, /, *, ?, \", <, >, |, comma, #.";
+export const SNAPSHOT_REPOSITORY_NAME = z.string()
+    .regex(SNAPSHOT_REPOSITORY_NAME_PATTERN, SNAPSHOT_REPOSITORY_NAME_MESSAGE)
+    .describe("Elasticsearch/OpenSearch snapshot repository name.")
+    .uiHint({
+        kind: 'text',
+        pattern: SNAPSHOT_REPOSITORY_NAME_PATTERN.source,
+        message: SNAPSHOT_REPOSITORY_NAME_MESSAGE,
+        examples: ['migration-repository', 'snapshots_prod'],
+    });
 
 export const PORT_NUMBER_PATTERN = "(?:[1-9]\\d{0,3}|[1-5]\\d{4}|6[0-4]\\d{3}|65[0-4]\\d{2}|655[0-2]\\d|6553[0-5])";
 export const OPTIONAL_PORT_PATTERN = `(?::${PORT_NUMBER_PATTERN})?`;
@@ -1867,6 +1991,7 @@ export const KAFKA_CLUSTERS_MAP = z.record(z.string().regex(K8S_NAMING_PATTERN),
         keyFormat: 'k8s-name',
         keyPattern: K8S_NAMING_PATTERN.source,
         message: "Use a valid Kubernetes DNS name for the Kafka cluster.",
+        resourceCollection: KAFKA_RESOURCE_COLLECTION,
     });
 
 export const HTTP_AUTH_BASIC = z.object({
@@ -1979,6 +2104,16 @@ export const SOURCE_CLUSTER_REPOS_RECORD =
         addLabel: 'snapshot repository',
     })
     .describe("Map of snapshot repository names to their backing-store configurations. Keys are the repository names as registered in the source cluster. Each value's repoPathUri scheme determines the backend (s3:// or gs://).");
+
+export const ELASTICSEARCH_SOURCE_CLUSTER_REPOS_RECORD =
+    z.record(SNAPSHOT_REPOSITORY_NAME, REPO_CONFIG)
+    .uiHint({
+        kind: 'record',
+        addLabel: 'snapshot repository',
+        keyPattern: SNAPSHOT_REPOSITORY_NAME_PATTERN.source,
+        message: SNAPSHOT_REPOSITORY_NAME_MESSAGE,
+    })
+    .describe("Map of Elasticsearch/OpenSearch snapshot repository names to their backing-store configurations. Keys must follow the repository naming rules enforced by Elasticsearch and OpenSearch.");
 
 export const CAPTURE_CONFIG = z.object({
     kafka: z.string().regex(K8S_NAMING_PATTERN).default("default").optional()
@@ -2094,6 +2229,7 @@ export const TRAFFIC_CONFIG = z.object({
             keyFormat: 'k8s-name',
             keyPattern: K8S_NAMING_PATTERN.source,
             message: "Use a valid Kubernetes DNS name for the capture proxy.",
+            resourceCollection: CAPTURE_PROXY_RESOURCE_COLLECTION,
         }),
     s3Sources: z.record(z.string().regex(K8S_NAMING_PATTERN), S3_CAPTURED_TRAFFIC_SOURCE).default({}).optional()
         .describe("[Expert] Optional map of pre-recorded traffic source names to their S3 archive configurations. " +
@@ -2105,6 +2241,7 @@ export const TRAFFIC_CONFIG = z.object({
             keyFormat: 'k8s-name',
             keyPattern: K8S_NAMING_PATTERN.source,
             message: "Use a valid Kubernetes DNS name for the optional S3 archive source.",
+            resourceCollection: S3_SOURCE_RESOURCE_COLLECTION,
         }),
     replayers: z.record(z.string().regex(K8S_NAMING_PATTERN), REPLAYER_CONFIG).default({}).optional()
         .describe("Map of replayer names to their replay configurations. Each replayer consumes from a Kafka topic and replays to a target cluster.")
@@ -2114,6 +2251,7 @@ export const TRAFFIC_CONFIG = z.object({
             keyFormat: 'k8s-name',
             keyPattern: K8S_NAMING_PATTERN.source,
             message: "Replay names become Kubernetes TrafficReplay resource names and must use lower-case RFC 1123 syntax.",
+            resourceCollection: TRAFFIC_REPLAY_RESOURCE_COLLECTION,
         })
 }).superRefine((data, ctx) => {
     const proxies = data.proxies ?? {};
@@ -2191,7 +2329,7 @@ export const ELASTICSEARCH_SNAPSHOT_NAME_CONFIG = z.union([
 export const ELASTICSEARCH_DYNAMIC_SNAPSHOT_CONFIG = z.object({
     config: ELASTICSEARCH_SNAPSHOT_NAME_CONFIG
         .describe("Elasticsearch/OpenSearch snapshot configuration: either an externally managed snapshot name or settings to create a new snapshot."),
-    repoName: z.string()
+    repoName: SNAPSHOT_REPOSITORY_NAME
         .describe("Name of the Elasticsearch/OpenSearch snapshot repository. Must match a key in the source cluster's snapshotInfo.repos.")
 }).describe("An Elasticsearch/OpenSearch snapshot configuration bound to a specific repository.");
 
@@ -2204,7 +2342,7 @@ export const ELASTICSEARCH_SNAPSHOT_CONFIGS_MAP = z.record(
 }).describe("Map of snapshot names to their configurations. Keys are used as labels and in snapshot name generation.");
 
 export const ELASTICSEARCH_SNAPSHOT_INFO = z.object({
-    repos: SOURCE_CLUSTER_REPOS_RECORD.optional()
+    repos: ELASTICSEARCH_SOURCE_CLUSTER_REPOS_RECORD.optional()
         .describe("Elasticsearch/OpenSearch snapshot repositories registered with the source cluster."),
     snapshots: ELASTICSEARCH_SNAPSHOT_CONFIGS_MAP
         .describe("Elasticsearch/OpenSearch snapshots to use or create for this source cluster."),
@@ -2499,12 +2637,14 @@ export const SOURCE_CLUSTERS_MAP = z.record(z.string(), SOURCE_CLUSTER_CONFIG)
     .uiHint({
         kind: 'record',
         addLabel: 'source cluster',
+        resourceCollection: SOURCE_RESOURCE_COLLECTION,
     });
 export const TARGET_CLUSTERS_MAP = z.record(z.string(), TARGET_CLUSTER_CONFIG)
     .describe("Map of target cluster names to their configurations. Keys are used as labels and must be referenced by snapshotMigrationConfigs and traffic replayers.")
     .uiHint({
         kind: 'record',
         addLabel: 'target cluster',
+        resourceCollection: TARGET_RESOURCE_COLLECTION,
     });
 
 export const OVERALL_MIGRATION_CONFIG = //validateOptionalDefaultConsistency
@@ -2523,6 +2663,7 @@ export const OVERALL_MIGRATION_CONFIG = //validateOptionalDefaultConsistency
             .uiHint({
                 kind: 'array',
                 addLabel: 'snapshot migration',
+                resourceCollection: SNAPSHOT_MIGRATION_RESOURCE_COLLECTION,
             }),
         traffic: TRAFFIC_CONFIG
             .describe("Traffic capture and replay configuration. Proxies capture live traffic from source clusters to Kafka, and replayers consume from Kafka to replay against target clusters. " +
