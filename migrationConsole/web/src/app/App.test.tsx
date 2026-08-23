@@ -211,6 +211,192 @@ function addLegacySourceNavigation(draft: ConfigDraft): ConfigDraft {
 }
 
 
+function addSourceDefinitionNavigation(
+  draft: ConfigDraft,
+  {
+    groupLabel,
+    itemLabel,
+    targetId,
+    typeLabel,
+  }: {
+    groupLabel: string;
+    itemLabel: string;
+    targetId: string;
+    typeLabel: string;
+  },
+) {
+  const navigation = draft.navigation;
+  if (!navigation) throw new Error("Missing configuration navigation");
+  const sourceId = "resource:sourceconfigs:legacy";
+  const source = navigation.nodes[sourceId];
+  if (!source) throw new Error("Missing source navigation node");
+  const collectionTargetId = targetId.slice(0, targetId.lastIndexOf("."));
+  const groupId = `definition-group:${collectionTargetId}`;
+  const definitionId = `definition:${targetId}`;
+  navigation.nodes[groupId] = {
+    id: groupId,
+    revision: `test:${groupId}`,
+    parentId: sourceId,
+    childIds: [definitionId],
+    kind: "group",
+    label: groupLabel,
+    description: null,
+    status: "ok",
+    phase: null,
+    valueSummary: null,
+    diagnostics: [],
+    capabilities: [],
+    details: [],
+    relationships: [],
+    comparisons: [],
+    resourcePlural: null,
+    resourceName: null,
+    resourceType: null,
+    configPresence: {},
+  };
+  navigation.nodes[definitionId] = {
+    id: definitionId,
+    revision: `test:${definitionId}`,
+    parentId: groupId,
+    childIds: [],
+    kind: "config-definition",
+    label: itemLabel,
+    description: typeLabel,
+    status: "ok",
+    phase: null,
+    valueSummary: null,
+    diagnostics: [],
+    capabilities: [{
+      kind: "edit",
+      editTargetId: targetId,
+      label: `Edit ${itemLabel}`,
+    }],
+    details: [],
+    relationships: [],
+    comparisons: [],
+    resourcePlural: null,
+    resourceName: null,
+    resourceType: typeLabel,
+    configPresence: {},
+  };
+  source.childIds.push(groupId);
+}
+
+
+function addSourceDefinitionCollection(
+  draft: ConfigDraft,
+  {
+    addLabel,
+    collectionName,
+    groupLabel,
+    groupOrder,
+    typeLabel,
+  }: {
+    addLabel: string;
+    collectionName: string;
+    groupLabel: string;
+    groupOrder: number;
+    typeLabel: string;
+  },
+) {
+  const sourceEdit = draft.editState.nodes
+    .flatMap((node) => node.children)
+    .find((node) => node.id === "edit:sourceClusters.legacy");
+  if (!sourceEdit) throw new Error("Missing source edit node");
+  let snapshotInfo = sourceEdit.children.find(
+    (node) => node.id === "edit:sourceClusters.legacy.snapshotInfo",
+  );
+  if (!snapshotInfo) {
+    snapshotInfo = {
+      id: "edit:sourceClusters.legacy.snapshotInfo",
+      path: ["sourceClusters", "legacy", "snapshotInfo"],
+      label: "Snapshot information",
+      valueKind: "object",
+      status: "ok",
+      diagnostics: [],
+      children: [],
+    };
+    sourceEdit.children.push(snapshotInfo);
+  }
+  const collectionTargetId = [
+    "edit:sourceClusters.legacy.snapshotInfo",
+    collectionName,
+  ].join(".");
+  const collectionPath = [
+    "sourceClusters",
+    "legacy",
+    "snapshotInfo",
+    collectionName,
+  ];
+  const groupId = `definition-group:${collectionTargetId}`;
+  snapshotInfo.children.push({
+    id: collectionTargetId,
+    path: collectionPath,
+    label: groupLabel,
+    valueKind: "record",
+    status: "ok",
+    inputHint: {
+      kind: "record",
+      addLabel,
+      definitionCollection: {
+        ownerAncestorLevels: 2,
+        navigation: {
+          groupLabel,
+          groupOrder,
+          groupId,
+        },
+        definition: {
+          typeLabel,
+        },
+      },
+    },
+    diagnostics: [],
+    children: [{
+      id: `${collectionTargetId}:add`,
+      path: collectionPath,
+      label: `+ Add ${addLabel}`,
+      valueKind: "command",
+      status: "ok",
+      command: {
+        requiresName: true,
+        editAdded: false,
+        autoEditAdded: true,
+      },
+      diagnostics: [],
+      children: [],
+    }],
+  });
+
+  const navigation = draft.navigation;
+  if (!navigation) throw new Error("Missing configuration navigation");
+  const sourceId = "resource:sourceconfigs:legacy";
+  const source = navigation.nodes[sourceId];
+  if (!source) throw new Error("Missing source navigation node");
+  navigation.nodes[groupId] = {
+    id: groupId,
+    revision: `test:${groupId}`,
+    parentId: sourceId,
+    childIds: [],
+    kind: "group",
+    label: groupLabel,
+    description: null,
+    status: "ok",
+    phase: null,
+    valueSummary: null,
+    diagnostics: [],
+    capabilities: [],
+    details: [],
+    relationships: [],
+    comparisons: [],
+    resourcePlural: null,
+    resourceName: null,
+    resourceType: null,
+    configPresence: {},
+  };
+  source.childIds.push(groupId);
+}
+
+
 function rawRepairDraft() {
   const draft = structuredClone(configDraft);
   draft.draftRevision = "raw-repair-1";
@@ -403,7 +589,32 @@ test("keeps the full dependency graph stable while selection changes", async () 
   expect(within(graph).getByRole("button", {
     name: "Open replay, Running",
   })).toHaveAttribute("aria-current", "true");
-  expect(within(graph).queryByText("Deploy replay")).toBeNull();
+  expect(within(graph).getByRole("button", {
+    name: "Open workflow step Deploy replay, Running",
+  })).toBeInTheDocument();
+});
+
+
+test("moves runtime workflow steps from resource navigation into activity", async () => {
+  renderApp();
+
+  const tree = await screen.findByRole("tree", { name: "Workflow resources" });
+  const replay = within(tree).getByRole("treeitem", {
+    name: /^replay, Running$/,
+  });
+  expect(within(replay).queryByRole("button", {
+    name: "Expand replay",
+  })).toBeNull();
+  expect(within(tree).queryByText("Deploy replay")).toBeNull();
+
+  const graph = screen.getByRole("region", {
+    name: "Workflow dependency graph",
+  });
+  await userEvent.click(within(graph).getByRole("button", {
+    name: "Open workflow step Deploy replay, Running",
+  }));
+  expect(screen.getByRole("heading", { name: "Deploy replay" }))
+    .toBeInTheDocument();
 });
 
 
@@ -421,6 +632,57 @@ test("keeps workflow execution steps out of configuration navigation", async () 
     name: "Expand replay",
   })).toBeNull();
   expect(within(tree).queryByText("Deploy replay")).toBeNull();
+});
+
+
+test("refreshes server-projected configuration navigation while editing", async () => {
+  let snapshot = structuredClone(manageSnapshot);
+  let configRequests = 0;
+  server.use(
+    http.get("*/api/v1/manage/state", () => HttpResponse.json(snapshot)),
+    http.get("*/api/v1/config", () => {
+      configRequests += 1;
+      const draft = structuredClone(configDraft);
+      setNavigation(draft, snapshot);
+      return HttpResponse.json(draft);
+    }),
+  );
+  renderApp();
+  await enterEditMode();
+
+  const tree = screen.getByRole("tree", { name: "Workflow resources" });
+  expect(within(tree).queryByText("capture-next")).toBeNull();
+
+  const insertedId = "resource:captureproxies:capture-next";
+  const groupId = "group:Live Traffic Migration:Capture";
+  snapshot = {
+    ...snapshot,
+    revision: "snapshot-with-capture-next",
+    nodes: {
+      ...snapshot.nodes,
+      [groupId]: {
+        ...snapshot.nodes[groupId],
+        childIds: [...snapshot.nodes[groupId].childIds, insertedId],
+      },
+      [insertedId]: {
+        ...snapshot.nodes["resource:captureproxies:capture"],
+        id: insertedId,
+        revision: "capture-next-1",
+        parentId: groupId,
+        childIds: [],
+        label: "capture-next",
+        resourceName: "capture-next",
+      },
+    },
+  };
+  await userEvent.click(screen.getByRole("button", {
+    name: "Refresh state",
+  }));
+
+  expect(await within(tree).findByRole("treeitem", {
+    name: /^capture-next/,
+  })).toBeInTheDocument();
+  expect(configRequests).toBeGreaterThanOrEqual(2);
 });
 
 
@@ -671,12 +933,10 @@ test("lifts a VAP retry failure and requires reset before resubmitting", async (
       "Reset capture before retrying this apply.",
     );
 
-  await userEvent.click(within(capture).getByRole("button", {
-    name: "Expand capture",
-  }));
-  expect(within(tree).getByRole("treeitem", {
-    name: "Apply failed, Blocked",
+  expect(screen.getByRole("button", {
+    name: "Open workflow step Apply failed, Blocked",
   })).toBeInTheDocument();
+  expect(within(tree).queryByText("Apply failed")).toBeNull();
 });
 
 
@@ -1649,6 +1909,176 @@ test("keeps resource context while scoping edit mode to the selected resource", 
 });
 
 
+test("opens nested definitions from navigation and referenced fields", async () => {
+  const draft = addLegacySourceNavigation(structuredClone(configDraft));
+  const source = draft.editState.nodes[0]?.children?.[0];
+  if (!source) throw new Error("Missing source edit node");
+  source.children = [
+    ...(source.children ?? []),
+    {
+      id: "edit:sourceClusters.legacy.snapshotInfo",
+      path: ["sourceClusters", "legacy", "snapshotInfo"],
+      label: "Snapshot information",
+      valueKind: "object",
+      status: "ok",
+      diagnostics: [],
+      children: [{
+        id: "edit:sourceClusters.legacy.snapshotInfo.repos",
+        path: ["sourceClusters", "legacy", "snapshotInfo", "repos"],
+        label: "Repositories",
+        valueKind: "record",
+        status: "ok",
+        diagnostics: [],
+        children: [{
+          id: "edit:sourceClusters.legacy.snapshotInfo.repos.repo1",
+          path: [
+            "sourceClusters",
+            "legacy",
+            "snapshotInfo",
+            "repos",
+            "repo1",
+          ],
+          label: "repo1",
+          valueKind: "object",
+          removable: true,
+          status: "ok",
+          diagnostics: [],
+          children: [{
+            id: "edit:sourceClusters.legacy.snapshotInfo.repos.repo1.repoPathUri",
+            path: [
+              "sourceClusters",
+              "legacy",
+              "snapshotInfo",
+              "repos",
+              "repo1",
+              "repoPathUri",
+            ],
+            label: "Repository URI",
+            value: "s3://snapshots/repo1",
+            valueKind: "scalar",
+            valueType: "string",
+            status: "ok",
+            diagnostics: [],
+            children: [],
+          }],
+        }],
+      }, {
+        id: "edit:sourceClusters.legacy.snapshotInfo.snapshots",
+        path: ["sourceClusters", "legacy", "snapshotInfo", "snapshots"],
+        label: "Snapshots",
+        valueKind: "record",
+        status: "ok",
+        diagnostics: [],
+        children: [{
+          id: "edit:sourceClusters.legacy.snapshotInfo.snapshots.nightly",
+          path: [
+            "sourceClusters",
+            "legacy",
+            "snapshotInfo",
+            "snapshots",
+            "nightly",
+          ],
+          label: "nightly",
+          valueKind: "object",
+          removable: true,
+          referenceTargetId:
+            "edit:sourceClusters.legacy.snapshotInfo.snapshots.nightly",
+          status: "ok",
+          diagnostics: [],
+          children: [{
+            id: "edit:sourceClusters.legacy.snapshotInfo.snapshots.nightly.repoName",
+            path: [
+              "sourceClusters",
+              "legacy",
+              "snapshotInfo",
+              "snapshots",
+              "nightly",
+              "repoName",
+            ],
+            label: "Repository",
+            value: "repo1",
+            valueKind: "scalar",
+            valueType: "string",
+            status: "ok",
+            inputHint: {
+              kind: "reference",
+              options: [{
+                label: "repo1",
+                value: "repo1",
+                editTargetId:
+                  "edit:sourceClusters.legacy.snapshotInfo.repos.repo1",
+              }],
+            },
+            diagnostics: [],
+            children: [],
+          }],
+        }],
+      }],
+    },
+  ];
+  addSourceDefinitionNavigation(draft, {
+    groupLabel: "Repositories",
+    itemLabel: "repo1",
+    targetId: "edit:sourceClusters.legacy.snapshotInfo.repos.repo1",
+    typeLabel: "Snapshot repository",
+  });
+  addSourceDefinitionNavigation(draft, {
+    groupLabel: "Snapshots",
+    itemLabel: "nightly",
+    targetId: "edit:sourceClusters.legacy.snapshotInfo.snapshots.nightly",
+    typeLabel: "Source snapshot",
+  });
+  server.use(
+    http.get("*/api/v1/config", () => HttpResponse.json(draft)),
+  );
+  renderApp();
+  await enterEditMode();
+
+  const tree = screen.getByRole("tree", { name: "Workflow resources" });
+  const sourceItem = await within(tree).findByRole("treeitem", {
+    name: /^legacy/,
+  });
+  await userEvent.click(within(sourceItem).getByRole("button", {
+    name: "Expand legacy",
+  }));
+  await userEvent.click(await within(tree).findByRole("treeitem", {
+    name: /^nightly/,
+  }));
+
+  expect(await screen.findByRole("heading", { name: "Edit nightly" }))
+    .toBeInTheDocument();
+  const config = screen.getByRole("table", {
+    name: "Configuration fields",
+  });
+  expect(within(config).getByRole("row", { name: /Repository/ }))
+    .toBeInTheDocument();
+  expect(within(config).queryByRole("row", { name: /Endpoint/ })).toBeNull();
+
+  await userEvent.click(sourceItem);
+  expect(await screen.findByRole("heading", { name: "Edit legacy" }))
+    .toBeInTheDocument();
+  const snapshotRow = await within(config).findByRole("row", {
+    name: /^nightly/,
+  });
+  await userEvent.click(within(snapshotRow).getByRole("button", {
+    name: "Open nightly",
+  }));
+  expect(await screen.findByRole("heading", { name: "Edit nightly" }))
+    .toBeInTheDocument();
+
+  await userEvent.click(within(config).getByRole("button", {
+    name: "Open repo1",
+  }));
+
+  expect(await screen.findByRole("heading", { name: "Edit repo1" }))
+    .toBeInTheDocument();
+  expect(within(config).getByRole("row", { name: /Repository URI/ }))
+    .toBeInTheDocument();
+  expect(within(tree).getByRole("treeitem", { name: /^repo1/ }))
+    .toHaveAttribute("aria-selected", "true");
+});
+
+
 test("shows compact resource validation in navigation and hides valid detail", async () => {
   const snapshot = structuredClone(manageSnapshot);
   const source = snapshot.nodes["resource:captureproxies:capture"];
@@ -2045,6 +2475,79 @@ test("offers top-level add actions in navigation during scoped editing", async (
     path: ["sourceClusters"],
     value: { name: "next-source" },
   }]));
+});
+
+
+test("adds nested definitions from their left-navigation groups", async () => {
+  const draft = addLegacySourceNavigation(structuredClone(configDraft));
+  addSourceDefinitionCollection(draft, {
+    addLabel: "snapshot repository",
+    collectionName: "repos",
+    groupLabel: "Repositories",
+    groupOrder: 0,
+    typeLabel: "Snapshot repository",
+  });
+  addSourceDefinitionCollection(draft, {
+    addLabel: "source snapshot",
+    collectionName: "snapshots",
+    groupLabel: "Snapshots",
+    groupOrder: 1,
+    typeLabel: "Source snapshot",
+  });
+  const operations: unknown[] = [];
+  let releaseOperation: (() => void) | null = null;
+  const operationStarted = new Promise<void>((resolve) => {
+    releaseOperation = resolve;
+  });
+  server.use(
+    http.get("*/api/v1/config", () => HttpResponse.json(draft)),
+    http.post("*/api/v1/config/operations", async ({ request }) => {
+      const body = await request.json() as { operation: unknown };
+      operations.push(body.operation);
+      await operationStarted;
+      return HttpResponse.json(draft);
+    }),
+  );
+  renderApp();
+  await enterEditMode();
+
+  const tree = await screen.findByRole("tree", {
+    name: "Workflow resources",
+  });
+  const sourceItem = within(tree).getByRole("treeitem", {
+    name: /^legacy/,
+  });
+  await userEvent.click(within(sourceItem).getByRole("button", {
+    name: "Expand legacy",
+  }));
+  const repositories = within(tree).getByRole("treeitem", {
+    name: /^Repositories$/,
+  });
+  expect(within(repositories).getByRole("button", {
+    name: "Add snapshot repository",
+  })).toBeInTheDocument();
+  expect(within(tree).getByRole("button", {
+    name: "Add source snapshot",
+  })).toBeInTheDocument();
+
+  await userEvent.click(within(repositories).getByRole("button", {
+    name: "Add snapshot repository",
+  }));
+  await userEvent.type(within(tree).getByRole("textbox", {
+    name: "snapshot repository name",
+  }), "repo2");
+  await userEvent.keyboard("{Enter}");
+
+  expect(await within(tree).findByRole("treeitem", {
+    name: /^repo2, Snapshot repository, Syncing configuration$/,
+  })).toHaveAttribute("aria-selected", "true");
+  expect(operations).toEqual([{
+    op: "add",
+    path: ["sourceClusters", "legacy", "snapshotInfo", "repos"],
+    value: { name: "repo2" },
+  }]);
+
+  releaseOperation?.();
 });
 
 
@@ -2977,19 +3480,20 @@ test("shows ConfigMap keys and selects the map plus key together", async () => {
   const configTree = await screen.findByRole("table", {
     name: "Configuration fields",
   });
-  await userEvent.click(
-    within(configTree).getByRole("row", {
-      name: /ConfigMap/,
-    }),
-  );
-  await userEvent.click(
-    screen.getByRole("button", { name: "Browse Kubernetes resources" }),
-  );
+  const configMapRow = within(configTree).getByRole("row", {
+    name: /ConfigMap/,
+  });
+  await userEvent.click(within(configMapRow).getByRole("button", {
+    name: /Configure$/,
+  }));
 
-  expect(await screen.findByText("main.js")).toBeInTheDocument();
-  expect(screen.getByText("settings.json")).toBeInTheDocument();
+  const selector = await screen.findByRole("dialog", {
+    name: "Select Transform ConfigMap",
+  });
+  expect(await within(selector).findByText("main.js")).toBeInTheDocument();
+  expect(within(selector).getByText("settings.json")).toBeInTheDocument();
   await userEvent.click(
-    screen.getByRole("button", {
+    within(selector).getByRole("button", {
       name: "Use transform-code and key main.js",
     }),
   );
@@ -3004,6 +3508,101 @@ test("shows ConfigMap keys and selects the map plus key together", async () => {
     acceptWarning: false,
     manual: false,
   });
+  expect(screen.queryByRole("dialog", {
+    name: "Select Transform ConfigMap",
+  })).toBeNull();
+});
+
+
+test("selects an HTTP Basic Auth Secret in the shared resource dialog", async () => {
+  const secretDraft = structuredClone(configDraft);
+  const sourceClusters = secretDraft.editState.nodes.find(
+    (node) => node.id === "edit:sourceClusters",
+  );
+  const source = sourceClusters?.children.find(
+    (node) => node.id === "edit:sourceClusters.legacy",
+  );
+  const auth = source?.children.find(
+    (node) => node.id === "edit:sourceClusters.legacy.authConfig",
+  );
+  const secret = auth?.children.find(
+    (node) => node.id.endsWith("basic.secretName"),
+  );
+  if (!secret) throw new Error("Missing HTTP Basic Secret fixture");
+  secret.externalRef = {
+    kind: "kubernetesResource",
+    purpose: "http-basic-auth",
+    displayName: "HTTP Basic Auth Secret",
+    selection: { target: "scalarName" },
+    k8s: {
+      resourceTypes: [{
+        group: "",
+        version: "v1",
+        kind: "Secret",
+        namespaced: true,
+      }],
+    },
+  };
+  let selection: unknown;
+  server.use(
+    http.get("*/api/v1/config", () => HttpResponse.json(secretDraft)),
+    http.get("*/api/v1/external-resources", () => HttpResponse.json({
+      nodeId: secret.id,
+      draftRevision: secretDraft.draftRevision,
+      displayName: "HTTP Basic Auth Secret",
+      rows: [{
+        name: "source-creds",
+        kind: "Secret",
+        group: "",
+        version: "v1",
+        type: "kubernetes.io/basic-auth",
+        keys: ["username", "password"],
+        status: "matching",
+        message: "",
+        current: true,
+      }],
+    })),
+    http.post("*/api/v1/external-resources/select", async ({ request }) => {
+      selection = await request.json();
+      return HttpResponse.json({
+        ...secretDraft,
+        dirty: true,
+        draftRevision: "config-draft-secret-selected",
+      });
+    }),
+  );
+  renderApp();
+  await enterEditMode();
+  const configTree = await screen.findByRole("table", {
+    name: "Configuration fields",
+  });
+  const secretRow = within(configTree).getByRole("row", {
+    name: /Credentials secret/,
+  });
+  await userEvent.click(within(secretRow).getByRole("button", {
+    name: /Configure$/,
+  }));
+
+  const selector = await screen.findByRole("dialog", {
+    name: "Select HTTP Basic Auth Secret",
+  });
+  await userEvent.click(await within(selector).findByRole("button", {
+    name: "Use source-creds",
+  }));
+
+  expect(selection).toEqual({
+    expectedDraftRevision: "config-draft-1",
+    nodeId: secret.id,
+    name: "source-creds",
+    kind: "Secret",
+    group: "",
+    key: null,
+    acceptWarning: false,
+    manual: false,
+  });
+  expect(screen.queryByRole("dialog", {
+    name: "Select HTTP Basic Auth Secret",
+  })).toBeNull();
 });
 
 
@@ -3024,24 +3623,30 @@ test("allows an explicit ConfigMap and key when inventory is unavailable", async
   const configTree = await screen.findByRole("table", {
     name: "Configuration fields",
   });
+  const configMapRow = within(configTree).getByRole("row", {
+    name: /ConfigMap/,
+  });
   await userEvent.click(
-    within(configTree).getByRole("row", {
-      name: /ConfigMap/,
-    }),
+    within(configMapRow).getByRole("button", { name: /Configure$/ }),
   );
-  await userEvent.click(
-    screen.getByRole("button", { name: "Enter reference manually" }),
-  );
+  const selector = await screen.findByRole("dialog", {
+    name: "Select Transform ConfigMap",
+  });
+  await userEvent.click(within(selector).getByRole("button", {
+    name: "Enter reference manually",
+  }));
   await userEvent.type(
-    screen.getByRole("textbox", { name: "Resource name" }),
+    within(selector).getByRole("textbox", { name: "Resource name" }),
     "private-transform",
   );
   await userEvent.type(
-    screen.getByRole("textbox", { name: "ConfigMap key" }),
+    within(selector).getByRole("textbox", { name: "ConfigMap key" }),
     "transform.js",
   );
   await userEvent.click(
-    screen.getByRole("button", { name: "Use unverified reference" }),
+    within(selector).getByRole("button", {
+      name: "Use unverified reference",
+    }),
   );
 
   expect(selection).toEqual({
@@ -3054,6 +3659,41 @@ test("allows an explicit ConfigMap and key when inventory is unavailable", async
     acceptWarning: true,
     manual: true,
   });
+  expect(screen.queryByRole("dialog", {
+    name: "Select Transform ConfigMap",
+  })).toBeNull();
+});
+
+
+test("dismisses Kubernetes resource selection without persistent inline controls", async () => {
+  renderApp();
+  await enterEditMode();
+  const configTree = await screen.findByRole("table", {
+    name: "Configuration fields",
+  });
+  const configMapRow = within(configTree).getByRole("row", {
+    name: /ConfigMap/,
+  });
+  const configure = within(configMapRow).getByRole("button", {
+    name: /Configure$/,
+  });
+  await userEvent.click(configure);
+
+  const selector = await screen.findByRole("dialog", {
+    name: "Select Transform ConfigMap",
+  });
+  expect(within(selector).getByRole("button", {
+    name: "Close Kubernetes resource selector",
+  })).toHaveFocus();
+  await userEvent.keyboard("{Escape}");
+
+  expect(screen.queryByRole("dialog", {
+    name: "Select Transform ConfigMap",
+  })).toBeNull();
+  expect(screen.queryByRole("button", {
+    name: "Enter reference manually",
+  })).toBeNull();
+  await waitFor(() => expect(configure).toHaveFocus());
 });
 
 
@@ -3682,37 +4322,46 @@ test("views and creates descriptor-driven ConfigMaps without raw YAML", async ()
   const configTree = await screen.findByRole("table", {
     name: "Configuration fields",
   });
+  const configMapRow = within(configTree).getByRole("row", {
+    name: /ConfigMap/,
+  });
+  await userEvent.click(within(configMapRow).getByRole("button", {
+    name: /Configure$/,
+  }));
+  const selector = await screen.findByRole("dialog", {
+    name: "Select Transform ConfigMap",
+  });
+
   await userEvent.click(
-    within(configTree).getByRole("row", {
-      name: /ConfigMap/,
+    await within(selector).findByRole("button", {
+      name: "Inspect transform-code",
     }),
   );
-  await userEvent.click(
-    screen.getByRole("button", { name: "Browse Kubernetes resources" }),
-  );
-
-  await userEvent.click(
-    await screen.findByRole("button", { name: "Inspect transform-code" }),
-  );
-  expect(await screen.findByText("export default () => true;"))
+  expect(await within(selector).findByText("export default () => true;"))
     .toBeInTheDocument();
-  expect(screen.queryByText(/raw YAML/i)).toBeNull();
-  await userEvent.click(screen.getByRole("button", { name: "Back to resources" }));
+  expect(within(selector).queryByText(/raw YAML/i)).toBeNull();
+  await userEvent.click(within(selector).getByRole("button", {
+    name: "Back to resources",
+  }));
 
   await userEvent.click(
-    screen.getByRole("button", { name: "Create Transform ConfigMap" }),
+    within(selector).getByRole("button", {
+      name: "Create Transform ConfigMap",
+    }),
   );
   await userEvent.type(
-    screen.getByRole("textbox", { name: "ConfigMap name" }),
+    within(selector).getByRole("textbox", { name: "ConfigMap name" }),
     "next-transform",
   );
-  const key = screen.getByRole("textbox", { name: "Key" });
+  const key = within(selector).getByRole("textbox", { name: "Key" });
   expect(key).toHaveValue("transform.js");
   await userEvent.type(
-    screen.getByRole("textbox", { name: "JavaScript" }),
+    within(selector).getByRole("textbox", { name: "JavaScript" }),
     "export default () => false;",
   );
-  await userEvent.click(screen.getByRole("button", { name: "Create resource" }));
+  await userEvent.click(within(selector).getByRole("button", {
+    name: "Create resource",
+  }));
 
   expect(saveRequest).toEqual({
     expectedDraftRevision: "config-draft-1",
@@ -3725,6 +4374,9 @@ test("views and creates descriptor-driven ConfigMaps without raw YAML", async ()
     confirmations: {},
     existingName: null,
   });
+  expect(screen.queryByRole("dialog", {
+    name: "Select Transform ConfigMap",
+  })).toBeNull();
 });
 
 

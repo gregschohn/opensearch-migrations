@@ -46,6 +46,7 @@ import type {
 import { SubmitConfigDialog } from "../features/submission/SubmitConfigDialog";
 import { ResourceTree } from "../features/tree/ResourceTree";
 import {
+  projectResourceNavigation,
   projectResourceView,
   RESOURCE_VIEW_OPTIONS,
   type ResourceViewMode,
@@ -91,7 +92,7 @@ function navigationResourceId(
 ): string | null {
   const resource = Object.values(draft?.navigation?.nodes ?? {}).find(
     (node) => (
-      node.kind === "resource"
+      ["resource", "config-definition"].includes(node.kind)
       && node.capabilities.some((capability) => (
         capability.kind === "edit"
         && capability.editTargetId === targetId
@@ -345,6 +346,14 @@ export function App() {
     () => Object.values(displayedState?.nodes ?? {}).filter(
       (node) => node.kind === "resource",
     ).length,
+    [displayedState],
+  );
+  const resourceNavigationState = useMemo(
+    () => (
+      displayedState
+        ? projectResourceNavigation(displayedState)
+        : displayedState
+    ),
     [displayedState],
   );
   const approvals = useMemo(
@@ -637,6 +646,19 @@ export function App() {
     setSelectedId(nodeId);
     setTreeOpen(false);
   };
+  const navigateEditTarget = (targetId: string) => {
+    const navigation = resourceNavigationState ?? displayedState;
+    const node = Object.values(navigation?.nodes ?? {}).find(
+      (candidate) => editTarget(candidate) === targetId,
+    );
+    if (!node) return;
+    setSelectedId(node.id);
+    setEditContext({
+      resourceId: node.id,
+      targetId,
+    });
+    setTreeOpen(false);
+  };
   const editApprovalResource = (candidate: ApprovalCandidate) => {
     const node = state.data?.nodes[candidate.nodeId];
     const targetId = candidate.editTargetId ?? (
@@ -778,15 +800,30 @@ export function App() {
           <button
             aria-label="Refresh state"
             className="icon-button"
-            disabled={state.isFetching || operations.isFetching}
+            disabled={
+              state.isFetching
+              || operations.isFetching
+              || configDraft.isFetching
+            }
             onClick={() => {
               void state.refetch();
               void operations.refetch();
+              if (editContext || submissionAvailable) {
+                void configDraft.refetch();
+              }
             }}
             title="Refresh state"
             type="button"
           >
-            <RefreshCw className={state.isFetching ? "spin" : ""} />
+            <RefreshCw
+              className={
+                state.isFetching
+                || operations.isFetching
+                || configDraft.isFetching
+                  ? "spin"
+                  : ""
+              }
+            />
           </button>
           <button
             aria-label={treeOpen ? "Close resources" : "Open resources"}
@@ -940,7 +977,7 @@ export function App() {
                   presentation={editContext ? "configuration" : "runtime"}
                   resourceAdds={editContext ? resourceAdds : null}
                   selectedId={selectedId}
-                  snapshot={displayedState}
+                  snapshot={resourceNavigationState ?? displayedState}
                   validationStates={resourceValidations}
                   viewTransitionKey={
                     editContext
@@ -978,6 +1015,7 @@ export function App() {
                   onResourceRenameSettled={resourceRenameSettled}
                   onResourceRenameStarted={resourceRenameStarted}
                   onResourceAddsReady={registerResourceAdds}
+                  onNavigateEditTarget={navigateEditTarget}
                   onSubmitted={() => {
                     setEditContext(null);
                     void queryClient.invalidateQueries({

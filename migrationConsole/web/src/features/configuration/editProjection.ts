@@ -61,7 +61,7 @@ export function resourceValidationStates(
 ): Record<string, ResourceValidationState> {
   const result: Record<string, ResourceValidationState> = {};
   Object.values(snapshot.nodes).forEach((node) => {
-    if (node.kind !== "resource") return;
+    if (!["resource", "config-definition"].includes(node.kind)) return;
     const state = validationState(node);
     if (state) result[node.id] = state;
   });
@@ -92,7 +92,7 @@ export function resourceDraftChangeStates(
 ): Record<string, ResourceDraftChangeState> {
   const result: Record<string, ResourceDraftChangeState> = {};
   Object.values(snapshot.nodes).forEach((node) => {
-    if (node.kind !== "resource") return;
+    if (!["resource", "config-definition"].includes(node.kind)) return;
     const change = draftChangeState(node);
     if (change) result[node.id] = change;
   });
@@ -115,9 +115,11 @@ function appendAddition(
     revision,
     parentId: group.id,
     childIds: [],
-    kind: "resource",
+    kind: addition.nodeKind,
     label: addition.label,
-    description: `${addition.resourcePlural}/${addition.resourceName}`,
+    description: addition.nodeKind === "config-definition"
+      ? addition.resourceType
+      : `${addition.resourcePlural}/${addition.resourceName}`,
     status,
     phase: status === "syncing" ? "Syncing" : "Pending Config",
     valueSummary,
@@ -134,8 +136,10 @@ function appendAddition(
     }],
     relationships: [],
     comparisons: [],
-    resourcePlural: addition.resourcePlural,
-    resourceName: addition.resourceName,
+    resourcePlural: addition.resourcePlural ?? null,
+    resourceName: addition.nodeKind === "resource"
+      ? addition.resourceName
+      : null,
     resourceType: addition.resourceType,
     configPresence: {
       deployed: false,

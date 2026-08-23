@@ -1185,6 +1185,11 @@ export function ResourceTree({
   const resourceTypesByNode = useMemo(() => {
     const result = new Map<string, string>();
     Object.values(snapshot.nodes).forEach((node) => {
+      if (node.kind === "config-definition" && node.resourceType) {
+        result.set(node.id, node.resourceType);
+      }
+    });
+    Object.values(snapshot.nodes).forEach((node) => {
       if (node.kind !== "group") return;
       const resources = node.childIds
         .map((childId) => snapshot.nodes[childId])
@@ -1231,14 +1236,15 @@ export function ResourceTree({
     const result = new Map<string, ResourceRenameOption>();
     (resourceAdds?.renames ?? []).forEach((option) => {
       const matchingResource = Object.values(snapshot.nodes).find((node) => (
-        node.kind === "resource"
+        ["resource", "config-definition"].includes(node.kind)
         && (
           node.capabilities.some((capability) => (
             capability.kind === "edit"
             && capability.editTargetId === option.editTargetId
           ))
           || (
-            node.resourcePlural === option.placement.resourcePlural
+            option.placement.resourcePlural
+            && node.resourcePlural === option.placement.resourcePlural
             && (
               node.resourceName === option.currentName
               || node.label === option.label

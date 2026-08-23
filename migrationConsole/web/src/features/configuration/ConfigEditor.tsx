@@ -14,6 +14,7 @@ import {
   ChevronRight,
   ChevronsDown,
   LoaderCircle,
+  Link2,
   Pencil,
   Plus,
   Save,
@@ -65,6 +66,7 @@ interface ConfigEditorProps {
     applied: boolean,
   ) => void;
   onResourceAddsReady: (controller: ResourceAddController | null) => void;
+  onNavigateEditTarget: (targetId: string) => void;
   onSubmitted: () => void;
   removalState?: string | null;
   resourceLabel: string;
@@ -159,7 +161,7 @@ function renameableConfigPath(path: readonly string[]): boolean {
     path.length === 5
     && path[0] === "sourceClusters"
     && path[2] === "snapshotInfo"
-    && ["repos", "snapshots"].includes(path[3])
+    && ["repos", "snapshots", "backups"].includes(path[3])
   );
 }
 
@@ -174,12 +176,12 @@ function resourceRenameOptions(nodes: EditNode[]): ResourceRenameOption[] {
   const result: ResourceRenameOption[] = [];
   const visit = (node: EditNode) => {
     const placement = resourceAddPlacement(node);
-    if (placement) {
+    const command = addCommand(node);
+    if (placement && command?.command?.requiresName !== false) {
       const collectionDepth = node.path.length;
       propertyChildren(node).forEach((child) => {
         if (
           child.path.length !== collectionDepth + 1
-          || !renameableConfigPath(child.path)
         ) {
           return;
         }
@@ -466,6 +468,7 @@ function hintOptions(node: EditNode): {
   label: string;
   value: unknown;
   description?: string;
+  editTargetId?: string;
 }[] {
   const options = hintRecord(node.inputHint).options;
   if (!Array.isArray(options)) return [];
@@ -477,6 +480,9 @@ function hintOptions(node: EditNode): {
         value: value.value,
         description: typeof value.description === "string"
           ? value.description
+          : undefined,
+        editTargetId: typeof value.editTargetId === "string"
+          ? value.editTargetId
           : undefined,
       }]
       : [];
@@ -945,6 +951,7 @@ function ConfigPropertyRow({
   onRequestRemoval,
   onSelectAdded,
   onSelect,
+  onNavigateEditTarget,
   onRevealChildren,
   onToggle,
   rowRef,
@@ -967,6 +974,7 @@ function ConfigPropertyRow({
   onRequestRemoval: (node: EditNode) => void;
   onSelectAdded: (nodeId: string, parentId: string | null) => void;
   onSelect: () => void;
+  onNavigateEditTarget: (targetId: string) => void;
   onRevealChildren: () => void;
   onToggle: () => void;
   rowRef: (element: HTMLTableRowElement | null) => void;
@@ -974,6 +982,8 @@ function ConfigPropertyRow({
 }>) {
   const [renaming, setRenaming] = useState(false);
   const [addingCommandId, setAddingCommandId] = useState<string | null>(null);
+  const [externalEditorOpen, setExternalEditorOpen] = useState(false);
+  const externalEditorTriggerRef = useRef<HTMLButtonElement>(null);
   const [newName, setNewName] = useState(node.path.at(-1) ?? "");
   const children = propertyChildren(node);
   const commands = addCommands(node);
@@ -998,7 +1008,7 @@ function ConfigPropertyRow({
     && !["scalar", "boolean", "union", "command"].includes(node.valueKind)
   );
   const showDetails = Boolean(addingCommand)
-    || (selected && (Boolean(node.externalRef) || structured));
+    || (selected && structured);
   const name = fieldName(node);
   const errorEmphasis = validationErrorEmphasis(node);
   const changeTitle = draftChangeTitle(node);
@@ -1019,6 +1029,14 @@ function ConfigPropertyRow({
         (option) => String(option.value) === scalarString(node.value),
       )?.description
   );
+  const selectedReference = hintOptions(node).find(
+    (option) => String(option.value) === scalarString(node.value),
+  );
+  const referenceTargetId = node.referenceTargetId
+    ?? selectedReference?.editTargetId;
+  const referenceLabel = selectedReference?.label
+    ?? node.path.at(-1)
+    ?? "definition";
   const fieldDescription = node.description ?? selectedDescription;
   const generatedTitle = [
     "Generated from defaults or related configuration, not explicitly set here.",
@@ -1027,11 +1045,20 @@ function ConfigPropertyRow({
       : "",
     effectiveDefaultDescription,
   ].filter(Boolean).join(" ");
+  const closeExternalEditor = () => {
+    setExternalEditorOpen(false);
+    globalThis.setTimeout(() => externalEditorTriggerRef.current?.focus(), 0);
+  };
 
   const valueEditor = node.externalRef ? (
     <button
       className="inline-resource-button"
-      onClick={onSelect}
+      disabled={busy}
+      onClick={() => {
+        onSelect();
+        setExternalEditorOpen(true);
+      }}
+      ref={externalEditorTriggerRef}
       type="button"
     >
       <span>{scalarString(node.value) || "Not selected"}</span>
@@ -1166,6 +1193,17 @@ function ConfigPropertyRow({
             key={`${node.id}-${draft.draftRevision}`}
           >
             {valueEditor}
+            {referenceTargetId ? (
+              <button
+                className="inline-reference-link"
+                onClick={() => onNavigateEditTarget(referenceTargetId)}
+                title={`Open the definition referenced by ${name}`}
+                type="button"
+              >
+                <Link2 aria-hidden="true" />
+                Open {referenceLabel}
+              </button>
+            ) : null}
             {inlineCommands.length > 0 ? (
               <div className="inline-add-actions">
                 {inlineCommands.map((command) => {
@@ -1364,20 +1402,22 @@ function ConfigPropertyRow({
                   onComplete={() => setAddingCommandId(null)}
                   parent={node}
                 />
-              ) : node.externalRef ? (
-                <ExternalResourceEditor
-                  busy={busy}
-                  draft={draft}
-                  node={node}
-                  replaceDraft={replaceDraft}
-                  reportError={reportError}
-                />
               ) : structured ? (
                 <StructuredEditor busy={busy} commit={commit} node={node} />
               ) : null}
             </div>
           </td>
         </tr>
+      ) : null}
+      {node.externalRef && externalEditorOpen ? (
+        <ExternalResourceEditor
+          busy={busy}
+          draft={draft}
+          node={node}
+          onClose={closeExternalEditor}
+          replaceDraft={replaceDraft}
+          reportError={reportError}
+        />
       ) : null}
     </>
   );
@@ -1393,6 +1433,7 @@ export function ConfigEditor({
   onResourceRenameStarted,
   onResourceRenameSettled,
   onResourceAddsReady,
+  onNavigateEditTarget,
   onSubmitted,
   removalState,
   resourceLabel,
@@ -2611,6 +2652,7 @@ export function ConfigEditor({
                     removing={removingIds.has(node.id)}
                     showDocumentation={showDocumentation}
                     onLocalDirtyChange={markLocalEdit}
+                    onNavigateEditTarget={onNavigateEditTarget}
                     onRequestRemoval={(removalNode) => {
                       void requestRemoval(removalNode);
                     }}
