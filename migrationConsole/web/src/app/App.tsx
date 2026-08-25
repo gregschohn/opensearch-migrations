@@ -14,12 +14,16 @@ import {
 } from "lucide-react";
 
 import {
+  approveTarget,
+  getApprovalGates,
   getApprovalReview,
   getConfigDraft,
   getHealth,
   getManageState,
   getOperations,
   reconcileManageState,
+  setGatePreapproval,
+  type ApprovalGateSummary,
   type ConfigDraft,
   type ManageSnapshot,
 } from "../api/client";
@@ -27,6 +31,7 @@ import { useManageEvents } from "../api/useManageEvents";
 import { useOperationEvents } from "../api/useOperationEvents";
 import { ActivityPanel } from "../features/activity/ActivityPanel";
 import { ApprovalDialog } from "../features/actions/ResourceActionDialogs";
+import { ApprovalCenterDialog } from "../features/actions/ApprovalCenterDialog";
 import {
   approvalCandidates,
   type ApprovalCandidate,
@@ -43,6 +48,7 @@ import type {
   PendingResourceRename,
   ResourceAddController,
 } from "../features/configuration/resourceAdds";
+import { ApprovalOutputDialog } from "../features/output/OutputPanel";
 import { SubmitConfigDialog } from "../features/submission/SubmitConfigDialog";
 import { ResourceTree } from "../features/tree/ResourceTree";
 import {
@@ -68,6 +74,12 @@ const PROMPTED_APPROVALS_KEY = "workflow-manage-prompted-approvals";
 interface EditContext {
   resourceId: string;
   targetId: string;
+}
+
+
+interface LinkedNavigationEntry {
+  nodeId: string;
+  editTargetId: string | null;
 }
 
 
@@ -226,7 +238,15 @@ export function App() {
         : false
     ),
   });
+  const approvalGates = useQuery({
+    queryKey: ["approval-gates"],
+    queryFn: getApprovalGates,
+    refetchInterval: 10_000,
+    retry: false,
+  });
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [linkedNavigation, setLinkedNavigation] =
+    useState<LinkedNavigationEntry[]>([]);
   const [treeOpen, setTreeOpen] = useState(false);
   const [resourceViewMode, setResourceViewMode] =
     useState<ResourceViewMode>("all");
@@ -234,6 +254,12 @@ export function App() {
   const [submitOpen, setSubmitOpen] = useState(false);
   const [approvalDialogTargetId, setApprovalDialogTargetId] =
     useState<string | null>(null);
+  const [approvalCenterOpen, setApprovalCenterOpen] = useState(false);
+  const [approvalOutput, setApprovalOutput] =
+    useState<ApprovalCandidate | null>(null);
+  const [pendingApprovalNames, setPendingApprovalNames] =
+    useState<Set<string>>(new Set());
+  const [approvalCenterProblem, setApprovalCenterProblem] = useState("");
   const [promptedApprovals] = useState(promptedApprovalKeys);
   const [resourceAdds, setResourceAdds] =
     useState<ResourceAddController | null>(null);
@@ -373,9 +399,11 @@ export function App() {
     setSelectedId((current) => (
       current && displayedState.nodes[current]
         ? current
-        : firstSelectableId(displayedState)
+        : editContext
+          ? null
+          : firstSelectableId(displayedState)
     ));
-  }, [displayedState]);
+  }, [displayedState, editContext]);
 
   const selectedNode = useMemo(
     () => (
@@ -501,6 +529,7 @@ export function App() {
   const resourceAddStarted = useCallback((
     addition: PendingResourceAddition,
   ) => {
+    setLinkedNavigation([]);
     setPendingResourceAdditions((current) => [
       ...current.filter((candidate) => candidate.id !== addition.id),
       addition,
@@ -546,6 +575,7 @@ export function App() {
   const resourceRenameStarted = useCallback((
     rename: PendingResourceRename,
   ) => {
+    setLinkedNavigation([]);
     setPendingResourceRenames((current) => [
       ...current.filter((candidate) => candidate.oldId !== rename.oldId),
       rename,
@@ -627,17 +657,19 @@ export function App() {
     );
     const node = resourceId ? state.data.nodes[resourceId] : null;
     const targetId = node ? editTarget(node) : null;
+    setLinkedNavigation([]);
+    setSelectedId(targetId && node ? node.id : null);
     setEditContext({
       resourceId: targetId && node ? node.id : "",
       targetId: targetId ?? "edit:workflowConfiguration",
     });
   };
-  const selectNode = (nodeId: string) => {
+  const applyNodeSelection = (nodeId: string) => {
     const node = displayedState?.nodes[nodeId];
-    if (!node) return;
+    if (!node) return false;
     if (editContext) {
       const targetId = editTarget(node);
-      if (!targetId) return;
+      if (!targetId) return false;
       setEditContext({
         resourceId: nodeId,
         targetId,
@@ -645,18 +677,78 @@ export function App() {
     }
     setSelectedId(nodeId);
     setTreeOpen(false);
+    return true;
+  };
+  const selectNode = (nodeId: string) => {
+    if (nodeId === selectedId) return;
+    setLinkedNavigation([]);
+    applyNodeSelection(nodeId);
+  };
+  const rememberLinkedOrigin = () => {
+    if (!selectedId || !displayedState?.nodes[selectedId]) return;
+    const entry: LinkedNavigationEntry = {
+      nodeId: selectedId,
+      editTargetId: editContext?.targetId ?? null,
+    };
+    setLinkedNavigation((current) => {
+      const previous = current.at(-1);
+      return (
+        previous?.nodeId === entry.nodeId
+        && previous.editTargetId === entry.editTargetId
+      )
+        ? current
+        : [...current, entry];
+    });
+  };
+  const navigateLinkedNode = (nodeId: string) => {
+    if (nodeId === selectedId || !displayedState?.nodes[nodeId]) return;
+    rememberLinkedOrigin();
+    applyNodeSelection(nodeId);
   };
   const navigateEditTarget = (targetId: string) => {
     const navigation = resourceNavigationState ?? displayedState;
     const node = Object.values(navigation?.nodes ?? {}).find(
       (candidate) => editTarget(candidate) === targetId,
     );
-    if (!node) return;
+    if (!node || node.id === selectedId) return;
+    rememberLinkedOrigin();
     setSelectedId(node.id);
     setEditContext({
       resourceId: node.id,
       targetId,
     });
+    setTreeOpen(false);
+  };
+  let linkedBackIndex = -1;
+  for (let index = linkedNavigation.length - 1; index >= 0; index -= 1) {
+    const entry = linkedNavigation[index];
+    const node = displayedState?.nodes[entry.nodeId];
+    if (
+      node
+      && Boolean(entry.editTargetId) === Boolean(editContext)
+    ) {
+      linkedBackIndex = index;
+      break;
+    }
+  }
+  const linkedBackEntry = linkedBackIndex >= 0
+    ? linkedNavigation[linkedBackIndex]
+    : null;
+  const linkedBackLabel = linkedBackEntry
+    ? displayedState?.nodes[linkedBackEntry.nodeId]?.label ?? null
+    : null;
+  const navigateLinkedBack = () => {
+    if (!linkedBackEntry) return;
+    const node = displayedState?.nodes[linkedBackEntry.nodeId];
+    if (!node) return;
+    setLinkedNavigation(linkedNavigation.slice(0, linkedBackIndex));
+    setSelectedId(node.id);
+    if (linkedBackEntry.editTargetId) {
+      setEditContext({
+        resourceId: node.id,
+        targetId: linkedBackEntry.editTargetId,
+      });
+    }
     setTreeOpen(false);
   };
   const editApprovalResource = (candidate: ApprovalCandidate) => {
@@ -665,6 +757,7 @@ export function App() {
       node ? editTarget(node) : null
     );
     if (!node || !targetId) return;
+    setLinkedNavigation([]);
     setApprovalDialogTargetId(null);
     setSelectedId(node.id);
     setEditContext({
@@ -672,6 +765,76 @@ export function App() {
       targetId,
     });
     setTreeOpen(false);
+  };
+  const setPreapprovals = async (
+    gates: ApprovalGateSummary[],
+    preapproved: boolean,
+  ) => {
+    const changed = gates.filter((gate) => (
+      gate.toggleable && gate.approved !== preapproved
+    ));
+    if (changed.length === 0) return;
+    setApprovalCenterProblem("");
+    setPendingApprovalNames((current) => new Set([
+      ...current,
+      ...changed.map((gate) => gate.name),
+    ]));
+    try {
+      await Promise.all(changed.map((gate) => setGatePreapproval(
+        gate.name,
+        gate.gateRevision,
+        preapproved,
+      )));
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["approval-gates"] }),
+        queryClient.invalidateQueries({ queryKey: ["manage-state"] }),
+      ]);
+    } catch (error) {
+      setApprovalCenterProblem(
+        error instanceof Error ? error.message : String(error),
+      );
+      void queryClient.invalidateQueries({ queryKey: ["approval-gates"] });
+    } finally {
+      const names = new Set(changed.map((gate) => gate.name));
+      setPendingApprovalNames((current) => new Set(
+        [...current].filter((name) => !names.has(name)),
+      ));
+    }
+  };
+  const approveBlockingGate = async (gate: ApprovalGateSummary) => {
+    if (!gate.approvalTargetId) return;
+    setApprovalCenterProblem("");
+    setPendingApprovalNames((current) => new Set([
+      ...current,
+      gate.name,
+    ]));
+    try {
+      await approveTarget(
+        gate.approvalTargetId,
+        gate.gateRevision,
+      );
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["approval-gates"] }),
+        queryClient.invalidateQueries({ queryKey: ["manage-state"] }),
+        queryClient.invalidateQueries({ queryKey: ["operations"] }),
+      ]);
+    } catch (error) {
+      setApprovalCenterProblem(
+        error instanceof Error ? error.message : String(error),
+      );
+    } finally {
+      setPendingApprovalNames((current) => {
+        const next = new Set(current);
+        next.delete(gate.name);
+        return next;
+      });
+    }
+  };
+  const viewGateOutput = (gate: ApprovalGateSummary) => {
+    const candidate = approvals.find((approval) => (
+      approval.targetId === gate.approvalTargetId
+    ));
+    if (candidate) setApprovalOutput(candidate);
   };
   const persistPromptedApprovals = useCallback(() => {
     try {
@@ -756,7 +919,10 @@ export function App() {
             onClick={() => {
               if (editContext) {
                 if (editExitRef.current) editExitRef.current();
-                else setEditContext(null);
+                else {
+                  setLinkedNavigation([]);
+                  setEditContext(null);
+                }
               } else {
                 startEditing();
               }
@@ -771,6 +937,28 @@ export function App() {
               : <Pencil aria-hidden="true" />}
             <span>{editContext ? "Exit editing" : "Edit configuration"}</span>
           </button>
+          {!editContext ? (
+            <button
+              aria-label="Approvals"
+              className="edit-mode-button approvals-mode-button"
+              disabled={!state.data}
+              onClick={() => setApprovalCenterOpen(true)}
+              title="Review all workflow approval checkpoints"
+              type="button"
+            >
+              <ShieldCheck aria-hidden="true" />
+              <span>Approvals</span>
+              {(approvalGates.data?.gates ?? []).some((gate) => (
+                gate.state === "blocking"
+              )) ? (
+                <b>
+                  {approvalGates.data?.gates.filter((gate) => (
+                    gate.state === "blocking"
+                  )).length}
+                </b>
+              ) : null}
+            </button>
+          ) : null}
           {!editContext ? (
             <>
               <button
@@ -843,7 +1031,46 @@ export function App() {
           reason={resubmissionOnly ? submitSignalText : undefined}
         />
       ) : null}
-      {approvalDialogTargetId && approvals.length > 0 ? (
+      {
+        approvalCenterOpen
+        && !approvalDialogTargetId
+        && !approvalOutput
+          ? (
+            <ApprovalCenterDialog
+              error={
+                approvalGates.isError
+                  ? approvalGates.error.message
+                  : approvalCenterProblem || null
+              }
+              inventory={approvalGates.data}
+              loading={approvalGates.isPending}
+              onClose={() => setApprovalCenterOpen(false)}
+              onApprove={(gate) => {
+                void approveBlockingGate(gate);
+              }}
+              onToggle={(gate, preapproved) => {
+                void setPreapprovals([gate], preapproved);
+              }}
+              onToggleAll={(gates, preapproved) => {
+                void setPreapprovals(gates, preapproved);
+              }}
+              onViewOutput={viewGateOutput}
+              pendingNames={pendingApprovalNames}
+            />
+            )
+          : null
+      }
+      {approvalOutput ? (
+        <ApprovalOutputDialog
+          approval={approvalOutput}
+          onClose={() => setApprovalOutput(null)}
+        />
+      ) : null}
+      {
+        approvalDialogTargetId
+        && approvals.length > 0
+        && !approvalOutput
+          ? (
         <ApprovalDialog
           candidates={approvals}
           initialTargetId={approvalDialogTargetId}
@@ -852,8 +1079,11 @@ export function App() {
             setApprovalDialogTargetId(null);
           }}
           onEdit={editApprovalResource}
+          onViewOutput={setApprovalOutput}
         />
-      ) : null}
+            )
+          : null
+      }
       {state.isPending ? (
         <main className="shell-loading">
           <LoaderCircle className="spin" aria-hidden="true" />
@@ -908,6 +1138,13 @@ export function App() {
               <span>{problem.message}</span>
             </output>
           ))}
+          {approvalCenterProblem && !approvalCenterOpen ? (
+            <output className="state-banner problem-banner">
+              <CircleAlert aria-hidden="true" />
+              <strong>Approval update failed</strong>
+              <span>{approvalCenterProblem}</span>
+            </output>
+          ) : null}
           {firstApproval ? (
             <section
               aria-label="Approval required"
@@ -1008,8 +1245,13 @@ export function App() {
               {editContext ? (
                 <ConfigEditor
                   initialTargetId={editContext.targetId}
-                  onClose={() => setEditContext(null)}
+                  navigationBackLabel={linkedBackLabel}
+                  onClose={() => {
+                    setLinkedNavigation([]);
+                    setEditContext(null);
+                  }}
                   onExitReady={registerEditExit}
+                  onNavigateBack={navigateLinkedBack}
                   onResourceAddSettled={resourceAddSettled}
                   onResourceAddStarted={resourceAddStarted}
                   onResourceRenameSettled={resourceRenameSettled}
@@ -1017,6 +1259,7 @@ export function App() {
                   onResourceAddsReady={registerResourceAdds}
                   onNavigateEditTarget={navigateEditTarget}
                   onSubmitted={() => {
+                    setLinkedNavigation([]);
                     setEditContext(null);
                     void queryClient.invalidateQueries({
                       queryKey: ["operations"],
@@ -1038,10 +1281,20 @@ export function App() {
                 />
               ) : selectedNode ? (
                 <ResourceWorkspace
+                  approvalGates={approvalGates.data?.gates ?? []}
+                  approvalGatesLoading={approvalGates.isPending}
+                  approvals={approvals}
+                  navigationBackLabel={linkedBackLabel}
                   node={selectedNode}
                   onEdit={startEditing}
+                  onNavigateBack={navigateLinkedBack}
                   onRequestApproval={setApprovalDialogTargetId}
-                  onSelect={selectNode}
+                  onSelect={navigateLinkedNode}
+                  onTogglePreapprovals={(gates, preapproved) => {
+                    void setPreapprovals(gates, preapproved);
+                  }}
+                  operations={operations.data ?? []}
+                  pendingPreapprovalNames={pendingApprovalNames}
                   resetInProgress={resetTargetIds.has(selectedNode.id)}
                 />
               ) : (
@@ -1054,6 +1307,7 @@ export function App() {
                 operations={operations.data ?? []}
                 onReviewApproval={setApprovalDialogTargetId}
                 onSelectNode={selectNode}
+                onViewApprovalOutput={setApprovalOutput}
                 selectedNode={observedSelectedNode}
                 snapshot={observedState ?? state.data}
               />

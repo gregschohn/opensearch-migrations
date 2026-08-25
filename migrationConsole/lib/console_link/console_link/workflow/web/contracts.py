@@ -24,7 +24,11 @@ from ..application.config_drafts import (
     ExternalResourceMutation,
 )
 from ..application.operations import Operation
-from ..application.actions import ApprovalReview
+from ..application.actions import (
+    ApprovalGateInventory,
+    ApprovalGateSummary,
+    ApprovalReview,
+)
 from ..application.resets import ResetPlan, ResetTarget
 from ..services.admission_preflight import (
     AdmissionDeploymentAction,
@@ -88,6 +92,7 @@ class ApproveCapabilityV1(WebModel):
     approval_target_id: str
     label: str
     disabled_reason: Optional[str] = None
+    output_target_id: Optional[str] = None
 
 
 class ResetCapabilityV1(WebModel):
@@ -169,6 +174,7 @@ class ManageNodeV1(WebModel):
     status: str
     phase: Optional[str] = None
     value_summary: Optional[str] = None
+    activity_at: Optional[datetime] = None
     diagnostics: List[DiagnosticV1] = Field(default_factory=list)
     capabilities: List[NodeCapabilityV1] = Field(default_factory=list)
     details: List[DetailV1] = Field(default_factory=list)
@@ -706,6 +712,71 @@ class ApproveRequestV1(WebModel):
     expected_gate_revision: str
 
 
+class ApprovalGateSummaryV1(WebModel):
+    name: str
+    gate_revision: str
+    category: Literal["checkpoint", "recovery"]
+    state: Literal[
+        "upcoming",
+        "preapproved",
+        "blocking",
+        "accepted",
+        "passed",
+        "not-required",
+        "not-reached",
+        "recovery-standby",
+        "error",
+    ]
+    phase: str
+    resource_id: Optional[str] = None
+    resource_kind: Optional[str] = None
+    resource_name: Optional[str] = None
+    stage: str
+    effect: str
+    reason: Optional[str] = None
+    enabled: bool
+    approved: bool
+    toggleable: bool
+    disabled_reason: Optional[str] = None
+    approval_target_id: Optional[str] = None
+    output_target_id: Optional[str] = None
+
+    @classmethod
+    def from_domain(
+        cls,
+        gate: ApprovalGateSummary,
+    ) -> "ApprovalGateSummaryV1":
+        return cls.model_validate(gate.__dict__)
+
+
+class ApprovalGateInventoryV1(WebModel):
+    workflow_name: str
+    gates: List[ApprovalGateSummaryV1]
+
+    @classmethod
+    def from_domain(
+        cls,
+        inventory: ApprovalGateInventory,
+    ) -> "ApprovalGateInventoryV1":
+        return cls(
+            workflow_name=inventory.workflow_name,
+            gates=[
+                ApprovalGateSummaryV1.from_domain(gate)
+                for gate in inventory.gates
+            ],
+        )
+
+
+class SetPreapprovalRequestV1(WebModel):
+    expected_gate_revision: str
+    preapproved: bool
+
+
+class SetPreapprovalResponseV1(WebModel):
+    gate_name: str
+    preapproved: bool
+
+
 class ResetPlanRequestV1(WebModel):
     target_id: Optional[str] = None
     target_ids: List[str] = Field(default_factory=list)
@@ -1067,4 +1138,6 @@ def _capability_payload(capability: ManageCapability) -> Dict[str, Any]:
         payload["label"] = capability.label
     if capability.disabled_reason:
         payload["disabledReason"] = capability.disabled_reason
+    if capability.related_output_target_id:
+        payload["outputTargetId"] = capability.related_output_target_id
     return payload

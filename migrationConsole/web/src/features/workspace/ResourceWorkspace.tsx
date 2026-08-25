@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import {
+  ArrowLeft,
   ArrowRight,
   CheckCircle2,
   FileOutput,
@@ -12,12 +13,15 @@ import {
 } from "lucide-react";
 
 import type {
+  ApprovalGateSummary,
   ManageNode,
   ManageRelationship,
+  Operation,
 } from "../../api/client";
 import { OutputPanel } from "../output/OutputPanel";
 import { LogPanel } from "../logviewer/LogPanel";
 import { ResetDialog } from "../actions/ResourceActionDialogs";
+import type { ApprovalCandidate } from "../actions/approvals";
 import { StatusIndicator } from "../status/StatusIndicator";
 
 
@@ -50,6 +54,7 @@ function ResourceActions({
   onApproval,
   onReset,
   cleanupRequired,
+  approvals,
   resetInProgress,
 }: Readonly<{
   node: ManageNode;
@@ -58,6 +63,7 @@ function ResourceActions({
   onApproval: (targetId: string) => void;
   onReset: (targetId: string) => void;
   cleanupRequired: boolean;
+  approvals: ApprovalCandidate[];
   resetInProgress: boolean;
 }>) {
   const capabilities = node.capabilities.filter(
@@ -70,15 +76,24 @@ function ResourceActions({
       && Boolean(capability.disabledReason)
     ),
   );
+  const approvalOutputs = new Set(approvals.flatMap((approval) => (
+    approval.outputTargetId ? [approval.outputTargetId] : []
+  )));
   const orderedCapabilities = [...capabilities].sort((left, right) => {
-    if (!resetBeforeRetry) return 0;
-    const order: Record<string, number> = {
-      reset: 0,
-      logs: 1,
-      approve: 2,
-      output: 3,
+    const rank = (capability: typeof left) => {
+      if (resetBeforeRetry && capability.kind === "reset") return 0;
+      if (capability.kind === "approve") return 1;
+      if (
+        capability.kind === "output"
+        && approvalOutputs.has(capability.outputTargetId)
+      ) {
+        return 2;
+      }
+      if (capability.kind === "logs") return 3;
+      if (capability.kind === "output") return 4;
+      return 5;
     };
-    return (order[left.kind] ?? 4) - (order[right.kind] ?? 4);
+    return rank(left) - rank(right);
   });
   return (
     <div className="resource-actions" aria-label="Available actions">
@@ -254,12 +269,135 @@ function ResourceIssues({
 }
 
 
-function Diagnostics({ node }: Readonly<{ node: ManageNode }>) {
+function RecentOperationFailure({
+  node,
+  operations,
+}: Readonly<{
+  node: ManageNode;
+  operations: Operation[];
+}>) {
+  const nodeIds = new Set([node.id, ...node.childIds]);
+  const latest = operations
+    .filter((operation) => (
+      operation.targetIds.some((targetId) => nodeIds.has(targetId))
+    ))
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
+  if (latest?.status !== "failed") return null;
+  return (
+    <section
+      aria-label="Recent operation failed"
+      className="workspace-section operation-failure"
+      role="alert"
+    >
+      <header>
+        <TriangleAlert aria-hidden="true" />
+        <div>
+          <h3>Recent operation failed</h3>
+          <strong>{latest.label}</strong>
+        </div>
+      </header>
+      <p>{latest.message}</p>
+      <details>
+        <summary>Failure details</summary>
+        <pre>
+          {latest.detail || "No additional failure detail was reported."}
+        </pre>
+      </details>
+    </section>
+  );
+}
+
+
+function ResourcePreapproval({
+  gates,
+  loading,
+  onToggle,
+  pendingNames,
+}: Readonly<{
+  gates: ApprovalGateSummary[];
+  loading: boolean;
+  onToggle: (
+    gates: ApprovalGateSummary[],
+    preapproved: boolean,
+  ) => void;
+  pendingNames: Set<string>;
+}>) {
+  const upcoming = gates.filter((gate) => (
+    gate.state === "upcoming" || gate.state === "preapproved"
+  ));
+  const approvedCount = upcoming.filter((gate) => gate.approved).length;
+  const checked = upcoming.length > 0 && approvedCount === upcoming.length;
+  const mixed = approvedCount > 0 && !checked;
+  const pending = gates.some((gate) => pendingNames.has(gate.name));
+  const disabledReason = loading
+    ? "Approval checkpoints are still loading."
+    : gates.length === 0
+      ? (
+        "The submitted configuration does not define a manual approval "
+        + "checkpoint for this resource."
+      )
+      : upcoming.length === 0
+        ? (
+          gates.find((gate) => gate.disabledReason)?.disabledReason
+          ?? "This resource has no upcoming approval checkpoints."
+        )
+        : null;
+  const disabled = Boolean(disabledReason) || pending;
+  return (
+    <section
+      aria-label="Resource preapproval"
+      className="resource-preapproval"
+    >
+      <div>
+        <ShieldCheck aria-hidden="true" />
+        <span>
+          <strong>Preapprove upcoming checkpoints</strong>
+          <small>
+            {upcoming.length > 0
+              ? `${approvedCount} of ${upcoming.length} upcoming ${
+                upcoming.length === 1 ? "checkpoint" : "checkpoints"
+              } preapproved`
+              : disabledReason}
+          </small>
+        </span>
+      </div>
+      <button
+        aria-checked={mixed ? "mixed" : checked}
+        aria-label="Preapprove upcoming checkpoints"
+        className={[
+          "approval-toggle",
+          checked ? "active" : "",
+          mixed ? "mixed" : "",
+        ].filter(Boolean).join(" ")}
+        disabled={disabled}
+        onClick={() => onToggle(upcoming, !checked)}
+        role="switch"
+        title={disabledReason ?? "Preapprove all upcoming checkpoints"}
+        type="button"
+      >
+        <span aria-hidden="true">
+          {pending ? <LoaderCircle className="spin" /> : null}
+        </span>
+        <b>{mixed ? "Some" : checked ? "On" : "Off"}</b>
+      </button>
+    </section>
+  );
+}
+
+
+function Diagnostics({
+  node,
+  suppressEmpty = false,
+}: Readonly<{
+  node: ManageNode;
+  suppressEmpty?: boolean;
+}>) {
   const diagnostics = node.diagnostics.filter((diagnostic) => (
     diagnostic.source !== "workflow-apply"
     && diagnostic.source !== "workflow-step"
   ));
   if (diagnostics.length === 0 && node.diagnostics.length > 0) return null;
+  if (diagnostics.length === 0 && suppressEmpty) return null;
   return (
     <section className="workspace-section">
       <h3>Diagnostics</h3>
@@ -415,15 +553,34 @@ function Relationships({
 
 export function ResourceWorkspace({
   node,
+  navigationBackLabel,
   onSelect,
   onEdit,
+  onNavigateBack,
   onRequestApproval,
+  approvalGates = [],
+  approvalGatesLoading = false,
+  approvals = [],
+  onTogglePreapprovals,
+  operations = [],
+  pendingPreapprovalNames = new Set<string>(),
   resetInProgress = false,
 }: Readonly<{
   node: ManageNode;
+  navigationBackLabel?: string | null;
   onSelect: (nodeId: string) => void;
   onEdit?: () => void;
+  onNavigateBack?: () => void;
   onRequestApproval?: (targetId: string) => void;
+  approvalGates?: ApprovalGateSummary[];
+  approvalGatesLoading?: boolean;
+  approvals?: ApprovalCandidate[];
+  onTogglePreapprovals?: (
+    gates: ApprovalGateSummary[],
+    preapproved: boolean,
+  ) => void;
+  operations?: Operation[];
+  pendingPreapprovalNames?: Set<string>;
   resetInProgress?: boolean;
 }>) {
   const [outputTarget, setOutputTarget] = useState<string | null>(null);
@@ -438,13 +595,33 @@ export function ResourceWorkspace({
   const cleanupRequired = (
     node.valueSummary === "Orphaned; cleanup required"
   );
+  const nodeIds = new Set([node.id, ...node.childIds]);
+  const latestRelatedOperation = [...operations]
+    .filter((operation) => (
+      operation.targetIds.some((targetId) => nodeIds.has(targetId))
+    ))
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
+  const operationFailed = latestRelatedOperation?.status === "failed";
   return (
     <article className="workspace">
       <header className="workspace-header">
-        <div>
-          <span className="resource-kind">{node.kind.replace("-", " ")}</span>
-          <h2>{node.label}</h2>
-          <p>{node.description ?? node.id}</p>
+        <div className="workspace-heading">
+          {navigationBackLabel && onNavigateBack ? (
+            <button
+              aria-label={`Back to ${navigationBackLabel}`}
+              className="navigation-back-button"
+              onClick={onNavigateBack}
+              title={`Back to ${navigationBackLabel}`}
+              type="button"
+            >
+              <ArrowLeft aria-hidden="true" />
+            </button>
+          ) : null}
+          <div>
+            <span className="resource-kind">{node.kind.replace("-", " ")}</span>
+            <h2>{node.label}</h2>
+            <p>{node.description ?? node.id}</p>
+          </div>
         </div>
         <div className="workspace-states">
           <span className={`phase-badge status-${String(
@@ -460,6 +637,7 @@ export function ResourceWorkspace({
         </div>
       </header>
       <ResourceActions
+        approvals={approvals.filter((candidate) => candidate.nodeId === node.id)}
         cleanupRequired={cleanupRequired}
         node={node}
         onLogs={(targetId) => {
@@ -477,6 +655,17 @@ export function ResourceWorkspace({
         })}
         resetInProgress={resetInProgress}
       />
+      {onTogglePreapprovals ? (
+        <ResourcePreapproval
+          gates={approvalGates.filter((gate) => (
+            gate.category === "checkpoint"
+            && gate.resourceId === node.id
+          ))}
+          loading={approvalGatesLoading}
+          onToggle={onTogglePreapprovals}
+          pendingNames={pendingPreapprovalNames}
+        />
+      ) : null}
       {cleanupRequired || resetInProgress ? (
         <section
           aria-label={resetInProgress ? "Removal in progress" : "Cleanup required"}
@@ -506,6 +695,7 @@ export function ResourceWorkspace({
         onEdit={onEdit}
         onReviewApproval={onRequestApproval}
       />
+      <RecentOperationFailure node={node} operations={operations} />
       <Relationships node={node} onSelect={onSelect} />
       {logTarget ? (
         <LogPanel
@@ -515,6 +705,12 @@ export function ResourceWorkspace({
       ) : null}
       {outputTarget ? (
         <OutputPanel
+          approval={approvals.find(
+            (candidate) => candidate.outputTargetId === outputTarget,
+          )}
+          onApprovalStarted={() => {
+            void 0;
+          }}
           onClose={() => setOutputTarget(null)}
           targetId={outputTarget}
         />
@@ -544,7 +740,7 @@ export function ResourceWorkspace({
           </div>
           ))}
       </dl>
-      <Diagnostics node={node} />
+      <Diagnostics node={node} suppressEmpty={operationFailed} />
       <Comparisons node={node} />
     </article>
   );
