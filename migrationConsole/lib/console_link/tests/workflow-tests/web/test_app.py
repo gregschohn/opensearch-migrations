@@ -56,6 +56,12 @@ from console_link.workflow.application.resets import (
     ResetPlanStale,
     ResetTarget,
 )
+from console_link.workflow.application.runtime_status import (
+    RuntimeStatus,
+    RuntimeStatusMetric,
+    RuntimeStatusMetrics,
+    RuntimeStatusSection,
+)
 from console_link.workflow.web.app import create_app
 from console_link.workflow.web.openapi import main as generate_openapi
 
@@ -184,12 +190,31 @@ def test_openapi_exposes_the_versioned_manage_snapshot_contract(tmp_path):
     ]["anyOf"][0] == {
         "type": "string",
     }
+    assert schemas["ResourceNavigationHintV1"]["properties"][
+        "parentGroupId"
+    ]["anyOf"][0] == {
+        "type": "string",
+    }
     assert schemas["EditNodeV1"]["properties"]["referenceTargetId"] == {
         "anyOf": [
             {"type": "string"},
             {"type": "null"},
         ],
         "title": "Referencetargetid",
+    }
+    assert schemas["EditNodeV1"]["properties"]["referenceLabel"] == {
+        "anyOf": [
+            {"type": "string"},
+            {"type": "null"},
+        ],
+        "title": "Referencelabel",
+    }
+    assert schemas["EditNodeV1"]["properties"]["implicit"] == {
+        "anyOf": [
+            {"type": "boolean"},
+            {"type": "null"},
+        ],
+        "title": "Implicit",
     }
 
 
@@ -313,6 +338,119 @@ def test_manage_state_without_a_runtime_coordinator_is_unavailable(tmp_path):
 
     assert response.status_code == 503
     assert response.json()["detail"] == "Workflow observation is not configured"
+
+
+class _RuntimeStatus:
+    def __init__(self):
+        self.calls = []
+
+    def inspect(self, node_id, plural, name, *, force=False):
+        self.calls.append((node_id, plural, name, force))
+        return RuntimeStatus(
+            node_id=node_id,
+            observed_at="2026-08-30T14:00:00+00:00",
+            poll_after_ms=10_000,
+            sections=(
+                RuntimeStatusSection(
+                    key="snapshot",
+                    title="Snapshot progress",
+                    state="running",
+                    summary="Snapshot is 50% complete",
+                    source="console snapshot status watcher",
+                    content=RuntimeStatusMetrics((
+                        RuntimeStatusMetric(
+                            key="shardsSuccessful",
+                            label="Shards successful",
+                            value=4,
+                        ),
+                        RuntimeStatusMetric(
+                            key="shardsTotal",
+                            label="Shards total",
+                            value=8,
+                        ),
+                    )),
+                ),
+            ),
+        )
+
+
+def test_runtime_status_resolves_the_observed_resource_node(tmp_path):
+    snapshot = _snapshot()
+    node_id = "resource:captureproxies:capture"
+    node = ManageNode(
+        **{
+            **snapshot.nodes[node_id].__dict__,
+            "resource_plural": "datasnapshots",
+            "resource_name": "source-snapshot",
+        }
+    )
+    snapshot = ManageSnapshot(
+        **{
+            **snapshot.__dict__,
+            "nodes": {node_id: node},
+        }
+    )
+    status = _RuntimeStatus()
+    app = create_app(
+        static_dir=_static_bundle(tmp_path),
+        coordinator=_Coordinator(Observation(snapshot=snapshot)),
+        runtime_status=status,
+    )
+
+    with TestClient(app) as client:
+        response = client.get(
+            f"/api/v1/nodes/{node_id}/runtime-status",
+            params={"force": "true"},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "nodeId": node_id,
+        "observedAt": "2026-08-30T14:00:00Z",
+        "pollAfterMs": 10_000,
+        "sections": [{
+            "key": "snapshot",
+            "title": "Snapshot progress",
+            "state": "running",
+            "summary": "Snapshot is 50% complete",
+            "source": "console snapshot status watcher",
+            "content": {
+                "kind": "metrics",
+                "metrics": [
+                    {
+                        "key": "shardsSuccessful",
+                        "label": "Shards successful",
+                        "value": 4,
+                    },
+                    {
+                        "key": "shardsTotal",
+                        "label": "Shards total",
+                        "value": 8,
+                    },
+                ],
+            },
+        }],
+    }
+    assert status.calls == [
+        (node_id, "datasnapshots", "source-snapshot", True),
+    ]
+
+
+def test_runtime_status_rejects_nodes_without_a_resource_identity(tmp_path):
+    status = _RuntimeStatus()
+    app = create_app(
+        static_dir=_static_bundle(tmp_path),
+        coordinator=_Coordinator(Observation(snapshot=_snapshot())),
+        runtime_status=status,
+    )
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/v1/nodes/resource:captureproxies:capture/runtime-status"
+        )
+
+    assert response.status_code == 404
+    assert status.calls == []
 
 
 class _Outputs:
@@ -451,6 +589,20 @@ class _Logs:
         self.calls = []
         self.stopped = False
 
+    def combine_targets(self, target_ids, label="All sources"):
+        self.calls.append(("combine", tuple(target_ids), label))
+        return LogTarget(
+            id="log-target-all-sources",
+            label=label,
+            kind="aggregate",
+            pod_name=None,
+            pod_uid=None,
+            container=None,
+            restart_count=None,
+            previous=False,
+            supports_follow=True,
+        )
+
     def list_targets(self, node_id, capability_target_id):
         self.calls.append(("targets", node_id, capability_target_id))
         return LogTargetInventory(
@@ -524,6 +676,11 @@ def test_log_routes_use_node_capability_and_server_issued_targets(tmp_path):
         static_dir=_static_bundle(tmp_path),
         coordinator=coordinator,
         logs=logs,
+        external_logs_url=(
+            "https://console.aws.amazon.com/cloudwatch/home"
+            "?region=us-east-2#logsV2:log-groups/log-group/"
+            "$252Fmigration-assistant-dev-us-east-2$252Flogs"
+        ),
     )
 
     with TestClient(app) as client:
@@ -548,6 +705,11 @@ def test_log_routes_use_node_capability_and_server_issued_targets(tmp_path):
         )
 
     assert targets.status_code == 200
+    assert targets.json()["subjectLabel"] == "capture"
+    assert targets.json()["subjectKind"] == "resource"
+    assert targets.json()["externalLogsUrl"].endswith(
+        "$252Fmigration-assistant-dev-us-east-2$252Flogs"
+    )
     assert targets.json()["targets"][0]["podName"] == "capture-0"
     assert started.status_code == 201
     assert started.json()["page"]["events"][0]["message"] == "proxy is ready"
@@ -566,6 +728,86 @@ def test_log_routes_use_node_capability_and_server_issued_targets(tmp_path):
         100,
     )
     assert logs.stopped is True
+
+
+def test_resource_log_targets_list_failed_workflow_steps_first(tmp_path):
+    logs = _Logs()
+    snapshot = _log_snapshot()
+    resource_id = "resource:captureproxies:capture"
+    step_id = f"workflow-step:{resource_id}:wait-for-endpoint"
+    resource = snapshot.nodes[resource_id]
+    resource = ManageNode(
+        **{
+            **resource.__dict__,
+            "status": "error",
+            "child_ids": (step_id,),
+        }
+    )
+    step = ManageNode(
+        id=step_id,
+        revision="step-revision",
+        kind="workflow-step",
+        label="waitForProxyEndpointReady",
+        status="error",
+        parent_id=resource_id,
+        capabilities=(
+            ManageCapability(
+                "logs",
+                "logs:workflow-step:wait-for-endpoint",
+                "View logs",
+            ),
+        ),
+    )
+    snapshot = ManageSnapshot(
+        **{
+            **snapshot.__dict__,
+            "nodes": {
+                resource_id: resource,
+                step_id: step,
+            },
+        }
+    )
+    app = create_app(
+        static_dir=_static_bundle(tmp_path),
+        coordinator=_Coordinator(Observation(snapshot=snapshot)),
+        logs=logs,
+    )
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/v1/nodes/resource:captureproxies:capture/log-targets"
+        )
+
+    assert response.status_code == 200
+    assert [target["label"] for target in response.json()["targets"]] == [
+        "All sources",
+        (
+            "Failure: waitForProxyEndpointReady / "
+            "capture-0 / capture-proxy"
+        ),
+        "Application / capture-0 / capture-proxy",
+    ]
+    assert response.json()["message"] == (
+        "Workflow-step and application containers are shown together by "
+        "default. Select a target to narrow the view."
+    )
+    assert logs.calls[:3] == [
+        (
+            "targets",
+            resource_id,
+            "logs:captureproxies:capture",
+        ),
+        (
+            "targets",
+            step_id,
+            "logs:workflow-step:wait-for-endpoint",
+        ),
+        (
+            "combine",
+            ("log-target-opaque", "log-target-opaque"),
+            "All sources",
+        ),
+    ]
 
 
 def test_log_targets_require_a_capability_on_the_observed_node(tmp_path):

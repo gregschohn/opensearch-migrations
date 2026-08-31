@@ -2,6 +2,7 @@
 
 from contextlib import asynccontextmanager
 import asyncio
+from dataclasses import replace
 import json
 import logging
 from pathlib import Path
@@ -23,7 +24,11 @@ from ..application.outputs import (
     OutputStale,
     OutputUnavailable,
 )
-from ..application.logs import LogTargetStale, LogUnavailable
+from ..application.logs import (
+    LogTargetInventory,
+    LogTargetStale,
+    LogUnavailable,
+)
 from ..application.operations import (
     OperationEvent,
     OperationWorkResult,
@@ -33,6 +38,7 @@ from ..application.resets import (
     ResetPlanStale,
     ResetUnavailable,
 )
+from ..application.runtime_status import RuntimeStatusUnavailable
 from ..commands.autocomplete_workflows import DEFAULT_WORKFLOW_NAME
 from .contracts import (
     AdmissionPreflightV1,
@@ -63,6 +69,7 @@ from .contracts import (
     ReplaceRawConfigRequestV1,
     ResetPlanRequestV1,
     ResetPlanV1,
+    RuntimeStatusV1,
     SaveExternalResourceRequestV1,
     SelectExternalResourceRequestV1,
     SetPreapprovalRequestV1,
@@ -86,7 +93,9 @@ def create_app(
     approvals: Optional[Any] = None,
     resets: Optional[Any] = None,
     logs: Optional[Any] = None,
+    runtime_status: Optional[Any] = None,
     workflow_name: str = DEFAULT_WORKFLOW_NAME,
+    external_logs_url: Optional[str] = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI):
@@ -142,6 +151,52 @@ def create_app(
                 if observation.refresh_error else None
             ),
         )
+
+    @app.get(
+        "/api/v1/nodes/{node_id}/runtime-status",
+        response_model=RuntimeStatusV1,
+        response_model_exclude_none=True,
+        tags=["manage"],
+    )
+    async def node_runtime_status(
+        node_id: str,
+        force: bool = False,
+    ) -> RuntimeStatusV1:
+        if coordinator is None:
+            raise HTTPException(
+                status_code=503,
+                detail=OBSERVATION_NOT_CONFIGURED,
+            )
+        if runtime_status is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Runtime status is not configured",
+            )
+        observation = await coordinator.get_observation()
+        node = observation.snapshot.nodes.get(node_id)
+        if (
+            node is None
+            or not node.resource_plural
+            or not node.resource_name
+        ):
+            raise HTTPException(
+                status_code=404,
+                detail="Runtime status is not available for this item.",
+            )
+        try:
+            status = await asyncio.to_thread(
+                runtime_status.inspect,
+                node.id,
+                node.resource_plural,
+                node.resource_name,
+                force=force,
+            )
+            return RuntimeStatusV1.from_domain(status)
+        except RuntimeStatusUnavailable as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except Exception as error:
+            logger.exception("Failed to inspect runtime status")
+            raise HTTPException(status_code=502, detail=str(error)) from error
 
     def draft_service():
         if config_drafts is None:
@@ -340,12 +395,109 @@ def create_app(
                 "Logs are not available for this item.",
             )
         try:
-            inventory = await asyncio.to_thread(
+            resource_inventory = await asyncio.to_thread(
                 log_service().list_targets,
                 node_id,
                 capability.target_id,
             )
-            return LogTargetInventoryV1.from_domain(inventory)
+            failure_targets = []
+            aggregate_target_ids = []
+            for child_id in node.child_ids:
+                child = observation.snapshot.nodes.get(child_id)
+                if child is None or child.status != "error":
+                    continue
+                child_capability = next(
+                    (
+                        item for item in child.capabilities
+                        if item.kind == "logs"
+                    ),
+                    None,
+                )
+                if child_capability is None:
+                    continue
+                try:
+                    child_inventory = await asyncio.to_thread(
+                        log_service().list_targets,
+                        child.id,
+                        child_capability.target_id,
+                    )
+                except (LogUnavailable, LogTargetStale):
+                    continue
+                child_scope = next(
+                    (
+                        target for target in child_inventory.targets
+                        if target.kind == "aggregate"
+                    ),
+                    None,
+                )
+                aggregate_target_ids.extend(
+                    [child_scope.id]
+                    if child_scope is not None
+                    else [target.id for target in child_inventory.targets]
+                )
+                failure_targets.extend(
+                    replace(
+                        target,
+                        label=f"Failure: {child.label} / {target.label}",
+                    )
+                    for target in sorted(
+                        child_inventory.targets,
+                        key=lambda target: (
+                            target.container != "main",
+                            target.label,
+                        ),
+                    )
+                )
+            if failure_targets:
+                application_scope = next(
+                    (
+                        target for target in resource_inventory.targets
+                        if target.kind == "aggregate"
+                    ),
+                    None,
+                )
+                aggregate_target_ids.extend(
+                    [application_scope.id]
+                    if application_scope is not None
+                    else [
+                        target.id
+                        for target in resource_inventory.targets
+                    ]
+                )
+                all_sources = await asyncio.to_thread(
+                    log_service().combine_targets,
+                    aggregate_target_ids,
+                    label="All sources",
+                )
+                application_targets = tuple(
+                    replace(
+                        target,
+                        label=f"Application / {target.label}",
+                    )
+                    for target in resource_inventory.targets
+                )
+                inventory = LogTargetInventory(
+                    node_id=node_id,
+                    capability_target_id=capability.target_id,
+                    targets=(
+                        all_sources,
+                        *failure_targets,
+                        *application_targets,
+                    ),
+                    message=(
+                        "Workflow-step and application containers are "
+                        "shown together by default. Select a target to "
+                        "narrow the view."
+                    ),
+                )
+            else:
+                inventory = resource_inventory
+            return LogTargetInventoryV1.from_domain(
+                inventory,
+                subject_label=node.label,
+                subject_kind=node.kind,
+                external_logs_url=external_logs_url,
+            )
         except (LogUnavailable, LogTargetStale) as error:
             raise _log_error(404, "logs_unavailable", error) from error
         except Exception as error:

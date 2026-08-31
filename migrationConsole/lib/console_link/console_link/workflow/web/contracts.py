@@ -48,6 +48,17 @@ from ..application.logs import (
     LogTarget,
     LogTargetInventory,
 )
+from ..application.runtime_status import (
+    RuntimeStatus,
+    RuntimeStatusContent,
+    RuntimeStatusMetric,
+    RuntimeStatusMetrics,
+    RuntimeStatusNameList,
+    RuntimeStatusSection,
+    RuntimeStatusText,
+    RuntimeStatusTopicPartition,
+    RuntimeStatusTopicPartitions,
+)
 
 
 class WebModel(BaseModel):
@@ -267,6 +278,9 @@ class ResourceNavigationHintV1(WebModel):
     group_id: str
     group_label: str
     group_order: int
+    parent_group_id: Optional[str] = None
+    parent_group_label: Optional[str] = None
+    parent_group_order: Optional[int] = None
     add_control_id: Optional[str] = None
 
 
@@ -350,6 +364,7 @@ class EditNodeV1(WebModel):
     presence: Optional[Literal["required", "optional"]] = None
     expert: Optional[bool] = None
     essential: Optional[bool] = None
+    implicit: Optional[bool] = None
     description: Optional[str] = None
     required: Optional[bool] = None
     removable: Optional[bool] = None
@@ -366,6 +381,7 @@ class EditNodeV1(WebModel):
     diagnostics: List[EditDiagnosticV1] = Field(default_factory=list)
     collapsed: Optional[bool] = None
     reference_target_id: Optional[str] = None
+    reference_label: Optional[str] = None
     variants: List[EditVariantV1] = Field(default_factory=list)
     command: Optional[EditCommandV1] = None
     children: List["EditNodeV1"] = Field(default_factory=list)
@@ -661,6 +677,127 @@ class AdmissionPreflightV1(WebModel):
         )
 
 
+class RuntimeStatusMetricV1(WebModel):
+    key: str
+    label: str
+    value: Union[str, int, float, bool]
+    unit: Optional[str] = None
+
+    @classmethod
+    def from_domain(cls, metric: RuntimeStatusMetric) -> "RuntimeStatusMetricV1":
+        return cls.model_validate(metric.__dict__)
+
+
+class RuntimeStatusMetricsV1(WebModel):
+    kind: Literal["metrics"] = "metrics"
+    metrics: List[RuntimeStatusMetricV1]
+
+
+class RuntimeStatusNameListV1(WebModel):
+    kind: Literal["name-list"] = "name-list"
+    items: List[str]
+
+
+class RuntimeStatusTopicPartitionV1(WebModel):
+    topic: str
+    partition: int
+    records: int
+
+    @classmethod
+    def from_domain(
+        cls,
+        partition: RuntimeStatusTopicPartition,
+    ) -> "RuntimeStatusTopicPartitionV1":
+        return cls.model_validate(partition.__dict__)
+
+
+class RuntimeStatusTopicPartitionsV1(WebModel):
+    kind: Literal["topic-partitions"] = "topic-partitions"
+    partitions: List[RuntimeStatusTopicPartitionV1]
+
+
+class RuntimeStatusTextV1(WebModel):
+    kind: Literal["text"] = "text"
+    lines: List[str]
+
+
+RuntimeStatusContentV1 = Annotated[
+    Union[
+        RuntimeStatusMetricsV1,
+        RuntimeStatusNameListV1,
+        RuntimeStatusTopicPartitionsV1,
+        RuntimeStatusTextV1,
+    ],
+    Field(discriminator="kind"),
+]
+
+
+def _runtime_status_content(
+    content: Optional[RuntimeStatusContent],
+) -> Optional[RuntimeStatusContentV1]:
+    if isinstance(content, RuntimeStatusMetrics):
+        return RuntimeStatusMetricsV1(
+            metrics=[
+                RuntimeStatusMetricV1.from_domain(metric)
+                for metric in content.metrics
+            ],
+        )
+    if isinstance(content, RuntimeStatusNameList):
+        return RuntimeStatusNameListV1(items=list(content.items))
+    if isinstance(content, RuntimeStatusTopicPartitions):
+        return RuntimeStatusTopicPartitionsV1(
+            partitions=[
+                RuntimeStatusTopicPartitionV1.from_domain(partition)
+                for partition in content.partitions
+            ],
+        )
+    if isinstance(content, RuntimeStatusText):
+        return RuntimeStatusTextV1(lines=list(content.lines))
+    return None
+
+
+class RuntimeStatusSectionV1(WebModel):
+    key: str
+    title: str
+    state: Literal["ok", "running", "pending", "error", "unsupported"]
+    summary: str
+    source: str
+    content: Optional[RuntimeStatusContentV1] = None
+
+    @classmethod
+    def from_domain(
+        cls,
+        section: RuntimeStatusSection,
+    ) -> "RuntimeStatusSectionV1":
+        return cls(
+            key=section.key,
+            title=section.title,
+            state=section.state,
+            summary=section.summary,
+            source=section.source,
+            content=_runtime_status_content(section.content),
+        )
+
+
+class RuntimeStatusV1(WebModel):
+    node_id: str
+    observed_at: datetime
+    poll_after_ms: Optional[int] = None
+    sections: List[RuntimeStatusSectionV1]
+
+    @classmethod
+    def from_domain(cls, status: RuntimeStatus) -> "RuntimeStatusV1":
+        return cls(
+            node_id=status.node_id,
+            observed_at=status.observed_at,
+            poll_after_ms=status.poll_after_ms,
+            sections=[
+                RuntimeStatusSectionV1.from_domain(section)
+                for section in status.sections
+            ],
+        )
+
+
 class OperationV1(WebModel):
     id: str
     kind: str
@@ -915,23 +1052,33 @@ class LogTargetV1(WebModel):
 
 class LogTargetInventoryV1(WebModel):
     node_id: str
+    subject_label: str
+    subject_kind: str
     capability_target_id: str
     targets: List[LogTargetV1]
     message: Optional[str] = None
+    external_logs_url: Optional[str] = None
 
     @classmethod
     def from_domain(
         cls,
         inventory: LogTargetInventory,
+        *,
+        subject_label: str,
+        subject_kind: str,
+        external_logs_url: Optional[str] = None,
     ) -> "LogTargetInventoryV1":
         return cls(
             node_id=inventory.node_id,
+            subject_label=subject_label,
+            subject_kind=subject_kind,
             capability_target_id=inventory.capability_target_id,
             targets=[
                 LogTargetV1.from_domain(target)
                 for target in inventory.targets
             ],
             message=inventory.message,
+            external_logs_url=external_logs_url,
         )
 
 

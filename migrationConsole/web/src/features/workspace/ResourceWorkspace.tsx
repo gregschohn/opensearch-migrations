@@ -1,12 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
   ArrowLeft,
   ArrowRight,
-  CheckCircle2,
   FileOutput,
   LoaderCircle,
   Logs,
   Pencil,
+  RefreshCw,
   RotateCcw,
   ShieldCheck,
   TriangleAlert,
@@ -17,7 +18,9 @@ import type {
   ManageNode,
   ManageRelationship,
   Operation,
+  RuntimeStatus,
 } from "../../api/client";
+import { getRuntimeStatus } from "../../api/client";
 import { OutputPanel } from "../output/OutputPanel";
 import { LogPanel } from "../logviewer/LogPanel";
 import { ResetDialog } from "../actions/ResourceActionDialogs";
@@ -28,6 +31,187 @@ import { StatusIndicator } from "../status/StatusIndicator";
 interface PendingAction {
   kind: "reset";
   targetId: string;
+}
+
+const RUNTIME_STATUS_PLURALS = new Set([
+  "datasnapshots",
+  "snapshotmigrations",
+  "kafkaclusters",
+  "capturedtraffics",
+  "captureproxies",
+  "trafficreplays",
+]);
+
+
+function observedTime(value: string): string {
+  const observed = new Date(value);
+  return Number.isNaN(observed.valueOf())
+    ? value
+    : observed.toLocaleTimeString([], {
+      hour: "numeric",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+}
+
+
+type RuntimeStatusContentValue = NonNullable<
+  RuntimeStatus["sections"][number]["content"]
+>;
+
+
+function metricValue(
+  metric: Extract<
+    RuntimeStatusContentValue,
+    { kind: "metrics" }
+  >["metrics"][number],
+): string {
+  const value = String(metric.value);
+  return metric.unit === "percent" ? `${value}%` : value;
+}
+
+
+function RuntimeStatusContent({
+  content,
+  title,
+}: Readonly<{
+  content: RuntimeStatusContentValue;
+  title: string;
+}>) {
+  if (content.kind === "metrics") {
+    return (
+      <dl className="runtime-status-metrics">
+        {content.metrics.map((metric) => (
+          <div key={metric.key}>
+            <dt>{metric.label}</dt>
+            <dd>{metricValue(metric)}</dd>
+          </div>
+        ))}
+      </dl>
+    );
+  }
+  if (content.kind === "name-list") {
+    return (
+      <ul aria-label={`${title} values`} className="runtime-status-names">
+        {content.items.map((item) => (
+          <li key={item}><code>{item}</code></li>
+        ))}
+      </ul>
+    );
+  }
+  if (content.kind === "topic-partitions") {
+    return (
+      <table className="runtime-status-table">
+        <caption>{title}</caption>
+        <thead>
+          <tr>
+            <th scope="col">Topic</th>
+            <th scope="col">Partition</th>
+            <th scope="col">Records</th>
+          </tr>
+        </thead>
+        <tbody>
+          {content.partitions.map((partition) => (
+            <tr key={`${partition.topic}-${partition.partition}`}>
+              <td><code>{partition.topic}</code></td>
+              <td>{partition.partition}</td>
+              <td>{partition.records.toLocaleString()}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    );
+  }
+  return (
+    <pre className="runtime-status-text">{content.lines.join("\n")}</pre>
+  );
+}
+
+
+function RuntimeStatusPanel({ node }: Readonly<{ node: ManageNode }>) {
+  const forceRefresh = useRef(false);
+  const supported = Boolean(
+    node.resourcePlural
+    && RUNTIME_STATUS_PLURALS.has(node.resourcePlural),
+  );
+  const status = useQuery({
+    queryKey: ["runtime-status", node.id],
+    queryFn: async () => {
+      const force = forceRefresh.current;
+      forceRefresh.current = false;
+      return getRuntimeStatus(node.id, force);
+    },
+    enabled: supported,
+    retry: false,
+    staleTime: 5_000,
+    refetchInterval: (query) => (
+      query.state.data?.pollAfterMs ?? false
+    ),
+  });
+  if (!supported) return null;
+
+  return (
+    <section
+      aria-label="Runtime status"
+      className="workspace-section runtime-status"
+    >
+      <header>
+        <div>
+          <h3>Runtime status</h3>
+          {status.data ? (
+            <span>Observed {observedTime(status.data.observedAt)}</span>
+          ) : null}
+        </div>
+        <button
+          aria-label="Refresh runtime status"
+          className="icon-button"
+          disabled={status.isFetching}
+          onClick={() => {
+            forceRefresh.current = true;
+            void status.refetch();
+          }}
+          title="Refresh runtime status"
+          type="button"
+        >
+          <RefreshCw
+            aria-hidden="true"
+            className={status.isFetching ? "spin" : ""}
+          />
+        </button>
+      </header>
+      {status.isPending ? (
+        <div className="runtime-status-loading">
+          <LoaderCircle aria-hidden="true" className="spin" />
+          <span>Reading runtime status</span>
+        </div>
+      ) : null}
+      {status.isError ? (
+        <div className="runtime-status-error">
+          <TriangleAlert aria-hidden="true" />
+          <span>{status.error.message}</span>
+        </div>
+      ) : null}
+      {status.data?.sections.map((section) => (
+        <article
+          className={`runtime-status-section status-${section.state}`}
+          key={section.key}
+        >
+          <StatusIndicator status={section.state} />
+          <div>
+            <strong>{section.title}</strong>
+            <p>{section.summary}</p>
+            {section.content ? (
+              <RuntimeStatusContent
+                content={section.content}
+                title={section.title}
+              />
+            ) : null}
+            <small>{section.source}</small>
+          </div>
+        </article>
+      ))}
+    </section>
+  );
 }
 
 
@@ -385,46 +569,105 @@ function ResourcePreapproval({
 }
 
 
-function Diagnostics({
-  node,
-  suppressEmpty = false,
-}: Readonly<{
-  node: ManageNode;
-  suppressEmpty?: boolean;
-}>) {
+function Findings({ node }: Readonly<{ node: ManageNode }>) {
   const diagnostics = node.diagnostics.filter((diagnostic) => (
     diagnostic.source !== "workflow-apply"
     && diagnostic.source !== "workflow-step"
   ));
-  if (diagnostics.length === 0 && node.diagnostics.length > 0) return null;
-  if (diagnostics.length === 0 && suppressEmpty) return null;
+  if (diagnostics.length === 0) return null;
   return (
     <section className="workspace-section">
-      <h3>Diagnostics</h3>
-      {diagnostics.length === 0 ? (
-        <div className="inline-empty">
-          <CheckCircle2 aria-hidden="true" />
-          No diagnostics for this resource.
+      <h3>Findings</h3>
+      <div className="diagnostic-list">
+        {diagnostics.map((diagnostic, index) => (
+          <details className={`diagnostic diagnostic-${diagnostic.severity}`} key={`${diagnostic.message}-${index}`}>
+            <summary>
+              <TriangleAlert aria-hidden="true" />
+              <span>{diagnostic.title ?? diagnostic.message}</span>
+              <strong>{diagnostic.severity}</strong>
+            </summary>
+            <div>
+              {diagnostic.path.length > 0 ? (
+                <code>{diagnostic.path.join(".")}</code>
+              ) : null}
+              {diagnostic.source ? <span>Source: {diagnostic.source}</span> : null}
+            </div>
+          </details>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+
+function FailedWorkflowSteps({
+  onSelect,
+  steps,
+}: Readonly<{
+  onSelect: (nodeId: string) => void;
+  steps: ManageNode[];
+}>) {
+  const failed = steps
+    .filter((step) => (
+      step.status === "error"
+      || step.status === "blocked"
+      || step.phase === "Failed"
+      || step.phase === "Error"
+      || step.phase === "Blocked"
+    ))
+    .sort((left, right) => (
+      (right.activityAt ?? "").localeCompare(left.activityAt ?? "")
+    ));
+  if (failed.length === 0) return null;
+  return (
+    <section
+      aria-label="Failed workflow steps"
+      className="workspace-section failed-workflow-steps"
+    >
+      <header>
+        <div>
+          <h3>Failed workflow steps</h3>
+          <span>
+            {failed.length} step{failed.length === 1 ? "" : "s"} need
+            attention
+          </span>
         </div>
-      ) : (
-        <div className="diagnostic-list">
-          {diagnostics.map((diagnostic, index) => (
-            <details className={`diagnostic diagnostic-${diagnostic.severity}`} key={`${diagnostic.message}-${index}`}>
-              <summary>
-                <TriangleAlert aria-hidden="true" />
-                <span>{diagnostic.title ?? diagnostic.message}</span>
-                <strong>{diagnostic.severity}</strong>
-              </summary>
-              <div>
-                {diagnostic.path.length > 0 ? (
-                  <code>{diagnostic.path.join(".")}</code>
+      </header>
+      <div className="failed-workflow-step-list">
+        {failed.map((step) => {
+          const message = step.details.find(
+            (detail) => detail.kind === "message",
+          );
+          return (
+            <button
+              aria-label={`Inspect failed workflow step ${step.label}, ${
+                step.phase ?? step.status
+              }`}
+              key={step.id}
+              onClick={() => onSelect(step.id)}
+              type="button"
+            >
+              <StatusIndicator status={step.phase ?? step.status} />
+              <span>
+                <strong>{step.label}</strong>
+                <small>
+                  {message
+                    ? String(message.value)
+                    : step.phase ?? step.status}
+                </small>
+              </span>
+              <span>
+                {step.activityAt ? (
+                  <time dateTime={step.activityAt}>
+                    {new Date(step.activityAt).toLocaleString()}
+                  </time>
                 ) : null}
-                {diagnostic.source ? <span>Source: {diagnostic.source}</span> : null}
-              </div>
-            </details>
-          ))}
-        </div>
-      )}
+                <ArrowRight aria-hidden="true" />
+              </span>
+            </button>
+          );
+        })}
+      </div>
     </section>
   );
 }
@@ -565,6 +808,7 @@ export function ResourceWorkspace({
   operations = [],
   pendingPreapprovalNames = new Set<string>(),
   resetInProgress = false,
+  workflowSteps = [],
 }: Readonly<{
   node: ManageNode;
   navigationBackLabel?: string | null;
@@ -582,6 +826,7 @@ export function ResourceWorkspace({
   operations?: Operation[];
   pendingPreapprovalNames?: Set<string>;
   resetInProgress?: boolean;
+  workflowSteps?: ManageNode[];
 }>) {
   const [outputTarget, setOutputTarget] = useState<string | null>(null);
   const [logTarget, setLogTarget] = useState<string | null>(null);
@@ -595,13 +840,6 @@ export function ResourceWorkspace({
   const cleanupRequired = (
     node.valueSummary === "Orphaned; cleanup required"
   );
-  const nodeIds = new Set([node.id, ...node.childIds]);
-  const latestRelatedOperation = [...operations]
-    .filter((operation) => (
-      operation.targetIds.some((targetId) => nodeIds.has(targetId))
-    ))
-    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
-  const operationFailed = latestRelatedOperation?.status === "failed";
   return (
     <article className="workspace">
       <header className="workspace-header">
@@ -696,6 +934,7 @@ export function ResourceWorkspace({
         onReviewApproval={onRequestApproval}
       />
       <RecentOperationFailure node={node} operations={operations} />
+      <FailedWorkflowSteps onSelect={onSelect} steps={workflowSteps} />
       <Relationships node={node} onSelect={onSelect} />
       {logTarget ? (
         <LogPanel
@@ -740,8 +979,9 @@ export function ResourceWorkspace({
           </div>
           ))}
       </dl>
-      <Diagnostics node={node} suppressEmpty={operationFailed} />
+      <Findings node={node} />
       <Comparisons node={node} />
+      <RuntimeStatusPanel node={node} />
     </article>
   );
 }
