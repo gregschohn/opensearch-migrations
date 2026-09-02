@@ -670,9 +670,12 @@ def cluster_curl_cmd(ctx, cluster, path, request, header, data, json_data, timeo
 @click.option('--num-docs', type=int, help='Total number of documents to generate')
 @click.option('--target-size-mb', type=float, help='Target total size in MB (alternative to num-docs)')
 @click.option('--batch-size', type=int, default=100, help='Number of documents per batch request')
+@click.option('--num-tenants', type=click.IntRange(min=1),
+              help='Number of tenant_id values to distribute across generated documents')
 @click.pass_obj
 def generate_data_cmd(ctx, cluster, source_selector, target_selector, proxy_selector,
-                      index_name, doc_size_bytes, num_docs, target_size_mb, batch_size):
+                      index_name, doc_size_bytes, num_docs, target_size_mb, batch_size,
+                      num_tenants):
     """Generate bulk test data in the specified cluster and index"""
     
     # Validate arguments
@@ -693,6 +696,8 @@ def generate_data_cmd(ctx, cluster, source_selector, target_selector, proxy_sele
     
     click.echo(f"Generating {num_docs:,} documents in index '{index_name}' on {cluster}")
     click.echo(f"Document size: ~{doc_size_bytes} bytes, Batch size: {batch_size}")
+    if num_tenants:
+        click.echo(f"Tenants: {num_tenants}")
     
     # Import bulk generation function
     try:
@@ -716,7 +721,8 @@ def generate_data_cmd(ctx, cluster, source_selector, target_selector, proxy_sele
         bulk_insert_data = test_module.bulk_insert_data
         
         # Execute bulk data generation
-        result = bulk_insert_data(cluster_obj, index_name, num_docs, doc_size_bytes, batch_size)
+        result = bulk_insert_data(cluster_obj, index_name, num_docs, doc_size_bytes,
+                                  batch_size, num_tenants)
 
         # Display results
         click.echo("\nData generation completed:")
@@ -900,44 +906,48 @@ def scale_backfill_cmd(ctx, units: int):
     click.echo(message)
 
 
+_PRESENCE = {True: "yes", False: "no"}
+
+
 @backfill_group.command(name="status")
 @click.option('--deep-check', is_flag=True, help='Perform a deep status check of the backfill')
 @click.pass_obj
 def status_backfill_cmd(ctx, deep_check):
     logger.info(f"Called `console backfill status`, with {deep_check=}")
+    # Resolve once; threaded into both output formats.
+    cfg, has_failures = _load_failed_document_stream()
     if ctx.json and deep_check:
         try:
-            payload = ctx.env.backfill.build_backfill_status().model_dump(mode="json")
+            payload = ctx.env.backfill.build_backfill_status(
+                has_failed_documents=has_failures).model_dump(mode="json")
         except DeepStatusNotYetAvailable:
             payload = BackfillOverallStatus(
                 status=StepStateWithPause.PENDING,
                 percentage_completed=0.0,
             ).model_dump(mode="json")
-        _augment_status_with_failed_document_stream(payload)
+        if cfg is not None:
+            payload["failed_document_stream_location"] = cfg.location_uri
+            payload["failed_documents_present"] = has_failures
         click.echo(json.dumps(payload))
         return
-    exitcode, message = backfill_.status(ctx.env.backfill, deep_check=deep_check)
+    exitcode, message = backfill_.status(ctx.env.backfill, deep_check=deep_check, has_failed_documents=has_failures)
     if exitcode != ExitCode.SUCCESS:
         raise click.ClickException(message)
     click.echo(message)
-    # Append failed document stream summary so operators see failed-document inventory without a second command.
-    try:
-        cfg = failed_document_stream_.load_config()
-        c = failed_document_stream_.safe_count(cfg)
+    # Presence only; counting reads every record. `failed-document-stream count` gives the number.
+    if cfg is not None:
         click.echo(f"failed document stream location: {cfg.location_uri}")
-        click.echo(f"Failed document count: {c if c is not None else 'unavailable'}")
-    except failed_document_stream_.FailedDocumentStreamNotConfigured:
-        # failed document stream is optional; only surface when configured.
-        pass
+        click.echo(f"Failed documents present: {_PRESENCE[has_failures]}")
 
 
-def _augment_status_with_failed_document_stream(payload: dict) -> None:
+def _load_failed_document_stream():
+    """Return (config, has_records), or (None, None) when not configured — then it is not
+    consulted. S3 errors propagate: an unreadable stream must not read as "no failures"."""
     try:
         cfg = failed_document_stream_.load_config()
     except failed_document_stream_.FailedDocumentStreamNotConfigured:
-        return
-    payload["failed_document_stream_location"] = cfg.location_uri
-    payload["failed_document_count"] = failed_document_stream_.safe_count(cfg)
+        return None, None
+    return cfg, failed_document_stream_.has_records(cfg)
 
 
 # ##################### failed document stream (Reindex-from-Snapshot Failed Document Stream) ###################

@@ -51,6 +51,7 @@ import {
     scalingFromOptions,
     workflowParameterAsNumber,
 } from "./commonUtils/scalableWorkload";
+import {MIGRATION_RESOURCE_UID_LABEL} from "./commonUtils/resourceLabels";
 
 function shouldCreateRfsWorkCoordinationCluster(
     documentBackfillConfig: BaseExpression<Serialized<z.infer<typeof ARGO_RFS_OPTIONS>>>
@@ -240,7 +241,8 @@ function getRfsDeploymentManifest
                 "migrations.opensearch.org/target": makeStringTypeProxy(args.targetK8sLabel),
                 "migrations.opensearch.org/snapshot": makeStringTypeProxy(args.snapshotK8sLabel),
                 "migrations.opensearch.org/from-snapshot-migration": makeStringTypeProxy(args.fromSnapshotMigrationK8sLabel),
-                "migrations.opensearch.org/task": makeStringTypeProxy(args.taskK8sLabel)
+                "migrations.opensearch.org/task": makeStringTypeProxy(args.taskK8sLabel),
+                [MIGRATION_RESOURCE_UID_LABEL]: makeStringTypeProxy(args.crdUid),
             },
         },
         spec: {
@@ -268,7 +270,8 @@ function getRfsDeploymentManifest
                         "migrations.opensearch.org/target": makeStringTypeProxy(args.targetK8sLabel),
                         "migrations.opensearch.org/snapshot": makeStringTypeProxy(args.snapshotK8sLabel),
                         "migrations.opensearch.org/from-snapshot-migration": makeStringTypeProxy(args.fromSnapshotMigrationK8sLabel),
-                        "migrations.opensearch.org/task": makeStringTypeProxy(args.taskK8sLabel)
+                        "migrations.opensearch.org/task": makeStringTypeProxy(args.taskK8sLabel),
+                        [MIGRATION_RESOURCE_UID_LABEL]: makeStringTypeProxy(args.crdUid),
                     },
                 },
                 spec: {
@@ -291,14 +294,14 @@ status_json=$(console --config-file=/config/migration_services.yaml --json backf
 status=$(echo "$status_json" | jq -r '.status')
 
 failed_document_stream_loc=$(echo "$status_json" | jq -r '.failed_document_stream_location // empty')
-failed_document_stream_count=$(echo "$status_json" | jq -r '.failed_document_count // empty')
+failed_documents_present=$(echo "$status_json" | jq -r '.failed_documents_present | tostring')
 failed_document_stream_suffix=""
 if [[ -n "$failed_document_stream_loc" ]]; then
-    if [[ -n "$failed_document_stream_count" && "$failed_document_stream_count" != "null" ]]; then
-        failed_document_stream_suffix="; failed document stream: $failed_document_stream_count failed doc(s) at $failed_document_stream_loc"
-    else
-        failed_document_stream_suffix="; failed document stream location: $failed_document_stream_loc (count unavailable)"
-    fi
+    case "$failed_documents_present" in
+        true)  failed_document_stream_suffix="; failed documents recorded at $failed_document_stream_loc" ;;
+        false) ;;
+        *)     failed_document_stream_suffix="; failed document stream location: $failed_document_stream_loc (unavailable)" ;;
+    esac
 fi
 
 # Check if initializing
@@ -317,8 +320,8 @@ else
            "$pct" "$eta" "$progress" "$waiting" "$complete" "$total" "$failed_document_stream_suffix" > /tmp/status-output.txt
 fi
 
-# Check completion status - exit 0 only if complete, otherwise exit 1
-if [[ "$status" == "Completed" ]]; then
+# Exit 0 on terminal completion; CompletedWithErrors is still done.
+if [[ "$status" == "Completed" || "$status" == "CompletedWithErrors" ]]; then
   exit 0
 else
   echo Checked > /tmp/phase-output.txt
@@ -367,6 +370,7 @@ const documentBulkLoadBaseBuilder = WorkflowBuilder.create({
                 CONSOLE_CONFIG_BASE64: expr.toBase64YamlSafe(expr.asString(c.inputs.consoleConfigContents)),
                 RFS_MONITOR_WORKFLOW_UID_LABEL: expr.literal(RFS_MONITOR_WORKFLOW_UID_LABEL),
                 RFS_MONITOR_SESSION_LABEL: expr.literal(RFS_MONITOR_SESSION_LABEL),
+                MIGRATION_RESOURCE_UID_LABEL: expr.literal(MIGRATION_RESOURCE_UID_LABEL),
                 ...workflowScriptRootEnvVars(t.inputs.workflowParameters.workflowScriptsRoot)
             })
             .addArgs([workflowScriptCommand("applyRfsMonitorCronJob.sh")])

@@ -70,6 +70,7 @@ push_images_to_ecr=true
 ma_images_source=""
 skip_setting_k8s_context=false
 skip_test_images=false
+with_load_test_images=false
 image_tag="latest"
 kubectl_context=""
 
@@ -109,6 +110,7 @@ while [[ $# -gt 0 ]]; do
     --skip-setting-k8s-context) skip_setting_k8s_context=true; shift 1 ;;
     --kubectl-context) kubectl_context="$2"; shift 2 ;;
     --skip-test-images) skip_test_images=true; shift 1 ;;
+    --with-load-test-images) with_load_test_images=true; shift 1 ;;
     --image-tag) image_tag="$2"; shift 2 ;;
     --tls-mode) tls_mode="$2"; shift 2 ;;
     --pca-arn) pca_arn="$2"; shift 2 ;;
@@ -171,6 +173,9 @@ while [[ $# -gt 0 ]]; do
       echo "  --kubectl-context <name>                  Custom alias for the kubectl context (default: EKS cluster name)."
       echo "                                            Useful for CI systems that need a predictable context name."
       echo "  --skip-test-images                        Skip building test-only images (e.g. elasticsearch_searchguard)"
+      echo "  --with-load-test-images                   Also build the load-test images (migrations/k6_scripts)."
+      echo "                                            They are not part of the standard image set. Only the k6"
+      echo "                                            load-test cases (Test008x) need them. Requires --build."
       echo "  --image-tag <tag>                         Override the image tag (default: git short SHA)"
       echo ""
       echo "Build options:"
@@ -347,6 +352,20 @@ validate_args() {
     echo "  --build builds everything from source (no version needed)." >&2
     echo "  --version downloads published artifacts for a specific release." >&2
     exit 1
+  fi
+  # Load-test images are built from source only. No release publishes them, and
+  # --ma-images-source has no entry for them in MA_IMAGES.
+  if [[ "$with_load_test_images" == "true" ]]; then
+    if [[ "$build" != "true" ]]; then
+      echo "Error: --with-load-test-images requires --build." >&2
+      echo "  The load-test images (migrations/k6_scripts) are not published in a release." >&2
+      exit 1
+    fi
+    if [[ -n "$ma_images_source" ]]; then
+      echo "Error: --with-load-test-images cannot be combined with --ma-images-source." >&2
+      echo "  Mirrored runs copy a fixed image set that does not include the load-test images." >&2
+      exit 1
+    fi
   fi
   if [[ -n "$create_vpc_endpoints" && "$deploy_import_vpc" != "true" ]]; then
     echo "Error: --create-vpc-endpoints is only valid with --deploy-import-vpc-cfn." >&2
@@ -547,6 +566,36 @@ get_cfn_export() {
   fi
 }
 
+# Dump diagnostics when the Migration Assistant helm install fails. The install fails via
+# a hook Job (pre-install ma-dependency-installer, post-install create-s3-bucket-ma, etc.)
+# whose pod holds the only record of why it failed -- and the observability stack
+# (fluent-bit, migration-console) may not exist on a hook failure, so grab it directly.
+dump_helm_debug_info() {
+  local release_namespace="$1"
+  local kctx=()
+  [[ -n "${KUBE_CONTEXT:-}" ]] && kctx=("--context=${KUBE_CONTEXT}")
+
+  echo "=== BEGIN HELM INSTALL DEBUG INFO ===" >&2
+  kubectl "${kctx[@]}" get pods -n "$release_namespace" -o wide >&2 2>&1 || true
+  echo "--- Jobs in $release_namespace ---" >&2
+  kubectl "${kctx[@]}" get jobs -n "$release_namespace" -o wide >&2 2>&1 || true
+  echo "--- Recent events ---" >&2
+  kubectl "${kctx[@]}" get events -n "$release_namespace" --sort-by=.lastTimestamp >&2 2>&1 || true
+
+  # Logs + describe for every non-succeeded pod in the namespace (the failed hook pod is here).
+  local pods
+  pods=$(kubectl "${kctx[@]}" get pods -n "$release_namespace" \
+    --field-selector=status.phase!=Running,status.phase!=Succeeded \
+    -o jsonpath='{.items[*].metadata.name}' 2>/dev/null) || true
+  for p in $pods; do
+    echo "--- Logs for $p (--tail=200, all containers) ---" >&2
+    kubectl "${kctx[@]}" logs -n "$release_namespace" "$p" --all-containers --tail=200 >&2 2>&1 || true
+    echo "--- Describe $p ---" >&2
+    kubectl "${kctx[@]}" describe pod "$p" -n "$release_namespace" >&2 2>&1 || true
+  done
+  echo "=== END HELM INSTALL DEBUG INFO ===" >&2
+}
+
 check_existing_ma_release() {
   local release_name="$1"
   local release_namespace="$2"
@@ -592,7 +641,7 @@ if [[ "$deploy_cfn" == "true" ]]; then
     # Clear STACK_NAME_SUFFIX so CDK produces predictable template filenames.
     # The stack name is controlled by --stack-name, not by CDK stack IDs.
     # Other CDK env vars (CODE_BUCKET, SOLUTION_NAME, CODE_VERSION) are left
-    # intact — they affect template content (AppRegistry names, S3 paths) and
+    # intact — they affect template content (such as S3 paths) and
     # the CDK has safe defaults when they're unset.
     STACK_NAME_SUFFIX="" \
       "$base_dir/gradlew" -p "$base_dir" :deployment:migration-assistant-solution:cdkSynthMinified -x test
@@ -748,6 +797,9 @@ echo ""
 echo "Resolved configuration:"
 if [[ "$RELEASE_VERSION" == "local-build" ]]; then
   echo "  Mode                   = Build from source (--build)"
+  if [[ "$with_load_test_images" == "true" ]]; then
+    echo "  Load-test images       = Included (--with-load-test-images)"
+  fi
 else
   echo "  Mode                   = Published artifacts"
   echo "  Version                = ${RELEASE_VERSION}"
@@ -1040,7 +1092,13 @@ fi
 if [[ "$build" == "true" && -z "$ma_images_source" ]]; then
   # Always build for both architectures on EKS
   MULTI_ARCH_NATIVE=true
-  BUILD_TARGET="buildImagesToRegistry"
+  BUILD_TARGETS=":buildImages:buildImagesToRegistry"
+  # Load-test images are their own aggregate (see buildImages/build.gradle), so
+  # buildImagesToRegistry does not build them. Only the k6 load-test cases
+  # (Test008x) need migrations/k6_scripts in the registry.
+  if [[ "$with_load_test_images" == "true" ]]; then
+    BUILD_TARGETS="${BUILD_TARGETS} :buildImages:buildKitLoadTestAll"
+  fi
   export MULTI_ARCH_NATIVE
 
   # When mirroring, buildkit still pulls from public registries — building on
@@ -1074,9 +1132,9 @@ if [[ "$build" == "true" && -z "$ma_images_source" ]]; then
   skip_test_arg=""
   [[ "$skip_test_images" == "true" ]] && skip_test_arg="-PskipTestImages=true"
 
-  "$base_dir/gradlew" -p "$base_dir" :buildImages:${BUILD_TARGET} -PregistryEndpoint="$MIGRATIONS_ECR_REGISTRY" -Pbuilder="$BUILDER_NAME" -PimageVersion="$IMAGE_TAG" $skip_test_arg -x test \
+  "$base_dir/gradlew" -p "$base_dir" ${BUILD_TARGETS} -PregistryEndpoint="$MIGRATIONS_ECR_REGISTRY" -Pbuilder="$BUILDER_NAME" -PimageVersion="$IMAGE_TAG" $skip_test_arg -x test \
     || { echo "Image build failed, retrying in 10s..."; sleep 10; \
-         "$base_dir/gradlew" -p "$base_dir" :buildImages:${BUILD_TARGET} -PregistryEndpoint="$MIGRATIONS_ECR_REGISTRY" -Pbuilder="$BUILDER_NAME" -PimageVersion="$IMAGE_TAG" $skip_test_arg -x test; } \
+         "$base_dir/gradlew" -p "$base_dir" ${BUILD_TARGETS} -PregistryEndpoint="$MIGRATIONS_ECR_REGISTRY" -Pbuilder="$BUILDER_NAME" -PimageVersion="$IMAGE_TAG" $skip_test_arg -x test; } \
     || { echo "Image build failed on retry, giving up."; exit 1; }
 
   echo "Cleaning up docker buildx builder to free buildkit pods..."
@@ -1270,7 +1328,7 @@ helm install "$namespace" "${ma_chart_dir}" \
   $IMAGE_FLAGS \
   $TLS_HELM_FLAGS \
   $NODEPOOL_HELM_FLAGS \
-  || { echo "Installing Migration Assistant chart failed..."; exit 1; }
+  || { echo "Installing Migration Assistant chart failed..."; dump_helm_debug_info "$namespace"; exit 1; }
 set -x
 
 kubectl config set-context "${KUBE_CONTEXT}" --namespace="$namespace" >/dev/null 2>&1
