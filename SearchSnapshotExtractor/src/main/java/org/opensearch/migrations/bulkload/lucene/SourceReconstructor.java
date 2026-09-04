@@ -603,6 +603,15 @@ public class SourceReconstructor {
                     continue;
                 }
                 for (String targetField : rankedTargets) {
+                    // A fan-in target holds the UNION of its contributors with no record of who
+                    // contributed what, so attributing it to one source fabricates data. Skip only
+                    // when the source has its own Lucene footprint (tiers 1-4 already failed, so the
+                    // doc truly had no value); footprint-less sources keep best-effort recovery.
+                    if (mappingContext.getCopyToSources(targetField).size() > 1
+                            && sourceMapping != null
+                            && (sourceMapping.indexed() || sourceMapping.docValues())) {
+                        continue;
+                    }
                     ProbeResult recovered = probeFieldValue(reader, docId, document, targetField,
                             mappingContext, termIndex);
                     if (recovered == null) {
