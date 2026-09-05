@@ -917,6 +917,10 @@ export const OPTIONAL_HTTP_ENDPOINT_PATTERN = `^(?:https?:\\/\\/${HOSTNAME_PATTE
 export const GENERIC_JSON_OBJECT = z.record(z.string(), z.any());
 export const HTTP_HEADER_NAME_PATTERN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 export const K8S_NAMING_PATTERN = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/;
+export const WORKFLOW_RESOURCE_ALIAS_MESSAGE =
+    "Use a valid resource alias: lowercase letters, numbers, '-' or '.', starting and ending with an alphanumeric character.";
+export const WORKFLOW_RESOURCE_ALIAS = z.string()
+    .regex(K8S_NAMING_PATTERN, WORKFLOW_RESOURCE_ALIAS_MESSAGE);
 export const DNS_LABEL_PATTERN = "[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?";
 export const DNS_NAME_PATTERN = `^(?:\\*\\.)?${DNS_LABEL_PATTERN}(?:\\.${DNS_LABEL_PATTERN})*$`;
 export const K8S_IMAGE_PULL_POLICY = z.enum(["Always", "Never", "IfNotPresent"]);
@@ -2804,18 +2808,24 @@ export const NORMALIZED_PARAMETERIZED_MIGRATION_CONFIG = z.object({
     }
 });
 
-export const SOURCE_CLUSTERS_MAP = z.record(z.string(), SOURCE_CLUSTER_CONFIG)
+export const SOURCE_CLUSTERS_MAP = z.record(WORKFLOW_RESOURCE_ALIAS, SOURCE_CLUSTER_CONFIG)
     .describe("Map of source cluster names to their configurations. Keys are used as labels throughout the migration workflow.")
     .uiHint({
         kind: 'record',
         addLabel: 'source cluster',
+        keyFormat: 'k8s-name',
+        keyPattern: K8S_NAMING_PATTERN.source,
+        message: WORKFLOW_RESOURCE_ALIAS_MESSAGE,
         resourceCollection: SOURCE_RESOURCE_COLLECTION,
     });
-export const TARGET_CLUSTERS_MAP = z.record(z.string(), TARGET_CLUSTER_CONFIG)
+export const TARGET_CLUSTERS_MAP = z.record(WORKFLOW_RESOURCE_ALIAS, TARGET_CLUSTER_CONFIG)
     .describe("Map of target cluster names to their configurations. Keys are used as labels and must be referenced by snapshotMigrationConfigs and traffic replayers.")
     .uiHint({
         kind: 'record',
         addLabel: 'target cluster',
+        keyFormat: 'k8s-name',
+        keyPattern: K8S_NAMING_PATTERN.source,
+        message: WORKFLOW_RESOURCE_ALIAS_MESSAGE,
         resourceCollection: TARGET_RESOURCE_COLLECTION,
     });
 

@@ -26,10 +26,16 @@ describe("workflow schema UI hints", () => {
         expect(schema.properties.sourceClusters["x-ui-hint"]).toMatchObject({
             kind: "record",
             addLabel: "source cluster",
+            keyFormat: "k8s-name",
+            keyPattern: expect.any(String),
+            message: expect.stringContaining("alias"),
         });
         expect(schema.properties.targetClusters["x-ui-hint"]).toMatchObject({
             kind: "record",
             addLabel: "target cluster",
+            keyFormat: "k8s-name",
+            keyPattern: expect.any(String),
+            message: expect.stringContaining("alias"),
         });
         expect(schema.properties.traffic.properties.kafkaClusters["x-ui-hint"]).toMatchObject({
             kind: "record",
@@ -50,6 +56,44 @@ describe("workflow schema UI hints", () => {
             kind: "array",
             addLabel: "snapshot migration",
         });
+    });
+
+    it("rejects source and target aliases that cannot be used as resource names", () => {
+        const result = OVERALL_MIGRATION_CONFIG.safeParse({
+            sourceClusters: {
+                "source with spaces": {
+                    endpoint: "https://source.example.com:9200",
+                    version: "ES 7.10.2",
+                },
+            },
+            targetClusters: {
+                "target with spaces": {
+                    endpoint: "https://target.example.com:9200",
+                },
+            },
+            snapshotMigrationConfigs: [],
+        });
+
+        expect(result.success).toBe(false);
+        if (result.success) return;
+        expect(result.error.issues).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                path: ["sourceClusters", "source with spaces"],
+                issues: expect.arrayContaining([
+                    expect.objectContaining({
+                        message: expect.stringContaining("alias"),
+                    }),
+                ]),
+            }),
+            expect.objectContaining({
+                path: ["targetClusters", "target with spaces"],
+                issues: expect.arrayContaining([
+                    expect.objectContaining({
+                        message: expect.stringContaining("alias"),
+                    }),
+                ]),
+            }),
+        ]));
     });
 
     it("exports scalar and reference edit hints for nested fields", () => {
