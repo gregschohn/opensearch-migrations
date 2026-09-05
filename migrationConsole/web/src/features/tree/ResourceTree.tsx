@@ -349,6 +349,7 @@ const TreeRow = memo(function TreeRow({
           ? `status-${node.status}`
           : "",
         configurationOnly ? "configuration-tree-row" : "",
+        renaming ? "tree-inline-editing" : "",
         validationErrorItem ? "validation-error-item" : "",
         validationErrorAncestor ? "validation-error-ancestor" : "",
         selected ? "selected" : "",
@@ -436,32 +437,34 @@ const TreeRow = memo(function TreeRow({
             ].filter(Boolean).join(" ")}
             value={renameValue}
           />
-          <button
-            aria-label="Apply rename"
-            disabled={
-              addPending
-              || !renameValue.trim()
-              || renameValue.trim() === renameOption.currentName
-              || Boolean(renameValidationProblem)
-            }
-            onClick={(event) => event.stopPropagation()}
-            title="Apply rename"
-            type="submit"
-          >
-            <Check aria-hidden="true" />
-          </button>
-          <button
-            aria-label="Cancel rename"
-            disabled={addPending}
-            onClick={(event) => {
-              event.stopPropagation();
-              onCancelRename();
-            }}
-            title="Cancel rename"
-            type="button"
-          >
-            <X aria-hidden="true" />
-          </button>
+          <span className="tree-inline-name-actions">
+            <button
+              aria-label="Apply rename"
+              disabled={
+                addPending
+                || !renameValue.trim()
+                || renameValue.trim() === renameOption.currentName
+                || Boolean(renameValidationProblem)
+              }
+              onClick={(event) => event.stopPropagation()}
+              title="Apply rename"
+              type="submit"
+            >
+              <Check aria-hidden="true" />
+            </button>
+            <button
+              aria-label="Cancel rename"
+              disabled={addPending}
+              onClick={(event) => {
+                event.stopPropagation();
+                onCancelRename();
+              }}
+              title="Cancel rename"
+              type="button"
+            >
+              <X aria-hidden="true" />
+            </button>
+          </span>
           {renameValidationProblem ? (
             <small className="tree-inline-validation" role="alert">
               {renameValidationProblem}
@@ -686,18 +689,6 @@ function InlineCreateRow({
     create.option.pattern,
     create.option.validationMessage,
   );
-  const resourceType = create.option.placement.resourceType.toLocaleLowerCase();
-  const clusterObjectHelp = resourceType.includes("repository")
-    ? (
-        " Submitting this configuration can create this repository on the "
-        + "source Elasticsearch/OpenSearch cluster."
-      )
-    : resourceType.includes("snapshot")
-      ? (
-          " Submitting this configuration can create this snapshot on the "
-          + "source Elasticsearch/OpenSearch cluster."
-        )
-      : "";
   return (
     <form
       aria-label={`New ${create.option.label}`}
@@ -747,34 +738,27 @@ function InlineCreateRow({
           required
           value={create.name}
         />
-        <button
-          aria-label={`Create ${create.option.label}`}
-          disabled={
-            pending || !create.name.trim() || Boolean(validationProblem)
-          }
-          title={`Create ${create.option.label}`}
-          type="submit"
-        >
-          <Check aria-hidden="true" />
-          <span>Add</span>
-        </button>
-        <button
-          aria-label={`Cancel adding ${create.option.label}`}
-          disabled={pending}
-          onClick={onCancel}
-          title="Cancel"
-          type="button"
-        >
-          <X aria-hidden="true" />
-          <span>Cancel</span>
-        </button>
-        <small className={[
-          "tree-inline-name-help",
-          clusterObjectHelp ? "cluster-object-name-help" : "",
-        ].join(" ")}>
-          This name is an alias used by references and status views.
-          {clusterObjectHelp}
-        </small>
+        <span className="tree-inline-name-actions">
+          <button
+            aria-label={`Create ${create.option.label}`}
+            disabled={
+              pending || !create.name.trim() || Boolean(validationProblem)
+            }
+            title={`Create ${create.option.label}`}
+            type="submit"
+          >
+            <Check aria-hidden="true" />
+          </button>
+          <button
+            aria-label={`Cancel adding ${create.option.label}`}
+            disabled={pending}
+            onClick={onCancel}
+            title="Cancel"
+            type="button"
+          >
+            <X aria-hidden="true" />
+          </button>
+        </span>
         {validationProblem ? (
           <small className="tree-inline-validation" role="alert">
             {validationProblem}
@@ -1379,6 +1363,11 @@ export function ResourceTree({
     if (!inlineCreate || !resourceAdds) return;
     const name = inlineCreate.name.trim();
     if (inlineCreate.option.requiresName && !name) return;
+    if (fieldValidationProblem(
+      name,
+      inlineCreate.option.pattern,
+      inlineCreate.option.validationMessage,
+    )) return;
     const previousSelectedId = inlineCreate.previousSelectedId;
     const previousFocusedId = inlineCreate.previousFocusedId;
     const optionId = inlineCreate.option.id;
@@ -1466,6 +1455,11 @@ export function ResourceTree({
     if (!inlineRename || !resourceAdds) return;
     const newName = inlineRename.name.trim();
     if (!newName || newName === inlineRename.option.currentName) return;
+    if (fieldValidationProblem(
+      newName,
+      inlineRename.option.pattern,
+      inlineRename.option.validationMessage,
+    )) return;
     const { nodeId, option } = inlineRename;
     setInlineRename(null);
     focusAfterMutation.current = true;

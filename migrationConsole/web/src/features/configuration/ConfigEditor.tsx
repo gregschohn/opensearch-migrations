@@ -11,6 +11,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
   ArrowLeft,
+  Check,
   ChevronDown,
   ChevronRight,
   ChevronsDown,
@@ -22,6 +23,7 @@ import {
   Send,
   Trash2,
   Undo2,
+  X,
 } from "lucide-react";
 
 import {
@@ -865,6 +867,19 @@ function CommandEditor({
     ?? hintRecord(node.inputHint).pattern;
   const patternMessage = hintRecord(node.validation).message
     ?? hintRecord(node.inputHint).message;
+  const resourceType = resourceAddPlacement(parent ?? node)
+    ?.resourceType.toLocaleLowerCase() ?? "";
+  const clusterObjectHelp = resourceType.includes("repository")
+    ? (
+        "Submitting this configuration can create this repository on the "
+        + "source Elasticsearch/OpenSearch cluster."
+      )
+    : resourceType.includes("snapshot")
+      ? (
+          "Submitting this configuration can create this snapshot on the "
+          + "source Elasticsearch/OpenSearch cluster."
+        )
+      : "";
   const formRef = useEscapeCancel<HTMLFormElement>(onCancel, busy);
   return (
     <form
@@ -873,6 +888,15 @@ function CommandEditor({
       onSubmit={(event) => {
         event.preventDefault();
         const trimmedName = name.trim();
+        const currentProblem = fieldValidationProblem(
+          trimmedName,
+          typeof pattern === "string" ? pattern : undefined,
+          typeof patternMessage === "string" ? patternMessage : undefined,
+        );
+        if (currentProblem) {
+          setValidationProblem(currentProblem);
+          return;
+        }
         const operation = execute
           ? execute(trimmedName)
           : runAddCommand(
@@ -907,26 +931,41 @@ function CommandEditor({
             }}
             pattern={typeof pattern === "string" ? pattern : undefined}
             required
+            type="text"
             value={name}
           />
         </label>
       ) : null}
       <button
+        aria-label={`Create ${label}`}
         disabled={
           busy
           || Boolean(node.command?.blockedMessage)
           || (requiresName && !name.trim())
           || Boolean(validationProblem)
         }
+        title={`Create ${label}`}
         type="submit"
       >
-        <Plus aria-hidden="true" />
-        Create {label}
+        <Check aria-hidden="true" />
       </button>
-      <button disabled={busy} onClick={onCancel} type="button">Cancel</button>
+      <button
+        aria-label={`Cancel creating ${label}`}
+        disabled={busy}
+        onClick={onCancel}
+        title="Cancel"
+        type="button"
+      >
+        <X aria-hidden="true" />
+      </button>
       {requiresName ? (
         <p className="field-help naming-help">
           This name is an alias used by references and status views.
+        </p>
+      ) : null}
+      {requiresName && clusterObjectHelp ? (
+        <p className="field-help cluster-object-name-help">
+          {clusterObjectHelp}
         </p>
       ) : null}
       {validationProblem ? (
@@ -3024,8 +3063,7 @@ export function ConfigEditor({
         >
           <div>
             <LoaderCircle className="spin" aria-hidden="true" />
-            <strong>Updating configuration</strong>
-            <span>Waiting for the server to finish this change.</span>
+            <span>Updating configuration</span>
           </div>
         </div>
       ) : null}

@@ -1684,9 +1684,26 @@ button.secondary-button:hover:not(:disabled) {
   display: grid;
   min-width: 0;
   grid-column: 3 / -1;
-  grid-template-columns: minmax(72px, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 3px;
+  gap: 4px;
+}
+
+.tree-row.tree-inline-create,
+.tree-row.tree-inline-editing {
+  height: auto;
+  min-height: 34px;
+  align-items: start;
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
+.tree-row.tree-inline-create > .tree-expander-spacer,
+.tree-row.tree-inline-create > .tree-status-slot,
+.tree-row.tree-inline-editing > .tree-expander,
+.tree-row.tree-inline-editing > .tree-expander-spacer,
+.tree-row.tree-inline-editing > .tree-status-slot {
+  margin-top: 6px;
 }
 
 .tree-inline-name input {
@@ -1706,11 +1723,11 @@ button.secondary-button:hover:not(:disabled) {
 
 .tree-inline-name button {
   display: inline-flex;
-  width: auto;
-  height: 25px;
+  width: 26px;
+  height: 26px;
+  justify-content: center;
   align-items: center;
-  gap: 3px;
-  padding: 0 6px;
+  padding: 0;
   border: 1px solid var(--border-strong);
   border-radius: 3px;
   color: var(--accent);
@@ -1732,16 +1749,16 @@ button.secondary-button:hover:not(:disabled) {
   height: 14px;
 }
 
-.tree-inline-name-help,
-.tree-inline-validation {
-  grid-column: 1 / -1;
-  padding-top: 2px;
-  color: var(--text-muted);
-  font-size: 10px;
-  line-height: 14px;
+.tree-inline-name-actions {
+  display: flex;
+  gap: 4px;
 }
 
 .tree-inline-validation {
+  grid-column: 1 / -1;
+  padding-top: 2px;
+  font-size: 10px;
+  line-height: 14px;
   color: var(--danger);
 }
 
@@ -5015,12 +5032,20 @@ button.secondary-button:hover:not(:disabled) {
   font-size: 11px;
 }
 
-.inline-command-form {
+.field-form.inline-command-form {
   width: 100%;
   max-width: none;
   grid-template-columns: minmax(0, 1fr) auto auto;
-  align-items: start;
+  align-items: center;
   gap: 6px;
+}
+
+.inline-command-form > button {
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
+  min-height: 34px;
+  padding: 0;
 }
 
 .inline-command-form .field-help {
@@ -5606,35 +5631,32 @@ button.secondary-button:hover:not(:disabled) {
   position: fixed;
   z-index: 200;
   inset: 0;
-  display: grid;
-  padding: 24px;
-  place-items: center;
-  background: rgb(23 33 43 / 42%);
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  padding: 70px 14px 14px;
+  background: transparent;
   cursor: progress;
 }
 
 .interaction-shield > div {
-  display: grid;
-  min-width: min(320px, 100%);
-  grid-template-columns: 22px minmax(0, 1fr);
-  gap: 3px 10px;
-  padding: 16px 18px;
-  border: 1px solid var(--border-strong);
-  border-radius: 6px;
-  box-shadow: 0 14px 34px rgb(23 33 43 / 24%);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-shadow: 0 3px 10px rgb(23 33 43 / 12%);
   background: var(--surface);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .interaction-shield svg {
-  width: 20px;
-  height: 20px;
-  grid-row: 1 / span 2;
+  width: 14px;
+  height: 14px;
   color: var(--accent);
-}
-
-.interaction-shield span {
-  color: var(--text-muted);
-  font-size: 11px;
 }
 
 .external-resource-form,

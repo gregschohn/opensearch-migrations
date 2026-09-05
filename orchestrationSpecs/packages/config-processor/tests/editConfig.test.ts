@@ -151,6 +151,10 @@ describe("editConfig state", () => {
             essential: true,
         });
         expect(findNode(state.nodes, "edit:sourceClusters")?.inputHint).toMatchObject({
+            kind: "record",
+            keyFormat: "k8s-name",
+            keyPattern: expect.any(String),
+            message: expect.stringContaining("alias"),
             resourceCollection: {
                 navigation: {
                     sectionId: "section:Sources",
@@ -165,6 +169,18 @@ describe("editConfig state", () => {
                     typeLabel: "Source cluster",
                     identity: {kind: "named"},
                 },
+            },
+        });
+        expect(findNode(state.nodes, "edit:sourceClusters:add")).toMatchObject({
+            inputHint: {
+                kind: "text",
+                format: "k8s-name",
+                pattern: expect.any(String),
+                message: expect.stringContaining("alias"),
+            },
+            validation: {
+                pattern: expect.any(String),
+                message: expect.stringContaining("alias"),
             },
         });
         expect(findNode(state.nodes, "edit:traffic.s3Sources")?.inputHint).toMatchObject({

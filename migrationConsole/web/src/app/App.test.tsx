@@ -4843,13 +4843,22 @@ test("promotes add commands to collection actions and keeps exact deletion", asy
   await userEvent.click(within(sourceClusters).getByRole("button", {
     name: "Add source cluster",
   }));
+  expect(screen.getByText(
+    "This name is an alias used by references and status views.",
+  )).toBeInTheDocument();
+  const createSource = screen.getByRole("button", {
+    name: "Create source cluster",
+  });
+  const cancelSource = screen.getByRole("button", {
+    name: "Cancel creating source cluster",
+  });
+  expect(createSource).toHaveTextContent("");
+  expect(cancelSource).toHaveTextContent("");
   await userEvent.type(
     screen.getByRole("textbox", { name: "source cluster name" }),
     "modern",
   );
-  await userEvent.click(screen.getByRole("button", {
-    name: "Create source cluster",
-  }));
+  await userEvent.click(createSource);
   await waitFor(() => expect(operations).toHaveLength(1));
 
   await userEvent.click(screen.getByRole("button", { name: "Remove legacy" }));
@@ -5124,6 +5133,11 @@ test("shows a newly added resource while the server operation is pending", async
   expect(screen.getAllByRole("status").some(
     (element) => element.textContent?.includes("Updating configuration"),
   )).toBe(true);
+  expect(screen.queryByText(
+    "Waiting for the server to finish this change.",
+  )).toBeNull();
+  expect(document.querySelector(".interaction-shield"))
+    .toHaveClass("interaction-shield");
   expect(screen.queryByRole("textbox", {
     name: "source cluster name",
   })).toBeNull();
@@ -5166,9 +5180,19 @@ test("cancels inline resource naming and restores tree selection and focus", asy
     name: "source cluster name",
   });
   expect(nameInput).toHaveFocus();
-  expect(within(tree).getByText(
+  expect(within(tree).queryByText(
     "This name is an alias used by references and status views.",
-  )).toBeInTheDocument();
+  )).toBeNull();
+  const create = within(tree).getByRole("button", {
+    name: "Create source cluster",
+  });
+  const cancel = within(tree).getByRole("button", {
+    name: "Cancel adding source cluster",
+  });
+  expect(create).toHaveTextContent("");
+  expect(cancel).toHaveTextContent("");
+  expect(create.parentElement).toHaveClass("tree-inline-name-actions");
+  expect(create.parentElement).toBe(cancel.parentElement);
   await userEvent.type(nameInput, "Invalid Name");
   expect(within(tree).getByRole("alert")).toHaveTextContent(
     "Use a Kubernetes-compatible name.",
