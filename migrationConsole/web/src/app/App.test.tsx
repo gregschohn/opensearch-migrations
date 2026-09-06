@@ -904,7 +904,7 @@ test("surfaces failed prerequisites in navigation and workflow activity", async 
   const tree = await screen.findByRole("tree", { name: "Workflow resources" });
   const replay = within(tree).getByRole(
     "treeitem",
-    { name: /^replay, Pending$/ },
+    { name: /^replay, Pending, Blocked by capture$/ },
   );
   expect(within(replay).getByRole("button", {
     name: "View blocker capture",
@@ -1050,7 +1050,7 @@ test("lifts a VAP retry failure and requires reset before resubmitting", async (
   const tree = await screen.findByRole("tree", { name: "Workflow resources" });
   const capture = within(tree).getByRole(
     "treeitem",
-    { name: /^capture, Ready$/ },
+    { name: /^capture, Ready, Reset before approval/ },
   );
   expect(within(capture).getByText("Reset before approval"))
     .toBeInTheDocument();
@@ -6237,6 +6237,11 @@ test("offers submission for a pending resource addition without field diffs", as
   const pendingState = structuredClone(manageSnapshot);
   const capture = pendingState.nodes["resource:captureproxies:capture"];
   capture.valueSummary = "Addition pending submission";
+  capture.configPresence = {
+    deployed: false,
+    submitted: false,
+    pending: true,
+  };
   capture.comparisons = [];
   const validDraft = structuredClone(configDraft);
   validDraft.editState.validation = {

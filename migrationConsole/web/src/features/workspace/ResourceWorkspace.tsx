@@ -850,8 +850,18 @@ export function ResourceWorkspace({
     setLogTarget(null);
     setPendingAction(null);
   }, [node.id]);
+  // Mirrors the server's orphan derivation from configPresence rather
+  // than matching the "Orphaned; cleanup required" presentation string.
+  const presence = node.configPresence ?? {};
+  const presenceDeployed = presence.deployed ?? true;
+  const presenceSubmitted = presence.submitted ?? presenceDeployed;
+  const presencePending = presence.pending ?? presenceSubmitted;
   const cleanupRequired = (
-    node.valueSummary === "Orphaned; cleanup required"
+    node.kind === "resource"
+    && !("pending" in presence && presencePending !== presenceSubmitted)
+    && "submitted" in presence
+    && presenceSubmitted !== presenceDeployed
+    && !presenceSubmitted
   );
   return (
     <article className="workspace">
@@ -949,30 +959,6 @@ export function ResourceWorkspace({
       <RecentOperationFailure node={node} operations={operations} />
       <FailedWorkflowSteps onSelect={onSelect} steps={workflowSteps} />
       <Relationships node={node} onSelect={onSelect} />
-      {logTarget ? (
-        <LogPanel
-          nodeId={node.id}
-          onClose={() => setLogTarget(null)}
-        />
-      ) : null}
-      {outputTarget ? (
-        <OutputPanel
-          approval={approvals.find(
-            (candidate) => candidate.outputTargetId === outputTarget,
-          )}
-          onApprovalStarted={() => {
-            void 0;
-          }}
-          onClose={() => setOutputTarget(null)}
-          targetId={outputTarget}
-        />
-      ) : null}
-      {pendingAction ? (
-        <ResetDialog
-          onClose={() => setPendingAction(null)}
-          targetId={pendingAction.targetId}
-        />
-      ) : null}
       <dl className="facts-grid">
         <div>
           <dt>Status</dt>
@@ -992,6 +978,27 @@ export function ResourceWorkspace({
           </div>
           ))}
       </dl>
+      {logTarget ? (
+        <LogPanel
+          nodeId={node.id}
+          onClose={() => setLogTarget(null)}
+        />
+      ) : null}
+      {outputTarget ? (
+        <OutputPanel
+          approval={approvals.find(
+            (candidate) => candidate.outputTargetId === outputTarget,
+          )}
+          onClose={() => setOutputTarget(null)}
+          targetId={outputTarget}
+        />
+      ) : null}
+      {pendingAction ? (
+        <ResetDialog
+          onClose={() => setPendingAction(null)}
+          targetId={pendingAction.targetId}
+        />
+      ) : null}
       <Findings node={node} />
       <Comparisons node={node} />
       <RuntimeStatusPanel node={node} />

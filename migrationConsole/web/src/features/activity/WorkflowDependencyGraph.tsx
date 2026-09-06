@@ -99,13 +99,15 @@ function dependencyLaneGeometry(
     ? firstNode.getBoundingClientRect().left - graphRect.left
     : 72;
   const maxDepth = Math.max(1, ...routes.map((route) => route.depth));
+  // Compress lanes as depth grows so trunks stay inside the gutter
+  // instead of drawing underneath the node cards.
   const laneSpacing = Math.min(
     10,
-    Math.max(5, (nodeLeft - 18) / (maxDepth + 1)),
+    Math.max(2, (nodeLeft - 14) / (maxDepth + 1)),
   );
   return {
     laneSpacing,
-    leftmostX: Math.max(12, nodeLeft - laneSpacing * (maxDepth + 1)),
+    leftmostX: Math.max(6, nodeLeft - laneSpacing * (maxDepth + 1)),
   };
 }
 
@@ -267,6 +269,7 @@ function GraphNode({
   selectedNodeId,
   operation,
   approval,
+  prerequisites,
   onReviewApproval,
   onSelectNode,
   onActivate,
@@ -279,6 +282,7 @@ function GraphNode({
   selectedNodeId: string | null;
   operation: Operation | undefined;
   approval: ApprovalCandidate | undefined;
+  prerequisites: string[];
   onReviewApproval: (targetId: string) => void;
   onSelectNode: (nodeId: string) => void;
   onActivate: (nodeId: string) => void;
@@ -322,10 +326,18 @@ function GraphNode({
       }}
       onFocus={() => onActivate(graphNode.id)}
       onMouseEnter={() => onActivate(graphNode.id)}
-      onMouseLeave={onDeactivate}
+      onMouseLeave={(event) => {
+        // Keep the keyboard-focused path highlighted when the pointer
+        // merely passes over and out of the card.
+        if (event.currentTarget.contains(document.activeElement)) return;
+        onDeactivate();
+      }}
     >
       <button
         aria-current={selected ? "true" : undefined}
+        aria-description={prerequisites.length > 0
+          ? `Requires ${prerequisites.join(", ")}`
+          : undefined}
         aria-label={`Open ${graphNode.label}, ${state}`}
         className="workflow-graph-node-main"
         data-dependency-anchor="true"
@@ -487,6 +499,18 @@ export function WorkflowDependencyGraph({
   const depthById = useMemo(() => new Map(
     graph.nodes.map((node) => [node.id, node.depth]),
   ), [graph.nodes]);
+  const prerequisitesById = useMemo(() => {
+    const result = new Map<string, string[]>();
+    graph.edges.forEach((edge) => {
+      const source = nodeById.get(edge.sourceId);
+      if (!source) return;
+      result.set(edge.targetId, [
+        ...(result.get(edge.targetId) ?? []),
+        source.label,
+      ]);
+    });
+    return result;
+  }, [graph.edges, nodeById]);
   const pathAnchorId = hoveredNodeId;
   const activePath = useMemo(
     () => connectedPath(graph.edges, pathAnchorId),
@@ -529,14 +553,21 @@ export function WorkflowDependencyGraph({
       ? null
       : new ResizeObserver(update);
     observer?.observe(container);
-    nodeElements.current.forEach((element) => observer?.observe(element));
+    nodeElements.current.forEach((element) => {
+      observer?.observe(element);
+      // Disclosing steps/approvals grows the card, not the anchor
+      // button, so watch the whole card for geometry changes.
+      const card = element.closest("fieldset");
+      if (card) observer?.observe(card);
+    });
     globalThis.addEventListener("resize", update);
     return () => {
       cancelAnimationFrame(frame);
       observer?.disconnect();
       globalThis.removeEventListener("resize", update);
     };
-  }, [approvals, depthById, graph.edges, nodeById]);
+    // selectedNodeId changes which steps render, moving cards below.
+  }, [approvals, depthById, graph.edges, nodeById, selectedNodeId]);
 
   if (graph.nodes.length === 0) {
     return (
@@ -657,6 +688,7 @@ export function WorkflowDependencyGraph({
               (candidate) => candidate.nodeId === graphNode.id,
             )}
             graphNode={graphNode}
+            prerequisites={prerequisitesById.get(graphNode.id) ?? []}
             onActivate={setHoveredNodeId}
             onDeactivate={() => setHoveredNodeId(null)}
             onReviewApproval={onReviewApproval}
@@ -673,6 +705,29 @@ export function WorkflowDependencyGraph({
           />
         </div>
       ))}
+      {routedPaths.length > 0 ? (
+        <footer aria-hidden="true" className="workflow-graph-legend">
+          <span><i className="legend-line" />requires</span>
+          {routedPaths.some((route) => route.state === "blocked") ? (
+            <span>
+              <i className="legend-line legend-blocked" />
+              blocked prerequisite
+            </span>
+          ) : null}
+          {routedPaths.some((route) => route.state === "approval") ? (
+            <span>
+              <i className="legend-line legend-approval" />
+              approval gate
+            </span>
+          ) : null}
+          {routedPaths.some((route) => route.state === "unknown") ? (
+            <span>
+              <i className="legend-line legend-unknown" />
+              state unknown
+            </span>
+          ) : null}
+        </footer>
+      ) : null}
     </section>
   );
 }

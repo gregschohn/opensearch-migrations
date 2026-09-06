@@ -139,17 +139,18 @@ function navigationResourceId(
 
 
 function hasPendingConfiguration(snapshot: ManageSnapshot): boolean {
+  // Mirrors the server's value-summary derivation from configPresence
+  // instead of matching its presentation strings.
   return Object.values(snapshot.nodes).some((node) => {
     if (node.kind !== "resource") return false;
     if (node.comparisons.some((comparison) => comparison.pendingChanged)) {
       return true;
     }
-    const summary = (node.valueSummary ?? "").toLocaleLowerCase();
-    return (
-      summary.includes("pending submission")
-      || summary.includes("will be orphaned")
-      || /changes? to submit/.test(summary)
-    );
+    const presence = node.configPresence ?? {};
+    if (!("pending" in presence)) return false;
+    const deployed = presence.deployed ?? true;
+    const submitted = presence.submitted ?? deployed;
+    return presence.pending !== submitted;
   });
 }
 

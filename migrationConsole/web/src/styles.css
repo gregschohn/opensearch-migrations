@@ -20,6 +20,13 @@
   --success: #26734d;
   --warning: #a35a08;
   --danger: #b0362f;
+  --danger-strong: #a33d36;
+  --danger-border: #8b312d;
+  --danger-text: #7e2a25;
+  --approval-border: #b98222;
+  --approval-border-soft: #d8b46d;
+  --approval-text: #5d430b;
+  --approval-surface: #fff8e9;
   --running: #3467a7;
   --row-height: 42px;
 }
@@ -178,7 +185,7 @@ button.secondary-button:hover:not(:disabled) {
 }
 
 .activity-step.operation-waiting {
-  border-left: 2px solid #b7791f;
+  border-left: 2px solid var(--warning);
 }
 
 .activity-step.operation-failed {
@@ -187,7 +194,7 @@ button.secondary-button:hover:not(:disabled) {
 }
 
 .activity-step.operation-succeeded {
-  border-left: 2px solid #2f855a;
+  border-left: 2px solid var(--success);
 }
 
 .activity-step.operation small {
@@ -243,7 +250,7 @@ button.secondary-button:hover:not(:disabled) {
   padding: 8px;
   border: 1px solid #d85c50;
   border-radius: 3px;
-  color: #7e241d;
+  color: var(--danger-text);
   background: #fff6f5;
   font-size: 11px;
 }
@@ -269,11 +276,11 @@ button.secondary-button:hover:not(:disabled) {
 .submit-preflight > header svg {
   width: 17px;
   height: 17px;
-  color: #2f855a;
+  color: var(--success);
 }
 
 .submit-preflight:has(li) > header svg {
-  color: #9a5c19;
+  color: var(--warning);
 }
 
 .submit-preflight.deployment-impact > header svg {
@@ -341,7 +348,7 @@ button.secondary-button:hover:not(:disabled) {
 .submit-reset-plan {
   margin-top: 8px;
   padding: 8px;
-  border-left: 2px solid #a33d36;
+  border-left: 2px solid var(--danger-strong);
   background: #fff6f5;
   font-size: 10px;
 }
@@ -435,7 +442,7 @@ button.secondary-button:hover:not(:disabled) {
   border-radius: 9px;
   color: var(--text-muted);
   background: #e2e7e9;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
 }
 
@@ -468,12 +475,12 @@ button.secondary-button:hover:not(:disabled) {
 }
 
 .approval-center-row.state-blocking {
-  background: #fff9e9;
+  background: var(--approval-surface);
 }
 
 .approval-center-row.state-blocking > svg,
 .approval-center-row.state-error > svg {
-  color: #a66a11;
+  color: var(--warning);
 }
 
 .approval-center-row.state-passed > svg {
@@ -509,7 +516,7 @@ button.secondary-button:hover:not(:disabled) {
 .approval-center-row-content small {
   margin-top: 1px;
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .approval-center-row-content p {
@@ -590,7 +597,7 @@ button.secondary-button:hover:not(:disabled) {
   min-width: 0;
   padding: 12px;
   border: 1px solid var(--border);
-  border-left: 3px solid #b98222;
+  border-left: 3px solid var(--approval-border);
   border-radius: 4px;
   background: var(--surface);
 }
@@ -614,7 +621,7 @@ button.secondary-button:hover:not(:disabled) {
 
 .approval-review-item > header > svg {
   width: 17px;
-  color: #9a6613;
+  color: var(--warning);
 }
 
 .approval-review-item.impossible-change > header > svg {
@@ -653,7 +660,7 @@ button.secondary-button:hover:not(:disabled) {
   overflow: hidden;
   color: var(--text-muted);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
+  font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -693,9 +700,9 @@ button.secondary-button:hover:not(:disabled) {
 }
 
 .approval-review-item > footer .danger-confirm {
-  border-color: #8b312d;
+  border-color: var(--danger-border);
   color: #fff;
-  background: #a33d36;
+  background: var(--danger-strong);
 }
 
 .combined-reset-review {
@@ -756,17 +763,17 @@ button.secondary-button:hover:not(:disabled) {
   align-items: flex-start;
   gap: 7px;
   padding: 8px;
-  border: 1px solid #d9a441;
+  border: 1px solid var(--approval-border-soft);
   border-radius: 3px;
-  color: #684106;
-  background: #fff9eb;
+  color: var(--approval-text);
+  background: var(--approval-surface);
   font-size: 11px;
   line-height: 1.4;
 }
 
 .action-dialog-error {
   border-color: #d85c50;
-  color: #7e241d;
+  color: var(--danger-text);
   background: #fff6f5;
 }
 
@@ -794,7 +801,7 @@ button.secondary-button:hover:not(:disabled) {
 
 .action-review-facts dt {
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
 }
@@ -861,7 +868,7 @@ button.secondary-button:hover:not(:disabled) {
 .reset-target-list small,
 .reset-target-list li > span:last-child {
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .reset-review-dialog .action-warning + .action-warning {
@@ -945,8 +952,8 @@ button.secondary-button:hover:not(:disabled) {
   place-items: center;
   border-radius: 9px;
   color: #fff;
-  background: #a66a11;
-  font-size: 9px;
+  background: var(--warning);
+  font-size: 10px;
 }
 
 .health-state {
@@ -1080,20 +1087,20 @@ button.secondary-button:hover:not(:disabled) {
 }
 
 .stale-banner {
-  color: #6b410b;
-  background: #fff4dc;
+  color: var(--approval-text);
+  background: var(--approval-surface);
 }
 
 .problem-banner {
-  color: #7e2f2a;
+  color: var(--danger-text);
   background: #fff0ef;
 }
 
 .approval-banner {
   align-items: flex-start;
-  border-bottom-color: #dfc07c;
-  color: #5d430b;
-  background: #fff9e9;
+  border-bottom-color: var(--approval-border-soft);
+  color: var(--approval-text);
+  background: var(--approval-surface);
 }
 
 .approval-banner > div {
@@ -1133,7 +1140,7 @@ button.secondary-button:hover:not(:disabled) {
 }
 
 .approval-banner .approval-reason {
-  color: #7b4c08;
+  color: var(--approval-text);
   font-weight: 650;
 }
 
@@ -1144,9 +1151,9 @@ button.secondary-button:hover:not(:disabled) {
   align-items: center;
   gap: 6px;
   padding: 0 10px;
-  border: 1px solid #b98222;
+  border: 1px solid var(--approval-border);
   border-radius: 4px;
-  color: #5d430b;
+  color: var(--approval-text);
   background: #fff;
   font-weight: 650;
 }
@@ -1156,8 +1163,8 @@ button.secondary-button:hover:not(:disabled) {
 }
 
 .approval-banner > button:hover:not(:disabled) {
-  border-color: #9a6613;
-  background: #fff4dc;
+  border-color: var(--warning);
+  background: var(--approval-surface);
 }
 
 .manage-layout {
@@ -1223,7 +1230,7 @@ button.secondary-button:hover:not(:disabled) {
   border-radius: 0;
   color: var(--text-muted);
   background: var(--surface);
-  font-size: 9px;
+  font-size: 10px;
   line-height: 12px;
 }
 
@@ -1544,7 +1551,7 @@ button.secondary-button:hover:not(:disabled) {
   padding: 0;
   overflow: hidden;
   border: 0;
-  color: #6c500d;
+  color: var(--approval-text);
   background: transparent;
   cursor: pointer;
   font-size: 10px;
@@ -1562,7 +1569,7 @@ button.secondary-button:hover:not(:disabled) {
 .tree-dependency-hint small {
   flex: 0 0 auto;
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .tree-dependency-hint.dependency-blocked {
@@ -1575,7 +1582,7 @@ button.secondary-button:hover:not(:disabled) {
   grid-template-columns: auto minmax(0, 1fr);
   align-items: baseline;
   gap: 5px;
-  color: #7e2f2a !important;
+  color: var(--danger-text) !important;
   font-size: 10px;
   line-height: 15px;
 }
@@ -1641,21 +1648,21 @@ button.secondary-button:hover:not(:disabled) {
 }
 
 .tree-validation-indicator > span {
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
 }
 
 .tree-validation-indicator.validation-valid {
-  color: #237a4b;
+  color: var(--success);
 }
 
 .tree-validation-indicator.validation-warning {
   color: #9a5b0a;
-  background: #fff6df;
+  background: var(--approval-surface);
 }
 
 .tree-validation-indicator.validation-error {
-  color: #a33d36;
+  color: var(--danger-strong);
   background: #fff0ef;
 }
 
@@ -1798,8 +1805,8 @@ button.secondary-button:hover:not(:disabled) {
 .cluster-object-name-help {
   padding: 5px 6px;
   border-left: 2px solid var(--warning);
-  background: #fff8ec;
-  color: #70491b;
+  background: var(--approval-surface);
+  color: var(--approval-text);
   font-size: 11px;
 }
 
@@ -1972,7 +1979,7 @@ button.secondary-button:hover:not(:disabled) {
 .phase-badge.status-error,
 .phase-badge.status-blocked {
   border-color: #e0b1ae;
-  color: #8c2e29;
+  color: var(--danger-text);
   background: #fff1f0;
 }
 
@@ -2003,14 +2010,14 @@ button.secondary-button:hover:not(:disabled) {
 }
 
 .resource-actions button.primary-button.cleanup-action {
-  border-color: #52636f;
+  border-color: var(--danger-border);
   color: #fff;
-  background: #52636f;
+  background: var(--danger-strong);
 }
 
 .resource-actions button.primary-button.cleanup-action:disabled {
-  color: #e5e9eb;
-  background: #737f87;
+  color: #f3e2e0;
+  background: #b6716b;
 }
 
 .cleanup-notice {
@@ -2087,7 +2094,7 @@ button.secondary-button:hover:not(:disabled) {
   margin-top: 2px;
   overflow: hidden;
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2105,7 +2112,7 @@ button.secondary-button:hover:not(:disabled) {
   border-radius: 15px;
   color: #51616c;
   background: #edf0f2;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .approval-toggle > span {
@@ -2123,15 +2130,15 @@ button.secondary-button:hover:not(:disabled) {
 }
 
 .approval-toggle.active {
-  border-color: #2e7a65;
+  border-color: var(--success);
   color: #fff;
-  background: #2e7a65;
+  background: var(--success);
 }
 
 .approval-toggle.mixed {
-  border-color: #a66a11;
+  border-color: var(--warning);
   color: #fff;
-  background: #a66a11;
+  background: var(--warning);
 }
 
 .approval-toggle:disabled {
@@ -2164,9 +2171,9 @@ button.secondary-button:hover:not(:disabled) {
   gap: 10px;
   margin: 0 -18px;
   padding: 11px 18px;
-  border-bottom: 1px solid #dfc07c;
-  color: #5d430b;
-  background: #fff9e9;
+  border-bottom: 1px solid var(--approval-border-soft);
+  color: var(--approval-text);
+  background: var(--approval-surface);
 }
 
 .output-approval > svg {
@@ -2313,7 +2320,7 @@ button.secondary-button:hover:not(:disabled) {
 
 .output-stage-tabs small {
   margin-top: 2px;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .output-context {
@@ -2329,7 +2336,7 @@ button.secondary-button:hover:not(:disabled) {
 
 .output-context dt {
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
 }
@@ -2614,11 +2621,11 @@ button.secondary-button:hover:not(:disabled) {
 }
 
 .log-error-count {
-  color: #b23d37;
+  color: var(--danger-strong);
 }
 
 .log-warning-count {
-  color: #97630d;
+  color: var(--warning);
 }
 
 .log-issue-summary button {
@@ -2675,7 +2682,7 @@ button.secondary-button:hover:not(:disabled) {
   border-bottom: 1px solid #40515e;
   color: #afc0ca;
   background: #202d37;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
 }
@@ -2832,7 +2839,7 @@ button.secondary-button:hover:not(:disabled) {
   gap: 9px;
   padding: 12px 22px;
   border-bottom: 1px solid #e8cdca;
-  color: #6f2824;
+  color: var(--danger-text);
   background: #fff0ef;
 }
 
@@ -2862,7 +2869,7 @@ button.secondary-button:hover:not(:disabled) {
   grid-template-columns: 20px minmax(0, 1fr);
   gap: 9px;
   padding: 14px 22px 16px;
-  color: #6f2824;
+  color: var(--danger-text);
 }
 
 .resource-issue > svg {
@@ -2900,7 +2907,7 @@ button.secondary-button:hover:not(:disabled) {
 }
 
 .issue-remedy strong {
-  color: #6f2824;
+  color: var(--danger-text);
 }
 
 .issue-actions {
@@ -3028,7 +3035,7 @@ button.secondary-button:hover:not(:disabled) {
 
 .relationship-list small {
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .relationship-list button > svg:last-child {
@@ -3197,7 +3204,7 @@ button.secondary-button:hover:not(:disabled) {
 
 .runtime-status-table th {
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 650;
   text-transform: uppercase;
 }
@@ -3224,7 +3231,7 @@ button.secondary-button:hover:not(:disabled) {
   margin-top: 5px;
   color: var(--text-muted);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .failed-workflow-steps {
@@ -3291,7 +3298,7 @@ button.secondary-button:hover:not(:disabled) {
 .failed-workflow-step-list small,
 .failed-workflow-step-list time {
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .failed-workflow-step-list button > span:last-child {
@@ -3389,7 +3396,7 @@ button.secondary-button:hover:not(:disabled) {
 
 .comparison-table td.changed {
   box-shadow: inset 3px 0 var(--warning);
-  background: #fff8e8;
+  background: var(--approval-surface);
 }
 
 .activity-panel {
@@ -3447,12 +3454,12 @@ button.secondary-button:hover:not(:disabled) {
 }
 
 .workflow-graph-edge.edge-blocked {
-  stroke: #b34d43;
+  stroke: var(--danger-strong);
   stroke-width: 2;
 }
 
 .workflow-graph-edge.edge-approval {
-  stroke: #b27716;
+  stroke: var(--warning);
   stroke-width: 2;
 }
 
@@ -3478,11 +3485,11 @@ button.secondary-button:hover:not(:disabled) {
 }
 
 .workflow-graph-port.edge-blocked {
-  stroke: #b34d43;
+  stroke: var(--danger-strong);
 }
 
 .workflow-graph-port.edge-approval {
-  stroke: #b27716;
+  stroke: var(--warning);
 }
 
 #graph-arrow path {
@@ -3490,17 +3497,52 @@ button.secondary-button:hover:not(:disabled) {
 }
 
 #graph-arrow-blocked path {
-  fill: #b34d43;
+  fill: var(--danger-strong);
 }
 
 #graph-arrow-approval path {
-  fill: #b27716;
+  fill: var(--warning);
 }
 
 .workflow-graph-item {
   position: relative;
   z-index: 1;
   padding-left: 64px;
+}
+
+.workflow-graph-legend {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  padding-top: 4px;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.workflow-graph-legend > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.workflow-graph-legend .legend-line {
+  display: inline-block;
+  width: 14px;
+  border-top: 2px solid #9ba9af;
+}
+
+.workflow-graph-legend .legend-line.legend-blocked {
+  border-top-color: var(--danger-strong);
+}
+
+.workflow-graph-legend .legend-line.legend-approval {
+  border-top-color: var(--warning);
+}
+
+.workflow-graph-legend .legend-line.legend-unknown {
+  border-top-style: dashed;
 }
 
 .workflow-graph-node {
@@ -3540,7 +3582,7 @@ button.secondary-button:hover:not(:disabled) {
 }
 
 .workflow-graph-node.graph-state-approval {
-  border-color: #d8b46d;
+  border-color: var(--approval-border-soft);
   background: #fffaf0;
 }
 
@@ -3590,12 +3632,12 @@ button.secondary-button:hover:not(:disabled) {
 
 .workflow-graph-node-main small {
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 10px;
   line-height: 13px;
 }
 
 .workflow-graph-node-main .workflow-graph-activity {
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .workflow-graph-steps {
@@ -3648,14 +3690,14 @@ button.secondary-button:hover:not(:disabled) {
 }
 
 .workflow-graph-step strong {
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 650;
   line-height: 12px;
 }
 
 .workflow-graph-step small {
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 10px;
   line-height: 12px;
 }
 
@@ -3670,7 +3712,7 @@ button.secondary-button:hover:not(:disabled) {
   border-radius: 0;
   color: var(--text-muted);
   background: #f8fafb;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 650;
   text-align: left;
 }
@@ -3693,11 +3735,11 @@ button.secondary-button:hover:not(:disabled) {
   gap: 5px;
   margin: 0 9px 7px;
   padding: 0 7px;
-  border: 1px solid #d2aa5c;
+  border: 1px solid var(--approval-border-soft);
   border-radius: 3px;
-  color: #6d4a09;
+  color: var(--approval-text);
   background: #fff;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
 }
 
@@ -3709,7 +3751,7 @@ button.secondary-button:hover:not(:disabled) {
   min-height: 27px;
   border-top: 1px solid var(--border);
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .workflow-graph-operation:not(details) {
@@ -3796,7 +3838,7 @@ button.secondary-button:hover:not(:disabled) {
 .workflow-global-operation span {
   overflow: hidden;
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3878,7 +3920,7 @@ button.secondary-button:hover:not(:disabled) {
 }
 
 .workflow-health > strong {
-  color: #7e2f2a;
+  color: var(--danger-text);
   font-size: 11px;
 }
 
@@ -4005,7 +4047,7 @@ button.secondary-button:hover:not(:disabled) {
 
 .config-toolbar-title > span:first-child {
   color: var(--accent);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
 }
@@ -4138,7 +4180,7 @@ button.secondary-button:hover:not(:disabled) {
   gap: 8px;
   padding: 8px 14px;
   border-bottom: 1px solid #e7aaa5;
-  color: #7e2f2a;
+  color: var(--danger-text);
   background: #fff0ef;
   font-size: 12px;
 }
@@ -4229,7 +4271,7 @@ button.secondary-button:hover:not(:disabled) {
   justify-content: center;
   flex-direction: column;
   padding: clamp(28px, 6vw, 72px);
-  border-left: 4px solid #a33d36;
+  border-left: 4px solid var(--danger-strong);
   background: #fffafa;
 }
 
@@ -4299,7 +4341,7 @@ button.secondary-button:hover:not(:disabled) {
   place-items: center;
   border: 1px solid #e2aaa6;
   border-radius: 6px;
-  color: #8b312d;
+  color: var(--danger-border);
   background: #fff;
 }
 
@@ -4309,7 +4351,7 @@ button.secondary-button:hover:not(:disabled) {
 
 .config-removal-state {
   margin-top: 16px;
-  color: #8b312d;
+  color: var(--danger-border);
   font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
@@ -4373,13 +4415,13 @@ button.secondary-button:hover:not(:disabled) {
 
 .confirmation-dialog > header > svg {
   width: 20px;
-  color: #8b312d;
+  color: var(--danger-border);
 }
 
 .confirmation-dialog header span {
   display: block;
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
 }
@@ -4409,7 +4451,7 @@ button.secondary-button:hover:not(:disabled) {
 }
 
 .dialog-error {
-  color: #8b312d;
+  color: var(--danger-border);
 }
 
 .removal-impact-list {
@@ -4483,9 +4525,9 @@ button.secondary-button:hover:not(:disabled) {
 }
 
 .confirmation-dialog > footer .danger-confirm {
-  border-color: #8b312d;
+  border-color: var(--danger-border);
   color: #fff;
-  background: #a33d36;
+  background: var(--danger-strong);
 }
 
 .confirmation-dialog > footer .primary-button {
@@ -4652,13 +4694,13 @@ button.secondary-button:hover:not(:disabled) {
   place-items: center;
   border: 1px solid #e0aaa6;
   border-radius: 3px;
-  color: #8b312d;
+  color: var(--danger-border);
   background: var(--surface);
 }
 
 .config-scope-remove:hover:not(:disabled),
 .config-scope-remove:focus-visible {
-  border-color: #a33d36;
+  border-color: var(--danger-strong);
   background: #fff1f0;
 }
 
@@ -4699,7 +4741,7 @@ button.secondary-button:hover:not(:disabled) {
   border-bottom: 1px solid var(--border);
   color: var(--text-muted);
   background: #f7f9fa;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
 }
@@ -5003,7 +5045,7 @@ button.secondary-button:hover:not(:disabled) {
   border-radius: 3px;
   color: var(--text-muted);
   background: var(--surface-subtle);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 600;
   line-height: 14px;
   text-transform: uppercase;
@@ -5015,7 +5057,7 @@ button.secondary-button:hover:not(:disabled) {
   gap: 5px;
   margin-top: 6px;
   padding-left: calc(27px + (var(--config-depth) - 1) * 12px);
-  color: #724309;
+  color: var(--approval-text);
   font-size: 10px;
   font-weight: 400;
 }
@@ -5346,7 +5388,7 @@ button.secondary-button:hover:not(:disabled) {
   overflow-wrap: anywhere;
   color: var(--text-muted);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .config-tree-spacer {
@@ -5441,9 +5483,9 @@ button.secondary-button:hover:not(:disabled) {
   align-items: flex-start;
   gap: 7px;
   padding: 8px 10px;
-  border: 1px solid #edc685;
-  color: #724309;
-  background: #fff8e8;
+  border: 1px solid var(--approval-border-soft);
+  color: var(--approval-text);
+  background: var(--approval-surface);
   font-size: 12px;
 }
 
@@ -5647,7 +5689,7 @@ button.secondary-button:hover:not(:disabled) {
 .external-resource-heading em {
   margin-left: auto;
   color: var(--accent);
-  font-size: 9px;
+  font-size: 10px;
   font-style: normal;
   text-transform: uppercase;
 }
@@ -5850,9 +5892,9 @@ button.secondary-button:hover:not(:disabled) {
   align-items: center;
   gap: 7px;
   padding: 8px 10px;
-  border-bottom: 1px solid #edc685;
-  color: #724309;
-  background: #fff8e8;
+  border-bottom: 1px solid var(--approval-border-soft);
+  color: var(--approval-text);
+  background: var(--approval-surface);
   font-size: 11px;
 }
 
@@ -6078,7 +6120,7 @@ button.secondary-button:hover:not(:disabled) {
   }
 
   .property-flags span {
-    font-size: 8px;
+    font-size: 10px;
   }
 
   .property-state-cell .field-status {
