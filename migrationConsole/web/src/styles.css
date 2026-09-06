@@ -442,7 +442,7 @@ button.secondary-button:hover:not(:disabled) {
   border-radius: 9px;
   color: var(--text-muted);
   background: #e2e7e9;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
 }
 
@@ -516,7 +516,7 @@ button.secondary-button:hover:not(:disabled) {
 .approval-center-row-content small {
   margin-top: 1px;
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .approval-center-row-content p {
@@ -660,7 +660,7 @@ button.secondary-button:hover:not(:disabled) {
   overflow: hidden;
   color: var(--text-muted);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
+  font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -801,7 +801,7 @@ button.secondary-button:hover:not(:disabled) {
 
 .action-review-facts dt {
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
 }
@@ -868,7 +868,7 @@ button.secondary-button:hover:not(:disabled) {
 .reset-target-list small,
 .reset-target-list li > span:last-child {
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .reset-review-dialog .action-warning + .action-warning {
@@ -953,7 +953,7 @@ button.secondary-button:hover:not(:disabled) {
   border-radius: 9px;
   color: #fff;
   background: var(--warning);
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .health-state {
@@ -1230,7 +1230,7 @@ button.secondary-button:hover:not(:disabled) {
   border-radius: 0;
   color: var(--text-muted);
   background: var(--surface);
-  font-size: 9px;
+  font-size: 10px;
   line-height: 12px;
 }
 
@@ -1569,7 +1569,7 @@ button.secondary-button:hover:not(:disabled) {
 .tree-dependency-hint small {
   flex: 0 0 auto;
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .tree-dependency-hint.dependency-blocked {
@@ -1648,7 +1648,7 @@ button.secondary-button:hover:not(:disabled) {
 }
 
 .tree-validation-indicator > span {
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
 }
 
@@ -2094,7 +2094,7 @@ button.secondary-button:hover:not(:disabled) {
   margin-top: 2px;
   overflow: hidden;
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2112,7 +2112,7 @@ button.secondary-button:hover:not(:disabled) {
   border-radius: 15px;
   color: #51616c;
   background: #edf0f2;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .approval-toggle > span {
@@ -2320,7 +2320,7 @@ button.secondary-button:hover:not(:disabled) {
 
 .output-stage-tabs small {
   margin-top: 2px;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .output-context {
@@ -2336,7 +2336,7 @@ button.secondary-button:hover:not(:disabled) {
 
 .output-context dt {
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
 }
@@ -2682,7 +2682,7 @@ button.secondary-button:hover:not(:disabled) {
   border-bottom: 1px solid #40515e;
   color: #afc0ca;
   background: #202d37;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
 }
@@ -3035,7 +3035,7 @@ button.secondary-button:hover:not(:disabled) {
 
 .relationship-list small {
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .relationship-list button > svg:last-child {
@@ -3204,7 +3204,7 @@ button.secondary-button:hover:not(:disabled) {
 
 .runtime-status-table th {
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 650;
   text-transform: uppercase;
 }
@@ -3231,7 +3231,7 @@ button.secondary-button:hover:not(:disabled) {
   margin-top: 5px;
   color: var(--text-muted);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .failed-workflow-steps {
@@ -3298,7 +3298,7 @@ button.secondary-button:hover:not(:disabled) {
 .failed-workflow-step-list small,
 .failed-workflow-step-list time {
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .failed-workflow-step-list button > span:last-child {
@@ -3597,12 +3597,12 @@ button.secondary-button:hover:not(:disabled) {
 
 .workflow-graph-node-main small {
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 10px;
   line-height: 13px;
 }
 
 .workflow-graph-node-main .workflow-graph-activity {
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .workflow-graph-steps {
@@ -3655,14 +3655,14 @@ button.secondary-button:hover:not(:disabled) {
 }
 
 .workflow-graph-step strong {
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 650;
   line-height: 12px;
 }
 
 .workflow-graph-step small {
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 10px;
   line-height: 12px;
 }
 
@@ -3677,7 +3677,7 @@ button.secondary-button:hover:not(:disabled) {
   border-radius: 0;
   color: var(--text-muted);
   background: #f8fafb;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 650;
   text-align: left;
 }
@@ -3704,7 +3704,7 @@ button.secondary-button:hover:not(:disabled) {
   border-radius: 3px;
   color: var(--approval-text);
   background: #fff;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
 }
 
@@ -3716,7 +3716,7 @@ button.secondary-button:hover:not(:disabled) {
   min-height: 27px;
   border-top: 1px solid var(--border);
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .workflow-graph-operation:not(details) {
@@ -3803,7 +3803,7 @@ button.secondary-button:hover:not(:disabled) {
 .workflow-global-operation span {
   overflow: hidden;
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -4012,7 +4012,7 @@ button.secondary-button:hover:not(:disabled) {
 
 .config-toolbar-title > span:first-child {
   color: var(--accent);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
 }
@@ -4386,7 +4386,7 @@ button.secondary-button:hover:not(:disabled) {
 .confirmation-dialog header span {
   display: block;
   color: var(--text-muted);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
 }
@@ -4706,7 +4706,7 @@ button.secondary-button:hover:not(:disabled) {
   border-bottom: 1px solid var(--border);
   color: var(--text-muted);
   background: #f7f9fa;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
 }
@@ -5010,7 +5010,7 @@ button.secondary-button:hover:not(:disabled) {
   border-radius: 3px;
   color: var(--text-muted);
   background: var(--surface-subtle);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 600;
   line-height: 14px;
   text-transform: uppercase;
@@ -5353,7 +5353,7 @@ button.secondary-button:hover:not(:disabled) {
   overflow-wrap: anywhere;
   color: var(--text-muted);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .config-tree-spacer {
@@ -5654,7 +5654,7 @@ button.secondary-button:hover:not(:disabled) {
 .external-resource-heading em {
   margin-left: auto;
   color: var(--accent);
-  font-size: 9px;
+  font-size: 10px;
   font-style: normal;
   text-transform: uppercase;
 }
@@ -6085,7 +6085,7 @@ button.secondary-button:hover:not(:disabled) {
   }
 
   .property-flags span {
-    font-size: 8px;
+    font-size: 10px;
   }
 
   .property-state-cell .field-status {
