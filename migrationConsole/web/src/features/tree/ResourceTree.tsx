@@ -337,6 +337,14 @@ const TreeRow = memo(function TreeRow({
           ? draftChange?.label
             ?? (explicitConfigurationState ? configurationState : null)
           : spokenState,
+        // The aria-label replaces the row's inner text as its accessible
+        // name, so surface the hint content that sighted users see.
+        approvalAttention
+          ? `${approvalAttention.headline}, ${approvalAttention.reason}`
+          : null,
+        activeRequirement
+          ? `${dependencyPrefix} ${activeRequirement.targetName}`
+          : null,
       ].filter(Boolean).join(", ")}
       aria-level={depth}
       aria-selected={selected}

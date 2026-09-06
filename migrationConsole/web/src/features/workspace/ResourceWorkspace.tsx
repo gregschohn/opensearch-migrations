@@ -949,30 +949,6 @@ export function ResourceWorkspace({
       <RecentOperationFailure node={node} operations={operations} />
       <FailedWorkflowSteps onSelect={onSelect} steps={workflowSteps} />
       <Relationships node={node} onSelect={onSelect} />
-      {logTarget ? (
-        <LogPanel
-          nodeId={node.id}
-          onClose={() => setLogTarget(null)}
-        />
-      ) : null}
-      {outputTarget ? (
-        <OutputPanel
-          approval={approvals.find(
-            (candidate) => candidate.outputTargetId === outputTarget,
-          )}
-          onApprovalStarted={() => {
-            void 0;
-          }}
-          onClose={() => setOutputTarget(null)}
-          targetId={outputTarget}
-        />
-      ) : null}
-      {pendingAction ? (
-        <ResetDialog
-          onClose={() => setPendingAction(null)}
-          targetId={pendingAction.targetId}
-        />
-      ) : null}
       <dl className="facts-grid">
         <div>
           <dt>Status</dt>
@@ -992,6 +968,27 @@ export function ResourceWorkspace({
           </div>
           ))}
       </dl>
+      {logTarget ? (
+        <LogPanel
+          nodeId={node.id}
+          onClose={() => setLogTarget(null)}
+        />
+      ) : null}
+      {outputTarget ? (
+        <OutputPanel
+          approval={approvals.find(
+            (candidate) => candidate.outputTargetId === outputTarget,
+          )}
+          onClose={() => setOutputTarget(null)}
+          targetId={outputTarget}
+        />
+      ) : null}
+      {pendingAction ? (
+        <ResetDialog
+          onClose={() => setPendingAction(null)}
+          targetId={pendingAction.targetId}
+        />
+      ) : null}
       <Findings node={node} />
       <Comparisons node={node} />
       <RuntimeStatusPanel node={node} />

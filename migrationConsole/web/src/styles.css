@@ -2010,14 +2010,14 @@ button.secondary-button:hover:not(:disabled) {
 }
 
 .resource-actions button.primary-button.cleanup-action {
-  border-color: #52636f;
+  border-color: var(--danger-border);
   color: #fff;
-  background: #52636f;
+  background: var(--danger-strong);
 }
 
 .resource-actions button.primary-button.cleanup-action:disabled {
-  color: #e5e9eb;
-  background: #737f87;
+  color: #f3e2e0;
+  background: #b6716b;
 }
 
 .cleanup-notice {
