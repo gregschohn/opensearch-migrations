@@ -805,6 +805,8 @@ export function ResourceTree({
   const [inlineCreate, setInlineCreate] = useState<InlineCreate | null>(null);
   const [inlineRename, setInlineRename] = useState<InlineRename | null>(null);
   const knownIds = useRef<Set<string> | null>(null);
+  const expansionNodeIds = useRef<Set<string> | null>(null);
+  const revealedSelectionId = useRef<string | null>(null);
   const knownIdsViewKey = useRef(viewTransitionKey);
   const layoutViewKey = useRef(viewTransitionKey);
   const layoutRects = useRef(new Map<string, RowLayout>());
@@ -815,17 +817,24 @@ export function ResourceTree({
   const focusAfterMutation = useRef(false);
 
   useEffect(() => {
+    const nextIds = new Set(Object.keys(snapshot.nodes));
+    const previousIds = expansionNodeIds.current;
+    expansionNodeIds.current = nextIds;
     setExpanded((current) => {
       const next = new Set(
         [...current].filter((nodeId) => snapshot.nodes[nodeId]),
       );
       Object.values(snapshot.nodes).forEach((node) => {
-        if (
-          node.childIds.length > 0
-          && (node.kind === "section" || node.kind === "group")
-        ) {
-          next.add(node.id);
-        }
+        if (node.childIds.length === 0) return;
+        if (node.kind !== "section" && node.kind !== "group") return;
+        // Preserve the user's collapse state across polls; auto-expand
+        // only containers that just appeared or just gained children so
+        // adds, renames, and view switches still reveal their results.
+        const newlySeen = !previousIds || !previousIds.has(node.id);
+        const gainedChild = !previousIds || node.childIds.some(
+          (childId) => !previousIds.has(childId),
+        );
+        if (newlySeen || gainedChild) next.add(node.id);
       });
       const unchanged = (
         next.size === current.size
@@ -834,6 +843,24 @@ export function ResourceTree({
       return unchanged ? current : next;
     });
   }, [snapshot]);
+
+  useEffect(() => {
+    if (!selectedId || revealedSelectionId.current === selectedId) return;
+    revealedSelectionId.current = selectedId;
+    setExpanded((current) => {
+      const next = new Set(current);
+      let parentId = snapshot.nodes[selectedId]?.parentId ?? null;
+      let changed = false;
+      while (parentId) {
+        if (!next.has(parentId)) {
+          next.add(parentId);
+          changed = true;
+        }
+        parentId = snapshot.nodes[parentId]?.parentId ?? null;
+      }
+      return changed ? next : current;
+    });
+  }, [selectedId, snapshot.nodes]);
 
   useEffect(() => {
     const nextIds = new Set(Object.keys(snapshot.nodes));
