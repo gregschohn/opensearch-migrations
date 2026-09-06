@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Repository-owned AWS Signature Version 4 request signing for stock k6.
+// Repository-owned AWS Signature Version 4 request signing using k6 cryptographic primitives.
 
 import crypto from 'k6/crypto';
 
@@ -16,7 +16,20 @@ function awsEncode(value) {
 
 function canonicalPath(path) {
   const value = path || '/';
-  return value.split('/').map((segment) => awsEncode(segment)).join('/');
+  const segments = [];
+  for (const segment of value.split('/')) {
+    if (!segment || segment === '.') continue;
+    if (segment === '..') {
+      segments.pop();
+    } else {
+      segments.push(segment);
+    }
+  }
+
+  const leadingSlash = value.startsWith('/') ? '/' : '';
+  const trailingSlash = segments.length && value.endsWith('/') ? '/' : '';
+  const normalized = `${leadingSlash}${segments.join('/')}${trailingSlash}` || '/';
+  return awsEncode(normalized).replace(/%2F/g, '/');
 }
 
 function canonicalQuery(query) {

@@ -728,6 +728,8 @@ selects the k6 pods directly.
 > Grafana either way.
 
 Metrics land in the existing Grafana (kube-prometheus-stack); open the **k6-load-test** dashboard.
+Unexpected Valkey failures increment `valkey_command_errors` with a `command` tag and emit one
+warning per VU; a missing control or registry key remains a normal, silent cache miss.
 k6 pushes OTLP gRPC to the otel-collector (`K6_OUT=opentelemetry`,
 `K6_OTEL_GRPC_EXPORTER_ENDPOINT=otel-collector:4317`); the collector exposes a Prometheus scrape
 endpoint the dashboard reads.
