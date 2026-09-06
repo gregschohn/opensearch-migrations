@@ -315,7 +315,9 @@ function ExternalResourceForm({
   const [values, setValues] = useState<Record<string, string>>(() =>
     Object.fromEntries(descriptor.fields.map((field) => [
       field.name,
-      details?.fieldValues[field.name] ?? field.default ?? "",
+      details?.fieldValues[field.name]
+        ?? field.default
+        ?? (field.input === "select" ? field.options?.[0] ?? "" : ""),
     ])),
   );
   const [confirmations, setConfirmations] = useState<Record<string, string>>({});

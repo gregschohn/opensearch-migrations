@@ -7,6 +7,8 @@
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   letter-spacing: 0;
+  accent-color: #176b78;
+  --text: #17212b;
   --border: #d7dee4;
   --border-strong: #b7c2cc;
   --canvas: #f3f5f7;
@@ -52,6 +54,11 @@ button {
 
 button:not(:disabled) {
   cursor: pointer;
+}
+
+:is(button, a, input, select, textarea):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 button.primary-button {
@@ -187,7 +194,7 @@ button.secondary-button:hover:not(:disabled) {
   display: block;
   margin-top: 3px;
   color: var(--danger);
-  font-size: 9px;
+  font-size: 10px;
   line-height: 1.35;
 }
 
@@ -897,6 +904,17 @@ button.secondary-button:hover:not(:disabled) {
   width: 15px;
 }
 
+.edit-mode-button:hover:not(:disabled) {
+  border-color: #8f9da8;
+  background: var(--surface-subtle);
+  box-shadow: 0 1px 2px rgb(23 33 43 / 12%);
+}
+
+.edit-mode-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
 .edit-mode-button.active {
   border-color: #58717e;
   background: #f4f7f8;
@@ -957,6 +975,15 @@ button.secondary-button:hover:not(:disabled) {
   flex: 0 0 auto;
   width: 15px;
   height: 15px;
+  color: #687784;
+}
+
+.state-ready,
+.state-completed,
+.state-succeeded,
+.state-skipped,
+.state-approved,
+.state-ok {
   color: var(--success);
 }
 
@@ -1125,6 +1152,11 @@ button.secondary-button:hover:not(:disabled) {
 
 .approval-banner > button svg {
   width: 14px;
+}
+
+.approval-banner > button:hover:not(:disabled) {
+  border-color: #9a6613;
+  background: #fff4dc;
 }
 
 .manage-layout {
@@ -1736,8 +1768,8 @@ button.secondary-button:hover:not(:disabled) {
 
 .tree-inline-name button:hover:not(:disabled),
 .tree-inline-name button:focus-visible {
-  border-color: var(--border-strong);
-  background: var(--surface);
+  border-color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .tree-inline-name button:disabled {
@@ -1961,6 +1993,12 @@ button.secondary-button:hover:not(:disabled) {
   border-radius: 4px;
   background: var(--surface);
   font-size: 12px;
+}
+
+.resource-actions button:hover:not(:disabled, .primary-button) {
+  border-color: var(--border-strong);
+  background: var(--surface-subtle);
+  box-shadow: 0 1px 2px rgb(23 33 43 / 10%);
 }
 
 .resource-actions button.primary-button.cleanup-action {
@@ -3556,7 +3594,7 @@ button.secondary-button:hover:not(:disabled) {
 }
 
 .workflow-graph-node-main .workflow-graph-activity {
-  font-size: 8px;
+  font-size: 9px;
 }
 
 .workflow-graph-steps {
@@ -3616,8 +3654,8 @@ button.secondary-button:hover:not(:disabled) {
 
 .workflow-graph-step small {
   color: var(--text-muted);
-  font-size: 8px;
-  line-height: 11px;
+  font-size: 9px;
+  line-height: 12px;
 }
 
 .workflow-graph-step-toggle {
@@ -3631,7 +3669,7 @@ button.secondary-button:hover:not(:disabled) {
   border-radius: 0;
   color: var(--text-muted);
   background: #f8fafb;
-  font-size: 8px;
+  font-size: 9px;
   font-weight: 650;
   text-align: left;
 }
@@ -3849,6 +3887,16 @@ button.secondary-button:hover:not(:disabled) {
   font-size: 10px;
 }
 
+.workflow-health.workflow-health-waiting {
+  border-bottom-color: var(--border);
+  background: var(--surface-subtle);
+}
+
+.workflow-health.workflow-health-waiting > span {
+  margin-top: 0;
+  font-size: 11px;
+}
+
 .activity-empty {
   padding: 15px 14px;
   color: var(--text-muted);
@@ -3900,6 +3948,11 @@ button.secondary-button:hover:not(:disabled) {
   border: 1px solid var(--border-strong);
   border-radius: 4px;
   background: var(--surface);
+}
+
+.shell-error button:hover {
+  border-color: #8f9da8;
+  background: var(--surface-subtle);
 }
 
 .spin {
@@ -4031,7 +4084,8 @@ button.secondary-button:hover:not(:disabled) {
 }
 
 .config-toolbar-actions .primary-button,
-.field-form > button[type="submit"] {
+.field-form > button[type="submit"],
+.rename-form > button[type="submit"] {
   border-color: #155d68;
   color: #fff;
   background: var(--accent);
@@ -4057,6 +4111,12 @@ button.secondary-button:hover:not(:disabled) {
   border-color: #c9ced1;
   background: #f2f4f5;
   box-shadow: none;
+}
+
+.tree-row.status-removed.selected {
+  border-color: #aab3b9;
+  background: #e9edef;
+  box-shadow: inset 3px 0 #78838c;
 }
 
 .tree-row.status-removed .tree-row-copy strong {
@@ -4299,11 +4359,15 @@ button.secondary-button:hover:not(:disabled) {
 }
 
 .confirmation-dialog > header {
+  position: sticky;
+  z-index: 5;
+  top: 0;
   display: flex;
   align-items: center;
   gap: 11px;
   padding: 15px 17px;
   border-bottom: 1px solid var(--border);
+  background: var(--surface);
 }
 
 .confirmation-dialog > header > svg {
@@ -4386,11 +4450,15 @@ button.secondary-button:hover:not(:disabled) {
 }
 
 .confirmation-dialog > footer {
+  position: sticky;
+  z-index: 5;
+  bottom: 0;
   display: flex;
   justify-content: flex-end;
   gap: 8px;
   padding: 12px 17px;
   border-top: 1px solid var(--border);
+  background: var(--surface);
 }
 
 .submission-dialog > footer {
@@ -4929,14 +4997,14 @@ button.secondary-button:hover:not(:disabled) {
 }
 
 .property-flags span {
-  padding: 0 3px;
+  padding: 0 4px;
   border: 1px solid var(--border);
   border-radius: 3px;
   color: var(--text-muted);
   background: var(--surface-subtle);
-  font-size: 8px;
+  font-size: 9px;
   font-weight: 600;
-  line-height: 13px;
+  line-height: 14px;
   text-transform: uppercase;
 }
 
@@ -5473,7 +5541,9 @@ button.secondary-button:hover:not(:disabled) {
 }
 
 .rename-form {
+  max-width: 620px;
   margin-top: 18px;
+  grid-template-columns: minmax(220px, 1fr) auto auto;
 }
 
 .external-picker {
@@ -6007,7 +6077,7 @@ button.secondary-button:hover:not(:disabled) {
   }
 
   .property-flags span {
-    font-size: 7px;
+    font-size: 8px;
   }
 
   .property-state-cell .field-status {

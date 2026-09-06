@@ -48,7 +48,7 @@ function ApprovalToggle({
       ].filter(Boolean).join(" ")}
       disabled={disabled}
       onClick={() => onToggle(gate, !gate.approved)}
-      role="switch"
+      role="checkbox"
       title={gate.disabledReason ?? `Preapprove ${gate.stage}`}
       type="button"
     >
@@ -166,7 +166,7 @@ function BulkPreapprovalToggle({
         ].filter(Boolean).join(" ")}
         disabled={pending}
         onClick={() => onToggle(toggleable, !checked)}
-        role="switch"
+        role="checkbox"
         title="Preapprove every upcoming checkpoint"
         type="button"
       >

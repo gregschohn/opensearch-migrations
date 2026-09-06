@@ -819,7 +819,11 @@ export function ResourceTree({
           next.add(node.id);
         }
       });
-      return next;
+      const unchanged = (
+        next.size === current.size
+        && [...next].every((nodeId) => current.has(nodeId))
+      );
+      return unchanged ? current : next;
     });
   }, [snapshot]);
 
@@ -1478,6 +1482,7 @@ export function ResourceTree({
     event: KeyboardEvent<HTMLDivElement>,
     nodeId: string,
   ) => {
+    if (event.target !== event.currentTarget) return;
     const index = rows.findIndex((row) => row.node.id === nodeId);
     const node = snapshot.nodes[nodeId];
     let targetId: string | undefined;

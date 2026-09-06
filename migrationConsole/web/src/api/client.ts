@@ -76,8 +76,10 @@ export class ConfigApiError extends Error {
     super(message);
     this.name = "ConfigApiError";
     this.status = status;
-    this.code = typeof detail === "object" ? detail.code : undefined;
-    this.current = typeof detail === "object" ? detail.current : undefined;
+    this.code = detail && typeof detail === "object" ? detail.code : undefined;
+    this.current = detail && typeof detail === "object"
+      ? detail.current
+      : undefined;
   }
 }
 

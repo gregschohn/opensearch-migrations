@@ -167,17 +167,17 @@ function routedDependencyPaths(
       graphRect,
       laneX,
     );
-    const endY = Math.max(
-      sourceY,
-      ...branches.map((branch) => branch.targetY),
-    );
+    const targetYs = branches.map((branch) => branch.targetY);
+    const trunkTopY = Math.min(sourceY, ...targetYs);
+    const trunkBottomY = Math.max(sourceY, ...targetYs);
     const sourceNode = nodeById.get(route.sourceId);
     paths.push({
       branches,
       d: [
         `M ${sourceX} ${sourceY}`,
         `H ${laneX}`,
-        `V ${endY}`,
+        `M ${laneX} ${trunkTopY}`,
+        `V ${trunkBottomY}`,
       ].join(" "),
       id: `${route.sourceId}:${route.depth}`,
       sourceId: route.sourceId,

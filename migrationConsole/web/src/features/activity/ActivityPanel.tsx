@@ -79,13 +79,22 @@ export function ActivityPanel({
           <span>Resources, active steps, and blockers</span>
         </div>
       </header>
-      {blockerIds.size > 0 || approvals.length > 0 || waiting.length > 0 ? (
-        <section className="workflow-health" aria-label="Workflow blockers">
-          <strong>
-            {actionCount} action{
-              actionCount === 1 ? "" : "s"
-            } {actionCount === 1 ? "needs" : "need"} attention
-          </strong>
+      {actionCount > 0 || waiting.length > 0 ? (
+        <section
+          aria-label="Workflow blockers"
+          className={
+            actionCount > 0
+              ? "workflow-health"
+              : "workflow-health workflow-health-waiting"
+          }
+        >
+          {actionCount > 0 ? (
+            <strong>
+              {actionCount} action{
+                actionCount === 1 ? "" : "s"
+              } {actionCount === 1 ? "needs" : "need"} attention
+            </strong>
+          ) : null}
           {waiting.length > 0 ? (
             <span>
               {waiting.length} downstream {

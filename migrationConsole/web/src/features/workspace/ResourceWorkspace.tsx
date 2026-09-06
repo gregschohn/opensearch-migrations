@@ -555,7 +555,7 @@ function ResourcePreapproval({
         ].filter(Boolean).join(" ")}
         disabled={disabled}
         onClick={() => onToggle(upcoming, !checked)}
-        role="switch"
+        role="checkbox"
         title={disabledReason ?? "Preapprove all upcoming checkpoints"}
         type="button"
       >
@@ -628,8 +628,8 @@ function FailedWorkflowSteps({
         <div>
           <h3>Failed workflow steps</h3>
           <span>
-            {failed.length} step{failed.length === 1 ? "" : "s"} need
-            attention
+            {failed.length} {failed.length === 1 ? "step needs" : "steps need"}
+            {" attention"}
           </span>
         </div>
       </header>

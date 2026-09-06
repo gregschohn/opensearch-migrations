@@ -771,6 +771,7 @@ function UnionEditor({
           disabled={busy || applying}
           onChange={(event) => {
             const nextValue = event.target.value;
+            const previousValue = value;
             const next = variants.find(
               (variant) => String(variant.value) === nextValue,
             );
@@ -782,6 +783,8 @@ function UnionEditor({
               op: "set",
               path: node.path,
               value: next.value,
+            }).then((applied) => {
+              if (!applied) setValue(previousValue);
             }).finally(() => setApplying(false));
           }}
           value={value}
@@ -828,6 +831,8 @@ function BooleanEditor({
               op: "set",
               path: node.path,
               value: next,
+            }).then((applied) => {
+              if (!applied) setChecked(!next);
             }).finally(() => setApplying(false));
           }}
           type="checkbox"
