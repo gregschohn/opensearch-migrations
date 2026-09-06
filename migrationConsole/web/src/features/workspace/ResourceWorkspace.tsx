@@ -850,8 +850,18 @@ export function ResourceWorkspace({
     setLogTarget(null);
     setPendingAction(null);
   }, [node.id]);
+  // Mirrors the server's orphan derivation from configPresence rather
+  // than matching the "Orphaned; cleanup required" presentation string.
+  const presence = node.configPresence ?? {};
+  const presenceDeployed = presence.deployed ?? true;
+  const presenceSubmitted = presence.submitted ?? presenceDeployed;
+  const presencePending = presence.pending ?? presenceSubmitted;
   const cleanupRequired = (
-    node.valueSummary === "Orphaned; cleanup required"
+    node.kind === "resource"
+    && !("pending" in presence && presencePending !== presenceSubmitted)
+    && "submitted" in presence
+    && presenceSubmitted !== presenceDeployed
+    && !presenceSubmitted
   );
   return (
     <article className="workspace">

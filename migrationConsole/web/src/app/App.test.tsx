@@ -6237,6 +6237,11 @@ test("offers submission for a pending resource addition without field diffs", as
   const pendingState = structuredClone(manageSnapshot);
   const capture = pendingState.nodes["resource:captureproxies:capture"];
   capture.valueSummary = "Addition pending submission";
+  capture.configPresence = {
+    deployed: false,
+    submitted: false,
+    pending: true,
+  };
   capture.comparisons = [];
   const validDraft = structuredClone(configDraft);
   validDraft.editState.validation = {
