@@ -1458,7 +1458,8 @@ test("reviews managed output and approves from the required-action dialog", asyn
     targetId: "approval:approval-node",
     expectedGateRevision: "11",
   }));
-  expect(within(outputReview).getByText("Approval accepted"))
+  expect(within(outputReview)
+    .getByText("Approval accepted; the workflow is continuing"))
     .toBeInTheDocument();
 });
 

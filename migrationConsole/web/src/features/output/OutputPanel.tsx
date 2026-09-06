@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
@@ -46,6 +46,7 @@ export function OutputPanel({
   onClose: () => void;
 }>) {
   const queryClient = useQueryClient();
+  const stagePanelId = useId();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [approving, setApproving] = useState(false);
@@ -102,9 +103,13 @@ export function OutputPanel({
 
   const copy = async () => {
     if (rendered === null) return;
-    await navigator.clipboard.writeText(rendered);
-    setCopied(true);
-    globalThis.setTimeout(() => setCopied(false), 1400);
+    try {
+      await navigator.clipboard.writeText(rendered);
+      setCopied(true);
+      globalThis.setTimeout(() => setCopied(false), 1400);
+    } catch {
+      // Clipboard access can be denied; the download link still works.
+    }
   };
 
   const approve = async () => {
@@ -126,6 +131,15 @@ export function OutputPanel({
       setApprovalProblem(
         error instanceof Error ? error.message : String(error),
       );
+      if (
+        error instanceof Error
+        && "status" in error
+        && (error as { status?: number }).status === 409
+      ) {
+        // The gate advanced underneath us; refresh so retry uses the
+        // current revision instead of resending the stale one.
+        void approvalReview.refetch();
+      }
     } finally {
       setApproving(false);
     }
@@ -172,8 +186,8 @@ export function OutputPanel({
           </div>
           {approvalAccepted ? (
             <span className="output-approval-accepted" role="status">
-              <LoaderCircle className="spin" aria-hidden="true" />
-              Approval accepted
+              <Check aria-hidden="true" />
+              Approval accepted; the workflow is continuing
             </span>
           ) : (
             <button
@@ -234,11 +248,14 @@ export function OutputPanel({
           <div className="output-stage-tabs" role="tablist" aria-label="Output stages">
             {inventory.data.outputs.map((output) => (
               <button
+                aria-controls={stagePanelId}
                 aria-selected={output.id === selectedId}
                 className={output.id === selectedId ? "active" : ""}
+                id={`${stagePanelId}-tab-${output.id}`}
                 key={output.id}
                 onClick={() => setSelectedId(output.id)}
                 role="tab"
+                tabIndex={output.id === selectedId ? 0 : -1}
                 type="button"
               >
                 <span>{output.stage}</span>
@@ -246,6 +263,13 @@ export function OutputPanel({
               </button>
             ))}
           </div>
+          <div
+            aria-labelledby={selectedId
+              ? `${stagePanelId}-tab-${selectedId}`
+              : undefined}
+            id={stagePanelId}
+            role="tabpanel"
+          >
           {selected ? (
             <dl className="output-context">
               <div>
@@ -316,6 +340,7 @@ export function OutputPanel({
               {content.data?.message ?? "Use download to read this output."}
             </div>
           )}
+          </div>
         </>
       )}
     </section>

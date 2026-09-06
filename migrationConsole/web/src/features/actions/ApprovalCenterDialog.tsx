@@ -260,11 +260,15 @@ export function ApprovalCenterDialog({
     ["blocking", "accepted", "error"].includes(gate.state)
   ));
   const upcoming = visible.filter((gate) => (
-    ["upcoming", "preapproved", "not-required"].includes(gate.state)
+    ["upcoming", "preapproved", "not-required", "recovery-standby"]
+      .includes(gate.state)
   ));
   const completed = visible.filter((gate) => (
     ["passed", "not-reached"].includes(gate.state)
   ));
+  const blockingNow = visible.filter(
+    (gate) => gate.state === "blocking",
+  ).length;
   return (
     <ModalDialog
       className="approval-center-dialog"
@@ -272,7 +276,7 @@ export function ApprovalCenterDialog({
       icon={<ShieldCheck aria-hidden="true" />}
       kicker="Workflow checkpoints"
       onClose={onClose}
-      subtitle={`${blocking.length} blocking, ${upcoming.length} upcoming`}
+      subtitle={`${blockingNow} blocking, ${upcoming.length} upcoming`}
       title="Approvals"
     >
         {loading ? (
