@@ -1176,10 +1176,10 @@ function ManageApp() {
               <span>{state.data.refreshError?.message}</span>
             </output>
           ) : null}
-          {visibleProblems.map((problem) => (
+          {visibleProblems.map((problem, index) => (
             <output
               className="state-banner problem-banner"
-              key={`${problem.source}-${problem.message}`}
+              key={`${problem.source}-${index}`}
             >
               <CircleAlert aria-hidden="true" />
               <strong>{problem.source}</strong>

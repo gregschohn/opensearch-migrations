@@ -55,6 +55,19 @@ function observedTime(value: string): string {
 }
 
 
+function activityTimestamp(value: string): string {
+  const activity = new Date(value);
+  return Number.isNaN(activity.valueOf())
+    ? value
+    : activity.toLocaleString();
+}
+
+
+function statusClassName(value: string): string {
+  return `status-${value.toLowerCase().replaceAll(/\s+/g, "-")}`;
+}
+
+
 type RuntimeStatusContentValue = NonNullable<
   RuntimeStatus["sections"][number]["content"]
 >;
@@ -281,7 +294,7 @@ function ResourceActions({
   });
   return (
     <div className="resource-actions" aria-label="Available actions">
-      {orderedCapabilities.map((capability) => {
+      {orderedCapabilities.map((capability, capabilityIndex) => {
         const Icon = capabilityIcon(capability.kind);
         const label = capability.label ?? capability.kind;
         const outputTarget = (
@@ -319,7 +332,7 @@ function ResourceActions({
               || (capability.kind === "reset" && resetInProgress)
               || (!outputTarget && !logTarget && !actionTarget)
             }
-            key={`${capability.kind}-${label}`}
+            key={`${capability.kind}-${label}-${capabilityIndex}`}
             onClick={() => {
               if (outputTarget) onOutput(outputTarget);
               else if (logTarget) onLogs(logTarget);
@@ -659,7 +672,7 @@ function FailedWorkflowSteps({
               <span>
                 {step.activityAt ? (
                   <time dateTime={step.activityAt}>
-                    {new Date(step.activityAt).toLocaleString()}
+                    {activityTimestamp(step.activityAt)}
                   </time>
                 ) : null}
                 <ArrowRight aria-hidden="true" />
@@ -862,9 +875,9 @@ export function ResourceWorkspace({
           </div>
         </div>
         <div className="workspace-states">
-          <span className={`phase-badge status-${String(
+          <span className={`phase-badge ${statusClassName(String(
             node.phase ?? node.status,
-          ).toLocaleLowerCase()}`}>
+          ))}`}>
             {node.phase ?? node.status}
           </span>
           {node.status === "blocked" && node.phase !== "Blocked" ? (
