@@ -89,7 +89,11 @@ export async function getHealth() {
     "/api/v1/system/health",
   );
   if (!response.ok || error || !data) {
-    throw new Error("Workflow Manage server is unavailable");
+    throw new ConfigApiError(
+      response.status,
+      "Workflow Manage server is unavailable",
+      error,
+    );
   }
   return data;
 }
@@ -100,7 +104,11 @@ export async function getManageState(): Promise<ManageSnapshot> {
     "/api/v1/manage/state",
   );
   if (!response.ok || error || !data) {
-    throw new Error("Workflow state is unavailable");
+    throw new ConfigApiError(
+      response.status,
+      "Workflow state is unavailable",
+      error,
+    );
   }
   return data;
 }
@@ -120,7 +128,11 @@ export async function getRuntimeStatus(
     },
   );
   if (!response.ok || error || !data) {
-    throw new Error("Runtime status is unavailable");
+    throw new ConfigApiError(
+      response.status,
+      "Runtime status is unavailable",
+      error,
+    );
   }
   return data;
 }
@@ -324,7 +336,11 @@ export async function getOperations(): Promise<Operation[]> {
     "/api/v1/operations",
   );
   if (!response.ok || error || !data) {
-    throw new Error("Recent operations are unavailable");
+    throw new ConfigApiError(
+      response.status,
+      "Recent operations are unavailable",
+      error,
+    );
   }
   return data.operations;
 }

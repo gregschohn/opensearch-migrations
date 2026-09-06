@@ -1,25 +1,28 @@
 import { useEffect, useState } from "react";
 import type { QueryClient } from "@tanstack/react-query";
 
+import { connectEventSource, type EventConnectionState } from "./eventSource";
 
-export type EventConnectionState = "connecting" | "live" | "reconnecting";
+export type { EventConnectionState } from "./eventSource";
 
 
 export function useManageEvents(queryClient: QueryClient) {
   const [connection, setConnection] =
     useState<EventConnectionState>("connecting");
 
-  useEffect(() => {
-    const source = new EventSource("/api/v1/manage/events");
-    source.onopen = () => setConnection("live");
-    source.onerror = () => setConnection("reconnecting");
-    source.addEventListener("heartbeat", () => setConnection("live"));
-    source.addEventListener("state-invalidated", () => {
-      setConnection("live");
+  useEffect(() => connectEventSource("/api/v1/manage/events", {
+    onStateChange: setConnection,
+    onRecovered: () => {
       void queryClient.invalidateQueries({ queryKey: ["manage-state"] });
-    });
-    return () => source.close();
-  }, [queryClient]);
+    },
+    listeners: {
+      heartbeat: () => setConnection("live"),
+      "state-invalidated": () => {
+        setConnection("live");
+        void queryClient.invalidateQueries({ queryKey: ["manage-state"] });
+      },
+    },
+  }), [queryClient]);
 
   return connection;
 }
