@@ -3510,6 +3510,41 @@ button.secondary-button:hover:not(:disabled) {
   padding-left: 64px;
 }
 
+.workflow-graph-legend {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  padding-top: 4px;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.workflow-graph-legend > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.workflow-graph-legend .legend-line {
+  display: inline-block;
+  width: 14px;
+  border-top: 2px solid #9ba9af;
+}
+
+.workflow-graph-legend .legend-line.legend-blocked {
+  border-top-color: var(--danger-strong);
+}
+
+.workflow-graph-legend .legend-line.legend-approval {
+  border-top-color: var(--warning);
+}
+
+.workflow-graph-legend .legend-line.legend-unknown {
+  border-top-style: dashed;
+}
+
 .workflow-graph-node {
   min-inline-size: 0;
   margin: 0;
