@@ -1,4 +1,4 @@
-import { useEffect, useRef, type RefObject } from "react";
+import { useEffect, useRef, type MutableRefObject } from "react";
 
 
 const ESCAPE_LAYER_SELECTOR = "[data-escape-cancel-layer]";
@@ -7,8 +7,8 @@ const ESCAPE_LAYER_SELECTOR = "[data-escape-cancel-layer]";
 export function useEscapeCancel<T extends HTMLElement>(
   onCancel: () => void,
   disabled = false,
-): RefObject<T> {
-  const layerRef = useRef<T>(null);
+): MutableRefObject<T | null> {
+  const layerRef = useRef<T | null>(null);
   const cancelRef = useRef(onCancel);
 
   useEffect(() => {

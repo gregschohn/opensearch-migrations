@@ -5,14 +5,13 @@ import {
   FileOutput,
   LoaderCircle,
   ShieldCheck,
-  X,
 } from "lucide-react";
 
 import type {
   ApprovalGateInventory,
   ApprovalGateSummary,
 } from "../../api/client";
-import { useEscapeCancel } from "../../hooks/useEscapeCancel";
+import { ModalDialog } from "../../components/ModalDialog";
 
 
 const STATE_LABELS: Record<ApprovalGateSummary["state"], string> = {
@@ -253,7 +252,6 @@ export function ApprovalCenterDialog({
   onViewOutput: (gate: ApprovalGateSummary) => void;
   pendingNames: Set<string>;
 }>) {
-  const dialogRef = useEscapeCancel<HTMLElement>(onClose);
   const visible = (inventory?.gates ?? []).filter((gate) => (
     gate.category === "checkpoint"
     || !["recovery-standby", "not-required"].includes(gate.state)
@@ -268,33 +266,15 @@ export function ApprovalCenterDialog({
     ["passed", "not-reached"].includes(gate.state)
   ));
   return (
-    <div className="modal-backdrop">
-      <section
-        aria-labelledby="approval-center-title"
-        aria-modal="true"
-        className="confirmation-dialog approval-center-dialog"
-        data-escape-cancel-layer
-        ref={dialogRef}
-        role="dialog"
-      >
-        <header>
-          <ShieldCheck aria-hidden="true" />
-          <div>
-            <span>Workflow checkpoints</span>
-            <h2 id="approval-center-title">Approvals</h2>
-            <small>
-              {blocking.length} blocking, {upcoming.length} upcoming
-            </small>
-          </div>
-          <button
-            aria-label="Close approvals"
-            className="icon-button"
-            onClick={onClose}
-            type="button"
-          >
-            <X aria-hidden="true" />
-          </button>
-        </header>
+    <ModalDialog
+      className="approval-center-dialog"
+      closeLabel="Close approvals"
+      icon={<ShieldCheck aria-hidden="true" />}
+      kicker="Workflow checkpoints"
+      onClose={onClose}
+      subtitle={`${blocking.length} blocking, ${upcoming.length} upcoming`}
+      title="Approvals"
+    >
         {loading ? (
           <div className="approval-center-state" role="status">
             <LoaderCircle className="spin" aria-hidden="true" />
@@ -341,7 +321,6 @@ export function ApprovalCenterDialog({
             />
           </div>
         )}
-      </section>
-    </div>
+    </ModalDialog>
   );
 }

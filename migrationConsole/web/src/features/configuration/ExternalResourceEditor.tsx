@@ -1,11 +1,9 @@
 import {
   useCallback,
   useEffect,
-  useId,
   useState,
   type FormEvent,
 } from "react";
-import { createPortal } from "react-dom";
 import {
   ArrowLeft,
   Database,
@@ -29,6 +27,7 @@ import {
   type ExternalResourceInventory,
   type ExternalResourceSelection,
 } from "../../api/client";
+import { ModalDialog } from "../../components/ModalDialog";
 import { useEscapeCancel } from "../../hooks/useEscapeCancel";
 
 
@@ -658,7 +657,6 @@ function ExternalResourceDialogContent({
   replaceDraft: (promise: Promise<ConfigDraft>) => Promise<boolean>;
   reportError: (message: string) => void;
 }>) {
-  const allResourcesTitleId = useId();
   const [inventory, setInventory] = useState<ExternalResourceInventory | null>(
     null,
   );
@@ -678,14 +676,6 @@ function ExternalResourceDialogContent({
     () => setWarning(null),
     warning === null,
   );
-  const allResourcesDialogRef = useEscapeCancel<HTMLElement>(
-    () => {
-      if (allResourcesPane) setAllResourcesPane(null);
-      else setAllResourcesOpen(false);
-    },
-    busy || !allResourcesOpen,
-  );
-
   const load = useCallback(async () => {
     setLoading(true);
     setWarning(null);
@@ -937,37 +927,35 @@ function ExternalResourceDialogContent({
           selectsKey={selectsKey}
         />
       </section>
-      {allResourcesOpen ? createPortal(
-        <div className="modal-backdrop nested-modal-backdrop">
-          <section
-            aria-labelledby={allResourcesTitleId}
-            aria-modal="true"
-            className="confirmation-dialog external-resource-dialog"
-            data-escape-cancel-layer
-            ref={allResourcesDialogRef}
-            role="dialog"
-          >
-            <header>
-              <Database aria-hidden="true" />
-              <div>
-                <span>Kubernetes resource inventory</span>
-                <h2 id={allResourcesTitleId}>
-                  All {inventory.displayName} resources
-                </h2>
-              </div>
-              <button
-                aria-label="Close all Kubernetes resources"
-                className="icon-button"
-                disabled={busy}
-                onClick={() => {
-                  setAllResourcesPane(null);
-                  setAllResourcesOpen(false);
-                }}
-                type="button"
-              >
-                <X aria-hidden="true" />
-              </button>
-            </header>
+      {allResourcesOpen ? (
+        <ModalDialog
+          backdropClassName="nested-modal-backdrop"
+          className="external-resource-dialog"
+          escapeDisabled={busy}
+          headerActions={(
+            <button
+              aria-label="Close all Kubernetes resources"
+              className="icon-button"
+              disabled={busy}
+              onClick={() => {
+                setAllResourcesPane(null);
+                setAllResourcesOpen(false);
+              }}
+              type="button"
+            >
+              <X aria-hidden="true" />
+            </button>
+          )}
+          hideCloseButton
+          icon={<Database aria-hidden="true" />}
+          kicker="Kubernetes resource inventory"
+          onClose={() => {
+            if (allResourcesPane) setAllResourcesPane(null);
+            else setAllResourcesOpen(false);
+          }}
+          portal
+          title={<>All {inventory.displayName} resources</>}
+        >
             <div className="external-resource-dialog-body">
               {warning ? (
                 <div className="selection-warning" role="alert">
@@ -1047,9 +1035,7 @@ function ExternalResourceDialogContent({
                       )
               }
             </div>
-          </section>
-        </div>,
-        document.body,
+        </ModalDialog>
       ) : null}
     </>
   );
@@ -1071,48 +1057,28 @@ export function ExternalResourceEditor({
   replaceDraft: (promise: Promise<ConfigDraft>) => Promise<boolean>;
   reportError: (message: string) => void;
 }>) {
-  const titleId = useId();
   const displayName = externalResourceDisplayName(node);
-  const dialogRef = useEscapeCancel<HTMLElement>(onClose, busy);
-  return createPortal(
-    <div className="modal-backdrop">
-      <section
-        aria-labelledby={titleId}
-        aria-modal="true"
-        className="confirmation-dialog external-resource-dialog"
-        data-escape-cancel-layer
-        ref={dialogRef}
-        role="dialog"
-      >
-        <header>
-          <Database aria-hidden="true" />
-          <div>
-            <span>Kubernetes resource</span>
-            <h2 id={titleId}>Select {displayName}</h2>
-          </div>
-          <button
-            aria-label="Close Kubernetes resource selector"
-            autoFocus
-            className="icon-button"
-            disabled={busy}
-            onClick={onClose}
-            type="button"
-          >
-            <X aria-hidden="true" />
-          </button>
-        </header>
-        <div className="external-resource-dialog-body">
-          <ExternalResourceDialogContent
-            busy={busy}
-            draft={draft}
-            node={node}
-            onClose={onClose}
-            replaceDraft={replaceDraft}
-            reportError={reportError}
-          />
-        </div>
-      </section>
-    </div>,
-    document.body,
+  return (
+    <ModalDialog
+      className="external-resource-dialog"
+      closeLabel="Close Kubernetes resource selector"
+      escapeDisabled={busy}
+      icon={<Database aria-hidden="true" />}
+      kicker="Kubernetes resource"
+      onClose={onClose}
+      portal
+      title={<>Select {displayName}</>}
+    >
+      <div className="external-resource-dialog-body">
+        <ExternalResourceDialogContent
+          busy={busy}
+          draft={draft}
+          node={node}
+          onClose={onClose}
+          replaceDraft={replaceDraft}
+          reportError={reportError}
+        />
+      </div>
+    </ModalDialog>
   );
 }

@@ -19,6 +19,7 @@ import {
   getOutputs,
   outputDownloadUrl,
 } from "../../api/client";
+import { ModalDialog } from "../../components/ModalDialog";
 import { useEscapeCancel } from "../../hooks/useEscapeCancel";
 import type { ApprovalCandidate } from "../actions/approvals";
 
@@ -333,20 +334,18 @@ export function ApprovalOutputDialog({
 }>) {
   if (!approval.outputTargetId) return null;
   return (
-    <div className="modal-backdrop output-review-backdrop">
-      <section
-        aria-label={`Review output for ${approval.nodeLabel}`}
-        aria-modal="true"
-        className="confirmation-dialog output-review-dialog"
-        role="dialog"
-      >
-        <OutputPanel
-          approval={approval}
-          onApprovalStarted={onApprovalStarted}
-          onClose={onClose}
-          targetId={approval.outputTargetId}
-        />
-      </section>
-    </div>
+    <ModalDialog
+      backdropClassName="output-review-backdrop"
+      bare
+      className="output-review-dialog"
+      label={`Review output for ${approval.nodeLabel}`}
+    >
+      <OutputPanel
+        approval={approval}
+        onApprovalStarted={onApprovalStarted}
+        onClose={onClose}
+        targetId={approval.outputTargetId}
+      />
+    </ModalDialog>
   );
 }

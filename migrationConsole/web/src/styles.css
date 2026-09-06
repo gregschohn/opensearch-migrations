@@ -373,7 +373,8 @@ button.secondary-button:hover:not(:disabled) {
   grid-template-columns: auto minmax(0, 1fr) auto;
 }
 
-.action-review-dialog > header > .icon-button {
+.confirmation-dialog > header > .icon-button {
+  flex: 0 0 auto;
   margin-left: auto;
 }
 
