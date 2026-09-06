@@ -1,7 +1,7 @@
 export function normalizedStatus(
   status: string | null | undefined,
 ): string {
-  return String(status ?? "unknown").trim().toLocaleLowerCase();
+  return String(status ?? "unknown").trim().toLowerCase();
 }
 
 
@@ -22,7 +22,7 @@ export function statusLabel(status: string | null | undefined): string {
   };
   return labels[normalized] ?? (
     normalized.length > 0
-      ? `${normalized[0].toLocaleUpperCase()}${normalized.slice(1)}`
+      ? `${normalized[0].toUpperCase()}${normalized.slice(1)}`
       : "Unknown"
   );
 }

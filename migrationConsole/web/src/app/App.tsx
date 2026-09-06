@@ -282,8 +282,12 @@ function ManageApp() {
     useState<ApprovalCandidate | null>(null);
   const [pendingApprovalNames, setPendingApprovalNames] =
     useState<Set<string>>(new Set());
+  const pendingApprovalClaims = useRef(new Map<string, number>());
   const [approvalCenterProblem, setApprovalCenterProblem] = useState("");
-  const [promptedApprovals] = useState(promptedApprovalKeys);
+  // A ref, not state: prompt bookkeeping never needs to trigger a render.
+  const promptedApprovalsRef = useRef<Set<string> | null>(null);
+  promptedApprovalsRef.current ??= promptedApprovalKeys();
+  const promptedApprovals = promptedApprovalsRef.current;
   const [resourceAdds, setResourceAdds] =
     useState<ResourceAddController | null>(null);
   const [pendingResourceAdditions, setPendingResourceAdditions] =
@@ -796,6 +800,21 @@ function ManageApp() {
     });
     setTreeOpen(false);
   };
+  const claimPendingApprovals = (names: string[]) => {
+    names.forEach((name) => pendingApprovalClaims.current.set(
+      name,
+      (pendingApprovalClaims.current.get(name) ?? 0) + 1,
+    ));
+    setPendingApprovalNames(new Set(pendingApprovalClaims.current.keys()));
+  };
+  const releasePendingApprovals = (names: string[]) => {
+    names.forEach((name) => {
+      const remaining = (pendingApprovalClaims.current.get(name) ?? 1) - 1;
+      if (remaining > 0) pendingApprovalClaims.current.set(name, remaining);
+      else pendingApprovalClaims.current.delete(name);
+    });
+    setPendingApprovalNames(new Set(pendingApprovalClaims.current.keys()));
+  };
   const setPreapprovals = async (
     gates: ApprovalGateSummary[],
     preapproved: boolean,
@@ -805,10 +824,7 @@ function ManageApp() {
     ));
     if (changed.length === 0) return;
     setApprovalCenterProblem("");
-    setPendingApprovalNames((current) => new Set([
-      ...current,
-      ...changed.map((gate) => gate.name),
-    ]));
+    claimPendingApprovals(changed.map((gate) => gate.name));
     try {
       await Promise.all(changed.map((gate) => setGatePreapproval(
         gate.name,
@@ -825,19 +841,13 @@ function ManageApp() {
       );
       void queryClient.invalidateQueries({ queryKey: ["approval-gates"] });
     } finally {
-      const names = new Set(changed.map((gate) => gate.name));
-      setPendingApprovalNames((current) => new Set(
-        [...current].filter((name) => !names.has(name)),
-      ));
+      releasePendingApprovals(changed.map((gate) => gate.name));
     }
   };
   const approveBlockingGate = async (gate: ApprovalGateSummary) => {
     if (!gate.approvalTargetId) return;
     setApprovalCenterProblem("");
-    setPendingApprovalNames((current) => new Set([
-      ...current,
-      gate.name,
-    ]));
+    claimPendingApprovals([gate.name]);
     try {
       await approveTarget(
         gate.approvalTargetId,
@@ -853,11 +863,7 @@ function ManageApp() {
         error instanceof Error ? error.message : String(error),
       );
     } finally {
-      setPendingApprovalNames((current) => {
-        const next = new Set(current);
-        next.delete(gate.name);
-        return next;
-      });
+      releasePendingApprovals([gate.name]);
     }
   };
   const viewGateOutput = (gate: ApprovalGateSummary) => {
@@ -865,6 +871,12 @@ function ManageApp() {
       approval.targetId === gate.approvalTargetId
     ));
     if (candidate) setApprovalOutput(candidate);
+    else {
+      setApprovalCenterProblem(
+        "The output for this checkpoint is not available yet. "
+        + "Refresh and try again.",
+      );
+    }
   };
   const persistPromptedApprovals = useCallback(() => {
     try {
@@ -897,7 +909,11 @@ function ManageApp() {
     if (
       editContext
       || submitOpen
+      || approvalCenterOpen
+      || approvalOutput
       || document.visibilityState !== "visible"
+      // Fallback for dialogs whose open state lives in child components
+      // (e.g. the workspace reset dialog).
       || document.querySelector('[role="dialog"]')
     ) {
       return;
@@ -905,7 +921,9 @@ function ManageApp() {
     rememberApprovalPrompt(firstApproval.targetId, review.gateRevision);
     setApprovalDialogTargetId(firstApproval.targetId);
   }, [
+    approvalCenterOpen,
     approvalDialogTargetId,
+    approvalOutput,
     approvalPreview.data,
     editContext,
     firstApproval,
@@ -1158,10 +1176,10 @@ function ManageApp() {
               <span>{state.data.refreshError?.message}</span>
             </output>
           ) : null}
-          {visibleProblems.map((problem) => (
+          {visibleProblems.map((problem, index) => (
             <output
               className="state-banner problem-banner"
-              key={`${problem.source}-${problem.message}`}
+              key={`${problem.source}-${index}`}
             >
               <CircleAlert aria-hidden="true" />
               <strong>{problem.source}</strong>

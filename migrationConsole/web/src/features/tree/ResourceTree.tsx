@@ -151,9 +151,9 @@ interface TreeRowProps {
   validationErrorItem: boolean;
   renaming: boolean;
   renameValue: string;
-  onAddResource: (optionId: string) => void;
+  onAddResource: (optionId: string, nodeId: string) => void;
   onCancelRename: () => void;
-  onChangeRename: (value: string) => void;
+  onChangeRename: (nodeId: string, value: string) => void;
   onExpand: (nodeId: string) => void;
   onFocus: (nodeId: string) => void;
   onKeyDown: (event: KeyboardEvent<HTMLDivElement>, nodeId: string) => void;
@@ -409,7 +409,7 @@ const TreeRow = memo(function TreeRow({
             autoFocus
             onChange={(event) => {
               event.currentTarget.setCustomValidity("");
-              onChangeRename(event.target.value);
+              onChangeRename(node.id, event.target.value);
             }}
             onClick={(event) => event.stopPropagation()}
             onInvalid={(event) => {
@@ -562,7 +562,7 @@ const TreeRow = memo(function TreeRow({
             disabled={addPending || addOptions[0].disabled}
             onClick={(event) => {
               event.stopPropagation();
-              onAddResource(addOptions[0].id);
+              onAddResource(addOptions[0].id, node.id);
             }}
             title={
               addOptions[0].disabledReason
@@ -604,7 +604,7 @@ const TreeRow = memo(function TreeRow({
                     key={option.id}
                     onClick={(event) => {
                       event.stopPropagation();
-                      onAddResource(option.id);
+                      onAddResource(option.id, node.id);
                     }}
                     role="menuitem"
                     title={option.disabledReason ?? `Add ${option.label}`}
@@ -819,7 +819,11 @@ export function ResourceTree({
           next.add(node.id);
         }
       });
-      return next;
+      const unchanged = (
+        next.size === current.size
+        && [...next].every((nodeId) => current.has(nodeId))
+      );
+      return unchanged ? current : next;
     });
   }, [snapshot]);
 
@@ -848,6 +852,7 @@ export function ResourceTree({
     knownIds.current = nextIds;
   }, [snapshot, viewTransitionKey]);
 
+  const filterActive = filter.trim().length > 0;
   const rows = useMemo(
     () => visibleRows(snapshot, expanded, filter, presentation),
     [snapshot, expanded, filter, presentation],
@@ -1295,9 +1300,17 @@ export function ResourceTree({
   }, [resourceAdds?.renames, snapshot]);
 
   useEffect(() => {
-    if (focusedId && snapshot.nodes[focusedId]) return;
-    setFocusedId(selectedId ?? rows[0]?.node.id ?? null);
-  }, [focusedId, rows, selectedId, snapshot.nodes]);
+    // The focused row must be rendered, not merely present in the
+    // snapshot; a collapsed ancestor or active filter can hide it and
+    // leave the tree without a tab stop.
+    if (focusedId && rows.some((row) => row.node.id === focusedId)) return;
+    const fallback = (
+      selectedId && rows.some((row) => row.node.id === selectedId)
+        ? selectedId
+        : rows[0]?.node.id ?? null
+    );
+    setFocusedId(fallback);
+  }, [focusedId, rows, selectedId]);
 
   const focusRow = useCallback((nodeId: string) => {
     setFocusedId(nodeId);
@@ -1478,29 +1491,37 @@ export function ResourceTree({
     event: KeyboardEvent<HTMLDivElement>,
     nodeId: string,
   ) => {
+    if (event.target !== event.currentTarget) return;
     const index = rows.findIndex((row) => row.node.id === nodeId);
     const node = snapshot.nodes[nodeId];
+    const rowDepth = rows[index]?.depth ?? 0;
+    const nextRowIsChild = (rows[index + 1]?.depth ?? 0) > rowDepth;
     let targetId: string | undefined;
     if (event.key === "ArrowDown") targetId = rows[index + 1]?.node.id;
     if (event.key === "ArrowUp") targetId = rows[index - 1]?.node.id;
     if (event.key === "Home") targetId = rows[0]?.node.id;
     if (event.key === "End") targetId = rows.at(-1)?.node.id;
     if (event.key === "ArrowRight" && node.childIds.length > 0) {
-      if (!expanded.has(nodeId)) {
+      if (nextRowIsChild) {
+        // An active filter renders children regardless of expansion, so
+        // navigate by what is actually on screen.
+        targetId = rows[index + 1]?.node.id;
+      } else if (!expanded.has(nodeId)) {
         setExpanded((current) => new Set(current).add(nodeId));
-      } else {
-        targetId = node.childIds[0];
       }
     }
     if (event.key === "ArrowLeft") {
-      if (expanded.has(nodeId)) {
+      if (expanded.has(nodeId) && nextRowIsChild && !filterActive) {
         setExpanded((current) => {
           const next = new Set(current);
           next.delete(nodeId);
           return next;
         });
-      } else {
-        targetId = node.parentId ?? undefined;
+      } else if (
+        node.parentId
+        && rows.some((row) => row.node.id === node.parentId)
+      ) {
+        targetId = node.parentId;
       }
     }
     if (event.key === "Enter" || event.key === " ") {
@@ -1519,7 +1540,43 @@ export function ResourceTree({
       event.preventDefault();
     }
     if (targetId) focusRow(targetId);
-  }, [expanded, focusRow, onSelect, rows, snapshot.nodes]);
+  }, [expanded, filterActive, focusRow, onSelect, rows, snapshot.nodes]);
+
+  const changeRenameName = useCallback((nodeId: string, name: string) => {
+    setInlineRename((current) => (
+      current?.nodeId === nodeId ? { ...current, name } : current
+    ));
+  }, []);
+
+  const handleSubmitRename = useCallback(() => {
+    void submitRename();
+  }, [submitRename]);
+
+  const toggleAddMenu = useCallback((nodeId: string) => {
+    setAddMenuGroupId((current) => (current === nodeId ? null : nodeId));
+  }, []);
+
+  useEffect(() => {
+    if (!addMenuGroupId) return;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (!target?.closest(".tree-group-add-menu, .tree-group-add")) {
+        setAddMenuGroupId(null);
+      }
+    };
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.stopImmediatePropagation();
+      setAddMenuGroupId(null);
+    };
+    document.addEventListener("pointerdown", closeOnOutsidePointer);
+    // Capture phase so the menu wins over escape-cancel dialog layers.
+    document.addEventListener("keydown", closeOnEscape, true);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutsidePointer);
+      document.removeEventListener("keydown", closeOnEscape, true);
+    };
+  }, [addMenuGroupId]);
 
   const toggleExpanded = useCallback((nodeId: string) => {
     setExpanded((current) => {
@@ -1556,7 +1613,7 @@ export function ResourceTree({
           {rows.map((row) => (
             <Fragment key={row.node.id}>
               <TreeRow
-                expanded={expanded.has(row.node.id) || filter.length > 0}
+                expanded={expanded.has(row.node.id) || filterActive}
                 focused={focusedId === row.node.id}
                 inserted={insertedIds.has(row.node.id)}
                 presentation={presentation}
@@ -1582,22 +1639,16 @@ export function ResourceTree({
                     : ""
                 }
                 renaming={inlineRename?.nodeId === row.node.id}
-                onAddResource={(optionId) => beginAdd(optionId, row.node.id)}
+                onAddResource={beginAdd}
                 onCancelRename={cancelRename}
-                onChangeRename={(name) => setInlineRename((current) => (
-                  current?.nodeId === row.node.id
-                    ? { ...current, name }
-                    : current
-                ))}
+                onChangeRename={changeRenameName}
                 onExpand={toggleExpanded}
                 onFocus={setFocusedId}
                 onKeyDown={handleKeyDown}
                 onSelect={onSelect}
                 onStartRename={beginRename}
-                onSubmitRename={() => void submitRename()}
-                onToggleAddMenu={(nodeId) => setAddMenuGroupId((current) => (
-                  current === nodeId ? null : nodeId
-                ))}
+                onSubmitRename={handleSubmitRename}
+                onToggleAddMenu={toggleAddMenu}
                 row={row}
                 rowRef={rowRef}
                 selected={

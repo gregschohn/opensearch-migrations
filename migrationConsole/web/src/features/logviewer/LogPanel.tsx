@@ -114,6 +114,8 @@ export function LogPanel({
   const pinToBottomRef = useRef(true);
   const sourceRef = useRef<EventSource | null>(null);
   const streamIdRef = useRef<string | null>(null);
+  const startTokenRef = useRef(0);
+  const scrollAnchorRef = useRef<{ height: number; top: number } | null>(null);
   const autoStartedRef = useRef(false);
   const autoFollowTimerRef = useRef<number | null>(null);
   const followRef = useRef(follow);
@@ -216,13 +218,31 @@ export function LogPanel({
 
   useLayoutEffect(() => {
     const viewer = viewerRef.current;
-    if (viewer && pinToBottomRef.current && !paused) {
+    if (!viewer) return;
+    const anchor = scrollAnchorRef.current;
+    if (anchor) {
+      // Keep the previously visible lines in place when older history is
+      // prepended (browsers without overflow scroll anchoring jump).
+      scrollAnchorRef.current = null;
+      viewer.scrollTop = anchor.top + (viewer.scrollHeight - anchor.height);
+      return;
+    }
+    if (pinToBottomRef.current && !paused) {
       viewer.scrollTop = viewer.scrollHeight;
     }
   }, [events, paused]);
 
+  const cancelAutoFollow = () => {
+    if (autoFollowTimerRef.current !== null) {
+      globalThis.clearTimeout(autoFollowTimerRef.current);
+      autoFollowTimerRef.current = null;
+    }
+    setAutoFollowPending(false);
+  };
+
   const stop = async () => {
     if (!stream) return;
+    cancelAutoFollow();
     setBusy(true);
     setError(null);
     sourceRef.current?.close();
@@ -247,20 +267,31 @@ export function LogPanel({
     requestedTarget = selected,
   ) => {
     if (!requestedTarget) return;
-    if (streamIdRef.current) {
-      await stopLogStream(streamIdRef.current);
-      streamIdRef.current = null;
-    }
+    const token = ++startTokenRef.current;
     setBusy(true);
     setError(null);
     setPaused(false);
     pinToBottomRef.current = true;
     try {
+      const previousId = streamIdRef.current;
+      if (previousId) {
+        streamIdRef.current = null;
+        try {
+          await stopLogStream(previousId);
+        } catch {
+          // The old stream may already be gone; starting fresh is the goal.
+        }
+      }
+      if (token !== startTokenRef.current) return undefined;
       const next = await startLogStream(requestedTarget.id, {
         tailLines,
         follow: requestedFollow && requestedTarget.supportsFollow,
         pageSize: Math.min(tailLines, 1000),
       });
+      if (token !== startTokenRef.current) {
+        void stopLogStream(next.id).catch(() => undefined);
+        return undefined;
+      }
       setStream(next);
       setEvents(next.page.events);
       setBeforeCursor(next.page.beforeCursor ?? null);
@@ -269,10 +300,12 @@ export function LogPanel({
       setConnection(next.state === "following" ? "connecting" : "ended");
       return next;
     } catch (startError) {
-      setError((startError as Error).message);
+      if (token === startTokenRef.current) {
+        setError((startError as Error).message);
+      }
       return undefined;
     } finally {
-      setBusy(false);
+      if (token === startTokenRef.current) setBusy(false);
     }
   };
 
@@ -310,6 +343,14 @@ export function LogPanel({
         before: beforeCursor,
         limit: 200,
       });
+      const viewer = viewerRef.current;
+      if (viewer) {
+        scrollAnchorRef.current = {
+          height: viewer.scrollHeight,
+          top: viewer.scrollTop,
+        };
+      }
+      pinToBottomRef.current = false;
       setEvents((current) => mergeEvents(page.events, current));
       setBeforeCursor(page.beforeCursor ?? null);
       setAtAvailableStart(page.atAvailableStart);
@@ -393,9 +434,13 @@ export function LogPanel({
   };
 
   const copy = async () => {
-    await navigator.clipboard.writeText(rendered);
-    setCopied(true);
-    globalThis.setTimeout(() => setCopied(false), 1400);
+    try {
+      await navigator.clipboard.writeText(rendered);
+      setCopied(true);
+      globalThis.setTimeout(() => setCopied(false), 1400);
+    } catch {
+      setError("The clipboard is unavailable in this browser context.");
+    }
   };
 
   const download = () => {
@@ -513,11 +558,7 @@ export function LogPanel({
                     (target) => target.id === nextId,
                   );
                   setSelectedId(nextId);
-                  if (autoFollowTimerRef.current !== null) {
-                    globalThis.clearTimeout(autoFollowTimerRef.current);
-                    autoFollowTimerRef.current = null;
-                    setAutoFollowPending(false);
-                  }
+                  cancelAutoFollow();
                   if (stream && nextTarget) {
                     void start(followRef.current, nextTarget);
                   }
@@ -555,11 +596,7 @@ export function LogPanel({
                 onChange={(event) => {
                   const nextFollow = event.target.checked;
                   setFollow(nextFollow);
-                  if (!nextFollow && autoFollowTimerRef.current !== null) {
-                    globalThis.clearTimeout(autoFollowTimerRef.current);
-                    autoFollowTimerRef.current = null;
-                    setAutoFollowPending(false);
-                  }
+                  if (!nextFollow) cancelAutoFollow();
                   if (!nextFollow && stream?.state === "following") {
                     void stop();
                   } else if (
@@ -575,7 +612,10 @@ export function LogPanel({
             </label>
             <button
               disabled={!selected || busy || stream?.state === "following"}
-              onClick={() => void start()}
+              onClick={() => {
+                cancelAutoFollow();
+                void start();
+              }}
               type="button"
             >
               <Play aria-hidden="true" />

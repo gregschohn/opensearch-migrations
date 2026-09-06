@@ -11,7 +11,6 @@ import {
   Pencil,
   RotateCcw,
   ShieldCheck,
-  X,
 } from "lucide-react";
 
 import {
@@ -21,7 +20,7 @@ import {
   getCombinedResetPlan,
   getResetPlan,
 } from "../../api/client";
-import { useEscapeCancel } from "../../hooks/useEscapeCancel";
+import { ModalDialog } from "../../components/ModalDialog";
 import type { ApprovalCandidate } from "./approvals";
 
 
@@ -80,7 +79,6 @@ export function ApprovalDialog({
     enabled: resetTargetIds.length > 0,
     retry: false,
   });
-  const dialogRef = useEscapeCancel<HTMLElement>(onClose);
   useEffect(() => {
     if (processing.size === 0) return;
     const timer = globalThis.setInterval(() => {
@@ -183,33 +181,43 @@ export function ApprovalDialog({
     }
   };
   return (
-    <div className="modal-backdrop">
-      <section
-        aria-labelledby="approval-dialog-title"
-        aria-modal="true"
-        className="confirmation-dialog action-review-dialog approval-list-dialog"
-        data-escape-cancel-layer
-        ref={dialogRef}
-        role="dialog"
-      >
-        <header>
-          <ShieldCheck aria-hidden="true" />
-          <div>
-            <span>Workflow intervention</span>
-            <h2 id="approval-dialog-title">Review required actions</h2>
-            <small>{candidates.length} waiting {
-              candidates.length === 1 ? "gate" : "gates"
-            }</small>
-          </div>
-          <button
-            aria-label="Close required actions"
-            className="icon-button"
-            onClick={onClose}
-            type="button"
-          >
-            <X aria-hidden="true" />
-          </button>
-        </header>
+    <ModalDialog
+      className="action-review-dialog approval-list-dialog"
+      closeLabel="Close required actions"
+      icon={<ShieldCheck aria-hidden="true" />}
+      kicker="Workflow intervention"
+      onClose={onClose}
+      subtitle={`${candidates.length} waiting ${
+        candidates.length === 1 ? "gate" : "gates"
+      }`}
+      title="Review required actions"
+      footer={(
+        <>
+          <button onClick={onClose} type="button">Close</button>
+          {resetCandidates.length > 0 ? (
+            <button
+              className="danger-confirm"
+              disabled={
+                combinedPlan.isPending
+                || !combinedPlan.data
+                || resetCandidates.some((candidate) => (
+                  submitting.has(candidate.targetId)
+                  || processing.has(candidate.targetId)
+                ))
+              }
+              onClick={() => void resetAndResubmit(
+                resetCandidates,
+                combinedPlan.data?.token,
+              )}
+              type="button"
+            >
+              <RotateCcw aria-hidden="true" />
+              Reset &amp; resubmit all ({resetCandidates.length})
+            </button>
+          ) : null}
+        </>
+      )}
+    >
         <div className="approval-review-list">
           {candidates.map((candidate) => {
             const review = reviewFor(candidate.targetId);
@@ -413,32 +421,7 @@ export function ApprovalDialog({
             ) : null}
           </section>
         ) : null}
-        <footer>
-          <button onClick={onClose} type="button">Close</button>
-          {resetCandidates.length > 0 ? (
-            <button
-              className="danger-confirm"
-              disabled={
-                combinedPlan.isPending
-                || !combinedPlan.data
-                || resetCandidates.some((candidate) => (
-                  submitting.has(candidate.targetId)
-                  || processing.has(candidate.targetId)
-                ))
-              }
-              onClick={() => void resetAndResubmit(
-                resetCandidates,
-                combinedPlan.data?.token,
-              )}
-              type="button"
-            >
-              <RotateCcw aria-hidden="true" />
-              Reset &amp; resubmit all ({resetCandidates.length})
-            </button>
-          ) : null}
-        </footer>
-      </section>
-    </div>
+    </ModalDialog>
   );
 }
 
@@ -458,7 +441,6 @@ export function ResetDialog({
     queryFn: () => getResetPlan(targetId),
     retry: false,
   });
-  const dialogRef = useEscapeCancel<HTMLElement>(onClose, submitting);
   const reset = async () => {
     if (!plan.data) return;
     setSubmitting(true);
@@ -481,30 +463,33 @@ export function ResetDialog({
     }
   };
   return (
-    <div className="modal-backdrop">
-      <section
-        aria-labelledby="reset-dialog-title"
-        aria-modal="true"
-        className="confirmation-dialog action-review-dialog reset-review-dialog"
-        data-escape-cancel-layer
-        ref={dialogRef}
-        role="dialog"
-      >
-        <header>
-          <RotateCcw aria-hidden="true" />
-          <div>
-            <span>Dependency-safe reset</span>
-            <h2 id="reset-dialog-title">Review reset plan</h2>
-          </div>
+    <ModalDialog
+      className="action-review-dialog reset-review-dialog"
+      closeLabel="Close reset"
+      escapeDisabled={submitting}
+      icon={<RotateCcw aria-hidden="true" />}
+      kicker="Dependency-safe reset"
+      onClose={onClose}
+      title="Review reset plan"
+      footer={(
+        <>
+          <button disabled={submitting} onClick={onClose} type="button">
+            Cancel
+          </button>
           <button
-            aria-label="Close reset"
-            className="icon-button"
-            onClick={onClose}
+            className="danger-confirm"
+            disabled={submitting || !plan.data}
+            onClick={() => void reset()}
             type="button"
           >
-            <X aria-hidden="true" />
+            {submitting
+              ? <LoaderCircle className="spin" aria-hidden="true" />
+              : <RotateCcw aria-hidden="true" />}
+            Reset exact plan
           </button>
-        </header>
+        </>
+      )}
+    >
         {plan.isPending ? (
           <div className="action-review-loading" role="status">
             <LoaderCircle className="spin" aria-hidden="true" />
@@ -540,23 +525,6 @@ export function ResetDialog({
           </>
         ) : null}
         {problem ? <p className="action-inline-error">{problem}</p> : null}
-        <footer>
-          <button disabled={submitting} onClick={onClose} type="button">
-            Cancel
-          </button>
-          <button
-            className="danger-confirm"
-            disabled={submitting || !plan.data}
-            onClick={() => void reset()}
-            type="button"
-          >
-            {submitting
-              ? <LoaderCircle className="spin" aria-hidden="true" />
-              : <RotateCcw aria-hidden="true" />}
-            Reset exact plan
-          </button>
-        </footer>
-      </section>
-    </div>
+    </ModalDialog>
   );
 }

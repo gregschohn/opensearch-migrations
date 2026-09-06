@@ -40,6 +40,7 @@ import {
   type EditNode,
   type EditOperation,
 } from "../../api/client";
+import { ModalDialog } from "../../components/ModalDialog";
 import { useEscapeCancel } from "../../hooks/useEscapeCancel";
 import { SubmitConfigDialog } from "../submission/SubmitConfigDialog";
 import { ExternalResourceEditor } from "./ExternalResourceEditor";
@@ -771,6 +772,7 @@ function UnionEditor({
           disabled={busy || applying}
           onChange={(event) => {
             const nextValue = event.target.value;
+            const previousValue = value;
             const next = variants.find(
               (variant) => String(variant.value) === nextValue,
             );
@@ -782,6 +784,8 @@ function UnionEditor({
               op: "set",
               path: node.path,
               value: next.value,
+            }).then((applied) => {
+              if (!applied) setValue(previousValue);
             }).finally(() => setApplying(false));
           }}
           value={value}
@@ -828,6 +832,8 @@ function BooleanEditor({
               op: "set",
               path: node.path,
               value: next,
+            }).then((applied) => {
+              if (!applied) setChecked(!next);
             }).finally(() => setApplying(false));
           }}
           type="checkbox"
@@ -1635,14 +1641,6 @@ export function ConfigEditor({
   const [confirmSubmit, setConfirmSubmit] = useState(false);
   const [exitPromptOpen, setExitPromptOpen] = useState(false);
   const [pinnedContext, setPinnedContext] = useState<PinnedContext[]>([]);
-  const exitDialogRef = useEscapeCancel<HTMLElement>(
-    () => setExitPromptOpen(false),
-    actionPending || !exitPromptOpen,
-  );
-  const removalDialogRef = useEscapeCancel<HTMLElement>(
-    () => setPendingRemoval(null),
-    busy || !pendingRemoval,
-  );
   const configTablePanelRef = useRef<HTMLElement>(null);
   const pinUpdateFrame = useRef<number | null>(null);
   const rowElements = useRef(new Map<string, HTMLTableRowElement>());
@@ -2905,27 +2903,15 @@ export function ConfigEditor({
         </section>
       </div>)}
       {exitPromptOpen ? (
-        <div className="modal-backdrop">
-          <section
-            aria-labelledby="exit-edit-dialog-title"
-            aria-modal="true"
-            className="confirmation-dialog"
-            data-escape-cancel-layer
-            ref={exitDialogRef}
-            role="dialog"
-          >
-            <header>
-              <AlertTriangle aria-hidden="true" />
-              <div>
-                <span>Unsaved configuration</span>
-                <h2 id="exit-edit-dialog-title">Leave editing?</h2>
-              </div>
-            </header>
-            <p>
-              Save these changes before leaving, or discard them and reread
-              the saved configuration next time you edit.
-            </p>
-            <footer>
+        <ModalDialog
+          escapeDisabled={actionPending}
+          hideCloseButton
+          icon={<AlertTriangle aria-hidden="true" />}
+          kicker="Unsaved configuration"
+          onClose={() => setExitPromptOpen(false)}
+          title="Leave editing?"
+          footer={(
+            <>
               <button
                 disabled={actionPending}
                 onClick={() => setExitPromptOpen(false)}
@@ -2954,29 +2940,49 @@ export function ConfigEditor({
                   : <Save aria-hidden="true" />}
                 Save and exit
               </button>
-            </footer>
-          </section>
-        </div>
+            </>
+          )}
+        >
+          <p>
+            Save these changes before leaving, or discard them and reread
+            the saved configuration next time you edit.
+          </p>
+        </ModalDialog>
       ) : null}
       {pendingRemoval ? (
-        <div className="modal-backdrop">
-          <section
-            aria-labelledby="removal-dialog-title"
-            aria-modal="true"
-            className="confirmation-dialog"
-            data-escape-cancel-layer
-            ref={removalDialogRef}
-            role="dialog"
-          >
-            <header>
-              <Trash2 aria-hidden="true" />
-              <div>
-                <span>Configuration removal</span>
-                <h2 id="removal-dialog-title">
-                  Remove {fieldName(pendingRemoval.node)}?
-                </h2>
-              </div>
-            </header>
+        <ModalDialog
+          closeLabel="Cancel removal"
+          escapeDisabled={busy}
+          icon={<Trash2 aria-hidden="true" />}
+          kicker="Configuration removal"
+          onClose={() => setPendingRemoval(null)}
+          title={<>Remove {fieldName(pendingRemoval.node)}?</>}
+          footer={(
+            <>
+              <button
+                disabled={busy}
+                onClick={() => setPendingRemoval(null)}
+                type="button"
+              >
+                Cancel
+              </button>
+              <button
+                aria-label="Confirm removal"
+                className="danger-confirm"
+                disabled={
+                  busy
+                  || pendingRemoval.loading
+                  || !pendingRemoval.impact
+                }
+                onClick={() => void confirmRemoval()}
+                type="button"
+              >
+                <Trash2 aria-hidden="true" />
+                Remove
+              </button>
+            </>
+          )}
+        >
             {pendingRemoval.loading ? (
               <div className="dialog-loading">
                 <LoaderCircle className="spin" aria-hidden="true" />
@@ -3018,31 +3024,7 @@ export function ConfigEditor({
                 )}
               </>
             )}
-            <footer>
-              <button
-                disabled={busy}
-                onClick={() => setPendingRemoval(null)}
-                type="button"
-              >
-                Cancel
-              </button>
-              <button
-                aria-label="Confirm removal"
-                className="danger-confirm"
-                disabled={
-                  busy
-                  || pendingRemoval.loading
-                  || !pendingRemoval.impact
-                }
-                onClick={() => void confirmRemoval()}
-                type="button"
-              >
-                <Trash2 aria-hidden="true" />
-                Remove
-              </button>
-            </footer>
-          </section>
-        </div>
+        </ModalDialog>
       ) : null}
       {confirmSubmit && draft ? (
         <SubmitConfigDialog

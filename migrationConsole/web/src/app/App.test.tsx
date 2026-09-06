@@ -1458,7 +1458,8 @@ test("reviews managed output and approves from the required-action dialog", asyn
     targetId: "approval:approval-node",
     expectedGateRevision: "11",
   }));
-  expect(within(outputReview).getByText("Approval accepted"))
+  expect(within(outputReview)
+    .getByText("Approval accepted; the workflow is continuing"))
     .toBeInTheDocument();
 });
 
@@ -1770,7 +1771,7 @@ test("preapproves upcoming resource checkpoints and inventories all gates", asyn
   );
   renderApp();
 
-  const resourceToggle = await screen.findByRole("switch", {
+  const resourceToggle = await screen.findByRole("checkbox", {
     name: "Preapprove upcoming checkpoints",
   });
   expect(resourceToggle).toHaveAttribute("aria-checked", "false");
@@ -1787,10 +1788,10 @@ test("preapproves upcoming resource checkpoints and inventories all gates", asyn
   expect(within(center).getByRole("heading", { name: "Passed" }))
     .toBeInTheDocument();
   expect(within(center).getByText("Not required")).toBeInTheDocument();
-  expect(within(center).getByRole("switch", {
+  expect(within(center).getByRole("checkbox", {
     name: "Preapprove Document backfill",
   })).toBeDisabled();
-  expect(within(center).getByRole("switch", {
+  expect(within(center).getByRole("checkbox", {
     name: "Preapprove Document backfill",
   })).toHaveAttribute(
     "title",
@@ -1905,7 +1906,7 @@ test("approves blockers inline and preapproves all upcoming checkpoints", async 
     name: "Review required actions",
   })).not.toBeInTheDocument();
 
-  const allUpcoming = within(center).getByRole("switch", {
+  const allUpcoming = within(center).getByRole("checkbox", {
     name: "Preapprove all upcoming checkpoints",
   });
   expect(allUpcoming).toHaveAttribute("aria-checked", "false");

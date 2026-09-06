@@ -18,7 +18,7 @@ import {
   getConfigReview,
   submitConfigDraft,
 } from "../../api/client";
-import { useEscapeCancel } from "../../hooks/useEscapeCancel";
+import { ModalDialog } from "../../components/ModalDialog";
 
 
 interface SubmitConfigDialogProps {
@@ -102,8 +102,6 @@ export function SubmitConfigDialog({
       resetPlan.data.targets.map((target) => target.path).join("; ")
     }.`
     : "Building the dependency-safe reset plan.";
-  const dialogRef = useEscapeCancel<HTMLElement>(onClose, submitting);
-
   const retry = () => {
     setProblem("");
     if (currentDraft.isError) void currentDraft.refetch();
@@ -159,24 +157,56 @@ export function SubmitConfigDialog({
   };
 
   return (
-    <div className="modal-backdrop">
-      <section
-        aria-labelledby="submit-dialog-title"
-        aria-modal="true"
-        className="confirmation-dialog submission-dialog"
-        data-escape-cancel-layer
-        ref={dialogRef}
-        role="dialog"
-      >
-        <header>
-          <Send aria-hidden="true" />
-          <div>
-            <span>Workflow submission</span>
-            <h2 id="submit-dialog-title">
-              {resubmitting ? "Resubmit configuration?" : "Submit configuration?"}
-            </h2>
-          </div>
-        </header>
+    <ModalDialog
+      className="submission-dialog"
+      closeLabel="Close submission review"
+      escapeDisabled={submitting}
+      icon={<Send aria-hidden="true" />}
+      kicker="Workflow submission"
+      onClose={onClose}
+      title={resubmitting ? "Resubmit configuration?" : "Submit configuration?"}
+      footer={(
+        <>
+          <button disabled={submitting} onClick={onClose} type="button">
+            Cancel
+          </button>
+          {resetTargetIds.length > 0 && !hasNonResetBlocker ? (
+            <button
+              className="danger-confirm"
+              disabled={submitting || !resetPlan.data}
+              onClick={() => void resetAndResubmit()}
+              title={resetAndResubmitTitle}
+              type="button"
+            >
+              {submitting
+                ? <LoaderCircle className="spin" aria-hidden="true" />
+                : <RotateCcw aria-hidden="true" />}
+              Reset &amp; resubmit ({resetActionCount})
+            </button>
+          ) : null}
+          <button
+            aria-label={resubmitting ? "Confirm resubmit" : "Confirm submit"}
+            className="primary-button"
+            disabled={
+              submitting
+              || loading
+              || !review.data?.valid
+              || !preflight.data?.allowed
+            }
+            onClick={() => void submit()}
+            title={directSubmitTitle}
+            type="button"
+          >
+            {submitting
+              ? <LoaderCircle className="spin" aria-hidden="true" />
+              : <Send aria-hidden="true" />}
+            {resubmitting
+              ? "Resubmit configuration"
+              : "Submit configuration"}
+          </button>
+        </>
+      )}
+    >
         <div className="submission-dialog-body">
           {loading ? (
             <div className="submit-review-state" role="status">
@@ -356,46 +386,6 @@ export function SubmitConfigDialog({
             </div>
           ) : null}
         </div>
-        <footer>
-          <button disabled={submitting} onClick={onClose} type="button">
-            Cancel
-          </button>
-          {resetTargetIds.length > 0 && !hasNonResetBlocker ? (
-            <button
-              className="danger-confirm"
-              disabled={submitting || !resetPlan.data}
-              onClick={() => void resetAndResubmit()}
-              title={resetAndResubmitTitle}
-              type="button"
-            >
-              {submitting
-                ? <LoaderCircle className="spin" aria-hidden="true" />
-                : <RotateCcw aria-hidden="true" />}
-              Reset &amp; resubmit ({resetActionCount})
-            </button>
-          ) : null}
-          <button
-            aria-label={resubmitting ? "Confirm resubmit" : "Confirm submit"}
-            className="primary-button"
-            disabled={
-              submitting
-              || loading
-              || !review.data?.valid
-              || !preflight.data?.allowed
-            }
-            onClick={() => void submit()}
-            title={directSubmitTitle}
-            type="button"
-          >
-            {submitting
-              ? <LoaderCircle className="spin" aria-hidden="true" />
-              : <Send aria-hidden="true" />}
-            {resubmitting
-              ? "Resubmit configuration"
-              : "Submit configuration"}
-          </button>
-        </footer>
-      </section>
-    </div>
+    </ModalDialog>
   );
 }
