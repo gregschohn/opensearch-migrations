@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Properties;
@@ -37,6 +38,7 @@ import org.opensearch.migrations.replay.lifecycle.ReplayIdentity.SourceConnectio
 import org.opensearch.migrations.replay.lifecycle.ReplayIdentity.SourceConnectionPartitionGenerationKey;
 import org.opensearch.migrations.replay.lifecycle.ReplayIdentity.SourceControlRecordId;
 import org.opensearch.migrations.replay.lifecycle.ReplayIdentity.SourcePartitionKey;
+import org.opensearch.migrations.replay.lifecycle.SourceCommitNotAcceptedException;
 import org.opensearch.migrations.replay.lifecycle.SourcePartitionLifecycleListener;
 import org.opensearch.migrations.replay.lifecycle.SourceRunwayLostException;
 import org.opensearch.migrations.replay.tracing.ChannelContextManager;
@@ -116,6 +118,13 @@ public class KafkaTrafficCaptureSource implements ISimpleTrafficCaptureSource {
 
     private record WriterPartitionKey(String nodeId, int partition) {}
 
+    record SessionTerminationStateSnapshot(
+        int pendingSessionTerminations,
+        int retiringSourcePartitions,
+        int queuedSyntheticCloseBatches,
+        Map<SourcePartitionKey, Long> pendingTerminationsByGeneration
+    ) {}
+
     public static final String MAX_POLL_INTERVAL_KEY = "max.poll.interval.ms";
     // Match the kafka-clients library default (5 minutes). This is the broker-enforced fence
     // threshold — how long the consumer can go between poll() calls before the group coordinator
@@ -165,6 +174,7 @@ public class KafkaTrafficCaptureSource implements ISimpleTrafficCaptureSource {
         new ConcurrentHashMap<>();
     private final Set<SourceConnectionPartitionGenerationKey> pendingConfirmedDead =
         ConcurrentHashMap.newKeySet();
+    private final Set<SourcePartitionKey> retiringSourcePartitions = ConcurrentHashMap.newKeySet();
     private final Queue<SourceControlEvent.ConfirmedDead> sourceControlQueue = new ConcurrentLinkedQueue<>();
     private final ConcurrentHashMap<WriterPartitionKey, Long> peerNoMoreWritesOffsets =
         new ConcurrentHashMap<>();
@@ -198,6 +208,8 @@ public class KafkaTrafficCaptureSource implements ISimpleTrafficCaptureSource {
 
     final ConcurrentHashMap<SourceConnectionPartitionGenerationKey, SessionTerminationObligation>
         pendingSessionTerminationObligations = new ConcurrentHashMap<>();
+    private volatile SourcePartitionLifecycleListener sourcePartitionLifecycleListener =
+        SourcePartitionLifecycleListener.NO_OP;
 
     public KafkaTrafficCaptureSource(
         @NonNull RootReplayerContext globalContext,
@@ -291,6 +303,7 @@ public class KafkaTrafficCaptureSource implements ISimpleTrafficCaptureSource {
         Collection<SourcePartitionKey> lostPartitions
     ) {
         for (var lostPartition : lostPartitions) {
+            retiringSourcePartitions.add(lostPartition);
             failPendingCommitAcknowledgements(lostPartition);
             int partition = lostPartition.partition();
             activeConnectionScanStates.entrySet().removeIf(entry ->
@@ -306,7 +319,10 @@ public class KafkaTrafficCaptureSource implements ISimpleTrafficCaptureSource {
                 control.evidence().partition().equals(lostPartition)
             );
             var active = partitionToActiveConnections.get(partition);
-            if (active == null) continue;
+            if (active == null) {
+                retireSourcePartitionIfDrained(lostPartition);
+                continue;
+            }
             var lostConnections = new ArrayList<ScopedConnectionIdKey>();
             for (var connKey : active) {
                 if (activeConnectionSourcePartitions.remove(connKey, lostPartition)) {
@@ -342,6 +358,7 @@ public class KafkaTrafficCaptureSource implements ISimpleTrafficCaptureSource {
             if (!batch.isEmpty()) {
                 trafficSourceReaderInterruptedCloseQueue.add(batch);
             }
+            retireSourcePartitionIfDrained(lostPartition);
         }
     }
 
@@ -392,6 +409,14 @@ public class KafkaTrafficCaptureSource implements ISimpleTrafficCaptureSource {
                         .addArgument(pendingSessionTerminationObligations::size)
                         .log();
                 }
+                matchingObligations.stream()
+                    .map(obligation -> new SourcePartitionKey(
+                        trackingKafkaConsumer.topic,
+                        obligation.partition(),
+                        obligation.sourceGeneration()
+                    ))
+                    .distinct()
+                    .forEach(this::retireSourcePartitionIfDrained);
                 if (matchingObligations.isEmpty()) {
                     log.atTrace()
                         .setMessage("No source termination obligation was registered for {}")
@@ -404,6 +429,50 @@ public class KafkaTrafficCaptureSource implements ISimpleTrafficCaptureSource {
             acknowledgement.completeExceptionally(t);
         }
         return acknowledgement.minimalCompletionStage();
+    }
+
+    private void retireSourcePartitionIfDrained(SourcePartitionKey partition) {
+        var hasOutstandingTermination = pendingSessionTerminationObligations.keySet()
+            .stream()
+            .anyMatch(obligation ->
+                obligation.partition() == partition.partition()
+                    && obligation.sourceGeneration() == partition.sourceGeneration()
+            );
+        if (hasOutstandingTermination) {
+            log.atDebug()
+                .setMessage("Source generation retirement is blocked by session termination; partition={}; state={}")
+                .addArgument(partition)
+                .addArgument(this::sessionTerminationStateSnapshot)
+                .log();
+            return;
+        }
+        if (!retiringSourcePartitions.remove(partition)) {
+            return;
+        }
+        log.atInfo()
+            .setMessage("Source generation {} drained after synthetic session termination")
+            .addArgument(partition)
+            .log();
+        sourcePartitionLifecycleListener.onRetired(List.of(partition));
+    }
+
+    SessionTerminationStateSnapshot sessionTerminationStateSnapshot() {
+        var pendingByGeneration = pendingSessionTerminationObligations.keySet()
+            .stream()
+            .collect(Collectors.groupingBy(
+                obligation -> new SourcePartitionKey(
+                    trackingKafkaConsumer.topic,
+                    obligation.partition(),
+                    obligation.sourceGeneration()
+                ),
+                Collectors.counting()
+            ));
+        return new SessionTerminationStateSnapshot(
+            pendingSessionTerminationObligations.size(),
+            retiringSourcePartitions.size(),
+            trafficSourceReaderInterruptedCloseQueue.size(),
+            Map.copyOf(pendingByGeneration)
+        );
     }
 
     private void onKeyFinishedCommitting(ITrafficStreamKey trafficStreamKey) {
@@ -1095,7 +1164,7 @@ public class KafkaTrafficCaptureSource implements ISimpleTrafficCaptureSource {
             if (result == CommitResult.IGNORED) {
                 pendingCommitAcknowledgements.remove(trafficStreamKey, acknowledgement);
                 acknowledgement.completeExceptionally(
-                    new SourceRunwayLostException(sourcePartitionFor(trafficStreamKey))
+                    new SourceCommitNotAcceptedException(sourcePartitionFor(trafficStreamKey))
                 );
             } else if (result == CommitResult.IMMEDIATE) {
                 pendingCommitAcknowledgements.remove(trafficStreamKey, acknowledgement);
@@ -1147,6 +1216,7 @@ public class KafkaTrafficCaptureSource implements ISimpleTrafficCaptureSource {
 
     @Override
     public void setSourcePartitionLifecycleListener(SourcePartitionLifecycleListener listener) {
+        sourcePartitionLifecycleListener = Objects.requireNonNull(listener);
         trackingKafkaConsumer.setSourcePartitionLifecycleListener(listener);
     }
 
@@ -1183,6 +1253,7 @@ public class KafkaTrafficCaptureSource implements ISimpleTrafficCaptureSource {
                 pendingCommitAcknowledgements.clear();
                 pendingSessionTerminationObligations.forEach((key, obligation) -> obligation.fail(cause));
                 pendingSessionTerminationObligations.clear();
+                retiringSourcePartitions.clear();
                 kafkaExecutor.shutdownNow();
             }
         }

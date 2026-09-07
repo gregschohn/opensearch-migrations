@@ -15,6 +15,7 @@ import lombok.NonNull;
 public final class KafkaCommitStateMetrics implements TrackingKafkaConsumer.Metrics {
     public static final AttributeKey<Long> PARTITION_ATTRIBUTE = AttributeKey.longKey("partition");
     public static final AttributeKey<Long> GENERATION_ATTRIBUTE = AttributeKey.longKey("generation");
+    private static final String RECORDS_UNIT = "records";
 
     public static final class MetricNames {
         private MetricNames() {}
@@ -40,13 +41,13 @@ public final class KafkaCommitStateMetrics implements TrackingKafkaConsumer.Metr
 
     public KafkaCommitStateMetrics(@NonNull Meter meter) {
         unresolvedObligations = meter.upDownCounterBuilder(MetricNames.UNRESOLVED_OBLIGATIONS)
-            .setUnit("records")
+            .setUnit(RECORDS_UNIT)
             .build();
         stagedCommitPartitions = meter.upDownCounterBuilder(MetricNames.STAGED_COMMIT_PARTITIONS)
             .setUnit("partitions")
             .build();
         pendingCommitAcknowledgements = meter.upDownCounterBuilder(MetricNames.PENDING_COMMIT_ACKNOWLEDGEMENTS)
-            .setUnit("records")
+            .setUnit(RECORDS_UNIT)
             .build();
         commitLatency = meter.histogramBuilder(MetricNames.COMMIT_LATENCY)
             .setUnit("ms")
@@ -55,7 +56,7 @@ public final class KafkaCommitStateMetrics implements TrackingKafkaConsumer.Metr
             .setUnit("ms")
             .build();
         ownedRecords = meter.upDownCounterBuilder(MetricNames.OWNED_RECORDS)
-            .setUnit("records")
+            .setUnit(RECORDS_UNIT)
             .build();
         ownedRecordBytes = meter.upDownCounterBuilder(MetricNames.OWNED_RECORD_BYTES)
             .setUnit("By")

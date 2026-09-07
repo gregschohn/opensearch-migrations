@@ -14,7 +14,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -93,10 +92,15 @@ public class RequestSenderOrchestrator {
         new AtomicReference<>();
     private ActorShutdown actorShutdown;
 
-    private record ActorShutdown(
-        CancellationException cause,
-        CompletableFuture<Void> completion
-    ) {}
+    private static final class ActorShutdown {
+        private final CancellationException cause;
+        private final CompletableFuture<Void> completion;
+
+        private ActorShutdown(CancellationException cause, CompletableFuture<Void> completion) {
+            this.cause = cause;
+            this.completion = completion;
+        }
+    }
 
     /**
      * Notice that the two arguments need to be in agreement with each other.  The clientConnectionPool will need to
@@ -309,7 +313,7 @@ public class RequestSenderOrchestrator {
         }
 
         private void onEventLoopTerminated() {
-            if (actorTerminated && terminationOwner.isDone()) {
+            if (terminationOwner.isDone()) {
                 return;
             }
             var cause = new CancellationException(
@@ -327,21 +331,21 @@ public class RequestSenderOrchestrator {
             // event loop, so asking it to do work throws, and that must not skip the fencing below.
             actor.abandonBecauseMailboxStopped(cause);
             // onActorTerminated runs as a posted command, so a dead mailbox never delivers it; complete
-            // the runtime's own gate directly rather than relying on that path.
-            if (!terminationOwner.isDone()) {
-                actorTerminated = true;
+            // the runtime's own gate from the registry's direct emergency sweep instead.  The sweep
+            // retains undisposed records and waits for accepted ledger work before this runtime retires.
+            actorTerminated = true;
+            transactions.terminateAfterMailboxLoss(cause).whenComplete((ignored, transactionFailure) -> {
+                if (transactionFailure != null) {
+                    var unwrappedFailure = unwrap(transactionFailure);
+                    cause.addSuppressed(unwrappedFailure);
+                    log.atError()
+                        .setMessage("Emergency transaction cleanup failed after the event loop for {} stopped")
+                        .addArgument(key)
+                        .setCause(unwrappedFailure)
+                        .log();
+                }
                 failTermination(cause);
-            }
-            try {
-                transactions.cancelOutstanding(cause);
-            } catch (RejectedExecutionException e) {
-                log.atDebug()
-                    .setMessage("Could not cancel the transactions for {} through its event loop, "
-                        + "which has already stopped accepting work")
-                    .addArgument(key)
-                    .setCause(e)
-                    .log();
-            }
+            });
         }
 
         private CompletionStage<SessionOutcome> termination() {
@@ -463,64 +467,86 @@ public class RequestSenderOrchestrator {
         }
 
         @Override
+        @SuppressWarnings("java:S1181") // Startup failure must settle the target outcome even for Errors.
         public CompletionStage<TargetOutcome<Object>> execute(PreparedActorRequest preparedRequest) {
             preparedRequest.beginExecution();
             if (cancellationCause != null) {
                 return CompletableFuture.completedFuture(new TargetOutcome.Cancelled<>(cancellationCause));
             }
-            TrackedFuture<String, DeterminedTransformedResponse<Object>> exchange;
             try {
-                @SuppressWarnings("unchecked")
-                var typedExchange = (TrackedFuture<String, DeterminedTransformedResponse<Object>>)
-                    (TrackedFuture<?, ?>) sendRequestWithRetries(
-                    () -> packetConsumerFactory.apply(runtime.session, preparedRequest.context),
-                    runtime.session.eventLoop,
-                    preparedRequest.packetProducer,
-                    preparedRequest.start,
-                    initialRetryDelay,
-                    preparedRequest.interval,
-                    preparedRequest.visitor
-                );
-                exchange = typedExchange;
+                return normalizeExchange(startExchange(preparedRequest));
             } catch (Throwable t) {
                 clearPhase();
                 return CompletableFuture.completedFuture(new TargetOutcome.Failed<>(unwrap(t)));
             }
+        }
+
+        @SuppressWarnings("unchecked")
+        private TrackedFuture<String, DeterminedTransformedResponse<Object>> startExchange(
+            PreparedActorRequest preparedRequest
+        ) {
+            return (TrackedFuture<String, DeterminedTransformedResponse<Object>>)
+                (TrackedFuture<?, ?>) sendRequestWithRetries(
+                () -> packetConsumerFactory.apply(runtime.session, preparedRequest.context),
+                runtime.session.eventLoop,
+                preparedRequest.packetProducer,
+                preparedRequest.start,
+                initialRetryDelay,
+                preparedRequest.interval,
+                preparedRequest.visitor
+            );
+        }
+
+        private CompletionStage<TargetOutcome<Object>> normalizeExchange(
+            TrackedFuture<String, DeterminedTransformedResponse<Object>> exchange
+        ) {
             var normalized = new CompletableFuture<TargetOutcome<Object>>();
             activeExchange = normalized;
-            exchange.future.whenComplete((result, failure) -> {
-                if (failure != null) {
-                    var cause = unwrap(failure);
-                    if (cause instanceof CancellationException cancellation) {
-                        normalized.complete(new TargetOutcome.Cancelled<>(cancellation));
-                    } else {
-                        normalized.complete(new TargetOutcome.Failed<>(cause));
-                    }
-                    return;
-                }
-                if (result == null) {
-                    normalized.complete(new TargetOutcome.Failed<>(
-                        new IllegalStateException("target exchange completed without a result")
-                    ));
-                    return;
-                }
-                if (normalized.complete(new TargetOutcome.Succeeded<>(result.value))) {
-                    result.transferOwnership();
-                } else {
-                    closeRejectedResult(result);
-                }
-            });
-            normalized.whenComplete((value, failure) -> {
-                runtime.session.eventLoop.execute(() -> {
-                    if (activeExchange == normalized) {
-                        activeExchange = null;
-                        if (cancellationCause == null) {
-                            clearPhaseOnOwner();
-                        }
-                    }
-                });
-            });
+            exchange.future.whenComplete((result, failure) -> settleNormalizedExchange(normalized, result, failure));
+            normalized.whenComplete((value, failure) ->
+                runtime.session.eventLoop.execute(() -> retireNormalizedExchange(normalized))
+            );
             return normalized;
+        }
+
+        private void settleNormalizedExchange(
+            CompletableFuture<TargetOutcome<Object>> normalized,
+            DeterminedTransformedResponse<Object> result,
+            Throwable failure
+        ) {
+            if (failure != null) {
+                var cause = unwrap(failure);
+                normalized.complete(
+                    cause instanceof CancellationException cancellation
+                        ? new TargetOutcome.Cancelled<>(cancellation)
+                        : new TargetOutcome.Failed<>(cause)
+                );
+                return;
+            }
+            if (result == null) {
+                normalized.complete(new TargetOutcome.Failed<>(
+                    new IllegalStateException("target exchange completed without a result")
+                ));
+                return;
+            }
+            try {
+                result.transferOwnership();
+            } catch (RuntimeException transferFailure) {
+                normalized.complete(new TargetOutcome.Failed<>(transferFailure));
+                return;
+            }
+            if (!normalized.complete(new TargetOutcome.Succeeded<>(result.value))) {
+                result.releaseTransferredValue();
+            }
+        }
+
+        private void retireNormalizedExchange(CompletableFuture<TargetOutcome<Object>> normalized) {
+            if (activeExchange == normalized) {
+                activeExchange = null;
+                if (cancellationCause == null) {
+                    clearPhaseOnOwner();
+                }
+            }
         }
 
         @Override
@@ -636,17 +662,10 @@ public class RequestSenderOrchestrator {
             RetryVisitor<T> visitor
         ) {
             transitionPhase(TargetExchangeState.Phase.STARTING_ATTEMPT);
-            if (cancellationCause != null) {
-                return TextTrackedFuture.failedFuture(
-                    cancellationCause,
-                    () -> "request exchange was cancelled before another attempt could start"
-                );
-            }
-            if (eventLoop.isShuttingDown()) {
-                return TextTrackedFuture.failedFuture(
-                    new IllegalStateException("EventLoop is shutting down"),
-                    () -> "sendRequestWithRetries is failing due to the pending shutdown of the EventLoop"
-                );
+            TrackedFuture<String, DeterminedTransformedResponse<T>> startRejection =
+                rejectUnavailableAttemptStart(eventLoop);
+            if (startRejection != null) {
+                return startRejection;
             }
             var attempt = packetProducer.newAttempt();
             if (!activeAttempt.compareAndSet(null, attempt)) {
@@ -729,6 +748,24 @@ public class RequestSenderOrchestrator {
                     interval,
                     visitor
                 ), () -> "determining if the response must be retried or if it should be returned now");
+        }
+
+        private <T> TrackedFuture<String, DeterminedTransformedResponse<T>> rejectUnavailableAttemptStart(
+            EventLoop eventLoop
+        ) {
+            if (cancellationCause != null) {
+                return TextTrackedFuture.failedFuture(
+                    cancellationCause,
+                    () -> "request exchange was cancelled before another attempt could start"
+                );
+            }
+            if (eventLoop.isShuttingDown()) {
+                return TextTrackedFuture.failedFuture(
+                    new IllegalStateException("EventLoop is shutting down"),
+                    () -> "sendRequestWithRetries is failing due to the pending shutdown of the EventLoop"
+                );
+            }
+            return null;
         }
 
         private <T> TrackedFuture<String, DeterminedTransformedResponse<T>> retryIfNeeded(
@@ -862,22 +899,13 @@ public class RequestSenderOrchestrator {
             return result == null ? null : closeResource(result);
         }
 
-        private void closeRejectedResult(DeterminedTransformedResponse<?> result) {
-            var closeFailure = closeResult(result);
-            if (closeFailure != null) {
-                log.atError()
-                    .setMessage("Failed to release a target result after cancellation won")
-                    .setCause(closeFailure)
-                    .log();
-            }
-        }
-
+        @SuppressWarnings("java:S1181") // Cleanup failure is aggregated without abandoning later releases.
         private Throwable closeResource(AutoCloseable resource) {
             try {
                 resource.close();
                 return null;
-            } catch (Throwable t) {
-                return t;
+            } catch (Exception | Error e) {
+                return e;
             }
         }
 
@@ -1282,10 +1310,17 @@ public class RequestSenderOrchestrator {
     }
 
     public static class DeterminedTransformedResponse<T> implements AutoCloseable {
+        private enum OwnershipState {
+            OWNED,
+            TRANSFERRED,
+            RELEASED
+        }
+
         private final RetryDirective directive;
         private final T value;
         private final Consumer<? super T> valueReleaser;
-        private final AtomicBoolean ownsValue = new AtomicBoolean(true);
+        private final AtomicReference<OwnershipState> ownership =
+            new AtomicReference<>(OwnershipState.OWNED);
 
         public DeterminedTransformedResponse(RetryDirective directive, T value) {
             this(directive, value, ignored -> {});
@@ -1302,14 +1337,21 @@ public class RequestSenderOrchestrator {
         }
 
         public void transferOwnership() {
-            if (!ownsValue.compareAndSet(true, false)) {
+            if (!ownership.compareAndSet(OwnershipState.OWNED, OwnershipState.TRANSFERRED)) {
                 throw new IllegalStateException("target response ownership was already settled");
             }
         }
 
+        private void releaseTransferredValue() {
+            if (!ownership.compareAndSet(OwnershipState.TRANSFERRED, OwnershipState.RELEASED)) {
+                throw new IllegalStateException("transferred target response ownership was already settled");
+            }
+            valueReleaser.accept(value);
+        }
+
         @Override
         public void close() {
-            if (ownsValue.compareAndSet(true, false)) {
+            if (ownership.compareAndSet(OwnershipState.OWNED, OwnershipState.RELEASED)) {
                 valueReleaser.accept(value);
             }
         }

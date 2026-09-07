@@ -221,7 +221,12 @@ public final class ReplayProgressController implements SourcePartitionLifecycleL
         private void settle() {
             var progress = partitions.get(partition);
             if (progress == null) {
-                throw new IllegalStateException("source partition was retired before work settled: " + partition);
+                throw new IllegalStateException(
+                    "source partition was retired before work settled: "
+                        + partition
+                        + "; work="
+                        + entry.workId
+                );
             }
             if (entry.settled) {
                 return;

@@ -26,7 +26,43 @@ public final class CaptureRoutingState {
         COMPLETE
     }
 
-    record SelfRelease(int partition, long epoch) {}
+    static final class SelfRelease {
+        private final int partition;
+        private final long epoch;
+
+        SelfRelease(int partition, long epoch) {
+            this.partition = partition;
+            this.epoch = epoch;
+        }
+
+        int partition() {
+            return partition;
+        }
+
+        long epoch() {
+            return epoch;
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            if (this == other) {
+                return true;
+            }
+            return other instanceof SelfRelease release
+                && partition == release.partition
+                && epoch == release.epoch;
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(partition, epoch);
+        }
+
+        @Override
+        public String toString() {
+            return "SelfRelease[partition=" + partition + ", epoch=" + epoch + "]";
+        }
+    }
 
     private static final class PartitionState {
         private boolean assigned;

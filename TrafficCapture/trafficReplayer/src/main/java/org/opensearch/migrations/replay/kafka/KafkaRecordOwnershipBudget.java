@@ -5,14 +5,30 @@ import java.util.Map;
 import java.util.Objects;
 
 import lombok.NonNull;
+import lombok.Value;
+import lombok.experimental.Accessors;
 
 /**
  * Owns the hard record and byte limits for Kafka records accepted by this consumer generation.
  */
 final class KafkaRecordOwnershipBudget {
-    record ReservationKey(int partition, int generation, long offset) {}
+    @Value
+    @Accessors(fluent = true)
+    static class ReservationKey {
+        int partition;
+        int generation;
+        long offset;
+    }
 
-    record Snapshot(int records, long bytes, int maximumRecords, long maximumBytes, boolean saturated) {}
+    @Value
+    @Accessors(fluent = true)
+    static class OwnershipSnapshot {
+        int records;
+        long bytes;
+        int maximumRecords;
+        long maximumBytes;
+        boolean saturated;
+    }
 
     private final int maximumRecords;
     private final long maximumBytes;
@@ -127,8 +143,8 @@ final class KafkaRecordOwnershipBudget {
             && ownedBytes < maximumBytes;
     }
 
-    synchronized Snapshot snapshot() {
-        return new Snapshot(
+    synchronized OwnershipSnapshot snapshot() {
+        return new OwnershipSnapshot(
             reservations.size(),
             ownedBytes,
             maximumRecords,

@@ -66,7 +66,7 @@ public class KafkaCaptureFactory implements IConnectionCaptureFactory<RecordMeta
     private volatile CaptureKafkaPublisher publisher;
     private volatile CaptureKafkaPublisher initializingPublisher;
     private volatile CaptureKafkaMembership membership;
-    private volatile CaptureKafkaWriteGate writeGate;
+    private final AtomicReference<CaptureKafkaWriteGate> writeGate = new AtomicReference<>();
     private final AtomicReference<Throwable> routingInitializationFailure = new AtomicReference<>();
     private int routingDiscoveryFailures;
 
@@ -391,7 +391,7 @@ public class KafkaCaptureFactory implements IConnectionCaptureFactory<RecordMeta
                 java.time.Clock.systemUTC(),
                 createdWriteGate
             );
-            writeGate = createdWriteGate;
+            writeGate.set(createdWriteGate);
             initializingPublisher = createdPublisher;
             initializedMembership = new CaptureKafkaMembership(
                 membershipConsumer,
@@ -415,7 +415,7 @@ public class KafkaCaptureFactory implements IConnectionCaptureFactory<RecordMeta
     private void finishMembershipInitialization() {
         CaptureKafkaPublisher initializedPublisher;
         try {
-            var gateFailure = Objects.requireNonNull(writeGate).failureIfNotWritable();
+            var gateFailure = Objects.requireNonNull(writeGate.get()).failureIfNotWritable();
             if (gateFailure != null) {
                 failRoutingInitialization(gateFailure);
                 return;
