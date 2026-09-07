@@ -318,6 +318,9 @@ function ManageApp() {
     () => activeResetTargetIds(operations.data),
     [operations.data],
   );
+  const blockingGateCount = (approvalGates.data?.gates ?? []).filter(
+    (gate) => gate.state === "blocking",
+  ).length;
   const observedState = useMemo(
     () => presentActiveResets(state.data, resetTargetIds),
     [resetTargetIds, state.data],
@@ -988,7 +991,9 @@ function ManageApp() {
           </button>
           {!editContext ? (
             <button
-              aria-label="Approvals"
+              aria-label={blockingGateCount > 0
+                ? `Approvals, ${blockingGateCount} blocking`
+                : "Approvals"}
               className="edit-mode-button approvals-mode-button"
               disabled={!state.data}
               onClick={() => setApprovalCenterOpen(true)}
@@ -997,15 +1002,9 @@ function ManageApp() {
             >
               <ShieldCheck aria-hidden="true" />
               <span>Approvals</span>
-              {(approvalGates.data?.gates ?? []).some((gate) => (
-                gate.state === "blocking"
-              )) ? (
-                <b>
-                  {approvalGates.data?.gates.filter((gate) => (
-                    gate.state === "blocking"
-                  )).length}
-                </b>
-              ) : null}
+              {blockingGateCount > 0
+                ? <b aria-hidden="true">{blockingGateCount}</b>
+                : null}
             </button>
           ) : null}
           {!editContext ? (
@@ -1063,12 +1062,15 @@ function ManageApp() {
             />
           </button>
           <button
+            aria-expanded={treeOpen}
             aria-label={treeOpen ? "Close resources" : "Open resources"}
             className="icon-button mobile-tree-toggle"
             onClick={() => setTreeOpen((open) => !open)}
             type="button"
           >
-            {treeOpen ? <X /> : <Menu />}
+            {treeOpen
+              ? <X aria-hidden="true" />
+              : <Menu aria-hidden="true" />}
           </button>
         </div>
       </header>
@@ -1336,6 +1338,7 @@ function ManageApp() {
                   approvalGates={approvalGates.data?.gates ?? []}
                   approvalGatesLoading={approvalGates.isPending}
                   approvals={approvals}
+                  key={selectedNode.id}
                   navigationBackLabel={linkedBackLabel}
                   node={selectedNode}
                   onEdit={startEditing}

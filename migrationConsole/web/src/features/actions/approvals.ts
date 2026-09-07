@@ -11,7 +11,6 @@ export interface ApprovalCandidate {
   nodeLabel: string;
   outputTargetId: string | null;
   resetTargetId: string | null;
-  resourcePresent: boolean;
   targetId: string;
 }
 
@@ -67,10 +66,6 @@ export function approvalCandidates(
         resetTargetId: resetCapability?.kind === "reset"
           ? resetCapability.resetTargetId
           : null,
-        resourcePresent: (
-          owner.configPresence?.deployed
-          ?? Boolean(resetCapability)
-        ),
         targetId: capability.approvalTargetId,
       };
       const previous = candidates.get(candidate.targetId);
@@ -82,13 +77,4 @@ export function approvalCandidates(
   };
   snapshot.rootIds.forEach(visit);
   return [...candidates.values()];
-}
-
-
-export function actionableApprovalCandidates(
-  snapshot: ManageSnapshot | undefined,
-): ApprovalCandidate[] {
-  return approvalCandidates(snapshot).filter(
-    (candidate) => !candidate.disabledReason,
-  );
 }
