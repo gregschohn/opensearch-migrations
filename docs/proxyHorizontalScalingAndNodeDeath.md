@@ -577,9 +577,12 @@ size is irrelevant, and storing the id makes "this is a self-release" checkable 
 (`declaredBy == nodeId`) rather than an unverifiable flag — worth having, since that bit now gates
 whether traffic is discarded.
 
-**Kafka membership timeouts stay at their defaults.** The tradeoff is asymmetric: slow death
-detection costs retained memory and a delayed commit, both recoverable, while a *false* eviction
-trips the §3.5 latch and takes a healthy proxy out of service over a GC pause. Bias toward patience.
+**Kafka membership timeouts are left at the client's defaults and are not set by us.** No values are
+pinned here deliberately — the client version documents them, and restating them in a design doc only
+creates something to drift. The reasoning behind not tuning them is that the tradeoff is asymmetric:
+slow death detection costs retained memory and a delayed commit, both recoverable, while a *false*
+eviction trips the §3.5 latch and takes a healthy proxy out of service over a GC pause. Bias toward
+patience, which is what the defaults already do.
 
 **Manifest fan-out gets no cap;** connection-lifetime expiry is the only sound lever and it is
 deferred to §8.
@@ -599,8 +602,5 @@ assumption for now rather than a blocker — see §9.2.
    detection, so it is a real fallback with a real cost.
 2. **The membership consumer needs its own thread.** Its `poll()` loop must not share a thread with
    capture work, or producer backpressure on the capture path could stall heartbeats and cause
-   exactly the spurious eviction the default timeouts are chosen to avoid — capture slowness would
-   masquerade as proxy death.
-3. **Confirm the default values against the client version in use.** Expected to be
-   `session.timeout.ms` 45s, `heartbeat.interval.ms` 3s, `max.poll.interval.ms` 300s; also check
-   the broker's `group.min.session.timeout.ms` / `group.max.session.timeout.ms` bounds permit them.
+   exactly the spurious eviction the defaults are there to avoid — capture slowness would masquerade
+   as proxy death.
