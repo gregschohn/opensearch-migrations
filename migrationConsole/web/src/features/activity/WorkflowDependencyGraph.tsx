@@ -499,6 +499,15 @@ export function WorkflowDependencyGraph({
   const depthById = useMemo(() => new Map(
     graph.nodes.map((node) => [node.id, node.depth]),
   ), [graph.nodes]);
+  // Reserve only the gutter the current lanes need; the fixed 64px
+  // width wasted a quarter of the panel on shallow graphs.
+  const graphGutter = useMemo(() => {
+    if (graph.edges.length === 0) return 14;
+    const maxDepth = Math.max(0, ...graph.edges.map(
+      (edge) => depthById.get(edge.targetId) ?? 0,
+    ));
+    return Math.min(64, Math.max(24, 14 + 10 * (maxDepth + 1)));
+  }, [depthById, graph.edges]);
   const prerequisitesById = useMemo(() => {
     const result = new Map<string, string[]>();
     graph.edges.forEach((edge) => {
@@ -582,6 +591,9 @@ export function WorkflowDependencyGraph({
       aria-label="Workflow dependency graph"
       className="workflow-dependency-graph"
       ref={graphRef}
+      style={{
+        "--workflow-graph-gutter": `${graphGutter}px`,
+      } as React.CSSProperties}
     >
       <svg aria-hidden="true" className="workflow-graph-edges">
         <defs>

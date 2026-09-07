@@ -79,7 +79,7 @@ button.primary-button {
   border-radius: 4px;
   color: #fff;
   background: var(--accent);
-  font-weight: 650;
+  font-weight: 600;
 }
 
 button.primary-button:hover:not(:disabled) {
@@ -3507,7 +3507,7 @@ button.secondary-button:hover:not(:disabled) {
 .workflow-graph-item {
   position: relative;
   z-index: 1;
-  padding-left: 64px;
+  padding-left: var(--workflow-graph-gutter, 64px);
 }
 
 .workflow-graph-legend {
@@ -4088,6 +4088,10 @@ button.secondary-button:hover:not(:disabled) {
   flex-wrap: wrap;
   gap: 7px;
   margin-left: auto;
+}
+
+.config-toolbar-actions > button {
+  font-weight: 600;
 }
 
 .config-toolbar-actions > button,
@@ -4722,11 +4726,11 @@ button.secondary-button:hover:not(:disabled) {
 }
 
 .config-setting-column {
-  width: 42%;
+  width: 36%;
 }
 
 .config-state-column {
-  width: 104px;
+  width: 84px;
 }
 
 .config-table thead {
@@ -4758,7 +4762,7 @@ button.secondary-button:hover:not(:disabled) {
   display: grid;
   width: 100%;
   min-height: 32px;
-  grid-template-columns: 42% minmax(0, 1fr) 104px;
+  grid-template-columns: 36% minmax(0, 1fr) 84px;
   align-items: center;
   padding: 0;
   border: 0;
@@ -5590,7 +5594,9 @@ button.secondary-button:hover:not(:disabled) {
 }
 
 .external-picker {
+  overflow: hidden;
   border: 1px solid var(--border);
+  border-radius: 5px;
 }
 
 .external-resource-dialog {
@@ -5635,8 +5641,10 @@ button.secondary-button:hover:not(:disabled) {
 }
 
 .external-picker > header {
+  flex-wrap: wrap;
   justify-content: space-between;
-  padding: 8px 10px;
+  gap: 8px 12px;
+  padding: 10px 12px;
   border-bottom: 1px solid var(--border);
   background: var(--surface-subtle);
 }
@@ -5646,9 +5654,35 @@ button.secondary-button:hover:not(:disabled) {
   display: block;
 }
 
+.external-picker > header strong {
+  font-size: 12px;
+}
+
 .external-picker > header span {
+  margin-top: 2px;
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: 11px;
+}
+
+.external-picker-header-actions {
+  flex-wrap: wrap;
+}
+
+.external-picker-header-actions .secondary-button {
+  min-height: 30px;
+  padding: 0 9px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.external-picker-header-actions .secondary-button svg {
+  width: 13px;
+  height: 13px;
+}
+
+.external-picker-header-actions .icon-button {
+  width: 30px;
+  height: 30px;
 }
 
 .external-resource-list {
@@ -5664,7 +5698,11 @@ button.secondary-button:hover:not(:disabled) {
 }
 
 .external-resource-row {
-  padding: 10px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px 12px;
+  padding: 10px 12px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -5677,8 +5715,16 @@ button.secondary-button:hover:not(:disabled) {
 }
 
 .external-resource-heading {
+  min-width: 0;
   flex-wrap: wrap;
-  gap: 7px;
+  gap: 4px 8px;
+}
+
+.external-resource-heading strong {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .external-resource-heading span {
@@ -5687,15 +5733,20 @@ button.secondary-button:hover:not(:disabled) {
 }
 
 .external-resource-heading em {
-  margin-left: auto;
-  color: var(--accent);
+  padding: 1px 5px;
+  border: 1px solid #b6d6da;
+  border-radius: 3px;
+  color: #104c57;
+  background: var(--accent-soft);
   font-size: 10px;
   font-style: normal;
+  font-weight: 650;
   text-transform: uppercase;
 }
 
 .external-resource-row p {
-  margin: 6px 0;
+  grid-column: 1 / -1;
+  margin: 0;
   color: var(--warning);
   font-size: 11px;
 }
@@ -5703,8 +5754,9 @@ button.secondary-button:hover:not(:disabled) {
 .external-keys {
   display: flex;
   flex-wrap: wrap;
+  grid-column: 1 / -1;
   gap: 5px;
-  margin: 8px 0;
+  margin: 2px 0 0;
 }
 
 .external-keys span {
@@ -5718,20 +5770,25 @@ button.secondary-button:hover:not(:disabled) {
 
 .empty-keys {
   display: block;
-  margin: 8px 0;
+  grid-column: 1 / -1;
+  margin: 2px 0 0;
   color: var(--text-muted);
   font-size: 10px;
 }
 
 .external-resource-actions {
   flex-wrap: wrap;
-  gap: 5px;
+  justify-content: flex-end;
+  grid-row: 1;
+  grid-column: 2;
+  gap: 6px;
 }
 
 .external-resource-actions button {
-  min-height: 28px;
-  font-size: 10px;
-  font-weight: 650;
+  min-height: 30px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .external-picker-header-actions,

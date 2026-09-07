@@ -488,7 +488,7 @@ function ExternalResourceView({
       <header>
         <div>
           <strong>{details.name}</strong>
-          <span>{details.kind}{details.resourceType ? ` · ${details.resourceType}` : ""}</span>
+          <span>{details.kind}</span>
         </div>
         <div>
           {selectsKey ? details.keys.map((key) => (
@@ -560,6 +560,7 @@ function ExternalResourceRows({
   onSelect,
   rows,
   selectsKey,
+  showDetails = false,
 }: Readonly<{
   busy: boolean;
   canUpdate: boolean;
@@ -567,6 +568,9 @@ function ExternalResourceRows({
   onSelect: (row: ExternalResourceRow, key?: string) => void;
   rows: ExternalResourceRow[];
   selectsKey: boolean;
+  /** Show per-row key chips and status messages (the all-resources
+      view); the matching list stays free of repeated detail. */
+  showDetails?: boolean;
 }>) {
   if (rows.length === 0) {
     return (
@@ -584,15 +588,22 @@ function ExternalResourceRows({
         >
           <div className="external-resource-heading">
             <strong>{row.name}</strong>
-            <span>{row.kind}{row.type ? ` · ${row.type}` : ""}</span>
+            <span>{row.kind}</span>
             {row.current ? <em>Current</em> : null}
           </div>
-          {row.message ? <p>{row.message}</p> : null}
-          {row.keys.length > 0 ? (
-            <div className="external-keys" aria-label={`Keys in ${row.name}`}>
-              {row.keys.map((key) => <span key={key}>{key}</span>)}
-            </div>
-          ) : <span className="empty-keys">No keys reported</span>}
+          {row.message && (showDetails || row.status !== "matching") ? (
+            <p>{row.message}</p>
+          ) : null}
+          {showDetails ? (
+            row.keys.length > 0 ? (
+              <div
+                aria-label={`Keys in ${row.name}`}
+                className="external-keys"
+              >
+                {row.keys.map((key) => <span key={key}>{key}</span>)}
+              </div>
+            ) : <span className="empty-keys">No keys reported</span>
+          ) : null}
           <div className="external-resource-actions">
             {selectsKey ? row.keys.map((key) => (
               <button
@@ -672,6 +683,12 @@ function ExternalResourceDialogContent({
   const selectionDescriptor = record(record(node.externalRef).selection);
   const selectsKey = selectionDescriptor.target === "fileRefConfigMap";
   const description = record(node.externalRef).description;
+  const k8sHint = record(record(node.externalRef).k8s);
+  const requiredKeysHint = record(k8sHint.match).requiredKeys
+    ?? k8sHint.requiredKeys;
+  const requiredKeys = Array.isArray(requiredKeysHint)
+    ? requiredKeysHint.map(String)
+    : [];
   const warningRef = useEscapeCancel<HTMLDivElement>(
     () => setWarning(null),
     warning === null,
@@ -849,7 +866,16 @@ function ExternalResourceDialogContent({
         <header>
           <div>
             <strong>{inventory.displayName}</strong>
-            <span>{matchingRows.length} matching resources</span>
+            <span>
+              {matchingRows.length} matching {
+                matchingRows.length === 1 ? "resource" : "resources"
+              }
+              {requiredKeys.length > 0
+                ? ` with ${
+                  requiredKeys.length === 1 ? "key" : "keys"
+                } ${requiredKeys.join(", ")}`
+                : ""}
+            </span>
           </div>
           <div className="external-picker-header-actions">
             <button
@@ -1031,6 +1057,7 @@ function ExternalResourceDialogContent({
                         )}
                         rows={inventory.rows}
                         selectsKey={selectsKey}
+                        showDetails
                       />
                       )
               }

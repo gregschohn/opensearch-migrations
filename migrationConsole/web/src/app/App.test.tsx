@@ -2321,8 +2321,9 @@ test("opens a generic configuration editor and explains generated values", async
   expect(within(credentials).getByText(
     "Kubernetes Secret containing the HTTP credentials.",
   )).toBeInTheDocument();
-  expect(within(credentials).getByText("Authored"))
-    .toBe(credentialsLabel?.querySelector(".property-flags span"));
+  // Authored/Generated/optional badges were dropped as clutter; the
+  // clear action and default hints carry that information now.
+  expect(within(credentials).queryByText("Authored")).toBeNull();
   expect(configTree.querySelector(".status-dot")).toBeNull();
   const timeout = within(configTree).getByRole("row", { name: /Timeout/ });
   await userEvent.click(timeout);
@@ -2336,7 +2337,7 @@ test("opens a generic configuration editor and explains generated values", async
   await userEvent.tab();
   expect(timeoutInput).toHaveAttribute("placeholder", "30");
 
-  expect(within(timeout).getByText("Generated")).toBeInTheDocument();
+  expect(within(timeout).queryByText("Generated")).toBeNull();
   expect(screen.getByText("runtime timeout")).toBeInTheDocument();
   expect(screen.getByText(
     "Generated from the standard runtime profile.",
@@ -2545,7 +2546,7 @@ test("keeps resource context while scoping edit mode to the selected resource", 
   expect(await screen.findByRole("heading", { name: "Edit replay" }))
     .toBeInTheDocument();
   expect(await within(config).findByRole("row", {
-    name: /^ConfigMap Authored/,
+    name: /^ConfigMap /,
   })).toBeInTheDocument();
   expect(within(config).queryByRole("row", {
     name: /Endpoint/,
@@ -3132,7 +3133,8 @@ test("highlights unsaved resources and fields with previous values", async () =>
   });
   expect(sourceSection).toHaveClass("draft-change-ancestor");
   expect(sourceRow).toHaveClass("draft-change-item");
-  expect(within(sourceRow).getByText("1 unsaved change")).toBeInTheDocument();
+  // The count is announced and shown as shading, not repeated as text.
+  expect(within(sourceRow).queryByText("1 unsaved change")).toBeNull();
 
   const config = screen.getByRole("table", { name: "Configuration fields" });
   const endpointRow = within(config).getByRole("row", { name: /^Endpoint/ });
@@ -4553,13 +4555,13 @@ test("shows ConfigMap keys and selects the map plus key together", async () => {
   const selector = await screen.findByRole("dialog", {
     name: "Select Transform ConfigMap",
   });
-  expect(await within(selector).findByText("main.js")).toBeInTheDocument();
-  expect(within(selector).getByText("settings.json")).toBeInTheDocument();
-  await userEvent.click(
-    within(selector).getByRole("button", {
-      name: "Use transform-code and key main.js",
-    }),
-  );
+  const useMainJs = await within(selector).findByRole("button", {
+    name: "Use transform-code and key main.js",
+  });
+  expect(within(selector).getByRole("button", {
+    name: "Use transform-code and key settings.json",
+  })).toBeInTheDocument();
+  await userEvent.click(useMainJs);
 
   expect(selection).toEqual({
     expectedDraftRevision: "config-draft-1",
@@ -5449,7 +5451,7 @@ test("focuses a newly added array item when command metadata requests it", async
 
   expect(
     await within(configTree).findByRole("row", {
-      name: /^transform 1 Authored/,
+      name: /^transform 1 /,
     }),
   ).toHaveAttribute("aria-selected", "true");
 });

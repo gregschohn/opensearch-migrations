@@ -20,7 +20,6 @@ import {
   Pencil,
   Plus,
   Save,
-  Send,
   Trash2,
   Undo2,
   X,
@@ -65,6 +64,7 @@ interface ConfigEditorProps {
   navigationBackLabel?: string | null;
   onClose: () => void;
   onExitReady: (handler: (() => void) | null) => void;
+  onSubmitReady: (handler: (() => void) | null) => void;
   onNavigateBack?: () => void;
   onResourceAddStarted: (addition: PendingResourceAddition) => void;
   onResourceAddSettled: (
@@ -83,6 +83,7 @@ interface ConfigEditorProps {
   resourceLabel: string;
   resourceType: string;
   resourceSyncing?: boolean;
+  stateSummary?: string | null;
 }
 
 
@@ -1191,13 +1192,6 @@ function ConfigPropertyRow({
     ?? node.path.at(-1)
     ?? "definition";
   const fieldDescription = node.description ?? selectedDescription;
-  const generatedTitle = [
-    "Generated from defaults or related configuration, not explicitly set here.",
-    effectiveDefaultLabel
-      ? `Effective default: ${effectiveDefaultLabel}.`
-      : "",
-    effectiveDefaultDescription,
-  ].filter(Boolean).join(" ");
   const closeExternalEditor = () => {
     setExternalEditorOpen(false);
     globalThis.setTimeout(() => externalEditorTriggerRef.current?.focus(), 0);
@@ -1312,15 +1306,9 @@ function ConfigPropertyRow({
                       {node.draftChange.kind === "added" ? "Added" : "Changed"}
                     </span>
                   ) : null}
-                  {node.valueAuthored ? (
-                    <span title="Explicitly set in the pending configuration.">
-                      Authored
-                    </span>
-                  ) : null}
-                  {node.valueDefaulted ? (
-                    <span title={generatedTitle}>Generated</span>
-                  ) : null}
-                  {node.presence ? <span>{node.presence}</span> : null}
+                  {node.presence === "required"
+                    ? <span>{node.presence}</span>
+                    : null}
                   {node.expert ? <span>Expert</span> : null}
                 </span>
               </span>
@@ -1583,6 +1571,7 @@ export function ConfigEditor({
   navigationBackLabel,
   onClose,
   onExitReady,
+  onSubmitReady,
   onNavigateBack,
   onResourceAddStarted,
   onResourceAddSettled,
@@ -1595,6 +1584,7 @@ export function ConfigEditor({
   resourceLabel,
   resourceType,
   resourceSyncing = false,
+  stateSummary = null,
 }: Readonly<ConfigEditorProps>) {
   const queryClient = useQueryClient();
   const draftQuery = useQuery({
@@ -2495,6 +2485,13 @@ export function ConfigEditor({
   });
 
   useEffect(() => {
+    onSubmitReady(() => {
+      void openSubmitReview();
+    });
+    return () => onSubmitReady(null);
+  });
+
+  useEffect(() => {
     onResourceAddsReady({
       options: resourceAddOptions,
       renames: resourceRenames,
@@ -2557,9 +2554,11 @@ export function ConfigEditor({
           <span>Editing configuration</span>
           <h2>Edit {resourceLabel}</h2>
           <span>
-            {removalState ?? (draft.dirty || hasLocalEdits
-              ? "Unsaved changes"
-              : "Saved configuration")}
+            {removalState
+              ?? stateSummary
+              ?? (draft.dirty || hasLocalEdits
+                ? "Unsaved changes"
+                : "Saved configuration")}
           </span>
         </div>
         {!removalState && draft.rawYaml === undefined
@@ -2633,25 +2632,6 @@ export function ConfigEditor({
           >
             <Save />
             <span>Save</span>
-          </button>
-          <button
-            aria-label="Save and submit"
-            className="submit-button"
-            disabled={
-              actionPending
-              || (busy && !hasLocalEdits)
-              || draft.editState.validation.valid === false
-            }
-            onClick={() => void openSubmitReview()}
-            title={
-              draft.editState.validation.valid === false
-                ? "Resolve validation errors before submitting"
-                : "Save configuration, submit the workflow, and leave editing"
-            }
-            type="button"
-          >
-            <Send />
-            <span>Save and submit</span>
           </button>
         </div>
       </header>

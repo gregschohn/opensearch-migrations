@@ -493,14 +493,6 @@ const TreeRow = memo(function TreeRow({
                   {attentionState}
                 </span>
               ) : null}
-              {draftChange ? (
-                <span
-                  className="tree-draft-state"
-                  title={draftChange.label + ". Save or discard before leaving edit mode."}
-                >
-                  {draftChange.label}
-                </span>
-              ) : null}
               {configurationStateVisible ? (
                 <span className={[
                   "tree-config-state",

@@ -296,6 +296,7 @@ function ManageApp() {
   const [pendingResourceRenames, setPendingResourceRenames] =
     useState<PendingResourceRename[]>([]);
   const editExitRef = useRef<(() => void) | null>(null);
+  const editSubmitRef = useRef<(() => void) | null>(null);
   const submitSignals = useMemo(
     () => submissionSignals(state.data),
     [state.data],
@@ -559,6 +560,20 @@ function ManageApp() {
   const registerEditExit = useCallback((handler: (() => void) | null) => {
     editExitRef.current = handler;
   }, []);
+  const registerEditSubmit = useCallback((handler: (() => void) | null) => {
+    editSubmitRef.current = handler;
+  }, []);
+  const editStateSummary = useMemo(() => {
+    if (!editContext) return null;
+    const node = displayedState?.nodes[editContext.resourceId];
+    const parts: string[] = [];
+    const change = resourceDraftChanges[editContext.resourceId];
+    if (change) parts.push(change.label);
+    if (node?.configPresence?.deployed === false) {
+      parts.push(node.valueSummary ?? "Not deployed yet");
+    }
+    return parts.length > 0 ? parts.join(" · ") : null;
+  }, [displayedState, editContext, resourceDraftChanges]);
   const registerResourceAdds = useCallback((
     controller: ResourceAddController | null,
   ) => {
@@ -964,6 +979,18 @@ function ManageApp() {
           </div>
         ) : null}
         <div className="header-actions">
+          {editContext ? (
+            <button
+              aria-label="Save and submit"
+              className="edit-mode-button submit-mode-button"
+              onClick={() => editSubmitRef.current?.()}
+              title="Save configuration, submit the workflow, and leave editing"
+              type="button"
+            >
+              <Send aria-hidden="true" />
+              <span>Save and submit</span>
+            </button>
+          ) : null}
           <button
             aria-label={editContext ? "Exit editing" : "Edit configuration"}
             className={`edit-mode-button ${editContext ? "active" : ""}`}
@@ -1301,6 +1328,7 @@ function ManageApp() {
                     setEditContext(null);
                   }}
                   onExitReady={registerEditExit}
+                  onSubmitReady={registerEditSubmit}
                   onNavigateBack={navigateLinkedBack}
                   onResourceAddSettled={resourceAddSettled}
                   onResourceAddStarted={resourceAddStarted}
@@ -1332,6 +1360,7 @@ function ManageApp() {
                     ?? "Workflow configuration"
                   }
                   resourceSyncing={selectedNode?.status === "syncing"}
+                  stateSummary={editStateSummary}
                 />
               ) : selectedNode ? (
                 <ResourceWorkspace
