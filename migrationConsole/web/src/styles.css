@@ -79,6 +79,7 @@ button.primary-button {
   border-radius: 4px;
   color: #fff;
   background: var(--accent);
+  font-size: 13px;
   font-weight: 600;
 }
 
@@ -684,7 +685,7 @@ button.secondary-button:hover:not(:disabled) {
   border: 1px solid var(--border-strong);
   border-radius: 4px;
   background: var(--surface);
-  font-size: 11px;
+  font-size: 13px;
 }
 
 .approval-review-item > footer button svg,
@@ -904,6 +905,7 @@ button.secondary-button:hover:not(:disabled) {
   border-radius: 4px;
   color: var(--text);
   background: var(--surface);
+  font-size: 13px;
   font-weight: 600;
   white-space: nowrap;
 }
@@ -4111,6 +4113,7 @@ button.secondary-button:hover:not(:disabled) {
   border: 1px solid var(--border-strong);
   border-radius: 4px;
   background: var(--surface);
+  font-size: 13px;
 }
 
 .config-toolbar-actions button svg,
@@ -4522,6 +4525,7 @@ button.secondary-button:hover:not(:disabled) {
   border: 1px solid var(--border-strong);
   border-radius: 4px;
   background: var(--surface);
+  font-size: 13px;
 }
 
 .confirmation-dialog > footer button svg {
@@ -5786,9 +5790,55 @@ button.secondary-button:hover:not(:disabled) {
 
 .external-resource-actions button {
   min-height: 30px;
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 600;
   white-space: nowrap;
+}
+
+.external-resource-actions button.primary-button {
+  border-color: #155d68;
+  color: #fff;
+  background: var(--accent);
+}
+
+.external-create-row {
+  border-top: 1px solid var(--border);
+  background: var(--surface-subtle);
+}
+
+.external-picker-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-subtle);
+}
+
+.external-picker-footer button {
+  display: inline-flex;
+  min-height: 26px;
+  align-items: center;
+  gap: 5px;
+  padding: 0;
+  border: 0;
+  color: var(--accent);
+  background: transparent;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.external-picker-footer button:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
+.external-picker-footer button:disabled {
+  opacity: 0.5;
+}
+
+.external-picker-footer button svg {
+  width: 13px;
+  height: 13px;
 }
 
 .external-picker-header-actions,

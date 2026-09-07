@@ -608,6 +608,7 @@ function ExternalResourceRows({
             {selectsKey ? row.keys.map((key) => (
               <button
                 aria-label={`Use ${row.name} and key ${key}`}
+                className="primary-button"
                 disabled={busy}
                 key={key}
                 onClick={() => onSelect(row, key)}
@@ -618,6 +619,7 @@ function ExternalResourceRows({
             )) : (
               <button
                 aria-label={`Use ${row.name}`}
+                className="primary-button"
                 disabled={busy}
                 onClick={() => onSelect(row)}
                 type="button"
@@ -879,34 +881,6 @@ function ExternalResourceDialogContent({
           </div>
           <div className="external-picker-header-actions">
             <button
-              className="secondary-button"
-              disabled={busy}
-              onClick={() => setAllResourcesOpen(true)}
-              type="button"
-            >
-              <Eye aria-hidden="true" />
-              View all {inventory.rows.length}
-            </button>
-            {descriptor ? (
-              <button
-                className="secondary-button"
-                onClick={() => setPane({ mode: "create" })}
-                type="button"
-              >
-                <Plus aria-hidden="true" />
-                Create {descriptor.label}
-              </button>
-            ) : null}
-            <button
-              className="secondary-button"
-              disabled={busy}
-              onClick={() => setPane({ mode: "manual" })}
-              type="button"
-            >
-              <Keyboard aria-hidden="true" />
-              Enter reference manually
-            </button>
-            <button
               aria-label="Refresh external resources"
               className="icon-button"
               disabled={loading}
@@ -952,6 +926,44 @@ function ExternalResourceDialogContent({
           rows={matchingRows}
           selectsKey={selectsKey}
         />
+        {descriptor ? (
+          <div className="external-resource-row external-create-row">
+            <div className="external-resource-heading">
+              <strong>Create a new {descriptor.label}</strong>
+              <span>Provisioned in the cluster and selected here.</span>
+            </div>
+            <div className="external-resource-actions">
+              <button
+                aria-label={`Create ${descriptor.label}`}
+                className="primary-button"
+                disabled={busy}
+                onClick={() => setPane({ mode: "create" })}
+                type="button"
+              >
+                <Plus aria-hidden="true" />
+                Create
+              </button>
+            </div>
+          </div>
+        ) : null}
+        <footer className="external-picker-footer">
+          <button
+            disabled={busy}
+            onClick={() => setPane({ mode: "manual" })}
+            type="button"
+          >
+            <Keyboard aria-hidden="true" />
+            Enter reference manually
+          </button>
+          <button
+            disabled={busy}
+            onClick={() => setAllResourcesOpen(true)}
+            type="button"
+          >
+            <Eye aria-hidden="true" />
+            View all {inventory.rows.length}
+          </button>
+        </footer>
       </section>
       {allResourcesOpen ? (
         <ModalDialog
