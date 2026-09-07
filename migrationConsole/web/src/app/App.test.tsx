@@ -2343,10 +2343,12 @@ test("opens a generic configuration editor and explains generated values", async
   )).toBeInTheDocument();
   const state = timeout.querySelector(".property-state-cell");
   expect(state?.querySelector(".property-state-content")).toBeInTheDocument();
-  expect(within(state as HTMLElement).getByText("ok")).toBeInTheDocument();
-  expect(within(state as HTMLElement).getByRole("button", {
+  // Healthy fields render no status chip and no per-field revert; both
+  // added clutter to every row.
+  expect(within(state as HTMLElement).queryByText("ok")).toBeNull();
+  expect(within(state as HTMLElement).queryByRole("button", {
     name: "Revert Timeout to default",
-  })).toBeInTheDocument();
+  })).toBeNull();
 
   await userEvent.click(screen.getByRole("checkbox", {
     name: "Show field documentation",

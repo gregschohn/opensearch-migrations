@@ -1144,12 +1144,6 @@ function ConfigPropertyRow({
     renamePattern,
     renameMessage,
   );
-  const canUnset = (
-    node.presence === "optional"
-    && node.required !== true
-    && !node.removable
-    && node.valueKind !== "command"
-  );
   const structured = (
     !node.externalRef
     && commands.length === 0
@@ -1404,9 +1398,11 @@ function ConfigPropertyRow({
         </td>
         <td className="property-state-cell">
           <div className="property-state-content">
-            <span className={`field-status status-${node.status ?? "ok"}`}>
-              {node.status ?? "ok"}
-            </span>
+            {node.status && node.status !== "ok" ? (
+              <span className={`field-status status-${node.status}`}>
+                {node.status}
+              </span>
+            ) : null}
             <div className="property-actions">
             {topLevelResourceCommand ? (
               <button
@@ -1450,17 +1446,6 @@ function ConfigPropertyRow({
                 type="button"
               >
                 <Pencil aria-hidden="true" />
-              </button>
-            ) : null}
-            {canUnset ? (
-              <button
-                aria-label={`Revert ${name} to default`}
-                disabled={busy}
-                onClick={() => void commit({ op: "unset", path: node.path })}
-                title="Revert to default"
-                type="button"
-              >
-                <Undo2 aria-hidden="true" />
               </button>
             ) : null}
             {node.removable ? (
@@ -2818,9 +2803,11 @@ export function ConfigEditor({
                         : "settings"
                     }
                   </span>
-                  <span className={`field-status status-${node.status ?? "ok"}`}>
-                    {node.status ?? "ok"}
-                  </span>
+                  {node.status && node.status !== "ok" ? (
+                    <span className={`field-status status-${node.status}`}>
+                      {node.status}
+                    </span>
+                  ) : null}
                 </button>
                 );
               })}
