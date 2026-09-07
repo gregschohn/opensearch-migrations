@@ -37,7 +37,7 @@ retain-and-halt-loudly outcome §10.5 prescribes. (It removes no wall-clock code
 and §20 already forbid any.) It revisits how a proxy chooses its partitions (§19.7) and adds one
 declaration record type alongside the snapshots in §10.8. The expiry policy and the omission
 predicate are unchanged; what changes is the admissible-evidence set, plus one new rule that
-discards a finished writer's later records. See its §2.1 — "the absence proof is unchanged" is
+discards later records from a writer a *peer* declared finished. See its §2.1 — "the absence proof is unchanged" is
 true of the predicate and misleading about the system.
 
 ---
@@ -1051,7 +1051,9 @@ node depart — so that a finished writer becomes an observed event rather than 
 Note that the declaration is scoped to a single partition, not to the node: a reader settles each
 partition from that partition's records alone, so a peer reporting a departure must write one copy
 per partition. That declaration is an additional evidence type, not a change to the omission
-predicate below, and they arrive with a new rule that discards a declared-dead node's later records;
+predicate below, and it arrives with a new rule that discards later records from a node a *peer*
+declared finished — peer-declared only, since a node may be reassigned a partition it released
+itself;
 that rule is what bounds the zombie hazard and also what makes the traffic it drops a completeness
 gap. That sketch also lets two nodes emit snapshots to one partition concurrently while a reassigned
 node drains its existing connections, which the per-`(nodeId, partition)` keying below already

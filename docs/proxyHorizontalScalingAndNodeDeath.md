@@ -59,7 +59,7 @@ Two ideas carry the whole design.
 never write another record." That is a fact about X. Earlier drafts tied it to partition
 ownership — a new owner's arrival declared the old owner's connections dead — which is
 unsound, because ownership legitimately transfers while the previous owner is still alive
-and still writing to those partitions (§4.2).
+and still writing to those partitions (§4.4).
 
 **Partition assignment is load balancing, not a lock.** The assignor decides where *newly
 opened* connections go. It says nothing about existing ones and grants no exclusivity.
@@ -111,11 +111,13 @@ The evidence set gets strictly better in three ways:
   query that is broker-maintained rather than elapsed-time-based.
 
 The **discard rule** is genuinely new policy and deserves its own line rather than riding along
-under "absence proofs are unchanged": records arriving from a declared-dead node after its
-declaration offset are treated as inert. That is what makes a zombie's late writes harmless to
-the commit decision, and it is also the direct cause of the completeness gap in §6.1 — the
-traffic reached the source and is then deliberately dropped. Nothing in the absence-proof
-framework implies it.
+under "absence proofs are unchanged": records arriving from a *peer*-declared finished node after
+that declaration's offset are treated as inert. Only *peer*-declared: a node's own release is
+retractable, since ordinary scale-down hands a released partition back to the same node and
+discarding then would destroy live traffic (§4.3). That asymmetry is what makes a zombie's late
+writes harmless to the commit decision, and it is also the direct cause of the completeness gap in
+§6.1 — the traffic reached the source and is then deliberately dropped. Nothing in the
+absence-proof framework implies it.
 
 So: the policy is constant, the predicate is constant, the evidence set is solidified, and one
 new rule is introduced whose cost is stated in §6.1.
@@ -157,10 +159,15 @@ Traffic records and manifest chunks as today, plus **one** declaration:
 
 ```
 NoMoreWrites { nodeId, partition, declaredBy }
-    // "nodeId will emit no further records on partition"
-    // declaredBy == nodeId  -> self-release; says nothing about other partitions
-    // declaredBy != nodeId  -> a peer observed nodeId depart the group
+    // "nodeId has no more connections on partition, as of this offset"
+    // declaredBy == nodeId  -> self-release; retractable by a later reassignment (§4.3)
+    // declaredBy != nodeId  -> a peer observed nodeId depart the group; terminal
 ```
+
+`declaredBy` is **load-bearing, not just diagnostic**: it selects whether the discard rule in §4.1
+applies. A self-release settles the past without condemning the future, because a node can be
+reassigned a partition it released (§4.3); a peer declaration is terminal, because its purpose is to
+bound a node that may still be running (§4.2).
 
 Earlier drafts had two types, `Release` and a fleet-wide `NodeDeath`. That was a confusing
 split, because a node-scoped judgment cannot be consumed as one:
@@ -183,10 +190,15 @@ earlier draft's real problem was varying both at once:
 
 Because both old types differed on both axes simultaneously, it was impossible to tell which axis
 the replayer actually depended on — and the fleet-wide scope was unusable regardless, per the
-paragraph above. Now scope is fixed: every declaration licenses exactly one conclusion, "X is
-finished on P as of this offset." Scope therefore distinguishes nothing, and the only remaining
-difference is who wrote it, which `declaredBy` carries and which the replayer never branches on
-(§4.1 reads it for diagnostics only).
+paragraph above. Now scope is fixed: every declaration settles exactly one thing, "X is finished on P
+as of this offset." Scope therefore distinguishes nothing, and the only remaining difference is who
+wrote it.
+
+That difference is consequential rather than cosmetic, and separating the axes is what makes it
+visible. Provenance decides **durability of the claim, not its reach**: a self-release is retractable
+by a later reassignment, a peer declaration is terminal. §4.1's discard rule branches on exactly
+that. Had the two axes stayed entangled, "terminal" and "fleet-wide" would still look like one
+property, which is how the scale-down bug in §4.3 got in.
 
 The subtlety worth keeping straight is that the underlying *fact* behind a peer declaration
 genuinely is broader — that node really is gone from every partition, not just this one. But
@@ -227,8 +239,10 @@ connections, not a filtered subset.
 - Assigned with zero connections → emit an **empty** manifest. That is a positive statement
   (§5.4.2), and it is what distinguishes an idle-but-alive node from a dead one.
 - Not assigned and zero connections → emit `NoMoreWrites{nodeId, partition, nodeId}` and stop
-  touching that partition. Safe precisely because new connections only go to assigned partitions,
-  so the count cannot rise again.
+  touching that partition until it is assigned again. The declaration is a statement about the
+  connections that existed when it was written, **not** a promise never to write here again — the
+  partition can legitimately come back on a later rebalance, which is the ordinary scale-down path
+  (§4.3).
 - Never self-declare `NoMoreWrites` for a partition that is still assigned.
 
 A self-declared `NoMoreWrites` must land after the node's last traffic record on that partition.
@@ -246,6 +260,12 @@ connections on those partitions **drain in place** — A keeps writing their tra
 and keeps emitting manifests listing them, on partitions B now owns for new connections.
 A declares `NoMoreWrites` on each as its last connection there closes. No client connection is
 disturbed by a scale-up.
+
+**Scale-down.** B, C, and D leave; the assignor gives their partitions back to A, including
+partitions A itself self-declared `NoMoreWrites` on during the earlier scale-up. A simply resumes
+writing to them — `onPartitionsAssigned` adds them back to `assignedPartitions` and new connections
+route there again. No record announces the reacquisition and none is needed; see §4.3, which is also
+why the discard rule in §4.1 ignores self-declared records.
 
 **Graceful shutdown.** Deregister from the load balancer → drain connections → declare
 `NoMoreWrites` on every partition → **leave the group last**. Leaving early turns an orderly
@@ -276,24 +296,91 @@ Everything is in-band and read-only.
 
 ### 4.1 Settling
 
+A declaration does two separable jobs, and conflating them is a defect: **settling** the
+connections that came before it, and **discarding** anything that comes after it. Settling applies
+to both variants; discarding applies only to peer-declared ones. §4.3 explains why.
+
 | Observation | Conclusion |
 |---|---|
-| `NoMoreWrites{X, P, *}` at offset O | every connection of X on P is dead as of O |
-| X absent from consumer-group membership (§6.2) | every connection of X, on every partition | 
+| `NoMoreWrites{X, P, *}` at offset O | every connection of X on P **already known at O** is dead as of O |
+| X absent from consumer-group membership (§6.2) | every connection of X, on every partition |
 | two consecutive manifests from X on P omitting C, after C's last record | C is dead (§5.4.1, unchanged) |
 
-`declaredBy` is not consulted; a self-release and a peer-observed departure settle identically,
-per §3.3. It is retained for diagnostics — "who decided this" is the first question during an
-incident.
+"Already known at O" is the load-bearing qualifier. The declaration settles the connections whose
+last record precedes O; it is not a standing rule about the pair (X, P) that also condemns
+connections X opens later. A connection first seen after O was never in the declaration's scope,
+so it accumulates normally.
 
 The membership row is the one signal that needs no per-partition copy, because the replayer
 obtains it out-of-band and can apply it directly on whichever partition it is settling. That
 asymmetry is the reason the in-band record is partition-scoped and the query is not.
 
-Records arriving from X on P after a `NoMoreWrites{X, P, *}` offset are **discarded** and counted.
-That counter is the detection mechanism for the completeness gap in §6.1.
+**Discard rule (peer-declared only).** Records arriving from X on P after a
+`NoMoreWrites{X, P, declaredBy}` offset where `declaredBy != X` are **discarded** and counted. That
+counter is the detection mechanism for the completeness gap in §6.1. Records after a
+*self*-declared `NoMoreWrites` are retained and processed normally.
 
-### 4.2 Why adoption proves nothing
+### 4.2 Why the discard rule is peer-only
+
+Because a self-declaration and a peer-declaration are asserted about different things.
+
+A **self**-declaration is a node's statement about its own past: "I have no connections here as of
+now." It is not a promise about the future, and §4.3 shows it cannot be one. A node that later
+writes to that partition again has not contradicted anything.
+
+A **peer** declaration is a statement about a node that might still be running — that is the entire
+reason it exists. Its whole purpose is to bound a zombie, so it must be terminal. It is safe to make
+it terminal because the node it condemns can never legitimately write again:
+
+- If the node truly died, a replacement is a new process with a fresh `nodeId` (§3.3), so it is a
+  different subject and the declaration does not touch it.
+- If the node was merely evicted or stalled, §3.5's one-way latch has already stopped it from
+  writing. That latch is what makes the terminal reading sound; without it, an evicted node could
+  rejoin under the same `nodeId` and have its traffic discarded.
+
+Note also that a peer declaration about X never impedes any *other* node: declarations are keyed
+per `(nodeId, partition)`, so `NoMoreWrites{B, P, A}` says nothing about A's own writes to P.
+
+Dropping discard for self-declarations also fails in the safe direction. The records in question are
+real captured traffic, and retaining them risks nothing worse than a duplicate; discarding them is
+unrecoverable data loss.
+
+### 4.3 Scale-down: a node reacquiring a partition it released
+
+This is the case that forces the split above, and an earlier draft got it wrong.
+
+Take one proxy A holding all `M` partitions. Scale up to four: the assignor gives A a quarter, and A
+drains and self-declares `NoMoreWrites{A, P, A}` on the other three quarters (§3.4). Now scale back
+down to A alone. **Kafka hands every partition back to A** — same process, same `nodeId`, and no
+mechanism by which A could decline. A immediately begins writing new connections to partitions it
+has already declared itself finished with.
+
+Under a discard rule that ignored `declaredBy`, all of that new traffic would be silently dropped:
+ordinary scale-down would become unbounded, undetectable-by-design data loss on the majority of
+partitions. That is strictly worse than the problem the discard rule exists to solve.
+
+Three properties make reacquisition safe, and none requires a new record or an epoch:
+
+- **The discard rule does not apply**, because A's declaration was self-declared (§4.2).
+- **Nothing was settled wrongly.** A only self-declares a partition with zero live connections, so
+  at offset O there was genuinely nothing left on P to settle. The connections A opens after
+  reacquiring have fresh connection ids and first records after O, so §4.1's "already known at O"
+  qualifier excludes them.
+- **The declaration was never falsified.** A self-declaration is scoped to a partition *and* to the
+  connections existing when it was written; it claims nothing about future assignment. Reading it as
+  "A will never write here again" is the misreading that caused the bug.
+
+**Repeated cycles are fine and need no counter.** Scaling up and down repeatedly produces an
+alternating sequence on P — traffic, self-declaration, traffic, self-declaration — and each
+declaration settles only what preceded it. There is no state to reconcile across cycles, which is
+why no era, epoch, or generation field is needed on the record or on traffic records. This is the
+concrete payoff of `nodeId` being fresh per process.
+
+The one thing reacquisition must not do is resurrect a condemned node. If a peer declared
+`NoMoreWrites{A, P, C}`, A must never write again at all — enforced by the latch in §3.5, not by
+anything in the reacquisition path.
+
+### 4.4 Why adoption proves nothing
 
 Stated explicitly because an earlier draft got it wrong. With 120 partitions and one proxy
 A, A owns all 120 and has connections spread across them. B joins and takes 60. A still
@@ -449,9 +536,9 @@ still emits empty manifests, so quiet is never ambiguous.
    node writes on behalf of another.
 3. Manifest fan-out doubles transiently after a scale-up, decaying as drained connections
    close and bounded by the request timeout. Worth a cap?
-4. Should `declaredBy` be a full `nodeId` or just a self/peer bit? Only diagnostics read it and a
-   bit is cheaper, but a `nodeId` tells you which survivor made the call, which is more useful in
-   an incident. Leaning `nodeId`.
+4. `declaredBy` needs at minimum a self/peer bit, since §4.1's discard rule branches on it. A full
+   `nodeId` additionally tells you which survivor made the call, which is what you want during an
+   incident, at the cost of a string per declaration. Leaning `nodeId`.
 5. `session.timeout.ms` sets how fast a crash is noticed, and `max.poll.interval.ms` how fast a
    live-but-stalled member is evicted. These are the only time constants left that affect how
    quickly a death is recognized, and both live on the broker side rather than in our commit
