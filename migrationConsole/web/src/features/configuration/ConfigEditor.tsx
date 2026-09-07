@@ -1144,6 +1144,15 @@ function ConfigPropertyRow({
     renamePattern,
     renameMessage,
   );
+  // Only authored values offer the clear action; its presence documents
+  // that the field is holding an explicit value over a default.
+  const canClear = (
+    node.valueAuthored === true
+    && node.presence === "optional"
+    && node.required !== true
+    && !node.removable
+    && node.valueKind !== "command"
+  );
   const structured = (
     !node.externalRef
     && commands.length === 0
@@ -1446,6 +1455,17 @@ function ConfigPropertyRow({
                 type="button"
               >
                 <Pencil aria-hidden="true" />
+              </button>
+            ) : null}
+            {canClear ? (
+              <button
+                aria-label={`Clear ${name} and use the default`}
+                disabled={busy}
+                onClick={() => void commit({ op: "unset", path: node.path })}
+                title="Clear this value and use the default"
+                type="button"
+              >
+                <X aria-hidden="true" />
               </button>
             ) : null}
             {node.removable ? (
