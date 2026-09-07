@@ -172,10 +172,29 @@ record the protocol can express; what it can express is M copies of "X writes no
 one per partition. The single type makes that explicit in the shape of the data rather than
 leaving it to prose, and the replayer gets one settling rule instead of two.
 
-The distinction that survives is **provenance, not scope**, which is what `declaredBy` carries.
-Both variants license exactly the same conclusion about (nodeId, partition); they differ in who
-asserted it and therefore in how much you can conclude about *other* partitions — which the
-replayer never needs, and which is why the two rows in §4.1 collapsed into one.
+The distinction that survives is **provenance, not scope**. Those are two separate axes, and the
+earlier draft's real problem was varying both at once:
+
+| | provenance (who asserted it) | scope (what one record licenses) |
+|---|---|---|
+| `Release` | the node itself | one partition |
+| `NodeDeath` | a peer | "everywhere" |
+| `NoMoreWrites` | either, in `declaredBy` | one partition, always |
+
+Because both old types differed on both axes simultaneously, it was impossible to tell which axis
+the replayer actually depended on — and the fleet-wide scope was unusable regardless, per the
+paragraph above. Now scope is fixed: every declaration licenses exactly one conclusion, "X is
+finished on P as of this offset." Scope therefore distinguishes nothing, and the only remaining
+difference is who wrote it, which `declaredBy` carries and which the replayer never branches on
+(§4.1 reads it for diagnostics only).
+
+The subtlety worth keeping straight is that the underlying *fact* behind a peer declaration
+genuinely is broader — that node really is gone from every partition, not just this one. But
+breadth of fact cannot turn into breadth of scope here, because no reader is in a position to use
+it. So it surfaces as **how many records get written** — M copies, one per partition (§3.5's crash
+case) — rather than as what any single record means. That is also why the two rows in §4.1
+collapsed into one, and why the membership query in §6.2, which the replayer *can* apply across
+partitions at will, is the one signal that needs no copies at all.
 
 The record carries no generation or epoch. `nodeId` is fresh per process, so a declaration is
 unambiguous forever without a counter.
