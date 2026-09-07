@@ -6,10 +6,14 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -29,6 +33,7 @@ import org.opensearch.migrations.replay.traffic.source.FollowUpRequirement;
 import org.opensearch.migrations.replay.traffic.source.ITrafficCaptureSource;
 import org.opensearch.migrations.replay.traffic.source.ITrafficStreamWithKey;
 import org.opensearch.migrations.replay.traffic.source.SourceControlEvent;
+import org.opensearch.migrations.replay.traffic.source.SourceInput;
 import org.opensearch.migrations.tracing.InstrumentationTest;
 import org.opensearch.migrations.tracing.TestContext;
 import org.opensearch.migrations.trafficcapture.protos.CaptureRecordTypes;
@@ -314,6 +319,122 @@ class KafkaStructuralExpirationTest extends InstrumentationTest {
             assertEquals(1, accumulator.numberOfConnectionsExpired());
             assertNoLivenessScanCycle();
         }
+    }
+
+    @Test
+    void scanAheadDoesNotChangeTheFinalDispositionOfTheDurableLog() throws Exception {
+        var withScanAhead = runDispositionEquivalenceScenario(true);
+        var withoutScanAhead = runDispositionEquivalenceScenario(false);
+
+        assertEquals(withoutScanAhead, withScanAhead);
+        assertEquals(
+            new DispositionOutcome(
+                NODE + ":0:11:after-0",
+                RequestResponsePacketPair.ReconstructionStatus.CONFIRMED_DEAD,
+                RequestResponsePacketPair.ReconstructionStatus.CONFIRMED_DEAD,
+                2,
+                1,
+                3,
+                0,
+                0,
+                false,
+                false
+            ),
+            withScanAhead
+        );
+    }
+
+    private DispositionOutcome runDispositionEquivalenceScenario(boolean scanAheadEnabled) throws Exception {
+        var clock = new MutableClock(Instant.ofEpochSecond(1));
+        var mockConsumer = new MockConsumer<String, byte[]>(OffsetResetStrategy.EARLIEST);
+        try (var source = source(mockConsumer, clock, scanAheadEnabled)) {
+            scheduleFirstPoll(mockConsumer, trafficRecord(0, true));
+            var traffic = assertInstanceOf(
+                ITrafficStreamWithKey.class,
+                source.readNextTrafficStreamChunk(rootContext::createReadChunkContext)
+                    .get(5, TimeUnit.SECONDS)
+                    .get(0)
+            );
+            var expiredStatus = new AtomicReference<RequestResponsePacketPair.ReconstructionStatus>();
+            var closeStatus = new AtomicReference<RequestResponsePacketPair.ReconstructionStatus>();
+            var ignored = new AtomicInteger();
+            var recordsToCommit = new LinkedHashSet<ITrafficStreamKey>();
+            var accumulator = new CapturedTrafficToHttpTransactionAccumulator(
+                Duration.ofMillis(1),
+                null,
+                dispositionCallbacks(expiredStatus, closeStatus, ignored, recordsToCommit),
+                true,
+                source::updateScanBlocker
+            );
+            accumulator.accept(traffic);
+
+            addRecord(mockConsumer, snapshotRecord(1, 10));
+            addRecord(mockConsumer, snapshotRecord(2, 11));
+            mockConsumer.updateEndOffsets(Map.of(PARTITION, 3L));
+
+            final SourceControlEvent.ConfirmedDead confirmedDead;
+            final List<SourceInput> markerRecords;
+            if (scanAheadEnabled) {
+                clock.advance(Duration.ofSeconds(2));
+                touch(source);
+                confirmedDead = readConfirmedDead(source);
+                accumulator.accept(confirmedDead);
+                // MockConsumer restores the seek position but does not refetch records consumed
+                // by the scan poll. Re-offer the same broker offsets to model the replay cursor.
+                addRecord(mockConsumer, snapshotRecord(1, 10));
+                addRecord(mockConsumer, snapshotRecord(2, 11));
+                markerRecords = source.readNextTrafficStreamChunk(rootContext::createReadChunkContext)
+                    .get(5, TimeUnit.SECONDS);
+                markerRecords.forEach(accumulator::accept);
+            } else {
+                markerRecords = source.readNextTrafficStreamChunk(rootContext::createReadChunkContext)
+                    .get(5, TimeUnit.SECONDS);
+                markerRecords.forEach(accumulator::accept);
+                confirmedDead = readConfirmedDead(source);
+                accumulator.accept(confirmedDead);
+            }
+
+            assertEquals(2, markerRecords.size());
+            assertTrue(markerRecords.stream().allMatch(KafkaLivenessSnapshotRecord.class::isInstance));
+            assertEquals(3, recordsToCommit.size());
+            source.onConnectionAccumulationComplete(traffic.getKey());
+            touch(source);
+
+            var acknowledgements = new ArrayList<CompletableFuture<Void>>();
+            for (var key : recordsToCommit) {
+                key.getTrafficStreamsContext().close();
+                acknowledgements.add(source.commitTrafficStreamAsync(key).toCompletableFuture());
+            }
+            CompletableFuture.allOf(acknowledgements.toArray(CompletableFuture[]::new))
+                .get(5, TimeUnit.SECONDS);
+
+            var committed = mockConsumer.committed(Set.of(PARTITION)).get(PARTITION);
+            assertNotNull(committed);
+            var ownership = source.trackingKafkaConsumer.ownershipBudgetSnapshot();
+            return new DispositionOutcome(
+                confirmedDead.evidence().proof().proofId(),
+                expiredStatus.get(),
+                closeStatus.get(),
+                ignored.get(),
+                accumulator.numberOfConnectionsExpired(),
+                committed.offset(),
+                ownership.records(),
+                ownership.bytes(),
+                source.hasPendingSourceControl(),
+                source.partitionToActiveConnections.containsKey(PARTITION.partition())
+            );
+        }
+    }
+
+    private SourceControlEvent.ConfirmedDead readConfirmedDead(
+        KafkaTrafficCaptureSource source
+    ) throws Exception {
+        return assertInstanceOf(
+            SourceControlEvent.ConfirmedDead.class,
+            source.readNextTrafficStreamChunk(rootContext::createReadChunkContext)
+                .get(5, TimeUnit.SECONDS)
+                .get(0)
+        );
     }
 
     @Test
@@ -810,6 +931,68 @@ class KafkaStructuralExpirationTest extends InstrumentationTest {
             }
         };
     }
+
+    private static AccumulationCallbacks dispositionCallbacks(
+        AtomicReference<RequestResponsePacketPair.ReconstructionStatus> expiredStatus,
+        AtomicReference<RequestResponsePacketPair.ReconstructionStatus> closeStatus,
+        AtomicInteger ignored,
+        Set<ITrafficStreamKey> recordsToCommit
+    ) {
+        return new AccumulationCallbacks() {
+            @Override
+            public Consumer<RequestResponsePacketPair> onRequestReceived(
+                @NonNull IReplayContexts.IReplayerHttpTransactionContext ctx,
+                @NonNull HttpMessageAndTimestamp request,
+                boolean isResumedConnection
+            ) {
+                return pair -> {};
+            }
+
+            @Override
+            public void onTrafficStreamsExpired(
+                RequestResponsePacketPair.ReconstructionStatus status,
+                @NonNull IReplayContexts.IChannelKeyContext ctx,
+                @NonNull List<ITrafficStreamKey> trafficStreamKeysBeingHeld
+            ) {
+                expiredStatus.set(status);
+                recordsToCommit.addAll(trafficStreamKeysBeingHeld);
+            }
+
+            @Override
+            public void onConnectionClose(
+                int channelInteractionNum,
+                @NonNull IReplayContexts.IChannelKeyContext ctx,
+                int channelSessionNumber,
+                RequestResponsePacketPair.ReconstructionStatus status,
+                @NonNull Instant timestamp,
+                @NonNull List<ITrafficStreamKey> trafficStreamKeysBeingHeld
+            ) {
+                closeStatus.set(status);
+                recordsToCommit.addAll(trafficStreamKeysBeingHeld);
+            }
+
+            @Override
+            public void onTrafficStreamIgnored(
+                @NonNull IReplayContexts.ITrafficStreamsLifecycleContext ctx
+            ) {
+                ignored.incrementAndGet();
+                recordsToCommit.add(ctx.getTrafficStreamKey());
+            }
+        };
+    }
+
+    private record DispositionOutcome(
+        String proofId,
+        RequestResponsePacketPair.ReconstructionStatus expiredStatus,
+        RequestResponsePacketPair.ReconstructionStatus closeStatus,
+        int ignoredRecords,
+        int expiredConnections,
+        long committedOffset,
+        int ownedRecords,
+        long ownedBytes,
+        boolean pendingSourceControl,
+        boolean activeConnection
+    ) {}
 
     private static final class MutableClock extends Clock {
         private final AtomicReference<Instant> now;

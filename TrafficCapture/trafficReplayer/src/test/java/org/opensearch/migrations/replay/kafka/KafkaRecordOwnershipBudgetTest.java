@@ -18,7 +18,10 @@ class KafkaRecordOwnershipBudgetTest {
         Assertions.assertFalse(budget.isCapacityAvailable());
         Assertions.assertFalse(budget.tryReserve(key(0, 1, 2), 30));
         Assertions.assertEquals(1, metrics.saturations);
-        Assertions.assertEquals(new KafkaRecordOwnershipBudget.Snapshot(2, 30, 2, 100, true), budget.snapshot());
+        Assertions.assertEquals(
+            new KafkaRecordOwnershipBudget.OwnershipSnapshot(2, 30, 2, 100, true),
+            budget.snapshot()
+        );
 
         budget.release(key(0, 1, 0));
 
@@ -40,7 +43,10 @@ class KafkaRecordOwnershipBudgetTest {
 
         budget.releasePartition(0, 1);
 
-        Assertions.assertEquals(new KafkaRecordOwnershipBudget.Snapshot(0, 0, 10, 20, false), budget.snapshot());
+        Assertions.assertEquals(
+            new KafkaRecordOwnershipBudget.OwnershipSnapshot(0, 0, 10, 20, false),
+            budget.snapshot()
+        );
         Assertions.assertEquals(0, metrics.records);
         Assertions.assertEquals(0, metrics.bytes);
     }

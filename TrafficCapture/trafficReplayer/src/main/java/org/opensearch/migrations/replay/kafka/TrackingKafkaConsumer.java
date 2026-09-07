@@ -709,32 +709,34 @@ public class TrackingKafkaConsumer implements ConsumerRebalanceListener {
             var topicPartition = new TopicPartition(kafkaRecord.topic(), kafkaRecord.partition());
             if (capacityReached) {
                 rewindOffsets.merge(topicPartition, kafkaRecord.offset(), Math::min);
-                continue;
+            } else {
+                var offsetTracker = partitionToOffsetLifecycleTrackerMap.get(kafkaRecord.partition());
+                var offsetDetails = new PojoKafkaCommitOffsetData(
+                    offsetTracker.consumerConnectionGeneration,
+                    kafkaRecord.partition(),
+                    kafkaRecord.offset()
+                );
+                var reservationKey = reservationKey(offsetDetails);
+                if (!ownershipBudget.tryReserve(reservationKey, serializedRecordSize(kafkaRecord))) {
+                    capacityReached = true;
+                    rewindOffsets.merge(topicPartition, kafkaRecord.offset(), Math::min);
+                } else {
+                    final T builtRecord;
+                    try {
+                        builtRecord = builder.apply(offsetDetails, kafkaRecord);
+                    } catch (RuntimeException | Error e) {
+                        ownershipBudget.release(reservationKey);
+                        throw e;
+                    }
+                    offsetTracker.add(offsetDetails.getOffset(), kafkaRecord.key());
+                    kafkaRecordsLeftToCommitEventually.incrementAndGet();
+                    metrics.unresolvedObligationsChanged(1);
+                    log.atTrace().setMessage("records in flight={}")
+                        .addArgument(kafkaRecordsLeftToCommitEventually::get)
+                        .log();
+                    accepted.add(builtRecord);
+                }
             }
-            var offsetTracker = partitionToOffsetLifecycleTrackerMap.get(kafkaRecord.partition());
-            var offsetDetails = new PojoKafkaCommitOffsetData(
-                offsetTracker.consumerConnectionGeneration,
-                kafkaRecord.partition(),
-                kafkaRecord.offset()
-            );
-            var reservationKey = reservationKey(offsetDetails);
-            if (!ownershipBudget.tryReserve(reservationKey, serializedRecordSize(kafkaRecord))) {
-                capacityReached = true;
-                rewindOffsets.merge(topicPartition, kafkaRecord.offset(), Math::min);
-                continue;
-            }
-            final T builtRecord;
-            try {
-                builtRecord = builder.apply(offsetDetails, kafkaRecord);
-            } catch (RuntimeException | Error e) {
-                ownershipBudget.release(reservationKey);
-                throw e;
-            }
-            offsetTracker.add(offsetDetails.getOffset(), kafkaRecord.key());
-            kafkaRecordsLeftToCommitEventually.incrementAndGet();
-            metrics.unresolvedObligationsChanged(1);
-            log.atTrace().setMessage("records in flight={}").addArgument(kafkaRecordsLeftToCommitEventually::get).log();
-            accepted.add(builtRecord);
         }
         rewindRejectedRecords(rewindOffsets);
         return accepted.stream();
@@ -748,16 +750,16 @@ public class TrackingKafkaConsumer implements ConsumerRebalanceListener {
         });
     }
 
-    private static long serializedRecordSize(ConsumerRecord<String, byte[]> record) {
-        int keySize = record.serializedKeySize();
-        if (keySize < 0 && record.key() != null) {
-            keySize = record.key().getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+    private static long serializedRecordSize(ConsumerRecord<String, byte[]> kafkaRecord) {
+        int keySize = kafkaRecord.serializedKeySize();
+        if (keySize < 0 && kafkaRecord.key() != null) {
+            keySize = kafkaRecord.key().getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
         }
-        int valueSize = record.serializedValueSize();
-        if (valueSize < 0 && record.value() != null) {
-            valueSize = record.value().length;
+        int valueSize = kafkaRecord.serializedValueSize();
+        if (valueSize < 0 && kafkaRecord.value() != null) {
+            valueSize = kafkaRecord.value().length;
         }
-        return Math.max(0, keySize) + Math.max(0, valueSize);
+        return (long) Math.max(0, keySize) + Math.max(0, valueSize);
     }
 
     private ConsumerRecords<String, byte[]> safePollWithSwallowedRuntimeExceptions(
@@ -1119,7 +1121,7 @@ public class TrackingKafkaConsumer implements ConsumerRebalanceListener {
         ownershipBudget.setCapacityAvailableListener(listener);
     }
 
-    KafkaRecordOwnershipBudget.Snapshot ownershipBudgetSnapshot() {
+    KafkaRecordOwnershipBudget.OwnershipSnapshot ownershipBudgetSnapshot() {
         return ownershipBudget.snapshot();
     }
 
