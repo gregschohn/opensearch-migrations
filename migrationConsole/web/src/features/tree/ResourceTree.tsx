@@ -1198,8 +1198,15 @@ export function ResourceTree({
 
     layoutRects.current = nextRects;
     layoutViewKey.current = viewTransitionKey;
+    // Inline create/rename rows mount between existing rows and change
+    // row heights; they must trigger a measurement pass or the rows
+    // below them jump and later animations start from stale geometry.
+    void inlineCreate;
+    void inlineRename;
   }, [
     changeStates,
+    inlineCreate,
+    inlineRename,
     presentation,
     rows,
     snapshot.nodes,

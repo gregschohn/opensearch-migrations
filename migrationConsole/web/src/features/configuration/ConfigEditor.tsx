@@ -1639,6 +1639,9 @@ export function ConfigEditor({
   const configTablePanelRef = useRef<HTMLElement>(null);
   const pinUpdateFrame = useRef<number | null>(null);
   const rowElements = useRef(new Map<string, HTMLTableRowElement>());
+  const flipTops = useRef(new Map<string, number>());
+  const flipScope = useRef<string | null>(null);
+  const activeFlipCount = useRef(0);
   const knownRowIds = useRef<Set<string> | null>(null);
   const knownExpansionIds = useRef<Set<string> | null>(null);
   const expansionScope = useRef<string | null>(null);
@@ -1851,6 +1854,88 @@ export function ConfigEditor({
     () => treeRows(scopedNodes, expanded, renderOptional, renderExpert),
     [expanded, renderExpert, renderOptional, scopedNodes],
   );
+  const measureRowTops = useCallback(() => {
+    const panel = configTablePanelRef.current;
+    const tops = new Map<string, number>();
+    if (!panel) return tops;
+    // Scroll-invariant positions so a scrolled panel never reads as a
+    // layout change.
+    const panelTop = panel.getBoundingClientRect().top - panel.scrollTop;
+    rowElements.current.forEach((element, nodeId) => {
+      tops.set(nodeId, element.getBoundingClientRect().top - panelTop);
+    });
+    return tops;
+  }, []);
+  useLayoutEffect(() => {
+    const previousTops = flipTops.current;
+    const scopeChanged = flipScope.current !== expansionScopeId;
+    flipScope.current = expansionScopeId;
+    const nextTops = measureRowTops();
+    flipTops.current = nextTops;
+    // Trigger-only dependencies: these change row geometry without
+    // being read here, and each needs a measurement pass.
+    void renderOptional;
+    void renderExpert;
+    void showDocumentation;
+    void removingIds;
+    void collapsingIds;
+    void insertedIds;
+    if (scopeChanged) return;
+    if (globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
+      return;
+    }
+    nextTops.forEach((top, nodeId) => {
+      const previous = previousTops.get(nodeId);
+      const element = rowElements.current.get(nodeId);
+      if (
+        previous === undefined
+        || !element
+        || typeof element.animate !== "function"
+      ) {
+        return;
+      }
+      const delta = previous - top;
+      if (Math.abs(delta) < 0.5) return;
+      activeFlipCount.current += 1;
+      const animation = element.animate([
+        { transform: `translateY(${delta}px)` },
+        { transform: "translateY(0)" },
+      ], {
+        duration: 420,
+        easing: "cubic-bezier(0.2, 0.75, 0.25, 1)",
+      });
+      const release = () => {
+        activeFlipCount.current = Math.max(0, activeFlipCount.current - 1);
+      };
+      animation.onfinish = release;
+      animation.oncancel = release;
+    });
+  }, [
+    collapsingIds,
+    expansionScopeId,
+    insertedIds,
+    measureRowTops,
+    removingIds,
+    renderExpert,
+    renderOptional,
+    rows,
+    showDocumentation,
+  ]);
+  useEffect(() => {
+    const panel = configTablePanelRef.current;
+    if (!panel || typeof ResizeObserver === "undefined") return;
+    // Row detail panes open and close from row-local state; refresh the
+    // move baselines whenever content resizes so the next animated
+    // change starts from what is actually on screen.
+    const observer = new ResizeObserver(() => {
+      if (activeFlipCount.current > 0) return;
+      flipTops.current = measureRowTops();
+    });
+    observer.observe(panel);
+    const body = panel.querySelector("tbody");
+    if (body) observer.observe(body);
+    return () => observer.disconnect();
+  }, [measureRowTops]);
   const retainScrollPosition = useCallback(() => {
     const panel = configTablePanelRef.current;
     if (!panel) return;
