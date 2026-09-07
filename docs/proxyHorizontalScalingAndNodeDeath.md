@@ -303,7 +303,7 @@ to both variants; discarding applies only to peer-declared ones. §4.3 explains 
 | Observation | Conclusion |
 |---|---|
 | `NoMoreWrites{X, P, *}` at offset O | every connection of X on P **already known at O** is dead as of O |
-| X absent from consumer-group membership (§6.2) | every connection of X, on every partition |
+| X absent from consumer-group membership, **and the replayer is at the tip** (§6.2) | every connection of X, on every partition |
 | two consecutive manifests from X on P omitting C, after C's last record | C is dead (§5.4.1, unchanged) |
 
 "Already known at O" is the load-bearing qualifier. The declaration settles the connections whose
@@ -311,9 +311,16 @@ last record precedes O; it is not a standing rule about the pair (X, P) that als
 connections X opens later. A connection first seen after O was never in the declaration's scope,
 so it accumulates normally.
 
-The membership row is the one signal that needs no per-partition copy, because the replayer
-obtains it out-of-band and can apply it directly on whichever partition it is settling. That
-asymmetry is the reason the in-band record is partition-scoped and the query is not.
+The membership row is the one signal that needs no per-partition copy, because the replayer obtains
+it out-of-band and can apply it on whichever partition it is settling. That is also its weakness: not
+being in the log is exactly why it has no offset to compare against, hence the tip precondition and
+its inability to fence. The in-band record pays the per-partition cost and gets log position in
+return.
+
+Only the first and third rows are usable while the replayer is lagging, which is its normal state.
+The membership row carries a precondition rather than a caveat: a query answers a question about
+*now*, i.e. about the tip, so applying it at a lagging offset would settle connections that have
+unread follow-up records later in the log. §6.2 states the required ordering.
 
 **Discard rule (peer-declared only).** Records arriving from X on P after a
 `NoMoreWrites{X, P, declaredBy}` offset where `declaredBy != X` are **discarded** and counted. That
@@ -467,21 +474,51 @@ real answer rather than a timer.
 
 **The answer is to ask the authority.** The replayer queries consumer-group membership and treats
 "X is not a current member" as X being dead. That is broker-maintained rather than inferred, and
-it is exactly the signal a surviving peer would have used to declare `NoMoreWrites` — so it is equal in
-strength, with the no-survivor hole closed. It is also the explicit "all proxies are down" signal,
-available directly instead of by timeout.
+it is the explicit "all proxies are down" signal, available directly instead of by timeout.
+
+**Precondition: the query is only admissible at the partition tip.** This is the constraint that
+makes it a narrow backstop rather than a general-purpose signal, and getting it wrong would lose
+data.
+
+A membership answer is a fact about *now*, which corresponds to the **tip** of the log. Every other
+signal in this design is positioned in the log, so it can be compared against the offset the
+replayer is actually working at. The query cannot. If the replayer is lagging — the normal
+condition — then "X is not a member now" says nothing about whether X was alive at offset O and
+wrote more records for connection C at offsets after O. Those records are sitting in the log
+unread. Settling C on the query would discard an accumulation that provably has follow-up, which is
+exactly the failure the absence proof exists to prevent. Mixing a present-time fact with a
+log-position question is the same category error as using a clock.
+
+The ordering also matters, and query-then-drain is the sound direction:
+
+1. Observe X absent from the group at time T. Given fresh `nodeId`s per process (§3.3) and the
+   latch (§3.5), X will never write again after T, so X's record set is now final.
+2. Read to an end offset observed **after** T. Everything X ever wrote is below it.
+3. Only now may X's connections be settled.
+
+Draining to the tip first and then querying is *not* sufficient, because X could have written
+between the end-offset read and the query.
+
+**This does not weaken the case §6.2 exists for**, because the no-survivor stall is precisely the
+state where the replayer has already drained to the tip and nothing is arriving — the condition
+argued two paragraphs above. The query's validity window coincides with the only situation that
+needs it.
 
 Requirements:
 
 - The proxy sets its consumer's `client.id` to its `nodeId`. `MemberDescription.clientId()` is
-  exposed by `describeConsumerGroups`; subscription `userData` is not. **Needs verification**
-  that `clientId` survives to the description as expected.
+  exposed by `describeConsumerGroups`; subscription `userData` is not. **Assumed stable** for now;
+  see §9.2.
 - The replayer gains `Describe` on the group. Read-only; it still needs no write access anywhere
   and no admin mutation.
 
-Peer-declared `NoMoreWrites` records remain worth keeping as the fast path — in-band, no admin call,
-and settle immediately — with the membership query as the backstop that covers no-survivor. Both
-carry the same trust model, so neither weakens the other.
+**Peer-declared `NoMoreWrites` records are therefore mandatory, not a redundant fast path.** They
+are a point-in-time observation written *into the log*, so their temporal ordering against the
+traffic they speak about is total and readable at any lag. That is what lets them settle
+connections while the replayer is far behind, and what supplies the fence offset the discard rule
+in §4.1 needs — a query result has no position, so it can settle but can never fence. The two
+signals do different jobs; the query covers only the case no peer survived to write a record, and
+only at the tip.
 
 The residual is benign in the right direction: if the replayer cannot reach the group, it cannot
 settle, so it retains and the head stays pinned. Every failure mode of this section is "stall,"
@@ -520,28 +557,50 @@ still emits empty manifests, so quiet is never ambiguous.
 - Static membership (`group.instance.id`). Would avoid rebalances on planned restarts, but
   needs a stable identity from outside the process, which is the deployment coupling we are
   avoiding.
-- Deliberate expiry of over-old connections, to dampen the post-scale-up manifest fan-out
-  faster.
+- Deliberate expiry of over-old connections. This is the only sound way to shrink post-scale-up
+  manifest fan-out: capping *manifests* is unsafe, since skipping one for a partition that has live
+  connections manufactures an omission, and two of those falsely prove a live connection dead
+  (§3.4). So the lever is connection lifetime, not manifest count. Deferred — the spike is
+  transient and bounded by the request-duration cap.
 
-## 9. Open questions
+## 9. Decisions and remaining follow-ups
 
-1. Does `MemberDescription.clientId()` reliably carry the value the proxy set as `client.id`?
-   §6.2 depends on it to map group members back to `nodeId`s. Verify before committing to the
-   approach; the fallback is `group.instance.id`, which also appears in the description but drags
-   static-membership semantics along with it.
-2. Given a membership query exists, are *peer-declared* `NoMoreWrites` records worth their weight?
-   They settle immediately and in-band with no admin call, but the query alone is sufficient for
-   correctness. Keeping both is proposed; dropping the peer-declared variant — leaving only
-   self-release plus the query — is defensible, and would remove the fleet's only path where one
-   node writes on behalf of another.
-3. Manifest fan-out doubles transiently after a scale-up, decaying as drained connections
-   close and bounded by the request timeout. Worth a cap?
-4. `declaredBy` needs at minimum a self/peer bit, since §4.1's discard rule branches on it. A full
-   `nodeId` additionally tells you which survivor made the call, which is what you want during an
-   incident, at the cost of a string per declaration. Leaning `nodeId`.
-5. `session.timeout.ms` sets how fast a crash is noticed, and `max.poll.interval.ms` how fast a
-   live-but-stalled member is evicted. These are the only time constants left that affect how
-   quickly a death is recognized, and both live on the broker side rather than in our commit
-   logic — the distinction that matters, since neither can commit anything by itself; they only
-   change when an observation becomes available. Lower `session.timeout.ms` is faster detection
-   and more spurious rebalances under GC pressure. Starting values?
+### 9.1 Decided
+
+**Peer-declared `NoMoreWrites` records are mandatory.** They are a point-in-time observation whose
+temporal ordering against the traffic they describe is critical, and putting them in the log is what
+makes that ordering readable. A membership query is only valid at the tip, which the replayer will
+rarely be at, so it cannot substitute. See §4.1 and §6.2.
+
+**`declaredBy` stores the full `nodeId`,** not a self/peer bit. Declarations are rare enough that the
+size is irrelevant, and storing the id makes "this is a self-release" checkable by comparison
+(`declaredBy == nodeId`) rather than an unverifiable flag — worth having, since that bit now gates
+whether traffic is discarded.
+
+**Kafka membership timeouts stay at their defaults.** The tradeoff is asymmetric: slow death
+detection costs retained memory and a delayed commit, both recoverable, while a *false* eviction
+trips the §3.5 latch and takes a healthy proxy out of service over a GC pause. Bias toward patience.
+
+**Manifest fan-out gets no cap;** connection-lifetime expiry is the only sound lever and it is
+deferred to §8.
+
+**`MemberDescription.clientId()` is assumed to carry the configured `client.id` stably.** Taken as an
+assumption for now rather than a blocker — see §9.2.
+
+### 9.2 Follow-ups
+
+1. **Verify the `clientId` round-trip.** `client.id` travels in the Kafka request header and the
+   group coordinator records it in member metadata at join, so this is expected to hold, but it is an
+   implementation detail rather than a documented contract. Confirm with a test: start a consumer
+   with a known `client.id`, `describeConsumerGroups`, assert the value comes back — and check it
+   survives a rejoin. If it does not, the fallback is `group.instance.id`, which is definitely
+   operator-set but turns on static membership, where a departing member keeps its assignment for a
+   full session timeout instead of triggering a rebalance. That works directly against prompt death
+   detection, so it is a real fallback with a real cost.
+2. **The membership consumer needs its own thread.** Its `poll()` loop must not share a thread with
+   capture work, or producer backpressure on the capture path could stall heartbeats and cause
+   exactly the spurious eviction the default timeouts are chosen to avoid — capture slowness would
+   masquerade as proxy death.
+3. **Confirm the default values against the client version in use.** Expected to be
+   `session.timeout.ms` 45s, `heartbeat.interval.ms` 3s, `max.poll.interval.ms` 300s; also check
+   the broker's `group.min.session.timeout.ms` / `group.max.session.timeout.ms` bounds permit them.
