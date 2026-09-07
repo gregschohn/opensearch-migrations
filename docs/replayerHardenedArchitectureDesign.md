@@ -31,12 +31,14 @@ idle-only snapshot and finite-window-exhaustion proposals.
 
 **Scaling proposal (sketch, unimplemented):**
 [proxyHorizontalScalingAndNodeDeath.md](proxyHorizontalScalingAndNodeDeath.md)
-— horizontal proxy scaling via consumer-group membership, and per-node death declarations that
-replace the residual wall-clock backstop with an observed event. It revisits how a proxy chooses its
-partitions (§19.7) and adds two declaration record types alongside the snapshots in §10.8. The
-expiry policy and the omission predicate are unchanged; what changes is the admissible-evidence set,
-plus one new rule that discards a declared-dead node's later records. See its §2.1 — "the absence
-proof is unchanged" is true of the predicate and misleading about the system.
+— horizontal proxy scaling via consumer-group membership, plus a per-`(nodeId, partition)`
+declaration that a writer is finished, turning a dead proxy into an observed event instead of the
+retain-and-halt-loudly outcome §10.5 prescribes. (It removes no wall-clock code: §10.5's last row
+and §20 already forbid any.) It revisits how a proxy chooses its partitions (§19.7) and adds one
+declaration record type alongside the snapshots in §10.8. The expiry policy and the omission
+predicate are unchanged; what changes is the admissible-evidence set, plus one new rule that
+discards a finished writer's later records. See its §2.1 — "the absence proof is unchanged" is
+true of the predicate and misleading about the system.
 
 ---
 
@@ -974,6 +976,14 @@ The last row is a hard rule with a specific reason: if a wall-clock expiry mecha
 the scanner, the two resolve in favor of whichever fires first — and the impatient one always does.
 That would defeat the scanner entirely while leaving it in the codebase looking authoritative.
 
+The "No proxy snapshots arriving" row is the one that costs availability: it is correct, but a proxy
+that dies with connections open halts progress until an operator intervenes. That is the residual
+[`proxyHorizontalScalingAndNodeDeath.md`](proxyHorizontalScalingAndNodeDeath.md) §6.2 targets,
+by making non-membership in the capture fleet's consumer group an admissible death signal. Note what
+that does *not* do: it adds an observation, so the row's verdict for genuine silence from a member
+that is still live stays **Never**. Retain-and-halt remains the fallback whenever the group cannot be
+queried.
+
 That rule governs Kafka and any other source with durable redelivery or offset obligations. Finite
 legacy sources such as an in-memory array or an input stream have no Kafka commit authority to
 advance. They may continue to use the configured inactivity timeout to end local reconstruction and
@@ -1030,11 +1040,17 @@ The earlier mechanism exploration, sizing work, and rejected alternatives are in
 supersede that document's idle-only snapshots and finite-window fallback.
 
 Snapshots still cannot say anything about a node that has stopped emitting them, so this section
-leaves a wall-clock backstop as its residual.
+leaves two residuals for that case — not a wall-clock backstop, which §10.5 and §20 forbid, but
+retain-and-halt-loudly per §10.5's "No proxy snapshots arriving" row, and a continued dependence on
+the proxy duration cap as the finite window that makes "nothing in the window" mean anything
+(`replayer-expiration-hardening.md` §5.3).
 [`proxyHorizontalScalingAndNodeDeath.md`](proxyHorizontalScalingAndNodeDeath.md) proposes closing that
-by adding two positive declarations — a node releasing a partition, and a surviving fleet member
-reporting a departure it observed — so that a dead node becomes an observed event rather than an
-inferred silence. Those declarations are an additional evidence type, not a change to the omission
+by adding a positive declaration, `NoMoreWrites{nodeId, partition, declaredBy}` — written either by
+the node itself as it finishes with a partition, or by a surviving fleet member that observed the
+node depart — so that a finished writer becomes an observed event rather than an inferred silence.
+Note that the declaration is scoped to a single partition, not to the node: a reader settles each
+partition from that partition's records alone, so a peer reporting a departure must write one copy
+per partition. That declaration is an additional evidence type, not a change to the omission
 predicate below, and they arrive with a new rule that discards a declared-dead node's later records;
 that rule is what bounds the zombie hazard and also what makes the traffic it drops a completeness
 gap. That sketch also lets two nodes emit snapshots to one partition concurrently while a reassigned
