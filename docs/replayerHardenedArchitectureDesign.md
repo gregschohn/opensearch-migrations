@@ -29,6 +29,13 @@ idle-only snapshot and finite-window-exhaustion proposals.
 **Tactical alternative:** [replayerSimplifiedLifecycleDesign.md](replayerSimplifiedLifecycleDesign.md)
 — the same invariants achieved by flattening contracts instead of changing the execution model.
 
+**Scaling proposal (sketch, unimplemented):**
+[proxyHorizontalScalingAndNodeDeath.md](proxyHorizontalScalingAndNodeDeath.md)
+— horizontal proxy scaling via consumer-group membership, and per-node death declarations that
+replace the residual wall-clock backstop with an observed event. It revisits how a proxy chooses its
+partitions (§19.7) and adds two declaration record types alongside the snapshots in §10.8. The
+absence-proof rule itself is unchanged.
+
 ---
 
 ## 0. How to Read This Document
@@ -1020,6 +1027,15 @@ The earlier mechanism exploration, sizing work, and rejected alternatives are in
 [`replayer-expiration-hardening.md`](replayer-expiration-hardening.md) §5.4. The contracts below
 supersede that document's idle-only snapshots and finite-window fallback.
 
+Snapshots still cannot say anything about a node that has stopped emitting them, so this section
+leaves a wall-clock backstop as its residual.
+[`proxyHorizontalScalingAndNodeDeath.md`](proxyHorizontalScalingAndNodeDeath.md) proposes closing that
+by adding two positive declarations — a node releasing a partition, and a surviving fleet member
+reporting a departure it observed — so that a dead node becomes an observed event rather than an
+inferred silence. That sketch also lets two nodes emit snapshots to one partition concurrently while a
+reassigned node drains its existing connections, which the per-`(nodeId, partition)` keying below
+already accommodates but which would require dropping the reader's chunk-contiguity requirement.
+
 **What is emitted.** Every `snapshotInterval` (default 30s), each proxy declares **all** open
 connections whose traffic routes to each partition in its shard set. Active connections are not
 omitted as redundant: "it was active before the first snapshot" does not imply that it will emit a
@@ -1948,6 +1964,14 @@ verdict.
 `nodeId`. Reducing `K` changes cost and distribution, not proof semantics, provided that shared plan
 remains self-consistent. Snapshot chunking remains mandatory for every `K`, including the full-set
 default.
+
+[`proxyHorizontalScalingAndNodeDeath.md`](proxyHorizontalScalingAndNodeDeath.md) proposes replacing
+both halves of this decision: the partition set would come from consumer-group assignment rather than
+from hashing `nodeId` with a configured width, and a connection's partition would be recorded at open
+rather than recomputed from a plan. The decision above stands until that sketch is accepted. Note that
+its model makes the immutability guaranteed here unnecessary rather than merely different — a recorded
+per-connection partition cannot be remapped by a plan change, because there is no plan left to
+change.
 
 ---
 
