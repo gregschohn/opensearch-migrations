@@ -1,10 +1,15 @@
 # Proxy Horizontal Scaling and Node-Death Declarations
 
-**Status: sketch, for review.** Nothing here is implemented. This supersedes parts of
-`replayer-expiration-hardening.md` — specifically §5.4.5 (stable per-host nodeId), §7's
-"A stable per-host nodeId" rejection, and the per-connection wall-clock backstop that §5.4
-leaves as the residual. It does not change §5.4.1's absence-proof rule, which remains the
-mechanism for expiring the idle connections of a proxy that is still alive.
+**Status: sketch, for review.** Nothing here is implemented.
+
+It supersedes `replayer-expiration-hardening.md` §5.4.5 and §7's "A stable per-host nodeId"
+rejection, and it closes the wall-clock backstop that both that document's §5.4 and
+`replayerHardenedArchitectureDesign.md` §10.8 leave as their residual. It revisits
+`replayerHardenedArchitectureDesign.md` §19.7 (how a proxy chooses its partitions).
+
+It does **not** change the absence-proof rule, which remains how the open connections of a
+*live* node expire. It also does not change §10.8's decision to declare all open connections
+rather than idle-only.
 
 ## 1. What problem this solves
 
@@ -15,10 +20,10 @@ claims `shardWidth` consecutive partitions from there (`PartitionRoutingPlan.for
 Ranges collide at random, growing the topic reshuffles every proxy's range, and there is no
 way to add capture capacity deliberately.
 
-**Proving a proxy is dead.** `replayer-expiration-hardening.md` §5.4.1 can prove an *idle*
-connection is gone using two consecutive manifests from its own node. It cannot prove
-anything about a node that stopped emitting manifests, because absence of manifests is
-indistinguishable from a slow node. The residual was a wall-clock timeout, which is the
+**Proving a proxy is dead.** The absence-proof rule (`replayer-expiration-hardening.md` §5.4.1)
+can prove an open connection is gone using two consecutive manifests from its own node. It
+cannot prove anything about a node that stopped emitting manifests, because absence of
+manifests is indistinguishable from a slow node. The residual is a wall-clock timeout — the
 same inference that made PR #3207 unsafe.
 
 The connection: if the fleet has a membership protocol, then a departure is an *event* a
@@ -89,7 +94,11 @@ unambiguous forever without a counter.
 ### 3.4 Manifest emission
 
 Every quantum, for each partition in `assignedPartitions ∪ partitionsWithLiveConnections`,
-emit a manifest listing that node's idle connections on that partition.
+emit a manifest listing **all** of that node's open connections on that partition — not just the idle
+ones. This inherits `replayerHardenedArchitectureDesign.md` §10.8's reasoning unchanged: "it was
+active before the first snapshot" does not imply it will emit a record after that snapshot, so an
+intentional omission combined with one concurrent-map miss can falsely prove death. It also means the
+fan-out in §8's transient-spike note is over the full open set, not a filtered one.
 
 - Assigned with zero connections → emit an **empty** manifest. That is a positive statement
   (§5.4.2), and it is what distinguishes an idle-but-alive node from a dead one.
