@@ -42,6 +42,55 @@ true of the predicate and misleading about the system.
 
 ---
 
+## Implementation Status (2026-09-07, branch `integrating3231`)
+
+This design is now substantially **implemented** on this branch; "Draft for discussion" above
+describes its origin, not its state. The table below marks what is finished, what was deliberately
+scoped out of the first implementation, and what is future work. Component names in §3.3 were
+working names: some became classes verbatim, others landed inside retained current classes per the
+crosswalk — naming drift is listed under the table.
+
+| Mechanism | Status | Where |
+| --- | --- | --- |
+| §6.4 Completion gates | **Done** | `lifecycle/CompletionGate.java`; gate discipline through actor/session/shutdown paths |
+| §9 Typed identity | **Done** | `lifecycle/ReplayIdentity.java` — all five key records plus work/record ids |
+| §10.2 One consumer, two cursors | **Done** | `TrackingKafkaConsumer.scanAhead` |
+| §10.3 Proof-bearing verdicts | **Done** | `traffic/source/ScanEvidence.java`, `AbsenceProof`, `FollowUpRequirement` |
+| §10.4 Verdicts via control loop | **Done** | scan-blocker listener in `CapturedTrafficToHttpTransactionAccumulator`; `runLivenessScanIfDue` |
+| §10.5 Expiration policy matrix | **Done** | `lifecycle/ReplayDispositionPolicy.java` |
+| §10.6 Epsilon lookahead | **Done** | `ReplayReadGate`, `ReplayProgressController`, `ReplayEngine` |
+| §10.7 Capture-side duration cap | **Not implemented** — and explicitly optional here | No proxy flag exists. The scaling sketch removes its residual correctness role entirely, so implement it (if ever) as operational policy only |
+| §10.8 Proxy open-connection declarations | **Done** | `ProxyLivenessSnapshotChunk` (proto), `ProxyLivenessRegistry` (exact, synchronized), `CaptureKafkaPublisher` (ordered submission), `PartitionRoutingPlan`, reassembly + validation in `KafkaLivenessScanner` |
+| §11 Connection actor | **Done** | `lifecycle/ConnectionActor.java`, `ActorMailbox`, `NettyEventLoopActorMailbox`; sorter and schedule map **deleted** (acceptance criterion 15) |
+| §12 Async permit pool | **Done** | `lifecycle/AsyncPermitPool.java`; `TrafficStreamLimiter` **deleted** |
+| §13 Replay transaction | **Done** | `lifecycle/ReplayTransaction.java`, `ReplayOutcomes`, `TargetExchangeState`, `ReplayTransactionRegistry` |
+| §14 Record disposition | **Done** | `lifecycle/RecordDisposition.java`, `RecordDispositionLedger.java`, `ReplayDispositionPolicy.java` |
+| §15 Resource ownership | **Done** | `lifecycle/ResourceOwnership.java` (tracker + metrics) |
+| §16.1–16.2 Rebalance / shutdown | **Done** | synthetic-close pipeline, generation fencing, drain-before-Netty-stop, shutdown-before-JVM-exit (see branch history) |
+| §16.3 Event-loop-death gates | **Done** | all four gates: `scheduleCancellable`, `ConnectionActor.post`/`abandonOnDeadMailbox`, `onEventLoopTerminated`, `closeSpans` |
+| §17 Evidence API | **Done to first-impl scope** | whole-tuple sink retained; disposition depends on explicit evidence; part-level receipts remain internal per §19.5 |
+| §19.1 Poison classifier | **Done** | `TargetResponseClassifier` + shared `ExceptionTypeAllowlist`, default empty |
+| §19.7 Routing plan + flags | **Done** | `PartitionRoutingPlan`, `--traffic-partition-shard-width`, snapshot-interval flag |
+
+Naming drift between this document and the code: `ProxyOmissionProof` → `AbsenceProof`;
+`ProxyOpenConnectionRegistry` → `ProxyLivenessRegistry`; `ProxyOpenConnectionSnapshotChunk` →
+`ProxyLivenessSnapshotChunk`; `--open-connection-snapshot-interval-seconds` →
+`--liveness-snapshot-interval-seconds`. Of the §3.3 working names, `KafkaSourceActor`,
+`SourceAssembler`, `ReplayCoordinator`, `ConnectionRuntime`, `TargetExchange`,
+`RequestPreparationService`, and `EvidenceWriter` did not become classes — their responsibilities
+live in the retained current classes (`TrackingKafkaConsumer`/`KafkaTrafficCaptureSource`,
+`CapturedTrafficToHttpTransactionAccumulator`, `RequestSenderOrchestrator` and its `ActorRuntime`,
+`NettyPacketToHttpConsumer`, the transformation pipeline, and the tuple sink), adapted to the
+contracts here.
+
+**Future work** is concentrated in one place: the scaling sketch
+([proxyHorizontalScalingAndNodeDeath.md](proxyHorizontalScalingAndNodeDeath.md)), none of which is
+implemented. Its §7 delta table is the workplan; until it lands, this document's §10.5
+retain-and-halt row is the dead-proxy behavior and §19.7's hash-based routing is the partition
+scheme.
+
+---
+
 ## 0. How to Read This Document
 
 **The short version.** Today the replayer's lifecycle decisions are spread across a graph of
