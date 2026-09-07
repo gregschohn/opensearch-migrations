@@ -133,6 +133,10 @@ new rule is introduced whose cost is stated in §6.1.
   `pause()`es every assigned partition immediately, and `poll()`s about every 100ms. It
   consumes nothing; membership is the only thing being used, and pausing means `poll()`
   issues no fetches.
+- That `poll()` loop runs on **its own thread**, never shared with capture work. Otherwise producer
+  backpressure on the capture path could stall heartbeats and get the proxy evicted, so capture
+  slowness would masquerade as proxy death — and eviction trips the §3.5 latch, which is not
+  recoverable in-process.
 - `CooperativeStickyAssignor`, or a custom cooperative assignor if we later want block
   shapes. Cooperative is required, not an optimization: the eager protocol revokes every
   partition from every member on every rebalance.
@@ -541,7 +545,7 @@ still emits empty manifests, so quiet is never ambiguous.
 | Record the partition per connection instead of hashing | replaces `PartitionRoutingPlan.partitionFor`; the registry already stores it |
 | Delete level-1 routing (nodeId hash → shard start) | `PartitionRoutingPlan.forTopic`; `selectedPartitions` becomes the assignment |
 | Drop `topicPartitionCount` from the plan digest, or drop `routingPlanId` outright | `PartitionRoutingPlan.makePlanId`. The mapping is fully determined by the stored per-connection partition, so the guard collapses to "a connection's partition stamp never changes", which `KafkaTrafficCaptureSource.java:648` already checks. |
-| Group membership client | new, in the proxy: subscribe, pause, poll, callbacks, `userData`, and `client.id = nodeId` |
+| Group membership client | new, in the proxy: subscribe, pause, poll on a dedicated thread (§3.1), callbacks, `userData`, and `client.id = nodeId` |
 | Membership query for the no-survivor case | new, in the replayer: `describeConsumerGroups`, plus `Describe` on the group in its ACL. Replaces the halt-loudly stall; see §6.2. |
 | Relieve the proxy duration cap of its correctness role | no code deleted — `replayer-expiration-hardening.md` §5.3/§5.4 and `replayerHardenedArchitectureDesign.md` §10.8 stop citing the cap as the finite window a dead-proxy proof needs. The cap stays as operational policy. **No wall-clock setting is removed, because none exists**: force-expiry was rejected (§7 there) and banned (§10.5 row, §20 non-goal). Verified by grep — nothing clock-driven is reachable from the Kafka commit path. |
 | `NoMoreWrites` record | `TrafficCaptureStream.proto`; emitted by `CaptureKafkaPublisher` |
@@ -590,17 +594,14 @@ deferred to §8.
 **`MemberDescription.clientId()` is assumed to carry the configured `client.id` stably.** Taken as an
 assumption for now rather than a blocker — see §9.2.
 
-### 9.2 Follow-ups
+### 9.2 Follow-up
 
-1. **Verify the `clientId` round-trip.** `client.id` travels in the Kafka request header and the
-   group coordinator records it in member metadata at join, so this is expected to hold, but it is an
-   implementation detail rather than a documented contract. Confirm with a test: start a consumer
-   with a known `client.id`, `describeConsumerGroups`, assert the value comes back — and check it
-   survives a rejoin. If it does not, the fallback is `group.instance.id`, which is definitely
-   operator-set but turns on static membership, where a departing member keeps its assignment for a
-   full session timeout instead of triggering a rebalance. That works directly against prompt death
-   detection, so it is a real fallback with a real cost.
-2. **The membership consumer needs its own thread.** Its `poll()` loop must not share a thread with
-   capture work, or producer backpressure on the capture path could stall heartbeats and cause
-   exactly the spurious eviction the defaults are there to avoid — capture slowness would masquerade
-   as proxy death.
+**Verify the `clientId` round-trip.** `client.id` travels in the Kafka request header and the group
+coordinator records it in member metadata at join, so this is expected to hold, but it is an
+implementation detail rather than a documented contract. Confirm with a test: start a consumer with a
+known `client.id`, `describeConsumerGroups`, assert the value comes back — and check it survives a
+rejoin. If it does not, the fallback is `group.instance.id`, which is definitely operator-set but
+turns on static membership, where a departing member keeps its assignment for a full session timeout
+instead of triggering a rebalance. That works directly against prompt death detection, so it is a
+real fallback with a real cost.
+
