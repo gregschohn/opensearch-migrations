@@ -24,7 +24,9 @@ import org.opensearch.migrations.replay.tracing.IKafkaConsumerContexts;
 import org.opensearch.migrations.replay.tracing.IReplayContexts;
 import org.opensearch.migrations.replay.tracing.KafkaConsumerContexts;
 import org.opensearch.migrations.replay.traffic.expiration.ScopedConnectionIdKey;
+import org.opensearch.migrations.replay.traffic.source.AbsenceProof;
 import org.opensearch.migrations.replay.traffic.source.FollowUpRequirement;
+import org.opensearch.migrations.replay.traffic.source.ITrafficCaptureSource;
 import org.opensearch.migrations.replay.traffic.source.ITrafficStreamWithKey;
 import org.opensearch.migrations.replay.traffic.source.SourceControlEvent;
 import org.opensearch.migrations.tracing.InstrumentationTest;
@@ -82,6 +84,20 @@ class KafkaStructuralExpirationTest extends InstrumentationTest {
         }
     }
 
+    private static final class ScanForbiddenConsumer extends MockConsumer<String, byte[]> {
+        private ScanForbiddenConsumer() {
+            super(OffsetResetStrategy.EARLIEST);
+        }
+
+        @Override
+        public synchronized Map<TopicPartition, Long> endOffsets(
+            Collection<TopicPartition> partitions,
+            Duration timeout
+        ) {
+            throw new AssertionError("Scanner-disabled replay must not request scan end offsets");
+        }
+    }
+
     @Override
     protected TestContext makeInstrumentationContext() {
         return TestContext.withAllTracking();
@@ -125,6 +141,12 @@ class KafkaStructuralExpirationTest extends InstrumentationTest {
                     .get(0)
             );
             assertEquals(FollowUpRequirement.REQUEST_COMPLETION, confirmedDead.evidence().requirement());
+            var proof = assertInstanceOf(
+                AbsenceProof.LivenessOmission.class,
+                confirmedDead.evidence().proof()
+            );
+            assertEquals(2, proof.omittingSnapshot().firstOffset());
+            assertEquals(0, proof.lastRecordOffsetForConnection());
             accumulator.accept(confirmedDead);
 
             assertEquals(RequestResponsePacketPair.ReconstructionStatus.CONFIRMED_DEAD, expiredStatus.get());
@@ -134,6 +156,163 @@ class KafkaStructuralExpirationTest extends InstrumentationTest {
                 2,
                 IKafkaConsumerContexts.LivenessScanVerdict.CONFIRMED_ABSENT
             );
+        }
+    }
+
+    @Test
+    void replayCursorManifestProofMatchesScannerDispositionWhenScanningIsDisabled() throws Exception {
+        var clock = new MutableClock(Instant.ofEpochSecond(1));
+        var mockConsumer = new ScanForbiddenConsumer();
+        try (var source = source(mockConsumer, clock, false)) {
+            scheduleFirstPoll(mockConsumer, trafficRecord(0, true));
+            var traffic = assertInstanceOf(
+                ITrafficStreamWithKey.class,
+                source.readNextTrafficStreamChunk(rootContext::createReadChunkContext)
+                    .get(5, TimeUnit.SECONDS)
+                    .get(0)
+            );
+            var expiredStatus = new AtomicReference<RequestResponsePacketPair.ReconstructionStatus>();
+            var closeStatus = new AtomicReference<RequestResponsePacketPair.ReconstructionStatus>();
+            var accumulator = new CapturedTrafficToHttpTransactionAccumulator(
+                Duration.ofMillis(1),
+                null,
+                callbacks(expiredStatus, closeStatus, new AtomicInteger()),
+                true,
+                source::updateScanBlocker
+            );
+            accumulator.accept(traffic);
+
+            addRecord(mockConsumer, snapshotRecord(1, 10));
+            addRecord(mockConsumer, snapshotRecord(2, 11));
+            mockConsumer.updateEndOffsets(Map.of(PARTITION, 3L));
+            var markers = source.readNextTrafficStreamChunk(rootContext::createReadChunkContext)
+                .get(5, TimeUnit.SECONDS);
+            assertEquals(2, markers.size());
+            markers.forEach(accumulator::accept);
+
+            var confirmedDead = assertInstanceOf(
+                SourceControlEvent.ConfirmedDead.class,
+                source.readNextTrafficStreamChunk(rootContext::createReadChunkContext)
+                    .get(5, TimeUnit.SECONDS)
+                    .get(0)
+            );
+            var proof = assertInstanceOf(
+                AbsenceProof.LivenessOmission.class,
+                confirmedDead.evidence().proof()
+            );
+            assertEquals(2, proof.omittingSnapshot().firstOffset());
+            assertEquals(0, proof.lastRecordOffsetForConnection());
+            accumulator.accept(confirmedDead);
+
+            assertEquals(RequestResponsePacketPair.ReconstructionStatus.CONFIRMED_DEAD, expiredStatus.get());
+            assertEquals(RequestResponsePacketPair.ReconstructionStatus.CONFIRMED_DEAD, closeStatus.get());
+            assertEquals(1, accumulator.numberOfConnectionsExpired());
+            assertNoLivenessScanCycle();
+        }
+    }
+
+    @Test
+    void replayCursorEvidenceCanBreakFullOwnershipBackpressureWhenScanningIsDisabled() throws Exception {
+        var clock = new MutableClock(Instant.ofEpochSecond(1));
+        var mockConsumer = new ScanForbiddenConsumer();
+        try (var source = source(mockConsumer, clock, false, 3)) {
+            scheduleFirstPoll(mockConsumer, trafficRecord(0, true));
+            var traffic = assertInstanceOf(
+                ITrafficStreamWithKey.class,
+                source.readNextTrafficStreamChunk(rootContext::createReadChunkContext)
+                    .get(5, TimeUnit.SECONDS)
+                    .get(0)
+            );
+            source.updateScanBlocker(traffic.getKey(), FollowUpRequirement.REQUEST_COMPLETION);
+
+            addRecord(mockConsumer, snapshotRecord(1, 10));
+            addRecord(mockConsumer, snapshotRecord(2, 11));
+            mockConsumer.updateEndOffsets(Map.of(PARTITION, 3L));
+            var markers = source.readNextTrafficStreamChunk(rootContext::createReadChunkContext)
+                .get(5, TimeUnit.SECONDS);
+
+            assertEquals(2, markers.size());
+            assertFalse(source.isReadCapacityAvailable());
+            assertTrue(source.hasPendingSourceControl());
+            for (var marker : markers) {
+                var keyedMarker = assertInstanceOf(ITrafficStreamWithKey.class, marker);
+                assertEquals(
+                    ITrafficCaptureSource.CommitResult.BLOCKED_BY_OTHER_COMMITS,
+                    source.commitTrafficStream(keyedMarker.getKey())
+                );
+            }
+
+            var confirmedDead = assertInstanceOf(
+                SourceControlEvent.ConfirmedDead.class,
+                source.readNextTrafficStreamChunk(rootContext::createReadChunkContext)
+                    .get(5, TimeUnit.SECONDS)
+                    .get(0)
+            );
+            assertInstanceOf(AbsenceProof.LivenessOmission.class, confirmedDead.evidence().proof());
+            assertFalse(source.hasPendingSourceControl());
+
+            assertEquals(
+                ITrafficCaptureSource.CommitResult.AFTER_NEXT_READ,
+                source.commitTrafficStream(traffic.getKey())
+            );
+            touch(source);
+            assertTrue(source.isReadCapacityAvailable());
+            assertNoLivenessScanCycle();
+        }
+    }
+
+    @Test
+    void replayCursorDeclarationProofMatchesScannerDispositionWhenScanningIsDisabled() throws Exception {
+        var clock = new MutableClock(Instant.ofEpochSecond(1));
+        var mockConsumer = new ScanForbiddenConsumer();
+        try (var source = source(mockConsumer, clock, false)) {
+            scheduleFirstPoll(mockConsumer, trafficRecord(0, true));
+            var traffic = assertInstanceOf(
+                ITrafficStreamWithKey.class,
+                source.readNextTrafficStreamChunk(rootContext::createReadChunkContext)
+                    .get(5, TimeUnit.SECONDS)
+                    .get(0)
+            );
+            var expiredStatus = new AtomicReference<RequestResponsePacketPair.ReconstructionStatus>();
+            var closeStatus = new AtomicReference<RequestResponsePacketPair.ReconstructionStatus>();
+            var accumulator = new CapturedTrafficToHttpTransactionAccumulator(
+                Duration.ofMillis(1),
+                null,
+                callbacks(expiredStatus, closeStatus, new AtomicInteger()),
+                true,
+                source::updateScanBlocker
+            );
+            accumulator.accept(traffic);
+
+            addRecord(mockConsumer, noMoreWritesRecord(1, "survivor"));
+            mockConsumer.updateEndOffsets(Map.of(PARTITION, 2L));
+            var marker = assertInstanceOf(
+                KafkaNoMoreWritesRecord.class,
+                source.readNextTrafficStreamChunk(rootContext::createReadChunkContext)
+                    .get(5, TimeUnit.SECONDS)
+                    .get(0)
+            );
+            accumulator.accept(marker);
+
+            var confirmedDead = assertInstanceOf(
+                SourceControlEvent.ConfirmedDead.class,
+                source.readNextTrafficStreamChunk(rootContext::createReadChunkContext)
+                    .get(5, TimeUnit.SECONDS)
+                    .get(0)
+            );
+            var proof = assertInstanceOf(
+                AbsenceProof.NoMoreWrites.class,
+                confirmedDead.evidence().proof()
+            );
+            assertTrue(proof.peerDeclared());
+            assertEquals(1, proof.declarationOffset());
+            assertEquals(0, proof.lastRecordOffsetForConnection());
+            accumulator.accept(confirmedDead);
+
+            assertEquals(RequestResponsePacketPair.ReconstructionStatus.CONFIRMED_DEAD, expiredStatus.get());
+            assertEquals(RequestResponsePacketPair.ReconstructionStatus.CONFIRMED_DEAD, closeStatus.get());
+            assertEquals(1, accumulator.numberOfConnectionsExpired());
+            assertNoLivenessScanCycle();
         }
     }
 
@@ -385,6 +564,28 @@ class KafkaStructuralExpirationTest extends InstrumentationTest {
     }
 
     private KafkaTrafficCaptureSource source(MockConsumer<String, byte[]> mockConsumer, Clock clock) {
+        return source(mockConsumer, clock, true);
+    }
+
+    private KafkaTrafficCaptureSource source(
+        MockConsumer<String, byte[]> mockConsumer,
+        Clock clock,
+        boolean livenessScanAheadEnabled
+    ) {
+        return source(
+            mockConsumer,
+            clock,
+            livenessScanAheadEnabled,
+            TrackingKafkaConsumer.UNBOUNDED_OWNED_RECORDS
+        );
+    }
+
+    private KafkaTrafficCaptureSource source(
+        MockConsumer<String, byte[]> mockConsumer,
+        Clock clock,
+        boolean livenessScanAheadEnabled,
+        int maximumOwnedRecords
+    ) {
         mockConsumer.updateBeginningOffsets(Map.of(PARTITION, 0L));
         return new KafkaTrafficCaptureSource(
             rootContext,
@@ -392,7 +593,20 @@ class KafkaStructuralExpirationTest extends InstrumentationTest {
             TOPIC,
             Duration.ofHours(1),
             clock,
-            new KafkaBehavioralPolicy()
+            new KafkaBehavioralPolicy(),
+            maximumOwnedRecords,
+            TrackingKafkaConsumer.UNBOUNDED_OWNED_BYTES,
+            livenessScanAheadEnabled
+        );
+    }
+
+    private void assertNoLivenessScanCycle() {
+        assertFalse(
+            rootContext.inMemoryInstrumentationBundle.getFinishedMetrics()
+                .stream()
+                .anyMatch(metric -> metric.getName().equals(
+                    IKafkaConsumerContexts.MetricNames.LIVENESS_SCAN_COUNT
+                ))
         );
     }
 
@@ -406,7 +620,7 @@ class KafkaStructuralExpirationTest extends InstrumentationTest {
             .findFirst()
             .orElseThrow();
         assertEquals(
-            2,
+            1,
             scanCount.getLongSumData().getPoints().stream().findFirst().orElseThrow().getValue()
         );
         var distance = metrics.stream()
@@ -414,13 +628,13 @@ class KafkaStructuralExpirationTest extends InstrumentationTest {
             .findFirst()
             .orElseThrow();
         var distancePoint = distance.getHistogramData().getPoints().stream().findFirst().orElseThrow();
-        assertEquals(2, distancePoint.getCount());
+        assertEquals(1, distancePoint.getCount());
         assertEquals(recordsScanned, distancePoint.getSum());
         var latency = metrics.stream()
             .filter(metric -> metric.getName().equals(IKafkaConsumerContexts.MetricNames.LIVENESS_SCAN_LATENCY))
             .findFirst()
             .orElseThrow();
-        assertEquals(2, latency.getHistogramData().getPoints().stream().findFirst().orElseThrow().getCount());
+        assertEquals(1, latency.getHistogramData().getPoints().stream().findFirst().orElseThrow().getCount());
         var discardedBytes = metrics.stream()
             .filter(metric -> metric.getName().equals(
                 IKafkaConsumerContexts.MetricNames.LIVENESS_SCAN_BYTES_DISCARDED
@@ -432,8 +646,7 @@ class KafkaStructuralExpirationTest extends InstrumentationTest {
             .filter(metric -> metric.getName().equals(IKafkaConsumerContexts.MetricNames.LIVENESS_SCAN_VERDICT_COUNT))
             .findFirst()
             .orElseThrow();
-        assertEquals(2, verdictMetric.getLongSumData().getPoints().size());
-        assertVerdictCount(verdictMetric, IKafkaConsumerContexts.LivenessScanVerdict.INCONCLUSIVE, 1);
+        assertEquals(1, verdictMetric.getLongSumData().getPoints().size());
         assertVerdictCount(verdictMetric, terminalVerdict, 1);
     }
 
