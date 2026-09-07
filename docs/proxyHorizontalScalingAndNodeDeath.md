@@ -204,9 +204,25 @@ unambiguous forever without a counter.
 Every quantum, for each partition in `assignedPartitions ∪ partitionsWithLiveConnections`,
 emit a manifest listing **all** of that node's open connections on that partition — not just the idle
 ones. This inherits `replayerHardenedArchitectureDesign.md` §10.8's reasoning unchanged: "it was
-active before the first snapshot" does not imply it will emit a record after that snapshot, so an
-intentional omission combined with one concurrent-map miss can falsely prove death. It also means the
-fan-out in §8's transient-spike note is over the full open set, not a filtered one.
+active before the first snapshot" does not imply it will emit a record after that snapshot.
+
+The reason that matters is that the two-consecutive-omission rule is a **budget of exactly one**
+accidental omission, and idle-only filtering spends it in advance. Under weakly-consistent iteration
+an entry present for a whole traversal is always visited, and only an entry added mid-traversal can
+be skipped — so a connection open across both traversals cannot be missed twice, and one accidental
+miss yields omit-then-present, which proves nothing. But if an *active* connection is intentionally
+omitted from the first manifest, a single accidental miss on the second completes two consecutive
+omissions and falsely proves a live connection dead.
+
+Today that accidental miss cannot occur: `ProxyLivenessRegistry` is a plain `HashMap` behind
+`synchronized` methods, and §10.8 requires it stay exact rather than assigning proof semantics to a
+`ConcurrentHashMap` traversal. (`replayer-expiration-hardening.md` §5.4.1 still describes the
+weakly-consistent case; it predates the exact registry.) So this is defense in depth — the point is
+that correctness must not *depend* on the registry being exact, because declaring all open
+connections keeps the proof sound even if that property is ever lost.
+
+Listing the full open set also means the fan-out in §8's transient-spike note is over all open
+connections, not a filtered subset.
 
 - Assigned with zero connections → emit an **empty** manifest. That is a positive statement
   (§5.4.2), and it is what distinguishes an idle-but-alive node from a dead one.
