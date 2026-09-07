@@ -34,7 +34,9 @@ idle-only snapshot and finite-window-exhaustion proposals.
 — horizontal proxy scaling via consumer-group membership, and per-node death declarations that
 replace the residual wall-clock backstop with an observed event. It revisits how a proxy chooses its
 partitions (§19.7) and adds two declaration record types alongside the snapshots in §10.8. The
-absence-proof rule itself is unchanged.
+expiry policy and the omission predicate are unchanged; what changes is the admissible-evidence set,
+plus one new rule that discards a declared-dead node's later records. See its §2.1 — "the absence
+proof is unchanged" is true of the predicate and misleading about the system.
 
 ---
 
@@ -1032,9 +1034,12 @@ leaves a wall-clock backstop as its residual.
 [`proxyHorizontalScalingAndNodeDeath.md`](proxyHorizontalScalingAndNodeDeath.md) proposes closing that
 by adding two positive declarations — a node releasing a partition, and a surviving fleet member
 reporting a departure it observed — so that a dead node becomes an observed event rather than an
-inferred silence. That sketch also lets two nodes emit snapshots to one partition concurrently while a
-reassigned node drains its existing connections, which the per-`(nodeId, partition)` keying below
-already accommodates but which would require dropping the reader's chunk-contiguity requirement.
+inferred silence. Those declarations are an additional evidence type, not a change to the omission
+predicate below, and they arrive with a new rule that discards a declared-dead node's later records;
+that rule is what bounds the zombie hazard and also what makes the traffic it drops a completeness
+gap. That sketch also lets two nodes emit snapshots to one partition concurrently while a reassigned
+node drains its existing connections, which the per-`(nodeId, partition)` keying below already
+accommodates but which would require dropping the reader's chunk-contiguity requirement.
 
 **What is emitted.** Every `snapshotInterval` (default 30s), each proxy declares **all** open
 connections whose traffic routes to each partition in its shard set. Active connections are not

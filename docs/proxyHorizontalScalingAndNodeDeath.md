@@ -7,9 +7,10 @@ rejection, and it closes the wall-clock backstop that both that document's §5.4
 `replayerHardenedArchitectureDesign.md` §10.8 leave as their residual. It revisits
 `replayerHardenedArchitectureDesign.md` §19.7 (how a proxy chooses its partitions).
 
-It does **not** change the absence-proof rule, which remains how the open connections of a
-*live* node expire. It also does not change §10.8's decision to declare all open connections
-rather than idle-only.
+It does not change the expiry *policy*, the omission *predicate*, or §10.8's decision to declare
+all open connections rather than idle-only. What it changes is the set of admissible signals.
+§2.1 states that split precisely, and reviewers should start there — "the absence proof is
+unchanged" is true of the predicate and misleading about the system.
 
 ## 1. What problem this solves
 
@@ -47,6 +48,38 @@ liveness conclusion is already keyed per `(nodeId, partition)`.
 A consequence worth stating up front: **the assignor is not safety-critical.** A bug that
 assigns one partition to two nodes costs evenness, not correctness. A partition assigned to
 nobody is simply unused.
+
+### 2.1 What changes and what doesn't
+
+"The absence proof is unchanged" is true of the predicate and misleading about the system, so
+the layers are separated here.
+
+| Layer | Status |
+|---|---|
+| **Expiry policy** — what a confirmation authorizes (commit vs. retain, per the disposition matrix) | **Unchanged.** A declaration-based confirmation produces the same `ConfirmedAbsent` verdict and takes the same downstream path. |
+| **Omission predicate** — two consecutive omitting manifests from one node on one partition, with the connection's last record before the first span | **Unchanged**, and still the mechanism for expiring a *live* node's connections. |
+| **Admissible signals** | **Changed.** One is added, one is nearly removed. |
+| **Discard rule** | **New.** Not an absence proof at all. |
+
+The signal change is not that omission got stronger. Omission is untouched. Rather:
+
+- A **positive declaration** (`Release` / `NodeDeath`) is added as an independent evidence type.
+  It is strictly stronger than omission: one record instead of two manifests, and no reasoning
+  about flush latency or weakly-consistent map iteration, because it is an assertion by or about
+  the writer rather than an inference from what is missing.
+- The **wall-clock backstop** stops being the general answer for a node that went quiet and
+  narrows to the single case in §6.2 — the last proxy crashing with no survivor to observe it.
+  It does not disappear.
+
+The **discard rule** is genuinely new policy and deserves its own line rather than riding along
+under "absence proofs are unchanged": records arriving from a declared-dead node after its
+declaration offset are treated as inert. That is what makes a zombie's late writes harmless to
+the commit decision, and it is also the direct cause of the completeness gap in §6.1 — the
+traffic reached the source and is then deliberately dropped. Nothing in the absence-proof
+framework implies it.
+
+So: the policy is constant, the predicate is constant, the evidence set is solidified, and one
+new rule is introduced whose cost is stated in §6.1.
 
 ## 3. Protocol
 
