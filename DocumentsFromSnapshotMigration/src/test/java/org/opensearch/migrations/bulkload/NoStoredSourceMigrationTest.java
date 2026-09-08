@@ -2315,6 +2315,80 @@ public class NoStoredSourceMigrationTest extends SourceTestBase {
     }
 
     /**
+     * ES-7.10 only. If all sources feeding a fan-in target have indexing and doc values disabled,
+     * preserve the target directly instead of assigning its value to an unknown contributor.
+     */
+    @ParameterizedTest(name = "copyToFanInTargetOnlyRecovery: {0} -> {1}")
+    @MethodSource("es710OnlyPair")
+    public void testCopyToFanInPreservesTargetWhenSourcesHaveNoLuceneFootprint(
+        ContainerVersion sourceVersion, ContainerVersion targetVersion
+    ) throws Exception {
+        try (
+            var sourceCluster = new SearchClusterContainer(sourceVersion);
+            var targetCluster = new SearchClusterContainer(targetVersion)
+        ) {
+            sourceCluster.start();
+            targetCluster.start();
+
+            var sourceOps = new ClusterOperations(sourceCluster);
+            var targetOps = new ClusterOperations(targetCluster);
+
+            String indexName = "copy_to_fanin_target_only_test";
+            String propertiesJson =
+                "\"properties\":{"
+                + "\"alpha\":{\"type\":\"keyword\",\"index\":false,\"doc_values\":false,"
+                    + "\"copy_to\":[\"shared\"]},"
+                + "\"beta\":{\"type\":\"keyword\",\"index\":false,\"doc_values\":false,"
+                    + "\"copy_to\":[\"shared\"]},"
+                + "\"shared\":{\"type\":\"keyword\"}"
+                + "}";
+            String indexBody = "{\"settings\":{\"number_of_shards\":1,\"number_of_replicas\":0},"
+                + "\"mappings\":{\"_source\":{\"enabled\":false}," + propertiesJson + "}}";
+
+            sourceOps.createIndex(indexName, indexBody);
+            sourceOps.createDocument(indexName, "1", "{\"alpha\":\"red\"}", null, null);
+            sourceOps.post("/_refresh", null);
+
+            String sourceSearchResponse = sourceOps.post("/" + indexName + "/_search",
+                "{\"query\":{\"term\":{\"shared\":\"red\"}}}").getValue();
+            JsonNode sourceTotal = MAPPER.readTree(sourceSearchResponse).path("hits").path("total");
+            assertEquals(1, sourceTotal.path("value").asInt(),
+                "Fixture must index alpha's copied value under shared. Response: " + sourceSearchResponse);
+
+            var snapshotCtx = SnapshotTestContext.factory().noOtelTracking();
+            createSnapshot(sourceCluster, "snap", snapshotCtx);
+            sourceCluster.copySnapshotData(localDirectory.toString());
+
+            String targetIndexBody = "{\"settings\":{\"number_of_shards\":1,\"number_of_replicas\":0},"
+                + "\"mappings\":{" + propertiesJson + "}}";
+            targetOps.createIndex(indexName, targetIndexBody);
+
+            var fileFinder = SnapshotReaderRegistry.getSnapshotFileFinder(
+                sourceCluster.getContainerVersion().getVersion(), true);
+            var sourceRepo = new FileSystemRepo(localDirectory.toPath(), fileFinder);
+            var docCtx = DocumentMigrationTestContext.factory().noOtelTracking();
+
+            waitForRfsCompletion(() -> SourcelessMigrationTest.migrateDocumentsSequentiallyWithSourceless(
+                sourceRepo, "snap", List.of(indexName), targetCluster,
+                new AtomicInteger(), new Random(1), docCtx,
+                sourceCluster.getContainerVersion().getVersion(),
+                targetCluster.getContainerVersion().getVersion()
+            ));
+
+            targetOps.post("/_refresh", null);
+            String targetSearchResponse = targetOps.post("/" + indexName + "/_search",
+                "{\"query\":{\"term\":{\"shared\":\"red\"}}}").getValue();
+            JsonNode hits = MAPPER.readTree(targetSearchResponse).path("hits").path("hits");
+            assertEquals(1, hits.size(),
+                "Migrated document must remain searchable as shared=red. Response: " + targetSearchResponse);
+
+            JsonNode source = hits.get(0).path("_source");
+            assertEquals(MAPPER.readTree("{\"shared\":\"red\"}"), source,
+                "Synthetic source should contain only the recoverable target. _source=" + source);
+        }
+    }
+
+    /**
      * ES-7.10 only. STRICT per-element reconstruction guard for non-nested
      * object arrays whose text+text subfields are NOT in _source and whose
      * doc_values are disabled. The reconstructor must rely on the term
