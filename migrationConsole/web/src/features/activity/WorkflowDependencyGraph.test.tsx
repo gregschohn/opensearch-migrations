@@ -188,7 +188,6 @@ test("shows blocking approval actions without output links", async () => {
         nodeLabel: "capture",
         outputTargetId: "output:migration:metadataEvaluate",
         resetTargetId: null,
-        resourcePresent: true,
         targetId: "approval:metadataEvaluate",
       }]}
       onReviewApproval={onReviewApproval}

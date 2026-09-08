@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   ArrowLeft,
@@ -695,10 +695,10 @@ function Comparisons({ node }: Readonly<{ node: ManageNode }>) {
         <table className="comparison-table">
           <thead>
             <tr>
-              <th>Field</th>
-              <th>Deployed</th>
-              <th>Submitted</th>
-              <th>Pending</th>
+              <th scope="col">Field</th>
+              <th scope="col">Deployed</th>
+              <th scope="col">Submitted</th>
+              <th scope="col">Pending</th>
             </tr>
           </thead>
           <tbody>
@@ -843,13 +843,10 @@ export function ResourceWorkspace({
 }>) {
   const [outputTarget, setOutputTarget] = useState<string | null>(null);
   const [logTarget, setLogTarget] = useState<string | null>(null);
+  // The workspace is keyed on node.id by its parent, so panel targets
+  // reset by remount instead of a one-frame-late effect.
   const [pendingAction, setPendingAction] =
     useState<PendingAction | null>(null);
-  useEffect(() => {
-    setOutputTarget(null);
-    setLogTarget(null);
-    setPendingAction(null);
-  }, [node.id]);
   // Mirrors the server's orphan derivation from configPresence rather
   // than matching the "Orphaned; cleanup required" presentation string.
   const presence = node.configPresence ?? {};

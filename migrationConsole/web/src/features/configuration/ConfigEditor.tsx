@@ -20,7 +20,6 @@ import {
   Pencil,
   Plus,
   Save,
-  Send,
   Trash2,
   Undo2,
   X,
@@ -65,6 +64,7 @@ interface ConfigEditorProps {
   navigationBackLabel?: string | null;
   onClose: () => void;
   onExitReady: (handler: (() => void) | null) => void;
+  onSubmitReady: (handler: (() => void) | null) => void;
   onNavigateBack?: () => void;
   onResourceAddStarted: (addition: PendingResourceAddition) => void;
   onResourceAddSettled: (
@@ -83,6 +83,7 @@ interface ConfigEditorProps {
   resourceLabel: string;
   resourceType: string;
   resourceSyncing?: boolean;
+  stateSummary?: string | null;
 }
 
 
@@ -1144,8 +1145,11 @@ function ConfigPropertyRow({
     renamePattern,
     renameMessage,
   );
-  const canUnset = (
-    node.presence === "optional"
+  // Only authored values offer the clear action; its presence documents
+  // that the field is holding an explicit value over a default.
+  const canClear = (
+    node.valueAuthored === true
+    && node.presence === "optional"
     && node.required !== true
     && !node.removable
     && node.valueKind !== "command"
@@ -1188,13 +1192,6 @@ function ConfigPropertyRow({
     ?? node.path.at(-1)
     ?? "definition";
   const fieldDescription = node.description ?? selectedDescription;
-  const generatedTitle = [
-    "Generated from defaults or related configuration, not explicitly set here.",
-    effectiveDefaultLabel
-      ? `Effective default: ${effectiveDefaultLabel}.`
-      : "",
-    effectiveDefaultDescription,
-  ].filter(Boolean).join(" ");
   const closeExternalEditor = () => {
     setExternalEditorOpen(false);
     globalThis.setTimeout(() => externalEditorTriggerRef.current?.focus(), 0);
@@ -1309,15 +1306,9 @@ function ConfigPropertyRow({
                       {node.draftChange.kind === "added" ? "Added" : "Changed"}
                     </span>
                   ) : null}
-                  {node.valueAuthored ? (
-                    <span title="Explicitly set in the pending configuration.">
-                      Authored
-                    </span>
-                  ) : null}
-                  {node.valueDefaulted ? (
-                    <span title={generatedTitle}>Generated</span>
-                  ) : null}
-                  {node.presence ? <span>{node.presence}</span> : null}
+                  {node.presence === "required"
+                    ? <span>{node.presence}</span>
+                    : null}
                   {node.expert ? <span>Expert</span> : null}
                 </span>
               </span>
@@ -1404,9 +1395,11 @@ function ConfigPropertyRow({
         </td>
         <td className="property-state-cell">
           <div className="property-state-content">
-            <span className={`field-status status-${node.status ?? "ok"}`}>
-              {node.status ?? "ok"}
-            </span>
+            {node.status && node.status !== "ok" ? (
+              <span className={`field-status status-${node.status}`}>
+                {node.status}
+              </span>
+            ) : null}
             <div className="property-actions">
             {topLevelResourceCommand ? (
               <button
@@ -1452,15 +1445,15 @@ function ConfigPropertyRow({
                 <Pencil aria-hidden="true" />
               </button>
             ) : null}
-            {canUnset ? (
+            {canClear ? (
               <button
-                aria-label={`Revert ${name} to default`}
+                aria-label={`Clear ${name} and use the default`}
                 disabled={busy}
                 onClick={() => void commit({ op: "unset", path: node.path })}
-                title="Revert to default"
+                title="Clear this value and use the default"
                 type="button"
               >
-                <Undo2 aria-hidden="true" />
+                <X aria-hidden="true" />
               </button>
             ) : null}
             {node.removable ? (
@@ -1578,6 +1571,7 @@ export function ConfigEditor({
   navigationBackLabel,
   onClose,
   onExitReady,
+  onSubmitReady,
   onNavigateBack,
   onResourceAddStarted,
   onResourceAddSettled,
@@ -1590,6 +1584,7 @@ export function ConfigEditor({
   resourceLabel,
   resourceType,
   resourceSyncing = false,
+  stateSummary = null,
 }: Readonly<ConfigEditorProps>) {
   const queryClient = useQueryClient();
   const draftQuery = useQuery({
@@ -1644,6 +1639,9 @@ export function ConfigEditor({
   const configTablePanelRef = useRef<HTMLElement>(null);
   const pinUpdateFrame = useRef<number | null>(null);
   const rowElements = useRef(new Map<string, HTMLTableRowElement>());
+  const flipTops = useRef(new Map<string, number>());
+  const flipScope = useRef<string | null>(null);
+  const activeFlipCount = useRef(0);
   const knownRowIds = useRef<Set<string> | null>(null);
   const knownExpansionIds = useRef<Set<string> | null>(null);
   const expansionScope = useRef<string | null>(null);
@@ -1856,6 +1854,87 @@ export function ConfigEditor({
     () => treeRows(scopedNodes, expanded, renderOptional, renderExpert),
     [expanded, renderExpert, renderOptional, scopedNodes],
   );
+  const measureRowTops = useCallback(() => {
+    const tops = new Map<string, number>();
+    // offsetTop is layout truth: unaffected by panel scroll AND by any
+    // in-flight transform animations, so a re-run during a transition
+    // (e.g. the inserted-row tracking commit) measures identical values
+    // and stacks no second animation on the moving rows.
+    rowElements.current.forEach((element, nodeId) => {
+      tops.set(nodeId, element.offsetTop);
+    });
+    return tops;
+  }, []);
+  useLayoutEffect(() => {
+    const previousTops = flipTops.current;
+    const scopeChanged = flipScope.current !== expansionScopeId;
+    flipScope.current = expansionScopeId;
+    const nextTops = measureRowTops();
+    flipTops.current = nextTops;
+    // Trigger-only dependencies: these change row geometry without
+    // being read here, and each needs a measurement pass.
+    void renderOptional;
+    void renderExpert;
+    void showDocumentation;
+    void removingIds;
+    void collapsingIds;
+    void insertedIds;
+    if (scopeChanged) return;
+    if (globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
+      return;
+    }
+    nextTops.forEach((top, nodeId) => {
+      const previous = previousTops.get(nodeId);
+      const element = rowElements.current.get(nodeId);
+      if (
+        previous === undefined
+        || !element
+        || typeof element.animate !== "function"
+      ) {
+        return;
+      }
+      const delta = previous - top;
+      if (Math.abs(delta) < 0.5) return;
+      activeFlipCount.current += 1;
+      const animation = element.animate([
+        { transform: `translateY(${delta}px)` },
+        { transform: "translateY(0)" },
+      ], {
+        duration: 420,
+        easing: "cubic-bezier(0.2, 0.75, 0.25, 1)",
+      });
+      const release = () => {
+        activeFlipCount.current = Math.max(0, activeFlipCount.current - 1);
+      };
+      animation.onfinish = release;
+      animation.oncancel = release;
+    });
+  }, [
+    collapsingIds,
+    expansionScopeId,
+    insertedIds,
+    measureRowTops,
+    removingIds,
+    renderExpert,
+    renderOptional,
+    rows,
+    showDocumentation,
+  ]);
+  useEffect(() => {
+    const panel = configTablePanelRef.current;
+    if (!panel || typeof ResizeObserver === "undefined") return;
+    // Row detail panes open and close from row-local state; refresh the
+    // move baselines whenever content resizes so the next animated
+    // change starts from what is actually on screen.
+    const observer = new ResizeObserver(() => {
+      if (activeFlipCount.current > 0) return;
+      flipTops.current = measureRowTops();
+    });
+    observer.observe(panel);
+    const body = panel.querySelector("tbody");
+    if (body) observer.observe(body);
+    return () => observer.disconnect();
+  }, [measureRowTops]);
   const retainScrollPosition = useCallback(() => {
     const panel = configTablePanelRef.current;
     if (!panel) return;
@@ -2490,6 +2569,13 @@ export function ConfigEditor({
   });
 
   useEffect(() => {
+    onSubmitReady(() => {
+      void openSubmitReview();
+    });
+    return () => onSubmitReady(null);
+  });
+
+  useEffect(() => {
     onResourceAddsReady({
       options: resourceAddOptions,
       renames: resourceRenames,
@@ -2552,9 +2638,11 @@ export function ConfigEditor({
           <span>Editing configuration</span>
           <h2>Edit {resourceLabel}</h2>
           <span>
-            {removalState ?? (draft.dirty || hasLocalEdits
-              ? "Unsaved changes"
-              : "Saved configuration")}
+            {removalState
+              ?? stateSummary
+              ?? (draft.dirty || hasLocalEdits
+                ? "Unsaved changes"
+                : "Saved configuration")}
           </span>
         </div>
         {!removalState && draft.rawYaml === undefined
@@ -2628,25 +2716,6 @@ export function ConfigEditor({
           >
             <Save />
             <span>Save</span>
-          </button>
-          <button
-            aria-label="Save and submit"
-            className="submit-button"
-            disabled={
-              actionPending
-              || (busy && !hasLocalEdits)
-              || draft.editState.validation.valid === false
-            }
-            onClick={() => void openSubmitReview()}
-            title={
-              draft.editState.validation.valid === false
-                ? "Resolve validation errors before submitting"
-                : "Save configuration, submit the workflow, and leave editing"
-            }
-            type="button"
-          >
-            <Send />
-            <span>Save and submit</span>
           </button>
         </div>
       </header>
@@ -2818,9 +2887,11 @@ export function ConfigEditor({
                         : "settings"
                     }
                   </span>
-                  <span className={`field-status status-${node.status ?? "ok"}`}>
-                    {node.status ?? "ok"}
-                  </span>
+                  {node.status && node.status !== "ok" ? (
+                    <span className={`field-status status-${node.status}`}>
+                      {node.status}
+                    </span>
+                  ) : null}
                 </button>
                 );
               })}

@@ -2321,8 +2321,9 @@ test("opens a generic configuration editor and explains generated values", async
   expect(within(credentials).getByText(
     "Kubernetes Secret containing the HTTP credentials.",
   )).toBeInTheDocument();
-  expect(within(credentials).getByText("Authored"))
-    .toBe(credentialsLabel?.querySelector(".property-flags span"));
+  // Authored/Generated/optional badges were dropped as clutter; the
+  // clear action and default hints carry that information now.
+  expect(within(credentials).queryByText("Authored")).toBeNull();
   expect(configTree.querySelector(".status-dot")).toBeNull();
   const timeout = within(configTree).getByRole("row", { name: /Timeout/ });
   await userEvent.click(timeout);
@@ -2336,17 +2337,19 @@ test("opens a generic configuration editor and explains generated values", async
   await userEvent.tab();
   expect(timeoutInput).toHaveAttribute("placeholder", "30");
 
-  expect(within(timeout).getByText("Generated")).toBeInTheDocument();
+  expect(within(timeout).queryByText("Generated")).toBeNull();
   expect(screen.getByText("runtime timeout")).toBeInTheDocument();
   expect(screen.getByText(
     "Generated from the standard runtime profile.",
   )).toBeInTheDocument();
   const state = timeout.querySelector(".property-state-cell");
   expect(state?.querySelector(".property-state-content")).toBeInTheDocument();
-  expect(within(state as HTMLElement).getByText("ok")).toBeInTheDocument();
-  expect(within(state as HTMLElement).getByRole("button", {
+  // Healthy fields render no status chip and no per-field revert; both
+  // added clutter to every row.
+  expect(within(state as HTMLElement).queryByText("ok")).toBeNull();
+  expect(within(state as HTMLElement).queryByRole("button", {
     name: "Revert Timeout to default",
-  })).toBeInTheDocument();
+  })).toBeNull();
 
   await userEvent.click(screen.getByRole("checkbox", {
     name: "Show field documentation",
@@ -2543,7 +2546,7 @@ test("keeps resource context while scoping edit mode to the selected resource", 
   expect(await screen.findByRole("heading", { name: "Edit replay" }))
     .toBeInTheDocument();
   expect(await within(config).findByRole("row", {
-    name: /^ConfigMap Authored/,
+    name: /^ConfigMap /,
   })).toBeInTheDocument();
   expect(within(config).queryByRole("row", {
     name: /Endpoint/,
@@ -3130,7 +3133,8 @@ test("highlights unsaved resources and fields with previous values", async () =>
   });
   expect(sourceSection).toHaveClass("draft-change-ancestor");
   expect(sourceRow).toHaveClass("draft-change-item");
-  expect(within(sourceRow).getByText("1 unsaved change")).toBeInTheDocument();
+  // The count is announced and shown as shading, not repeated as text.
+  expect(within(sourceRow).queryByText("1 unsaved change")).toBeNull();
 
   const config = screen.getByRole("table", { name: "Configuration fields" });
   const endpointRow = within(config).getByRole("row", { name: /^Endpoint/ });
@@ -4549,15 +4553,15 @@ test("shows ConfigMap keys and selects the map plus key together", async () => {
   }));
 
   const selector = await screen.findByRole("dialog", {
-    name: "Select Transform ConfigMap",
+    name: "Transform ConfigMap",
   });
-  expect(await within(selector).findByText("main.js")).toBeInTheDocument();
-  expect(within(selector).getByText("settings.json")).toBeInTheDocument();
-  await userEvent.click(
-    within(selector).getByRole("button", {
-      name: "Use transform-code and key main.js",
-    }),
-  );
+  const useMainJs = await within(selector).findByRole("button", {
+    name: "Use transform-code and key main.js",
+  });
+  expect(within(selector).getByRole("button", {
+    name: "Use transform-code and key settings.json",
+  })).toBeInTheDocument();
+  await userEvent.click(useMainJs);
 
   expect(selection).toEqual({
     expectedDraftRevision: "config-draft-1",
@@ -4570,7 +4574,7 @@ test("shows ConfigMap keys and selects the map plus key together", async () => {
     manual: false,
   });
   expect(screen.queryByRole("dialog", {
-    name: "Select Transform ConfigMap",
+    name: "Transform ConfigMap",
   })).toBeNull();
 });
 
@@ -4678,7 +4682,7 @@ test("selects an HTTP Basic Auth Secret in the shared resource dialog", async ()
   }));
 
   const selector = await screen.findByRole("dialog", {
-    name: "Select HTTP Basic Auth Secret",
+    name: "HTTP Basic Auth Secret",
   });
   expect(await within(selector).findByText("source-creds"))
     .toBeInTheDocument();
@@ -4693,17 +4697,17 @@ test("selects an HTTP Basic Auth Secret in the shared resource dialog", async ()
   expect(within(allResources).getByText("unrelated-creds"))
     .toBeInTheDocument();
   await userEvent.click(within(allResources).getByRole("button", {
-    name: "Inspect unrelated-creds",
+    name: "Details for unrelated-creds",
   }));
   expect(await within(allResources).findByText(
     "Missing username and password keys.",
   )).toBeInTheDocument();
   await userEvent.click(within(allResources).getByRole("button", {
-    name: "Back to resources",
+    name: "Close all Kubernetes resources",
   }));
   expect(within(allResources).getByText("source-creds")).toBeInTheDocument();
   await userEvent.click(within(allResources).getByRole("button", {
-    name: "Inspect source-creds",
+    name: "Details for source-creds",
   }));
   await userEvent.click(await within(allResources).findByRole("button", {
     name: "Use resource",
@@ -4720,7 +4724,7 @@ test("selects an HTTP Basic Auth Secret in the shared resource dialog", async ()
     manual: false,
   });
   expect(screen.queryByRole("dialog", {
-    name: "Select HTTP Basic Auth Secret",
+    name: "HTTP Basic Auth Secret",
   })).toBeNull();
 });
 
@@ -4749,7 +4753,7 @@ test("allows an explicit ConfigMap and key when inventory is unavailable", async
     within(configMapRow).getByRole("button", { name: /Configure$/ }),
   );
   const selector = await screen.findByRole("dialog", {
-    name: "Select Transform ConfigMap",
+    name: "Transform ConfigMap",
   });
   await userEvent.click(within(selector).getByRole("button", {
     name: "Enter reference manually",
@@ -4779,7 +4783,7 @@ test("allows an explicit ConfigMap and key when inventory is unavailable", async
     manual: true,
   });
   expect(screen.queryByRole("dialog", {
-    name: "Select Transform ConfigMap",
+    name: "Transform ConfigMap",
   })).toBeNull();
 });
 
@@ -4799,7 +4803,7 @@ test("dismisses Kubernetes resource selection without persistent inline controls
   await userEvent.click(configure);
 
   const selector = await screen.findByRole("dialog", {
-    name: "Select Transform ConfigMap",
+    name: "Transform ConfigMap",
   });
   expect(within(selector).getByRole("button", {
     name: "Close Kubernetes resource selector",
@@ -4807,7 +4811,7 @@ test("dismisses Kubernetes resource selection without persistent inline controls
   await userEvent.keyboard("{Escape}");
 
   expect(screen.queryByRole("dialog", {
-    name: "Select Transform ConfigMap",
+    name: "Transform ConfigMap",
   })).toBeNull();
   expect(screen.queryByRole("button", {
     name: "Enter reference manually",
@@ -5447,7 +5451,7 @@ test("focuses a newly added array item when command metadata requests it", async
 
   expect(
     await within(configTree).findByRole("row", {
-      name: /^transform 1 Authored/,
+      name: /^transform 1 /,
     }),
   ).toHaveAttribute("aria-selected", "true");
 });
@@ -5482,19 +5486,19 @@ test("views and creates descriptor-driven ConfigMaps without raw YAML", async ()
     name: /Configure$/,
   }));
   const selector = await screen.findByRole("dialog", {
-    name: "Select Transform ConfigMap",
+    name: "Transform ConfigMap",
   });
 
   await userEvent.click(
     await within(selector).findByRole("button", {
-      name: "Inspect transform-code",
+      name: "Details for transform-code",
     }),
   );
   expect(await within(selector).findByText("export default () => true;"))
     .toBeInTheDocument();
   expect(within(selector).queryByText(/raw YAML/i)).toBeNull();
   await userEvent.click(within(selector).getByRole("button", {
-    name: "Back to resources",
+    name: "Close Kubernetes resource selector",
   }));
 
   await userEvent.click(
@@ -5528,7 +5532,7 @@ test("views and creates descriptor-driven ConfigMaps without raw YAML", async ()
     existingName: null,
   });
   expect(screen.queryByRole("dialog", {
-    name: "Select Transform ConfigMap",
+    name: "Transform ConfigMap",
   })).toBeNull();
 });
 

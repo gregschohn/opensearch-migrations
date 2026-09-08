@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
@@ -102,6 +102,13 @@ export function SubmitConfigDialog({
       resetPlan.data.targets.map((target) => target.path).join("; ")
     }.`
     : "Building the dependency-safe reset plan.";
+  useEffect(() => () => {
+    // Session-keyed queries are unreachable after the dialog closes.
+    queryClient.removeQueries({ queryKey: ["submission-draft", sessionKey] });
+    queryClient.removeQueries({ queryKey: ["config-review", sessionKey] });
+    queryClient.removeQueries({ queryKey: ["config-preflight", sessionKey] });
+  }, [queryClient, sessionKey]);
+
   const retry = () => {
     setProblem("");
     if (currentDraft.isError) void currentDraft.refetch();

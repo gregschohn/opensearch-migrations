@@ -493,14 +493,6 @@ const TreeRow = memo(function TreeRow({
                   {attentionState}
                 </span>
               ) : null}
-              {draftChange ? (
-                <span
-                  className="tree-draft-state"
-                  title={draftChange.label + ". Save or discard before leaving edit mode."}
-                >
-                  {draftChange.label}
-                </span>
-              ) : null}
               {configurationStateVisible ? (
                 <span className={[
                   "tree-config-state",
@@ -1206,8 +1198,15 @@ export function ResourceTree({
 
     layoutRects.current = nextRects;
     layoutViewKey.current = viewTransitionKey;
+    // Inline create/rename rows mount between existing rows and change
+    // row heights; they must trigger a measurement pass or the rows
+    // below them jump and later animations start from stale geometry.
+    void inlineCreate;
+    void inlineRename;
   }, [
     changeStates,
+    inlineCreate,
+    inlineRename,
     presentation,
     rows,
     snapshot.nodes,
