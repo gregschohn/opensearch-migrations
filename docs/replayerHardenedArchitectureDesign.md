@@ -34,10 +34,10 @@ idle-only manifest and finite-window-exhaustion proposals.
 — horizontal proxy scaling via consumer-group membership, plus a per-`(nodeId, partition)`
 writer-completion record. Exact manifests, `NoMoreWrites`, group membership foundations, and
 interleaved chunk reconstruction are implemented. The final admission protocol uses
-`JOINING`/`READY`/`ACTIVE`, pairwise witnesses, and conservative versioned write footprints; that
-revision must land before proxy scaling is complete. A total fleet loss has no automated settlement
-path: unresolved work is retained, diagnosed, and may either wait indefinitely or terminate the
-replay run. A fresh replacement process cannot speak for an old `nodeId`.
+`PROBATIONARY`/`ACTIVE`, directional `confirmedPeerVisibility`, and conservative versioned write
+footprints; that revision must land before proxy scaling is complete. A total fleet loss has no
+automated settlement path: unresolved work is retained, diagnosed, and may either wait indefinitely
+or terminate the replay run. A fresh replacement process cannot speak for an old `nodeId`.
 
 ---
 
@@ -59,7 +59,7 @@ crosswalk — naming drift is listed under the table.
 | §10.5 Expiration policy matrix | **Done** | `lifecycle/ReplayDispositionPolicy.java` |
 | §10.6 Epsilon lookahead | **Done as an optimization** | `ReplayReadGate`, `ReplayProgressController`, `ReplayEngine`; it is not commit authority and scanner-disabled parity remains a verification target |
 | §10.7 Capture-side duration cap | **Not implemented** — and explicitly optional here | No proxy flag exists. The scaling sketch removes its residual correctness role entirely, so implement it (if ever) as operational policy only |
-| §10.8 Proxy manifests and writer completion | **Foundations done; admission revision required** | Exact registry, chunked manifests, ordered publisher, `NoMoreWrites`, reassembly, and membership foundation exist. Final states/witnesses/footprints are specified in the scaling design. |
+| §10.8 Proxy manifests and writer completion | **Foundations done; admission revision required** | Exact registry, chunked manifests, ordered publisher, `NoMoreWrites`, reassembly, and membership foundation exist. Final states/peer visibility/footprints are specified in the scaling design. |
 | §11 Connection actor | **Done** | `lifecycle/ConnectionActor.java`, `ActorMailbox`, `NettyEventLoopActorMailbox`; sorter and schedule map **deleted** (acceptance criterion 15) |
 | §12 Async permit pool | **Done** | `lifecycle/AsyncPermitPool.java`; `TrafficStreamLimiter` **deleted** |
 | §13 Replay transaction | **Done** | `lifecycle/ReplayTransaction.java`, `ReplayOutcomes`, `TargetExchangeState`, `ReplayTransactionRegistry` |
@@ -1118,26 +1118,31 @@ partition, or every surviving group member emits it after witnessing the writer 
 is partition-scoped because a reader settles one partition from that partition's ordered records.
 It is additional evidence, not a change to the omission predicate below.
 
-The capture membership protocol uses no coordination topic. `JOINING`, `READY`, `ACTIVE`, pairwise
-witness acknowledgements, and conservative versioned write footprints travel only through group
-subscription and assignment `userData`. A writer cannot become ACTIVE or expand onto a new
-partition until the configured number of mature peers have acknowledged it and the footprint
-revision. On departure, every survivor emits `NoMoreWrites` only across the last footprint it
-observed; UNKNOWN falls back to every partition. The replayer does not consume this membership
-metadata and needs no group or admin access.
+The capture membership protocol uses no coordination topic. `PROBATIONARY`, `ACTIVE`, directional
+`confirmedPeerVisibility(A, B)`, and conservative versioned write footprints travel only through
+group subscription and assignment `userData`. `confirmedPeerVisibility(A, B)` means A and B
+remained co-present and healthy for the configured visibility interval, allowing us to infer that
+A processed membership containing B. It is directional and per peer: unrelated joins do not reset
+it, A leaving removes only A's coverage, and tracking continues after B activates so replacement
+peers can restore coverage. A writer cannot become ACTIVE or expand onto a new partition until the
+configured number of peers have confirmed visibility of it and its exact footprint revision. On
+departure, every survivor emits `NoMoreWrites` only across the last footprint it observed; UNKNOWN
+falls back to every partition. The replayer does not consume this membership metadata and needs no
+group or admin access.
 
-A survivor waits the bounded producer-quiescence interval defined by the scaling design before
-emitting peer `NoMoreWrites`. A later traffic record from that writer/partition is nevertheless
-treated as a fatal protocol contradiction: retain the record, halt the affected replay path, emit
-the protocol-violation metric, and do not commit past it. It is never silently discarded. A
-self-emitted record does not install a terminal fence because ordinary scale-down may later
-reauthorize the same live process through a new footprint expansion.
+A survivor may wait a bounded quiescence delay before emitting peer `NoMoreWrites` to reduce
+legitimate queued or retrying sends crossing the cutoff. Group departure does not fence the
+departed producer, so this delay cannot guarantee that no later write occurs and is not required
+for consumer correctness. A peer-emitted `NoMoreWrites` establishes the authoritative cutoff:
+later traffic from that writer/partition is discarded, the consumer advances, and a high-severity
+log, metric, and alarm are emitted. A self-emitted record does not install a terminal cutoff
+because ordinary scale-down may later reauthorize the same live process through a new footprint
+expansion. A guarantee that no later writes can occur would require broker-side producer fencing.
 
-There is no synthetic "post-declaration" or "superseded traffic" record in the target design.
-`KafkaSupersededTrafficRecord` is deleted rather than renamed. The source raises
-`TrafficAfterPeerCompletionException` while retaining the underlying Kafka record. Internal
-writer-completion evidence uses `NoMoreWrites`/`emitterNodeId` terminology; generic "declaration"
-names are migration residue.
+The existing synthetic commit-bearing discard path remains part of the target design. Its current
+`KafkaSupersededTrafficRecord` name is imprecise and should be renamed separately to describe
+traffic after a peer-completion cutoff; it must not use vague "declaration" terminology. Do not
+replace this behavior with `TrafficAfterPeerCompletionException` or fatal partition retention.
 
 **What is emitted.** Every `manifestInterval` (default 30s), each proxy records **all** open
 connections whose traffic routes to each relevant partition. Active connections are not omitted as
@@ -1846,7 +1851,7 @@ callbacks: the commit policy must stay with the disposition owner.
 | Permits | available, queued, held duration, cancellation count |
 | Evidence | tuple-write latency, failures, retries, durable receipts |
 | Kafka | unresolved obligations, commit head identity/age, staged commits, pending commit acknowledgements by generation, commit latency |
-| Capture proxy | admission phase, active member count, mature peer witnesses, write-footprint revision/size, blocked footprint expansion, forced rebalances, open connections, manifest chunks/bytes, incomplete manifests, publisher failures |
+| Capture proxy | admission phase, active member count, confirmed-peer-visibility count, write-footprint revision/size, blocked footprint expansion, forced rebalances, open connections, manifest chunks/bytes, incomplete manifests, publisher failures, traffic-after-peer-cutoff discards |
 | Resources | owned buffer counts/bytes, duplicate-close attempts, leaked-owner assertions |
 
 Here, **monitoring** means code that reports health without owning lifecycle decisions: OTel metric
@@ -1891,16 +1896,19 @@ Use fake clocks, fake event loops, and manually controlled futures to enumerate:
 * publisher ordering and failure: traffic submission before a manifest, final close before removal,
   asynchronous send failure, and a publisher that must stop authoritative manifests and
   writer-completion records;
-* proxy admission: exact witness-count boundaries, witness loss before promotion, quiet-group
-  maturity progression, fixed-deadline cohort debounce, leader replacement, and cold-start
-  configurations that cannot satisfy their admission predicate;
+* proxy admission: exact confirmed-peer-visibility count boundaries, observer loss before
+  promotion, unrelated joins not resetting established directional relationships, continued
+  tracking after ACTIVE, quiet-group visibility-interval progression, fixed-deadline cohort
+  debounce, leader replacement, and cold-start configurations that cannot satisfy their admission
+  predicate;
 * write-footprint ownership: expansion before source admission, reassignment while a shrink is
   pending, exact revision-and-digest acknowledgement, stale table continuity falling back to all
   partitions, asynchronous send failure retaining coverage, and shrink clearing only after an
   exact assignment echo;
-* writer completion after departure: producer-quiescence timing, one retained publication
+* writer completion after departure: optional quiescence-delay timing, one retained publication
   obligation per survivor and partition until Kafka acknowledgement, retry-safe duplicates, and
-  later traffic after peer completion causing fatal retention rather than discard;
+  later traffic after peer completion being discarded, advanced past, counted, logged, and
+  alarmed;
 * source-owner ordering: commit proposal before versus after revocation, broker acknowledgement
   before versus after lifecycle notification, scan-blocker and connection-completion commands
   ordered with reads, and shutdown while source commands remain queued;
@@ -2090,15 +2098,16 @@ without another actor transition.
 
 The accepted routing design is
 [`proxyHorizontalScalingAndNodeDeath.md`](proxyHorizontalScalingAndNodeDeath.md). A custom
-cooperative assignor admits members through `JOINING`, `READY`, and `ACTIVE`; non-ACTIVE members
+cooperative assignor admits members through `PROBATIONARY` and `ACTIVE`; PROBATIONARY members
 receive no traffic assignments. New connections choose once from the ACTIVE member's traffic
 assignments and store that partition immutably. Existing connections drain in place through later
 assignment changes.
 
 Each proxy also advertises a conservative versioned write footprint through group metadata.
-Expansion is witnessed before writing and shrink follows final Kafka acknowledgement. Therefore the
-old `nodeId` hash range and startup-only shard-width setting are migration residue, not the target
-architecture. Remove them after the admission-aware assignor is active.
+Expansion obtains the required confirmed-peer-visibility coverage before writing and shrink follows
+final Kafka acknowledgement. Therefore the old `nodeId` hash range and startup-only shard-width
+setting are migration residue, not the target architecture. Remove them after the admission-aware
+assignor is active.
 
 The startup-only manifest interval defaults to 30 seconds and must be positive. The replayer may use
 it for expected-latency diagnostics but never for a verdict. Manifest chunking remains mandatory
@@ -2111,23 +2120,30 @@ regardless of assignment width.
 The existing PR remains the integration vehicle. Soundness is established by explicit proof gates,
 not by making reviewers reason about one undifferentiated diff:
 
-1. **Freeze the protocol.** Land the admission, witness, footprint, writer-completion, ownership,
+**Review gate:** if implementation requires a design change, or a test exposes behavior whose
+contract is not documented, stop that implementation slice. Update the design and review the new
+contract before changing production code or complexifying it to satisfy the test.
+
+1. **Freeze the protocol.** Land the admission, peer-visibility, footprint, writer-completion, ownership,
    and fatal-event-loop contracts in the two design documents before implementing them.
-2. **Remove known unsound alternatives.** Reject live topic replacement; delete post-peer-completion
-   discard; require process-fatal event-loop handling; remove cross-thread mailbox-loss mutation;
-   remove lifecycle default methods and built-in no-op collaborators.
-3. **Restore single-owner boundaries.** Make actor, transaction, footprint, and membership mutation
-   pass through typed commands to one owner. Add always-on owner checks and structural tests that
-   reject required default methods, `NO_OP` instances, and production constructors missing required
-   fatal/lifecycle collaborators.
+2. **Remove known unsound alternatives.** Reject live topic replacement; preserve the
+   post-peer-completion discard-and-alarm cutoff; require process-fatal event-loop handling; remove
+   cross-thread mailbox-loss mutation; remove lifecycle default methods and built-in no-op
+   collaborators.
+3. **Restore explicit owner authority.** Use exactly one Kafka source-I/O owner and one
+   replay-intake owner, with typed immutable messages between them. Each mutable object belongs to
+   exactly one of those owners. Remove the third-thread `BlockingTrafficSource` authority,
+   `commitDataLock`, and shared source-state maps. Add always-on owner checks and structural tests
+   that reject required default methods, `NO_OP` instances, and production constructors missing
+   required fatal/lifecycle collaborators.
 4. **Implement proxy admission and footprints behind deterministic models.** Each state transition
-   lands with its boundary tests: pairwise maturity, cohort promotion, exact footprint tuple
+   lands with its boundary tests: directional `confirmedPeerVisibility`, cohort promotion, exact footprint tuple
    acknowledgement, expansion gating, acknowledged shrink, departure obligations, and UNKNOWN
    fallback.
 5. **Prove real Kafka behavior.** Testcontainers exercises cooperative assignment `userData`,
-   `enforceRebalance()`, leader replacement, metadata limits, producer-quiescence assumptions, and
-   unacknowledged-record redelivery. Live Kubernetes tests cover pod death, network isolation,
-   insufficient capacity, and total-fleet loss.
+   `enforceRebalance()`, leader replacement, metadata limits, optional quiescence-delay behavior,
+   traffic crossing the peer cutoff, and unacknowledged-record redelivery. Live Kubernetes tests
+   cover pod death, network isolation, insufficient capacity, and total-fleet loss.
 6. **Run the complete acceptance matrix.** Existing replay, capture, leak, race, and integration
    suites must pass together. No feature is considered complete because its local tests pass while
    a known unsound path remains reachable.

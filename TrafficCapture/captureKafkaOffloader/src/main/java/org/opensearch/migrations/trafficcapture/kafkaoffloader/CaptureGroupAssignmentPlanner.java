@@ -21,7 +21,7 @@ import org.opensearch.migrations.trafficcapture.kafkaoffloader.CaptureGroupProto
 final class CaptureGroupAssignmentPlanner {
     record Plan(
         AssignmentTable table,
-        Map<String, Set<String>> validWitnesses,
+        Map<String, Set<String>> confirmedPeerVisibilityByCandidate,
         Set<String> promotedNodeIds,
         Long activationDeadlineNanos
     ) {}
@@ -54,19 +54,18 @@ final class CaptureGroupAssignmentPlanner {
 
     Plan plan(Map<String, Subscription> subscriptionsByMemberId, long nowNanos) {
         var subscriptionsByNodeId = byNodeId(subscriptionsByMemberId);
-        var validWitnesses = validatedWitnesses(subscriptionsByNodeId);
+        var confirmedPeerVisibility = validatedPeerVisibility(subscriptionsByNodeId);
         var active = new TreeSet<String>();
-        var eligibleReady = new TreeSet<String>();
+        var eligibleProbationary = new TreeSet<String>();
         subscriptionsByNodeId.forEach((nodeId, subscription) -> {
             if (subscription.advertisedPhase() == AdmissionPhase.ACTIVE) {
                 active.add(nodeId);
-            } else if (subscription.advertisedPhase() == AdmissionPhase.READY
-                && validWitnesses.get(nodeId).size() >= requiredPeerWitnesses) {
-                eligibleReady.add(nodeId);
+            } else if (confirmedPeerVisibility.get(nodeId).size() >= requiredPeerWitnesses) {
+                eligibleProbationary.add(nodeId);
             }
         });
 
-        updateCohort(eligibleReady, nowNanos);
+        updateCohort(eligibleProbationary, nowNanos);
         var promoted = promoteIfDue(active, nowNanos);
 
         var rows = new LinkedHashMap<String, MemberRow>();
@@ -74,10 +73,8 @@ final class CaptureGroupAssignmentPlanner {
             final AdmissionPhase effectivePhase;
             if (active.contains(nodeId) || promoted.contains(nodeId)) {
                 effectivePhase = AdmissionPhase.ACTIVE;
-            } else if (eligibleReady.contains(nodeId)) {
-                effectivePhase = AdmissionPhase.READY;
             } else {
-                effectivePhase = AdmissionPhase.JOINING;
+                effectivePhase = AdmissionPhase.PROBATIONARY;
             }
             rows.put(
                 nodeId,
@@ -87,22 +84,22 @@ final class CaptureGroupAssignmentPlanner {
                     effectivePhase,
                     subscription.footprint(),
                     subscription.observedFootprints(),
-                    subscription.matureWitnesses()
+                    subscription.confirmedPeerVisibility()
                 )
             );
         });
 
         return new Plan(
             new AssignmentTable(rows),
-            immutableSetMap(validWitnesses),
+            immutableSetMap(confirmedPeerVisibility),
             Set.copyOf(promoted),
             activationDeadlineNanos
         );
     }
 
-    private void updateCohort(Set<String> eligibleReady, long nowNanos) {
-        promotionCohort.retainAll(eligibleReady);
-        promotionCohort.addAll(eligibleReady);
+    private void updateCohort(Set<String> eligibleProbationary, long nowNanos) {
+        promotionCohort.retainAll(eligibleProbationary);
+        promotionCohort.addAll(eligibleProbationary);
         if (promotionCohort.isEmpty()) {
             activationDeadlineNanos = null;
         } else if (activationDeadlineNanos == null) {
@@ -141,20 +138,22 @@ final class CaptureGroupAssignmentPlanner {
         return Collections.unmodifiableMap(subscriptionsByNodeId);
     }
 
-    private Map<String, Set<String>> validatedWitnesses(Map<String, Subscription> subscriptionsByNodeId) {
+    private Map<String, Set<String>> validatedPeerVisibility(
+        Map<String, Subscription> subscriptionsByNodeId
+    ) {
         var result = new LinkedHashMap<String, Set<String>>();
-        subscriptionsByNodeId.forEach((writerNodeId, writer) -> {
-            var writerIdentity = writer.footprint().identity(writerNodeId);
+        subscriptionsByNodeId.forEach((candidateNodeId, candidate) -> {
+            var candidateIdentity = candidate.footprint().identity(candidateNodeId);
             var valid = new LinkedHashSet<String>();
-            writer.matureWitnesses().forEach((witnessNodeId, claimedWriterIdentity) -> {
-                var witness = subscriptionsByNodeId.get(witnessNodeId);
-                if (witness != null
-                    && writerIdentity.equals(claimedWriterIdentity)
-                    && writerIdentity.equals(witness.observedFootprints().get(writerNodeId))) {
-                    valid.add(witnessNodeId);
+            candidate.confirmedPeerVisibility().forEach((observerNodeId, claimedCandidateIdentity) -> {
+                var observer = subscriptionsByNodeId.get(observerNodeId);
+                if (observer != null
+                    && candidateIdentity.equals(claimedCandidateIdentity)
+                    && candidateIdentity.equals(observer.observedFootprints().get(candidateNodeId))) {
+                    valid.add(observerNodeId);
                 }
             });
-            result.put(writerNodeId, Collections.unmodifiableSet(valid));
+            result.put(candidateNodeId, Collections.unmodifiableSet(valid));
         });
         return Collections.unmodifiableMap(result);
     }
