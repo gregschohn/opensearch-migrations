@@ -87,9 +87,16 @@ interface ConfigEditorProps {
 }
 
 
+interface CanonicalReference {
+  label: string;
+  targetId: string;
+}
+
+
 interface EditRow {
   node: EditNode;
   depth: number;
+  collapsedReference?: CanonicalReference;
 }
 
 
@@ -360,11 +367,26 @@ function treeRows(
   expanded: ReadonlySet<string>,
   showOptional: boolean,
   showExpert: boolean,
+  collapseReferences?: ReadonlyMap<string, CanonicalReference>,
 ): EditRow[] {
   const rows: EditRow[] = [];
   const visit = (node: EditNode, depth: number) => {
     if (node.valueKind === "command") return;
     if (!visibleNode(node, showOptional, showExpert)) return;
+    const canonical = collapseReferences?.get(node.id);
+    if (canonical) {
+      // This subtree is edited on its own canonical surface; render one
+      // linking row instead of a second copy of the same configuration.
+      rows.push({
+        node,
+        depth,
+        collapsedReference: {
+          targetId: canonical.targetId,
+          label: node.referenceLabel ?? canonical.label,
+        },
+      });
+      return;
+    }
     rows.push({ node, depth });
     if (expanded.has(node.id)) {
       nodeChildren(node).forEach((child) => visit(child, depth + 1));
@@ -1064,6 +1086,7 @@ function ConfigPropertyRow({
   draft,
   node,
   parent,
+  collapsedReference,
   depth,
   expanded,
   selected,
@@ -1087,6 +1110,7 @@ function ConfigPropertyRow({
   draft: ConfigDraft;
   node: EditNode;
   parent: EditNode | null;
+  collapsedReference: CanonicalReference | null;
   depth: number;
   expanded: boolean;
   selected: boolean;
@@ -1197,7 +1221,17 @@ function ConfigPropertyRow({
     globalThis.setTimeout(() => externalEditorTriggerRef.current?.focus(), 0);
   };
 
-  const valueEditor = node.externalRef ? (
+  const valueEditor = collapsedReference ? (
+    <button
+      className="inline-reference-link"
+      onClick={() => onNavigateEditTarget(collapsedReference.targetId)}
+      title={`This configuration is edited as ${collapsedReference.label}`}
+      type="button"
+    >
+      <Link2 aria-hidden="true" />
+      Defined in {collapsedReference.label}
+    </button>
+  ) : node.externalRef ? (
     <button
       className="inline-resource-button"
       disabled={busy}
@@ -1281,7 +1315,7 @@ function ConfigPropertyRow({
             className="property-heading"
             style={{ "--config-depth": depth } as React.CSSProperties}
           >
-            {children.length > 0 ? (
+            {children.length > 0 && !collapsedReference ? (
               <button
                 aria-expanded={expanded}
                 aria-label={`${expanded ? "Collapse" : "Expand"} ${name}`}
@@ -1334,7 +1368,7 @@ function ConfigPropertyRow({
             key={`${node.id}-${draft.draftRevision}`}
           >
             {valueEditor}
-            {referenceTargetId ? (
+            {referenceTargetId && !collapsedReference ? (
               <button
                 className="inline-reference-link"
                 onClick={() => onNavigateEditTarget(referenceTargetId)}
@@ -1342,10 +1376,10 @@ function ConfigPropertyRow({
                 type="button"
               >
                 <Link2 aria-hidden="true" />
-                Open {referenceLabel}
+                Defined in {referenceLabel}
               </button>
             ) : null}
-            {inlineCommands.length > 0 ? (
+            {inlineCommands.length > 0 && !collapsedReference ? (
               <div className="inline-add-actions">
                 {inlineCommands.map((command) => {
                   const commandName = fieldName(command);
@@ -1381,7 +1415,8 @@ function ConfigPropertyRow({
                 })}
               </div>
             ) : null}
-            {showDocumentation && node.effectiveDefault ? (
+            {showDocumentation && node.effectiveDefault
+              && !collapsedReference ? (
               <div className="inline-effective-default">
                 <strong>
                   {effectiveDefaultLabel || "Effective default"}
@@ -1401,7 +1436,7 @@ function ConfigPropertyRow({
               </span>
             ) : null}
             <div className="property-actions">
-            {topLevelResourceCommand ? (
+            {topLevelResourceCommand && !collapsedReference ? (
               <button
                 aria-label={`Add ${fieldName(topLevelResourceCommand)}`}
                 disabled={
@@ -1431,7 +1466,7 @@ function ConfigPropertyRow({
                 <Plus aria-hidden="true" />
               </button>
             ) : null}
-            {canRename ? (
+            {canRename && !collapsedReference ? (
               <button
                 aria-label={`Rename ${node.path.at(-1)}`}
                 disabled={busy}
@@ -1445,7 +1480,7 @@ function ConfigPropertyRow({
                 <Pencil aria-hidden="true" />
               </button>
             ) : null}
-            {canClear ? (
+            {canClear && !collapsedReference ? (
               <button
                 aria-label={`Clear ${name} and use the default`}
                 disabled={busy}
@@ -1456,7 +1491,7 @@ function ConfigPropertyRow({
                 <X aria-hidden="true" />
               </button>
             ) : null}
-            {node.removable ? (
+            {node.removable && !collapsedReference ? (
               <button
                 aria-label={`Remove ${name}`}
                 className="danger-button"
@@ -1724,6 +1759,105 @@ export function ConfigEditor({
     },
     [activeTargetId, globalTarget, nodes, scope, target],
   );
+  const editSurfaces = useMemo(() => {
+    const surfaces: { kind: string; label: string; targetId: string }[] = [];
+    Object.values(draft?.navigation?.nodes ?? {}).forEach((navNode) => {
+      if (!["resource", "config-definition"].includes(navNode.kind)) return;
+      navNode.capabilities.forEach((capability) => {
+        if (capability.kind !== "edit") return;
+        surfaces.push({
+          kind: navNode.kind,
+          label: navNode.label,
+          targetId: capability.editTargetId,
+        });
+      });
+    });
+    return surfaces;
+  }, [draft?.navigation]);
+  const canonicalReferenceFor = useCallback((targetId: string) => {
+    // Prefer the resource surface inside the same family (e.g. the
+    // source-snap resource over the raw definition entry) as the place
+    // to send the user.
+    const surface = editSurfaces.find((candidate) => (
+      candidate.kind === "resource" && candidate.targetId === targetId
+    ))
+      ?? editSurfaces.find((candidate) => (
+        candidate.kind === "resource"
+        && candidate.targetId.startsWith(`${targetId}.`)
+      ))
+      ?? editSurfaces.find((candidate) => candidate.targetId === targetId);
+    return surface
+      ? { label: surface.label, targetId: surface.targetId }
+      : null;
+  }, [editSurfaces]);
+  const scopeTargetId = scope?.id ?? null;
+  const collapseReferences = useMemo(() => {
+    const map = new Map<string, CanonicalReference>();
+    const resourceTargets = editSurfaces
+      .filter((surface) => surface.kind === "resource")
+      .map((surface) => surface.targetId);
+    const scopeIsDefinition = editSurfaces.some((surface) => (
+      surface.kind === "config-definition"
+      && surface.targetId === scopeTargetId
+    ));
+    editSurfaces.forEach((surface) => {
+      if (surface.targetId === scopeTargetId) return;
+      if (surface.kind === "resource") {
+        const nestedInOtherResource = resourceTargets.some((target) => (
+          target !== surface.targetId
+          && surface.targetId.startsWith(`${target}.`)
+        ));
+        if (!nestedInOtherResource) return;
+        // A definition surface renders its own nested resource content.
+        if (
+          scopeIsDefinition
+          && scopeTargetId
+          && surface.targetId.startsWith(`${scopeTargetId}.`)
+        ) {
+          return;
+        }
+      }
+      const canonical = canonicalReferenceFor(surface.targetId);
+      if (canonical) map.set(surface.targetId, canonical);
+    });
+    return map;
+  }, [canonicalReferenceFor, editSurfaces, scopeTargetId]);
+  const usedIn = useMemo(() => {
+    if (!scopeTargetId) return [];
+    const users = new Map<string, CanonicalReference>();
+    const resourceSurfaces = editSurfaces.filter(
+      (surface) => surface.kind === "resource",
+    );
+    const visit = (node: EditNode) => {
+      const referenceTarget = node.referenceTargetId;
+      if (
+        referenceTarget
+        && (
+          scopeTargetId === referenceTarget
+          || scopeTargetId.startsWith(`${referenceTarget}.`)
+        )
+        // References from inside the definition's own subtree are
+        // structure, not usage.
+        && !node.id.startsWith(`${referenceTarget}.`)
+      ) {
+        const owner = resourceSurfaces
+          .filter((surface) => (
+            node.id === surface.targetId
+            || node.id.startsWith(`${surface.targetId}.`)
+          ))
+          .sort((a, b) => b.targetId.length - a.targetId.length)[0];
+        if (owner && owner.targetId !== scopeTargetId) {
+          users.set(owner.targetId, {
+            label: owner.label,
+            targetId: owner.targetId,
+          });
+        }
+      }
+      nodeChildren(node).forEach(visit);
+    };
+    nodes.forEach(visit);
+    return [...users.values()];
+  }, [editSurfaces, nodes, scopeTargetId]);
   const topLevelAdds = useMemo(
     () => topLevelAddContexts(nodes),
     [nodes],
@@ -1780,6 +1914,7 @@ export function ConfigEditor({
             initiallyExpanded,
             renderOptional,
             renderExpert,
+            collapseReferences,
           ).map(({ node }) => node.id),
         );
         skipNextRowTracking.current = true;
@@ -1819,6 +1954,7 @@ export function ConfigEditor({
         : target?.id ?? scopedNodes[0]?.id ?? null
     ));
   }, [
+    collapseReferences,
     draft,
     expansionScopeId,
     renderExpert,
@@ -1851,8 +1987,14 @@ export function ConfigEditor({
   }, [draft?.dirty, hasLocalEdits]);
 
   const rows = useMemo(
-    () => treeRows(scopedNodes, expanded, renderOptional, renderExpert),
-    [expanded, renderExpert, renderOptional, scopedNodes],
+    () => treeRows(
+      scopedNodes,
+      expanded,
+      renderOptional,
+      renderExpert,
+      collapseReferences,
+    ),
+    [collapseReferences, expanded, renderExpert, renderOptional, scopedNodes],
   );
   const measureRowTops = useCallback(() => {
     const tops = new Map<string, number>();
@@ -2019,7 +2161,7 @@ export function ConfigEditor({
       return;
     }
     const nextIds = new Set(
-      treeRows(scopedNodes, expanded, false, renderExpert)
+      treeRows(scopedNodes, expanded, false, renderExpert, collapseReferences)
         .map(({ node }) => node.id),
     );
     const exiting = new Set(
@@ -2042,7 +2184,7 @@ export function ConfigEditor({
       return;
     }
     const nextIds = new Set(
-      treeRows(scopedNodes, expanded, renderOptional, false)
+      treeRows(scopedNodes, expanded, renderOptional, false, collapseReferences)
         .map(({ node }) => node.id),
     );
     const exiting = new Set(
@@ -2822,9 +2964,21 @@ export function ConfigEditor({
                   type="button"
                 >
                   <Link2 aria-hidden="true" />
-                  From {scope.referenceLabel ?? "referenced definition"}
+                  Defined in {scope.referenceLabel ?? "referenced definition"}
                 </button>
               ) : null}
+              {usedIn.map((user) => (
+                <button
+                  className="inline-reference-link"
+                  key={user.targetId}
+                  onClick={() => onNavigateEditTarget(user.targetId)}
+                  title={`Go to ${user.label}`}
+                  type="button"
+                >
+                  <Link2 aria-hidden="true" />
+                  Used in {user.label}
+                </button>
+              ))}
               <button
                 className="secondary-button"
                 onClick={expandAll}
@@ -2911,13 +3065,14 @@ export function ConfigEditor({
               </tr>
             </thead>
             <tbody>
-              {rows.map(({ node, depth }) => {
+              {rows.map(({ node, depth, collapsedReference }) => {
                 const isExpanded = (
                   expanded.has(node.id) && !collapsingIds.has(node.id)
                 );
                 return (
                   <ConfigPropertyRow
                     busy={busy}
+                    collapsedReference={collapsedReference ?? null}
                     commit={commit}
                     contextProgress={
                       pinnedContext.find(({ id }) => id === node.id)?.progress

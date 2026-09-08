@@ -2826,7 +2826,7 @@ test("opens nested definitions from navigation and referenced fields", async () 
   expect(await screen.findByRole("heading", { name: "Edit nightly" }))
     .toBeInTheDocument();
   expect(screen.getByRole("button", {
-    name: "From Source Snapshot 'nightly'",
+    name: "Defined in Source Snapshot 'nightly'",
   })).toBeInTheDocument();
   const config = screen.getByRole("table", {
     name: "Configuration fields",
@@ -2842,13 +2842,13 @@ test("opens nested definitions from navigation and referenced fields", async () 
     name: /^nightly/,
   });
   await userEvent.click(within(snapshotRow).getByRole("button", {
-    name: "Open Source Snapshot 'nightly'",
+    name: "Defined in Source Snapshot 'nightly'",
   }));
   expect(await screen.findByRole("heading", { name: "Edit nightly" }))
     .toBeInTheDocument();
 
   await userEvent.click(within(config).getByRole("button", {
-    name: "Open repo1",
+    name: "Defined in repo1",
   }));
 
   expect(await screen.findByRole("heading", { name: "Edit repo1" }))
