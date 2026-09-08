@@ -6,7 +6,6 @@ import {
   type FormEvent,
 } from "react";
 import {
-  ArrowLeft,
   Database,
   Eye,
   Keyboard,
@@ -190,10 +189,6 @@ function ManualExternalResourceForm({
         <div>
           <span>The server will validate it against the field descriptor.</span>
         </div>
-        <button className="secondary-button" onClick={onBack} type="button">
-          <ArrowLeft aria-hidden="true" />
-          Back to resources
-        </button>
       </header>
       <div className="external-form-fields">
         {resourceTypes.length > 1 ? (
@@ -380,10 +375,6 @@ function ExternalResourceForm({
               </span>
             )}
         </div>
-        <button className="secondary-button" onClick={onBack} type="button">
-          <ArrowLeft aria-hidden="true" />
-          Back to resources
-        </button>
       </header>
       <div className="external-form-fields">
         {descriptor.fields.map((field) => {
@@ -491,14 +482,12 @@ function ExternalResourceForm({
 function ExternalResourceView({
   descriptor,
   details,
-  onBack,
   onSelect,
   onUpdate,
   selectsKey,
 }: Readonly<{
   descriptor: CreateDescriptor | null;
   details: ExternalResourceDetails;
-  onBack: () => void;
   onSelect: (key?: string) => void;
   onUpdate: () => void;
   selectsKey: boolean;
@@ -513,10 +502,6 @@ function ExternalResourceView({
           <span>{details.kind}</span>
         </div>
         <div>
-          <button className="secondary-button" onClick={onBack} type="button">
-            <ArrowLeft aria-hidden="true" />
-            Back to resources
-          </button>
           {descriptor ? (
             <button
               className="secondary-button"
@@ -577,7 +562,6 @@ type ExternalResourceRow = ExternalResourceInventory["rows"][number];
 
 function ExternalResourceRows({
   busy,
-  canUpdate,
   onInspect,
   onSelect,
   rows,
@@ -585,8 +569,7 @@ function ExternalResourceRows({
   showDetails = false,
 }: Readonly<{
   busy: boolean;
-  canUpdate: boolean;
-  onInspect: (row: ExternalResourceRow, mode: "view" | "update") => void;
+  onInspect: (row: ExternalResourceRow) => void;
   onSelect: (row: ExternalResourceRow, key?: string) => void;
   rows: ExternalResourceRow[];
   selectsKey: boolean;
@@ -628,25 +611,14 @@ function ExternalResourceRows({
           ) : null}
           <div className="external-resource-actions">
             <button
-              aria-label={`Inspect ${row.name}`}
+              aria-label={`Details for ${row.name}`}
               disabled={busy}
-              onClick={() => onInspect(row, "view")}
+              onClick={() => onInspect(row)}
               type="button"
             >
               <Eye aria-hidden="true" />
-              Inspect
+              Details
             </button>
-            {canUpdate ? (
-              <button
-                aria-label={`Update ${row.name}`}
-                disabled={busy}
-                onClick={() => onInspect(row, "update")}
-                type="button"
-              >
-                <Pencil aria-hidden="true" />
-                Update
-              </button>
-            ) : null}
             {selectsKey ? row.keys.map((key) => (
               <button
                 aria-label={`Use ${row.name} and key ${key}`}
@@ -735,8 +707,12 @@ function ExternalResourceDialogContent({
         ? `Update ${descriptorLabel}`
         : pane.mode === "manual"
           ? "Enter reference manually"
-          : `Inspect ${pane.details.name}`;
-    registerPane({ title, back: () => setPane(null) });
+          : pane.details.name;
+    const back = pane.mode === "update"
+      // Update is reached from the details view; step back to it.
+      ? () => setPane({ mode: "view", details: pane.details, row: pane.row })
+      : () => setPane(null);
+    registerPane({ title, back });
     return () => registerPane(null);
   }, [descriptorLabel, pane, registerPane]);
 
@@ -844,7 +820,11 @@ function ExternalResourceDialogContent({
         draft={draft}
         node={node}
         onApplied={onClose}
-        onBack={() => setPane(null)}
+        onBack={() => setPane({
+          mode: "view",
+          details: pane.details,
+          row: pane.row,
+        })}
         replaceDraft={replaceDraft}
         reportError={reportError}
       />
@@ -858,7 +838,6 @@ function ExternalResourceDialogContent({
           ...pane.details,
           message: pane.details.message || pane.row.message,
         }}
-        onBack={() => setPane(null)}
         onSelect={(key) => void select(
           selectionForRow(pane.row, key),
           pane.row.status,
@@ -965,8 +944,7 @@ function ExternalResourceDialogContent({
         ) : null}
         <ExternalResourceRows
           busy={busy || loading}
-          canUpdate={Boolean(descriptor)}
-          onInspect={(row, mode) => void inspect(row, mode)}
+          onInspect={(row) => void inspect(row, "view")}
           onSelect={(row, key) => void select(
             selectionForRow(row, key),
             row.status,
@@ -1060,7 +1038,11 @@ function ExternalResourceDialogContent({
                       draft={draft}
                       node={node}
                       onApplied={onClose}
-                      onBack={() => setAllResourcesPane(null)}
+                      onBack={() => setAllResourcesPane({
+                        mode: "view",
+                        details: allResourcesPane.details,
+                        row: allResourcesPane.row,
+                      })}
                       replaceDraft={replaceDraft}
                       reportError={reportError}
                     />
@@ -1074,7 +1056,6 @@ function ExternalResourceDialogContent({
                           message: allResourcesPane.details.message
                             || allResourcesPane.row.message,
                         }}
-                        onBack={() => setAllResourcesPane(null)}
                         onSelect={(key) => void select(
                           selectionForRow(allResourcesPane.row, key),
                           allResourcesPane.row.status,
@@ -1091,10 +1072,9 @@ function ExternalResourceDialogContent({
                     : (
                       <ExternalResourceRows
                         busy={busy || loading}
-                        canUpdate={Boolean(descriptor)}
-                        onInspect={(row, mode) => void inspect(
+                        onInspect={(row) => void inspect(
                           row,
-                          mode,
+                          "view",
                           true,
                         )}
                         onSelect={(row, key) => void select(

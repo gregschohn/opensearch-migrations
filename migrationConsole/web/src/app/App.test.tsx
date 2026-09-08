@@ -4697,17 +4697,17 @@ test("selects an HTTP Basic Auth Secret in the shared resource dialog", async ()
   expect(within(allResources).getByText("unrelated-creds"))
     .toBeInTheDocument();
   await userEvent.click(within(allResources).getByRole("button", {
-    name: "Inspect unrelated-creds",
+    name: "Details for unrelated-creds",
   }));
   expect(await within(allResources).findByText(
     "Missing username and password keys.",
   )).toBeInTheDocument();
   await userEvent.click(within(allResources).getByRole("button", {
-    name: "Back to resources",
+    name: "Close all Kubernetes resources",
   }));
   expect(within(allResources).getByText("source-creds")).toBeInTheDocument();
   await userEvent.click(within(allResources).getByRole("button", {
-    name: "Inspect source-creds",
+    name: "Details for source-creds",
   }));
   await userEvent.click(await within(allResources).findByRole("button", {
     name: "Use resource",
@@ -5491,14 +5491,14 @@ test("views and creates descriptor-driven ConfigMaps without raw YAML", async ()
 
   await userEvent.click(
     await within(selector).findByRole("button", {
-      name: "Inspect transform-code",
+      name: "Details for transform-code",
     }),
   );
   expect(await within(selector).findByText("export default () => true;"))
     .toBeInTheDocument();
   expect(within(selector).queryByText(/raw YAML/i)).toBeNull();
   await userEvent.click(within(selector).getByRole("button", {
-    name: "Back to resources",
+    name: "Close Kubernetes resource selector",
   }));
 
   await userEvent.click(
