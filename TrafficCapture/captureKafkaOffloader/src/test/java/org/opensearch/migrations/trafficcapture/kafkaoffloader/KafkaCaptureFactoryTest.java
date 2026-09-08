@@ -776,6 +776,53 @@ public class KafkaCaptureFactoryTest {
         }
     }
 
+    @Test
+    public void membershipInitializationFailureClosesTheUnpublishedPublisher() throws Exception {
+        var membershipConsumer = new MockConsumer<String, byte[]>(OffsetResetStrategy.EARLIEST);
+        var closeCalls = new AtomicInteger();
+        var producer = new MockProducer<String, byte[]>(
+            true,
+            null,
+            new StringSerializer(),
+            new ByteArraySerializer()
+        ) {
+            @Override
+            public List<PartitionInfo> partitionsFor(String ignoredTopic) {
+                return List.of(new PartitionInfo(topic, 0, null, new Node[0], new Node[0]));
+            }
+
+            @Override
+            public void close(Duration timeout) {
+                closeCalls.incrementAndGet();
+                super.close(timeout);
+            }
+        };
+        membershipConsumer.schedulePollTask(() -> {
+            throw new IllegalStateException("membership initialization failed");
+        });
+        var factory = new KafkaCaptureFactory(
+            TestRootKafkaOffloaderContext.noTracking(),
+            TEST_NODE_ID_STRING,
+            producer,
+            membershipConsumer,
+            topic,
+            1024 * 1024,
+            null,
+            Duration.ofDays(1)
+        );
+
+        Assertions.assertThrows(
+            ExecutionException.class,
+            () -> factory.publisherReady().get(5, TimeUnit.SECONDS)
+        );
+        Assertions.assertEquals(1, closeCalls.get());
+
+        factory.close();
+
+        Assertions.assertEquals(1, closeCalls.get());
+        Assertions.assertTrue(membershipConsumer.closed());
+    }
+
     private KafkaCaptureFactory createFactory(Producer<String, byte[]> producer, int messageSize) {
         var plan = PartitionRoutingPlan.forTopic(4, 4, TEST_NODE_ID_STRING);
         var publisher = new CaptureKafkaPublisher(

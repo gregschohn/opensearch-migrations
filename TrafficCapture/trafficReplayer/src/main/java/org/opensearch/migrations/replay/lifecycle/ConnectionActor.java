@@ -91,6 +91,10 @@ public final class ConnectionActor<P extends AutoCloseable, R> {
         void abortDuration(Duration duration);
 
         void pendingAbortChildChanged(AbortChild child, int delta);
+
+        default void fatalEventLoopTermination() {
+            // Optional for non-production actor metrics.
+        }
     }
 
     public interface TargetExchange<P, R> {

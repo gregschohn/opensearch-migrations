@@ -296,7 +296,8 @@ public class TrafficReplayerTopLevel extends TrafficReplayerCore implements Auto
             trafficSource::acknowledgeSessionTermination,
             topLevelContext.getConnectionActorMetrics(),
             topLevelContext.getTargetExchangeStateMetrics(),
-            topLevelContext.getResourceOwnershipMetrics()
+            topLevelContext.getResourceOwnershipMetrics(),
+            error -> shutdown(error)
         );
         var readGate = new ReplayReadGate(trafficSource.getBufferTimeWindow(), trafficSource);
         var progressController = new ReplayProgressController(intakeMailbox, readGate);

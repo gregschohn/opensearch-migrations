@@ -28,19 +28,19 @@ public final class CaptureRoutingState {
 
     static final class SelfRelease {
         private final int partition;
-        private final long epoch;
+        private final long assignmentRevision;
 
-        SelfRelease(int partition, long epoch) {
+        SelfRelease(int partition, long assignmentRevision) {
             this.partition = partition;
-            this.epoch = epoch;
+            this.assignmentRevision = assignmentRevision;
         }
 
         int partition() {
             return partition;
         }
 
-        long epoch() {
-            return epoch;
+        long assignmentRevision() {
+            return assignmentRevision;
         }
 
         @Override
@@ -50,23 +50,23 @@ public final class CaptureRoutingState {
             }
             return other instanceof SelfRelease release
                 && partition == release.partition
-                && epoch == release.epoch;
+                && assignmentRevision == release.assignmentRevision;
         }
 
         @Override
         public int hashCode() {
-            return Objects.hash(partition, epoch);
+            return Objects.hash(partition, assignmentRevision);
         }
 
         @Override
         public String toString() {
-            return "SelfRelease[partition=" + partition + ", epoch=" + epoch + "]";
+            return "SelfRelease[partition=" + partition + ", assignmentRevision=" + assignmentRevision + "]";
         }
     }
 
     private static final class PartitionState {
         private boolean assigned;
-        private long epoch;
+        private long assignmentRevision;
         private ReleaseStatus releaseStatus = ReleaseStatus.NONE;
 
         private void transitionTo(boolean nextAssigned) {
@@ -74,7 +74,7 @@ public final class CaptureRoutingState {
                 return;
             }
             assigned = nextAssigned;
-            epoch++;
+            assignmentRevision++;
             releaseStatus = ReleaseStatus.NONE;
         }
     }
@@ -224,7 +224,7 @@ public final class CaptureRoutingState {
         validatePartition(release.partition());
         var state = partitions.get(release.partition());
         if (shuttingDown
-            || state.epoch != release.epoch()
+            || state.assignmentRevision != release.assignmentRevision()
             || state.assigned
             || state.releaseStatus != ReleaseStatus.PENDING
             || hasConnections(release.partition())) {
@@ -237,7 +237,8 @@ public final class CaptureRoutingState {
 
     synchronized void completeSelfRelease(SelfRelease release) {
         var state = partitions.get(release.partition());
-        if (state.epoch == release.epoch() && state.releaseStatus == ReleaseStatus.SUBMITTED) {
+        if (state.assignmentRevision == release.assignmentRevision()
+            && state.releaseStatus == ReleaseStatus.SUBMITTED) {
             state.releaseStatus = ReleaseStatus.COMPLETE;
         }
     }
@@ -288,7 +289,7 @@ public final class CaptureRoutingState {
             return Optional.empty();
         }
         state.releaseStatus = ReleaseStatus.PENDING;
-        return Optional.of(new SelfRelease(partition, state.epoch));
+        return Optional.of(new SelfRelease(partition, state.assignmentRevision));
     }
 
     private boolean hasConnections(int partition) {

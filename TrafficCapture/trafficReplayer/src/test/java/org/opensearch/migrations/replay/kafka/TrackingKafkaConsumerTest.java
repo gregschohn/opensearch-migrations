@@ -630,7 +630,7 @@ class TrackingKafkaConsumerTest extends InstrumentationTest {
     }
 
     @Test
-    void backwardOffsetFencesTheOldGenerationBeforeRedelivery() {
+    void backwardOffsetFailsClosedWithoutCreatingAnotherGeneration() {
         var mockConsumer = buildMockConsumer();
         var consumer = buildConsumer(mockConsumer);
         var partition = new TopicPartition(TOPIC, 0);
@@ -662,30 +662,17 @@ class TrackingKafkaConsumerTest extends InstrumentationTest {
 
         mockConsumer.seek(partition, 0);
         mockConsumer.addRecord(new ConsumerRecord<>(TOPIC, 0, 0, "new", new byte[] { 0 }));
-        List<KafkaCommitOffsetData> resetBatch;
         try (var context = rootContext.createReadChunkContext()) {
-            resetBatch = consumer.getNextBatchOfRecords(context, (offset, record) -> offset).toList();
+            Assertions.assertThrows(
+                TrackingKafkaConsumer.UnexpectedOffsetRewindException.class,
+                () -> consumer.getNextBatchOfRecords(context, (offset, record) -> offset).toList()
+            );
         }
 
-        Assertions.assertTrue(resetBatch.isEmpty());
-        Assertions.assertEquals(List.of(new SourcePartitionKey(TOPIC, 0, 1)), revoked);
-        Assertions.assertEquals(revoked, trulyLost);
-        Assertions.assertEquals(
-            List.of(
-                new SourcePartitionKey(TOPIC, 0, 1),
-                new SourcePartitionKey(TOPIC, 0, 2)
-            ),
-            assigned
-        );
-        Assertions.assertEquals(0, mockConsumer.position(partition));
-
-        mockConsumer.addRecord(new ConsumerRecord<>(TOPIC, 0, 0, "new", new byte[] { 0 }));
-        List<KafkaCommitOffsetData> newRecords;
-        try (var context = rootContext.createReadChunkContext()) {
-            newRecords = consumer.getNextBatchOfRecords(context, (offset, record) -> offset).toList();
-        }
-        Assertions.assertEquals(1, newRecords.size());
-        Assertions.assertEquals(2, newRecords.get(0).getGeneration());
+        Assertions.assertTrue(revoked.isEmpty());
+        Assertions.assertTrue(trulyLost.isEmpty());
+        Assertions.assertEquals(List.of(new SourcePartitionKey(TOPIC, 0, 1)), assigned);
+        Assertions.assertEquals(1, consumer.getConsumerConnectionGeneration());
     }
 
     @Test

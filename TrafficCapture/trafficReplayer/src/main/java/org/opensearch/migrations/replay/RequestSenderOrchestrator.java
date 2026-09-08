@@ -77,6 +77,10 @@ import lombok.extern.slf4j.Slf4j;
  */
 @Slf4j
 public class RequestSenderOrchestrator {
+    @FunctionalInterface
+    public interface FatalReplayHandler {
+        void onFatal(Error failure);
+    }
 
     private final ClientConnectionPool clientConnectionPool;
     private final Duration initialRetryDelay;
@@ -86,10 +90,12 @@ public class RequestSenderOrchestrator {
     private final ConnectionActor.Metrics actorMetrics;
     private final TargetExchangeState.Metrics targetExchangeMetrics;
     private final ResourceOwnership.Metrics resourceOwnershipMetrics;
+    private final FatalReplayHandler fatalReplayHandler;
     private final ConcurrentHashMap<ConnectionSessionKey, ActorRuntime> actorRuntimes = new ConcurrentHashMap<>();
     private final Object actorLifecycleLock = new Object();
     private final AtomicReference<ReplayTransaction.RunwayLossReason> globalRunwayLossReason =
         new AtomicReference<>();
+    private final AtomicReference<Error> fatalFailure = new AtomicReference<>();
     private ActorShutdown actorShutdown;
 
     private static final class ActorShutdown {
@@ -153,13 +159,34 @@ public class RequestSenderOrchestrator {
     ) {
         this(
             clientConnectionPool,
+            packetConsumerFactory,
+            sessionTerminationAcknowledger,
+            actorMetrics,
+            targetExchangeMetrics,
+            resourceOwnershipMetrics,
+            RequestSenderOrchestrator::reportUnhandledFatal
+        );
+    }
+
+    public RequestSenderOrchestrator(
+        ClientConnectionPool clientConnectionPool,
+        BiFunction<ConnectionReplaySession, IReplayContexts.IReplayerHttpTransactionContext, IPacketFinalizingConsumer<AggregatedRawResponse>> packetConsumerFactory,
+        Function<ConnectionSessionKey, CompletionStage<Void>> sessionTerminationAcknowledger,
+        ConnectionActor.Metrics actorMetrics,
+        TargetExchangeState.Metrics targetExchangeMetrics,
+        ResourceOwnership.Metrics resourceOwnershipMetrics,
+        FatalReplayHandler fatalReplayHandler
+    ) {
+        this(
+            clientConnectionPool,
             Duration.ofMillis(100),
             Duration.ofSeconds(300),
             packetConsumerFactory,
             sessionTerminationAcknowledger,
             actorMetrics,
             targetExchangeMetrics,
-            resourceOwnershipMetrics
+            resourceOwnershipMetrics,
+            fatalReplayHandler
         );
     }
 
@@ -192,6 +219,30 @@ public class RequestSenderOrchestrator {
         TargetExchangeState.Metrics targetExchangeMetrics,
         ResourceOwnership.Metrics resourceOwnershipMetrics
     ) {
+        this(
+            clientConnectionPool,
+            initialRetryDelay,
+            maxRetryDelay,
+            packetConsumerFactory,
+            sessionTerminationAcknowledger,
+            actorMetrics,
+            targetExchangeMetrics,
+            resourceOwnershipMetrics,
+            RequestSenderOrchestrator::reportUnhandledFatal
+        );
+    }
+
+    RequestSenderOrchestrator(
+        ClientConnectionPool clientConnectionPool,
+        Duration initialRetryDelay,
+        Duration maxRetryDelay,
+        BiFunction<ConnectionReplaySession, IReplayContexts.IReplayerHttpTransactionContext, IPacketFinalizingConsumer<AggregatedRawResponse>> packetConsumerFactory,
+        Function<ConnectionSessionKey, CompletionStage<Void>> sessionTerminationAcknowledger,
+        ConnectionActor.Metrics actorMetrics,
+        TargetExchangeState.Metrics targetExchangeMetrics,
+        ResourceOwnership.Metrics resourceOwnershipMetrics,
+        FatalReplayHandler fatalReplayHandler
+    ) {
         this.clientConnectionPool = clientConnectionPool;
         this.initialRetryDelay = initialRetryDelay;
         this.maxRetryDelay = maxRetryDelay;
@@ -200,6 +251,14 @@ public class RequestSenderOrchestrator {
         this.actorMetrics = actorMetrics;
         this.targetExchangeMetrics = targetExchangeMetrics;
         this.resourceOwnershipMetrics = resourceOwnershipMetrics;
+        this.fatalReplayHandler = Objects.requireNonNull(fatalReplayHandler);
+    }
+
+    private static void reportUnhandledFatal(Error failure) {
+        log.atError()
+            .setCause(failure)
+            .setMessage("Fatal replay failure was not connected to a process-level shutdown handler")
+            .log();
     }
 
     public static Function<ConnectionSessionKey, CompletionStage<Void>> noSourceTerminationObligations() {
@@ -316,35 +375,44 @@ public class RequestSenderOrchestrator {
             if (terminationOwner.isDone()) {
                 return;
             }
-            var cause = new CancellationException(
+            var fatalError = new Error(
                 "the event loop for " + key + " terminated before the session finished"
             );
-            log.atWarn()
+            var cleanupCause = new CancellationException(fatalError.getMessage());
+            cleanupCause.initCause(fatalError);
+            log.atError()
+                .setCause(fatalError)
                 .setMessage("The event loop for {} terminated while the session was still live; "
-                    + "failing its outstanding work")
+                    + "the replay process is no longer safe to continue")
                 .addArgument(key)
                 .log();
+            clientConnectionPool.invalidateSession(
+                key.connection().connectionId(),
+                key.sessionNumber(),
+                key.sourceGeneration()
+            );
+            signalFatal(fatalError);
             // Settle the exchange before the actor, so that a target request still holding open
             // instrumentation closes it while the transaction span that encloses it is still open.
-            exchange.fenceAfterMailboxLoss(cause);
+            exchange.fenceAfterMailboxLoss(cleanupCause);
             // Fence the actor before anything that might post: the registry's mailbox is the same dead
             // event loop, so asking it to do work throws, and that must not skip the fencing below.
-            actor.abandonBecauseMailboxStopped(cause);
+            actor.abandonBecauseMailboxStopped(cleanupCause);
             // onActorTerminated runs as a posted command, so a dead mailbox never delivers it; complete
             // the runtime's own gate from the registry's direct emergency sweep instead.  The sweep
             // retains undisposed records and waits for accepted ledger work before this runtime retires.
             actorTerminated = true;
-            transactions.terminateAfterMailboxLoss(cause).whenComplete((ignored, transactionFailure) -> {
+            transactions.terminateAfterMailboxLoss(cleanupCause).whenComplete((ignored, transactionFailure) -> {
                 if (transactionFailure != null) {
                     var unwrappedFailure = unwrap(transactionFailure);
-                    cause.addSuppressed(unwrappedFailure);
+                    fatalError.addSuppressed(unwrappedFailure);
                     log.atError()
                         .setMessage("Emergency transaction cleanup failed after the event loop for {} stopped")
                         .addArgument(key)
                         .setCause(unwrappedFailure)
                         .log();
                 }
-                failTermination(cause);
+                failTermination(fatalError);
             });
         }
 
@@ -450,6 +518,23 @@ public class RequestSenderOrchestrator {
                     settleTermination(outcome);
                 })
             );
+        }
+    }
+
+    private void signalFatal(Error failure) {
+        if (!fatalFailure.compareAndSet(null, failure)) {
+            return;
+        }
+        actorMetrics.fatalEventLoopTermination();
+        try {
+            fatalReplayHandler.onFatal(failure);
+        } catch (Throwable handlerFailure) {
+            failure.addSuppressed(handlerFailure);
+            log.atError()
+                .setCause(handlerFailure)
+                .setMessage("The fatal replay handler failed while processing {}")
+                .addArgument(failure::getMessage)
+                .log();
         }
     }
 
