@@ -295,7 +295,7 @@ class RecordDispositionLedgerTest {
             "source-runway-lost-before-replay-succeeded",
             result.disposition().reasonCode()
         );
-        Assertions.assertEquals(0, handle.releasesWithoutCommit.get());
+        Assertions.assertEquals(1, handle.releasesWithoutCommit.get());
         Assertions.assertFalse(
             ledger.unresolvedObligations().toCompletableFuture().join().containsKey(handle.id())
         );

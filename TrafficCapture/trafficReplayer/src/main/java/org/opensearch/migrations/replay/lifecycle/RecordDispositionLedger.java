@@ -289,8 +289,10 @@ public final class RecordDispositionLedger implements SourcePartitionLifecycleLi
     }
 
     private RecordDisposition acceptDisposition(Obligation obligation, RecordDisposition requested) {
-        if (requested instanceof RecordDisposition.Commit
-            && !generationRunway.getOrDefault(obligation.sourcePartition(), false)) {
+        if (!(requested instanceof RecordDisposition.Commit)) {
+            return requested;
+        }
+        if (!generationRunway.getOrDefault(obligation.sourcePartition(), false)) {
             return new RecordDisposition.Retain(
                 "source-runway-lost-before-" + requested.reasonCode()
             );
@@ -337,8 +339,7 @@ public final class RecordDispositionLedger implements SourcePartitionLifecycleLi
                     "source-runway-lost-before-" + result.disposition().reasonCode()
                 )
             );
-            resolve(id, retainedResult);
-            completion.complete(retainedResult);
+            releaseWithoutCommit(id, obligation, retainedResult, completion);
             return;
         }
         resolveExceptionally(id, obligation, failure, completion);

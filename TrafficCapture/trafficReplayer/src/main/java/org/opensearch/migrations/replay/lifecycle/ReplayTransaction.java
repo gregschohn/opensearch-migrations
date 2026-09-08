@@ -735,12 +735,16 @@ public final class ReplayTransaction<R> {
         RecordDisposition requestedDisposition,
         List<CompletableFuture<RecordDispositionLedger.DispositionResult>> dispositionStages
     ) {
-        return dispositionStages.stream()
+        var acceptedDispositions = dispositionStages.stream()
             .map(CompletableFuture::join)
             .map(RecordDispositionLedger.DispositionResult::disposition)
-            .filter(RecordDisposition.Retain.class::isInstance)
-            .findFirst()
-            .orElse(requestedDisposition);
+            .toList();
+        for (var disposition : acceptedDispositions) {
+            if (disposition instanceof RecordDisposition.Retain) {
+                return disposition;
+            }
+        }
+        return requestedDisposition;
     }
 
     private void finishSuccessfullyLocked(

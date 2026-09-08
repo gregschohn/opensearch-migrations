@@ -476,6 +476,7 @@ public class KafkaCaptureFactory implements IConnectionCaptureFactory<RecordMeta
 
     private void failRoutingInitialization(Throwable failure) {
         CaptureKafkaPublisher publisherToFail;
+        boolean closeInitializingPublisher;
         synchronized (routingInitializationLock) {
             if (routingInitializationFailure.get() != null) {
                 return;
@@ -483,10 +484,16 @@ public class KafkaCaptureFactory implements IConnectionCaptureFactory<RecordMeta
             routingInitializationFailure.set(failure);
             connectionsAwaitingRouting.clear();
             publisherToFail = publisher == null ? initializingPublisher : publisher;
-            initializingPublisher = null;
+            closeInitializingPublisher = publisher == null && initializingPublisher != null;
+            if (!closeInitializingPublisher) {
+                initializingPublisher = null;
+            }
         }
         if (publisherToFail != null) {
             publisherToFail.failClosed(failure);
+            if (closeInitializingPublisher) {
+                publisherToFail.close();
+            }
         }
         publisherFuture.completeExceptionally(failure);
         if (routingInitializer != null) {

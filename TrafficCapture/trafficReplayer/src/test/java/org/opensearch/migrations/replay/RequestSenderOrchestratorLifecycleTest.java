@@ -965,6 +965,7 @@ class RequestSenderOrchestratorLifecycleTest extends InstrumentationTest {
         var permits = new AsyncPermitPool(1, Runnable::run);
         var context = rootContext.getTestConnectionRequestContext("pool-yanked", 0);
         var neverCompletes = new CompletableFuture<Void>();
+        var fatalFailure = new CompletableFuture<Error>();
         var writesStarted = new AtomicInteger();
         orchestrator = new RequestSenderOrchestrator(
             connectionPool,
@@ -982,7 +983,11 @@ class RequestSenderOrchestratorLifecycleTest extends InstrumentationTest {
                     return new TextTrackedFuture<>(new CompletableFuture<>(), "never-completing response");
                 }
             },
-            sessionKey -> sessionAcknowledger.get().apply(sessionKey)
+            sessionKey -> sessionAcknowledger.get().apply(sessionKey),
+            org.opensearch.migrations.replay.lifecycle.ConnectionActor.Metrics.NOOP,
+            TargetExchangeState.Metrics.NOOP,
+            ResourceOwnership.Metrics.NOOP,
+            fatalFailure::complete
         );
 
         var request = schedule(context, permits, CompletableFuture.completedFuture(transformedRequest()));
@@ -993,6 +998,8 @@ class RequestSenderOrchestratorLifecycleTest extends InstrumentationTest {
 
         connectionPool.shutdownNow().get(30, TimeUnit.SECONDS);
 
+        var reportedFatal = fatalFailure.get(5, TimeUnit.SECONDS);
+        Assertions.assertTrue(reportedFatal.getMessage().contains("event loop"));
         Assertions.assertThrows(
             java.util.concurrent.ExecutionException.class,
             () -> request.future.get(30, TimeUnit.SECONDS),

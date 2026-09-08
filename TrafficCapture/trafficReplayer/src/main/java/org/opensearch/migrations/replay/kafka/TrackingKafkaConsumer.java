@@ -195,7 +195,8 @@ public class TrackingKafkaConsumer implements ConsumerRebalanceListener {
      *  events for any active connections on them. Always invoked at the OLD generation (before
      *  any subsequent onPartitionsAssigned bumps it), matching the generation stamped on the
      *  source termination obligations. */
-    private java.util.function.Consumer<Collection<SourcePartitionKey>> onPartitionsTrulyLostCallback = ignored -> {};
+    private java.util.function.Consumer<Collection<SourcePartitionKey>> onPartitionsTrulyLostCallback =
+        ignored -> {};
     private SourcePartitionLifecycleListener sourcePartitionLifecycleListener =
         SourcePartitionLifecycleListener.NO_OP;
     /** Set true by {@link #cleanupRevokedPartitions} when a rebalance callback fires inline
@@ -782,7 +783,7 @@ public class TrackingKafkaConsumer implements ConsumerRebalanceListener {
             if (rebalanceDuringPoll.getAndSet(false)) {
                 records = recoverFromInlineRebalance(records, prePollPositions);
             }
-            records = recoverFromSourceEpochReset(records);
+            failOnUnexpectedOffsetRewind(records);
             pollsSinceLastHeartbeat.incrementAndGet();
             if (records.isEmpty()) {
                 emptyPollsSinceLastHeartbeat.incrementAndGet();
@@ -804,6 +805,9 @@ public class TrackingKafkaConsumer implements ConsumerRebalanceListener {
                 .log();
             return records;
         } catch (RuntimeException e) {
+            if (e instanceof UnexpectedOffsetRewindException) {
+                throw e;
+            }
             log.atWarn().setCause(e)
                 .setMessage("Unable to poll the topic: {} with our Kafka consumer ({}). "
                         + "Swallowing and awaiting next metadata refresh to try again.")
@@ -869,13 +873,7 @@ public class TrackingKafkaConsumer implements ConsumerRebalanceListener {
         return new ConsumerRecords<>(Collections.emptyMap(), Collections.emptyMap());
     }
 
-    /**
-     * Kafka can retain a cooperative assignment while deleting and recreating its topic. In that
-     * case no revoke/assign callback fences the old application generation, but fetched offsets
-     * move backward. Treat that rewind as a source epoch boundary before exposing either epoch's
-     * records to the replay lifecycle.
-     */
-    private ConsumerRecords<String, byte[]> recoverFromSourceEpochReset(
+    private void failOnUnexpectedOffsetRewind(
         ConsumerRecords<String, byte[]> polled
     ) {
         var minimumReturned = new HashMap<TopicPartition, Long>();
@@ -889,25 +887,22 @@ public class TrackingKafkaConsumer implements ConsumerRebalanceListener {
             .map(Map.Entry::getKey)
             .toList();
         if (resetPartitions.isEmpty()) {
-            return polled;
+            return;
         }
 
-        log.atWarn()
-            .setMessage("Kafka offsets moved backward for {}; fencing the old source generation")
-            .addArgument(() -> resetPartitions.stream()
-                .map(partition -> partition + "->" + minimumReturned.get(partition))
-                .collect(Collectors.joining(",")))
-            .log();
-        cleanupRevokedPartitions(resetPartitions, /*attemptCommit=*/ false);
-        onPartitionsAssigned(resetPartitions);
+        throw new UnexpectedOffsetRewindException(
+            "Kafka offsets moved backward for "
+                + resetPartitions.stream()
+                    .map(partition -> partition + "->" + minimumReturned.get(partition))
+                    .collect(Collectors.joining(","))
+                + ". Live traffic-topic replacement is unsupported; restart the replay with a fresh source."
+        );
+    }
 
-        for (var entry : minimumReturned.entrySet()) {
-            if (kafkaConsumer.assignment().contains(entry.getKey())) {
-                kafkaConsumer.seek(entry.getKey(), entry.getValue());
-            }
+    static final class UnexpectedOffsetRewindException extends IllegalStateException {
+        private UnexpectedOffsetRewindException(String message) {
+            super(message);
         }
-        rebalanceDuringPoll.set(false);
-        return new ConsumerRecords<>(Collections.emptyMap(), Collections.emptyMap());
     }
 
     private boolean hasAlreadyObserved(TopicPartition partition, long offset) {
