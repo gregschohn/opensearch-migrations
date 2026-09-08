@@ -21,8 +21,7 @@ final class CaptureGroupProtocol {
     private CaptureGroupProtocol() {}
 
     enum AdmissionPhase {
-        JOINING,
-        READY,
+        PROBATIONARY,
         ACTIVE
     }
 
@@ -77,15 +76,15 @@ final class CaptureGroupProtocol {
         AdmissionPhase advertisedPhase,
         Footprint footprint,
         Map<String, FootprintIdentity> observedFootprints,
-        Map<String, FootprintIdentity> matureWitnesses
+        Map<String, FootprintIdentity> confirmedPeerVisibility
     ) {
         Subscription {
             nodeId = requireNonBlank(nodeId, "subscription nodeId");
             advertisedPhase = Objects.requireNonNull(advertisedPhase);
             footprint = Objects.requireNonNull(footprint);
             observedFootprints = canonicalObservedFootprints(observedFootprints);
-            matureWitnesses = canonicalWitnessClaims(nodeId, matureWitnesses);
-            if (observedFootprints.containsKey(nodeId) || matureWitnesses.containsKey(nodeId)) {
+            confirmedPeerVisibility = canonicalPeerVisibilityClaims(nodeId, confirmedPeerVisibility);
+            if (observedFootprints.containsKey(nodeId) || confirmedPeerVisibility.containsKey(nodeId)) {
                 throw new IllegalArgumentException("a member cannot advertise itself as a peer");
             }
         }
@@ -97,7 +96,7 @@ final class CaptureGroupProtocol {
         AdmissionPhase effectivePhase,
         Footprint footprint,
         Map<String, FootprintIdentity> observedFootprints,
-        Map<String, FootprintIdentity> matureWitnesses
+        Map<String, FootprintIdentity> confirmedPeerVisibility
     ) {
         MemberRow {
             nodeId = requireNonBlank(nodeId, "member nodeId");
@@ -105,8 +104,8 @@ final class CaptureGroupProtocol {
             effectivePhase = Objects.requireNonNull(effectivePhase);
             footprint = Objects.requireNonNull(footprint);
             observedFootprints = canonicalObservedFootprints(observedFootprints);
-            matureWitnesses = canonicalWitnessClaims(nodeId, matureWitnesses);
-            if (observedFootprints.containsKey(nodeId) || matureWitnesses.containsKey(nodeId)) {
+            confirmedPeerVisibility = canonicalPeerVisibilityClaims(nodeId, confirmedPeerVisibility);
+            if (observedFootprints.containsKey(nodeId) || confirmedPeerVisibility.containsKey(nodeId)) {
                 throw new IllegalArgumentException("a member cannot advertise itself as a peer");
             }
         }
@@ -143,20 +142,20 @@ final class CaptureGroupProtocol {
         return Collections.unmodifiableMap(canonical);
     }
 
-    private static Map<String, FootprintIdentity> canonicalWitnessClaims(
-        String writerNodeId,
+    private static Map<String, FootprintIdentity> canonicalPeerVisibilityClaims(
+        String candidateNodeId,
         Map<String, FootprintIdentity> claims
     ) {
         Objects.requireNonNull(claims);
         var canonical = new LinkedHashMap<String, FootprintIdentity>();
-        new TreeMap<>(claims).forEach((witnessNodeId, writerIdentity) -> {
-            requireNonBlank(witnessNodeId, "witness nodeId");
-            if (!writerNodeId.equals(writerIdentity.nodeId())) {
+        new TreeMap<>(claims).forEach((observerNodeId, candidateIdentity) -> {
+            requireNonBlank(observerNodeId, "peer observer nodeId");
+            if (!candidateNodeId.equals(candidateIdentity.nodeId())) {
                 throw new IllegalArgumentException(
-                    "mature witness claim must identify the advertising writer's footprint"
+                    "confirmed peer visibility must identify the advertising candidate's footprint"
                 );
             }
-            canonical.put(witnessNodeId, writerIdentity);
+            canonical.put(observerNodeId, candidateIdentity);
         });
         return Collections.unmodifiableMap(canonical);
     }

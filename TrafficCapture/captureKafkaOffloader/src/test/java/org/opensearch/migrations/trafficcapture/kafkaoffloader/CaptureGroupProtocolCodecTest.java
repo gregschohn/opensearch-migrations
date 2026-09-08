@@ -22,7 +22,7 @@ class CaptureGroupProtocolCodecTest {
         var nodeB = Footprint.known(7, List.of(3));
         var subscription = new Subscription(
             "node-a",
-            AdmissionPhase.READY,
+            AdmissionPhase.PROBATIONARY,
             nodeA,
             Map.of("node-b", nodeB.identity("node-b")),
             Map.of("node-b", nodeA.identity("node-a"))
@@ -50,8 +50,8 @@ class CaptureGroupProtocolCodecTest {
         );
         var rowB = new MemberRow(
             "node-b",
-            AdmissionPhase.JOINING,
-            AdmissionPhase.JOINING,
+            AdmissionPhase.PROBATIONARY,
+            AdmissionPhase.PROBATIONARY,
             nodeB,
             Map.of("node-a", nodeA.identity("node-a")),
             Map.of()
@@ -80,7 +80,7 @@ class CaptureGroupProtocolCodecTest {
     void malformedOrWrongTypeMetadataFailsClosed() {
         var subscription = new Subscription(
             "node-a",
-            AdmissionPhase.JOINING,
+            AdmissionPhase.PROBATIONARY,
             Footprint.unknown(0),
             Map.of(),
             Map.of()
@@ -111,7 +111,7 @@ class CaptureGroupProtocolCodecTest {
             IllegalArgumentException.class,
             () -> new Subscription(
                 "node-a",
-                AdmissionPhase.JOINING,
+                AdmissionPhase.PROBATIONARY,
                 Footprint.unknown(0),
                 Map.of("wrong", nodeB.identity("node-b")),
                 Map.of()
@@ -120,7 +120,7 @@ class CaptureGroupProtocolCodecTest {
     }
 
     @Test
-    void matureWitnessClaimsNameTheWitnessButBindTheAdvertisingWriterFootprint() {
+    void confirmedVisibilityNamesTheObserverButBindsTheAdvertisingCandidateFootprint() {
         var nodeA = Footprint.known(3, List.of(0));
         var nodeB = Footprint.known(1, List.of(0));
 
@@ -128,7 +128,7 @@ class CaptureGroupProtocolCodecTest {
             IllegalArgumentException.class,
             () -> new Subscription(
                 "node-a",
-                AdmissionPhase.READY,
+                AdmissionPhase.PROBATIONARY,
                 nodeA,
                 Map.of("node-b", nodeB.identity("node-b")),
                 Map.of("node-b", nodeB.identity("node-b"))

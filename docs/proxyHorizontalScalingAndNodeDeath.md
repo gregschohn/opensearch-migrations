@@ -4,8 +4,9 @@
 ordered publishing, strict control-record timestamps, interleaved chunk reconstruction,
 `NoMoreWrites`, writer-completion settlement, peer fencing, group membership, and the local
 capture write gate exist. The current membership implementation does not yet implement the
-`JOINING`/`READY`/`ACTIVE` admission protocol, pairwise witnesses, or versioned write footprints
-specified below. Those are required before the scaling implementation is considered complete.
+`PROBATIONARY`/`ACTIVE` admission protocol, directional `confirmedPeerVisibility`, or versioned
+write footprints specified below. Those are required before the scaling implementation is
+considered complete.
 
 Terminology in this document is deliberately specific:
 
@@ -105,7 +106,7 @@ disposition through different structural facts.
 | **Expiry policy** — what a confirmation authorizes (commit vs. retain, per the disposition matrix) | **Unchanged.** A writer-completion confirmation produces the same `ConfirmedAbsent` verdict and takes the same downstream path. |
 | **Omission predicate** — the latest complete exact manifest from one node on one partition after the connection's last record omits it | **Implemented.** One manifest is sufficient because registry copy and final-record acknowledgement are linearized. |
 | **Admissible signals** | **Strengthened.** One added, one deleted outright. |
-| **Post-completion violation rule** | **New.** Traffic after peer completion is fatal and retained, never silently discarded. |
+| **Post-completion cutoff rule** | **Preserved.** Traffic after peer completion is discarded, counted, and committed past as zombie traffic. |
 
 The evidence set gets strictly better in three ways:
 
@@ -124,16 +125,17 @@ The evidence set gets strictly better in three ways:
   ordered fact, so unresolved work remains retained. §6.2 makes that accepted terminal behavior
   explicit instead of adding a second, out-of-band proof mechanism.
 
-The **post-completion violation rule** is separate policy. A peer emits `NoMoreWrites` only after
-the hard producer-quiescence bound in §5, so later traffic from that writer/partition is forbidden.
-If the replayer nevertheless observes it, the source protocol has been violated: retain, halt
-loudly, and do not acknowledge that later record. Never turn it into an inert record and commit
-past it. A self-emitted record does not install this terminal fence because ordinary scale-down may
-return the partition to the same process (§4.3).
+The **post-completion cutoff rule** is separate policy. A peer-emitted `NoMoreWrites` establishes
+the authoritative cutoff for that writer and partition. Later records from that writer/partition
+are zombie traffic: discard them, advance the consumer, and emit a high-severity log, metric, and
+alarm. A bounded quiescence delay before peer completion may reduce legitimate queued or retrying
+sends that cross the cutoff, but it does not fence the departed producer and is not required for
+consumer correctness. A self-emitted record does not install this terminal cutoff because ordinary
+scale-down may return the partition to the same process (§4.3).
 
 So: the policy is constant, the omission predicate is strengthened around the exact registry, the
-evidence set gains writer completion, and post-completion traffic becomes a fatal protocol
-violation rather than a lossy cleanup path.
+evidence set gains writer completion, and post-completion zombie traffic remains explicitly
+contained rather than blocking the replay partition.
 
 ## 3. Protocol
 
@@ -148,8 +150,8 @@ violation rather than a lossy cleanup path.
   issues no fetches.
 - Membership eligibility requires writer-completion capability. Before subscribing, a process
   must initialize its producer, resolve the traffic topic partitions, and prove locally that it can
-  emit `NoMoreWrites` to every partition. `JOINING` means "not admitted for client capture," not
-  "partially initialized."
+  emit `NoMoreWrites` to every partition. `PROBATIONARY` means "not admitted for client capture,"
+  not "partially initialized."
 - That `poll()` loop runs on **its own thread**, never shared with capture work. Otherwise producer
   backpressure on the capture path could stall heartbeats and get the proxy evicted, so capture
   slowness would masquerade as proxy death — and eviction trips the §3.5 latch, which is not
@@ -164,15 +166,17 @@ violation rather than a lossy cleanup path.
     cold group can promote a cohort only when that cohort plus existing active members reaches
     this count.
   - `requiredPeerWitnesses` excludes the candidate. It states how many other live members must
-    mature as witnesses before the candidate may become active. With `N` mature witnesses, the
-    writer can fail together with up to `N-1` of those witnesses while still leaving one survivor
-    that observed it. Therefore configure
+    have confirmed visibility of the candidate before it may become active. It counts validated
+    directional `confirmedPeerVisibility(peer, candidate)` relationships. With `N` confirming
+    peers, the writer can fail together with up to `N-1` of those peers while still leaving one
+    survivor that observed it. Therefore configure
     `requiredPeerWitnesses = toleratedPeerWitnessFailures + 1`.
     Zero is allowed only as an explicit singleton/availability-only mode that accepts
     total-fleet-loss retention; it is not hardened multi-proxy scaling.
-- `peerWitnessMaturityPeriod` applies independently to each candidate/witness pair. It delays
-  admission only; it never authorizes replay settlement or interprets peer silence as completion.
-- Both settings are admission controls. A later fall below the configured witness coverage emits
+- `peerVisibilityInterval` applies independently to each ordered `(observer, candidate)` pair. It
+  delays admission only; it never authorizes replay settlement or interprets peer silence as
+  completion.
+- Both settings are admission controls. A later fall below the configured peer-visibility coverage emits
   a persistent degraded-redundancy metric but does not demote an already active process or
   interrupt existing connections. During that degraded interval, recovery from a subsequent writer
   failure is no longer guaranteed; unresolved replay work may retain as in total-fleet loss. This
@@ -183,20 +187,20 @@ violation rather than a lossy cleanup path.
   metrics expose configurations or replica counts that cannot satisfy that condition.
 - A process that trips its one-way write latch or loses the ability to emit writer-completion
   records stops advertising acknowledgements and leaves the group. It cannot remain ACTIVE or
-  count as a witness. Re-entry requires a fresh process and `nodeId`.
+  count toward confirmed peer visibility. Re-entry requires a fresh process and `nodeId`.
 
 ### 3.2 Per-proxy state
 
 | State | Source | Used for |
 |---|---|---|
 | `nodeId` | fresh per process | attribution; never reused |
-| admission phase | local state plus leader assignment | `JOINING`, `READY`, or `ACTIVE` |
+| admission phase | local state plus leader assignment | `PROBATIONARY` or `ACTIVE` |
 | raw Kafka assignments | assignor callbacks | partitions proposed by group assignment |
 | eligible traffic assignments | footprint owner | partitions visible to connection routing and source forwarding |
 | connection → partition | chosen at open, **immutable** | routing every subsequent record |
 | partitions with live connections | `ProxyLivenessRegistry` key set | manifest targets, `NoMoreWrites` timing |
 | footprint tuple | serialized footprint owner, echoed by group leader | `(nodeId, revision, canonicalPartitionDigest)` plus its partition set |
-| peer witness acknowledgements | subscription/assignment `userData` | proves which peers observed this member and exact footprint tuple |
+| confirmed peer visibility | subscription/assignment `userData` | directional proof that a peer continuously observed this member and exact footprint tuple |
 | pending peer-completion work | ordered publisher lane | departed writer/partition records retained until Kafka acknowledgement |
 
 The connection→partition entry is chosen once and stored. Nothing recomputes it. This is
@@ -209,81 +213,83 @@ recomputation, keeping the assertion without the hazard.
 Every subscription advertises a versioned structure containing:
 
 - `nodeId`;
-- advertised admission phase: `JOINING`, `READY`, or `ACTIVE`;
+- advertised admission phase: `PROBATIONARY` or `ACTIVE`;
 - the currently advertised footprint tuple and canonical partition set, or `UNKNOWN`;
 - for each member observed in the previous assignment table, the exact
   `(nodeId, footprintRevision, canonicalFootprintDigest)` tuple this member observed;
-- the exact peer node ids and footprint tuples whose pairwise relationships it currently considers
-  mature. ACTIVE writers continue tracking this state so replacement peers can restore witness
-  coverage and authorize later footprint expansions.
+- the exact peer node ids and footprint tuples for which it currently claims
+  `confirmedPeerVisibility(peer, thisMember)`. ACTIVE writers continue tracking this state so
+  replacement peers can restore coverage and authorize later footprint expansions.
 
 The group leader places the complete member table into every assignment's `userData`. Each row
 contains the member's advertised phase, leader-effective phase, exact footprint tuple and set,
-mature-witness claim, and peer-observation acknowledgements. The leader serializes one immutable
-canonical table encoding for the group and distributes that same encoding to every member. Reusing
-one revision for different partition sets, a digest mismatch, malformed or duplicate node ids,
-oversized metadata, or any internally inconsistent acknowledgement fails capture closed.
+confirmed-peer-visibility claims, and peer-observation acknowledgements. The leader serializes one
+immutable canonical table encoding for the group and distributes that same encoding to every
+member. Reusing one revision for different partition sets, a digest mismatch, malformed or
+duplicate node ids, oversized metadata, or any internally inconsistent acknowledgement fails
+capture closed.
 
 Group metadata propagates only during rebalances. Receiving an assignment table is not itself
-proof that every peer received it. A peer becomes a witness only after that peer's later
-subscription echoes the candidate's `nodeId`; the same echo mechanism acknowledges a candidate's
-exact footprint tuple.
+proof that every peer received it. `confirmedPeerVisibility(A, B)` becomes possible only after A's
+later subscription echoes B's exact footprint tuple; the relationship becomes confirmed only
+after A and B remain co-present and healthy for `peerVisibilityInterval`.
 
-The leader never trusts an advertised READY phase or mature-witness claim by itself. For each
-writer, it intersects the writer's claimed mature witnesses with the current rebalance's
-subscriptions. A witness is currently valid only when it is a distinct completion-capable current
-member and its current subscription acknowledges the writer and required footprint tuple.
-Candidates use that validated set for promotion; ACTIVE writers use it for coverage reporting and
-footprint expansion.
+The leader never trusts a confirmed-peer-visibility claim by itself. For each candidate B, it
+intersects B's claimed observers with the current rebalance's subscriptions. A claim
+`confirmedPeerVisibility(A, B)` is currently valid only when A is a distinct,
+completion-capable current member and A's current subscription acknowledges B's required exact
+footprint tuple. Candidates use that validated set for promotion; ACTIVE writers use it for
+coverage reporting and footprint expansion.
 
 A survivor uses a bounded footprint for departure cleanup only when it observed the writer's exact
 write-authorizing tuple through a continuous installed assignment-table sequence. An assignment
 gap, membership loss/rejoin, missing writer row, invalid tuple, or uncertain continuity changes that
 writer's footprint to UNKNOWN and therefore every partition.
 
-Quiet groups must still advance the protocol. Maturity expiry, transition to READY, activation
-debounce expiry, and an unacknowledged footprint expansion each schedule a coalesced
+Quiet groups must still advance the protocol. Peer-visibility interval expiry, activation debounce
+expiry, and an unacknowledged footprint expansion each schedule a coalesced
 `enforceRebalance()` with jitter. Only the membership thread invokes it. Redundant requests are
 coalesced, with at most one in-flight enforcement for one proposed metadata tuple.
 
-#### 3.2.2 Admission phases and pairwise witness maturity
+#### 3.2.2 Admission phases and `confirmedPeerVisibility`
 
-Pre-activation readiness is revocable; ACTIVE is monotonic for one process:
+Pre-activation eligibility is revocable; ACTIVE is monotonic for one process:
 
 ```
-JOINING <-> READY -> ACTIVE
+PROBATIONARY -> ACTIVE
 ```
 
-- **`JOINING`** participates fully in group membership and peer observation but receives no
+- **`PROBATIONARY`** participates fully in group membership and peer observation but receives no
   traffic assignments and admits no capture connections. Therefore a scaling probation never
   removes capacity from existing active members.
-- A candidate starts one independent maturity interval for each peer whose subscription echoes
-  the candidate's presence. The relationship remains maturing while both node ids remain in the
-  group and the peer continues acknowledging the candidate. An unrelated member joining or
-  leaving does not reset it. Losing that peer resets only that pair.
-- **`READY`** means at least `requiredPeerWitnesses` peer relationships have matured and those
-  peers acknowledge the candidate's current initial footprint tuple. READY members still receive
-  no traffic assignments. Losing a required current witness, an acknowledgement, or the initial
-  footprint confirmation returns the effective phase to JOINING.
-- Advertised READY is a claim, not promotion authority. The leader revalidates the exact current
-  witnesses as described in §3.2.1.
-- When the first currently eligible READY candidate appears, the leader starts one short activation
+- **`confirmedPeerVisibility(A, B)`** means A and B remained co-present and healthy for the
+  configured visibility interval, allowing us to infer that A processed membership containing B.
+  The relationship is directional and per peer. An unrelated join does not reset it. A leaving
+  removes only A's coverage of B. Tracking continues after B activates so later or replacement
+  peers can restore B's failure-tolerance coverage.
+- B starts one independent visibility interval for each peer A whose subscription echoes B's
+  exact current footprint tuple. The interval continues while both node ids remain in the group
+  and A continues acknowledging that tuple. Losing A or changing B's footprint resets only
+  `confirmedPeerVisibility(A, B)`.
+- A probationary candidate becomes eligible when at least `requiredPeerWitnesses` current,
+  leader-validated peers have confirmed visibility of its current initial footprint tuple.
+- When the first currently eligible probationary candidate appears, the leader starts one short activation
   debounce deadline. Additional eligible candidates join that cohort without extending the
   deadline; candidates that lose eligibility are removed. At the deadline, the leader promotes all
   currently eligible cohort members if existing ACTIVE members plus that cohort reaches
   `minimumActiveProxyCount`; otherwise it promotes none. Leader replacement may restart the
-  debounce but cannot bypass witness validation.
+  debounce but cannot bypass peer-visibility validation.
 - **`ACTIVE`** receives traffic assignments and may admit new capture connections. ACTIVE never
-  returns to READY or JOINING in-process. Eviction or local staleness trips the one-way write
-  latch in §5 and requires process replacement.
+  returns to PROBATIONARY in-process. Eviction or local staleness trips the one-way write latch in
+  §5 and requires process replacement.
 
 There is deliberately no global "membership has been stable for N seconds" timer. Pairwise
-maturity is a filter on protocol evidence, not the evidence itself. The peer's subscription echo
-proves observation; a local monotonic timer rejects transient relationships. Timer expiry is
+visibility timing is a filter on protocol evidence, not the evidence itself. A's subscription echo
+proves that A observed B; a local monotonic timer rejects transient relationships. Timer expiry is
 provisional and schedules a rebalance. Promotion occurs only when that subsequent rebalance
-revalidates the pair against current subscriptions. Pair timers are neither persisted nor
-transferred between processes. A later join does not erase evidence already accumulated between an
-existing candidate and witness.
+revalidates the directional relationship against current subscriptions. Pair timers are neither
+persisted nor transferred between processes. A later join does not erase evidence already
+accumulated between an existing candidate B and observer A.
 
 `minimumActiveProxyCount` is evaluated at the leader's promotion decision. It is a startup barrier,
 not a maintained quorum and not proof that every promoted member has already installed its
@@ -309,16 +315,17 @@ eligible traffic assignments
 ```
 
 The initial footprint is `UNKNOWN`, which survivors interpret as every topic partition. The first
-implementation must advertise the full topic before READY and obtain the required peer
-acknowledgements. This lets the activation rebalance assign any partition without creating a second
-capacity gap. Later implementations may advertise a smaller prospective set only if the leader
-reserves assignments without revoking them from existing ACTIVE members until confirmation.
+implementation must advertise the full topic while PROBATIONARY and obtain the required
+confirmed-peer-visibility coverage. This lets the activation rebalance assign any partition
+without creating a second capacity gap. Later implementations may advertise a smaller prospective
+set only if the leader reserves assignments without revoking them from existing ACTIVE members
+until confirmation.
 
 The owner tracks two exact sets:
 
 - `latestAdvertisedFootprint`: the set in the most recent subscription metadata;
 - `writeAuthorizedFootprint`: the exact tuple echoed by the leader and acknowledged by enough
-  current mature witnesses.
+  current peers with confirmed visibility.
 
 Each partition moves through explicit owner states:
 
@@ -338,7 +345,8 @@ their final work settles. Consequently:
 
 - **Expansion precedes admission and source forwarding.** A newly assigned partition is not visible
   to connection routing, registration, capture, or request forwarding until a larger exact
-  footprint tuple is leader-echoed and acknowledged by `requiredPeerWitnesses`. Blocking only
+  footprint tuple is leader-echoed and covered by `requiredPeerWitnesses` validated
+  `confirmedPeerVisibility` relationships. Blocking only
   `KafkaProducer.send` is too late because the source mutation may already have occurred.
 - **An advertised shrink is immediately binding.** Once subscription metadata excludes a
   partition, that partition is removed from new routing and write admission even if the prior
@@ -450,19 +458,20 @@ completion record is.
 
 ### 3.5 Lifecycles
 
-**Startup.** Initialize writer-completion capability, then join as `JOINING` with UNKNOWN followed
-by a full-topic initial footprint. Participate in group polls but receive no traffic assignments.
-Accumulate pairwise witness maturity, advertise `READY`, and wait for leader cohort promotion.
-Begin accepting connections only after becoming `ACTIVE` and after every eligible assignment is
-covered by both advertised and write-authorized footprints. No traffic-log coordination record is
-added.
+**Startup.** Initialize writer-completion capability, then join as `PROBATIONARY` with UNKNOWN
+followed by a full-topic initial footprint. Participate in group polls but receive no traffic
+assignments. Accumulate directional `confirmedPeerVisibility` and wait for leader cohort
+promotion. Begin accepting connections only after becoming `ACTIVE` and after every eligible
+assignment is covered by both advertised and write-authorized footprints. No traffic-log
+coordination record is added.
 
-**Scale-up.** B joins as `JOINING`; A keeps all traffic assignments during B's witness probation.
-After B becomes READY, the leader promotes a debounced cohort and cooperatively transfers some
-traffic assignments. A's existing connections on transferred partitions **drain in place** — A
-keeps writing their traffic records and manifests while B owns those partitions for new
-connections. A emits self `NoMoreWrites` as its last connection on each partition closes. No
-client connection is disturbed by scale-up, and probation does not reduce existing capacity.
+**Scale-up.** B joins as `PROBATIONARY`; A keeps all traffic assignments during B's probation.
+After B has sufficient validated `confirmedPeerVisibility`, the leader promotes a debounced cohort
+and cooperatively transfers some traffic assignments. A's existing connections on transferred
+partitions **drain in place** — A keeps writing their traffic records and manifests while B owns
+those partitions for new connections. A emits self `NoMoreWrites` as its last connection on each
+partition closes. No client connection is disturbed by scale-up, and probation does not reduce
+existing capacity.
 
 **Scale-down.** B, C, and D leave; the assignor gives their partitions back to A, including
 partitions A previously emitted self `NoMoreWrites` for during scale-up. Before writing there, A
@@ -482,19 +491,19 @@ The callback returns immediately and never risks blowing `max.poll.interval.ms`.
 
 **Eviction or stall.** `onPartitionsLost`, or a local staleness gate (see §5), trips a
 one-way latch: this process never writes again, and per an operator flag either exits or
-degrades to pass-through. If the process can still execute, it stops witness acknowledgements and
-leaves the group. Survivors begin peer-completion processing.
+degrades to pass-through. If the process can still execute, it stops advertising peer-visibility
+confirmations and leaves the group. Survivors begin peer-completion processing.
 
-**Crash.** There is no self completion. Every continuous survivor that observes X disappear waits
-the bounded producer-quiescence interval in §5, then emits `NoMoreWrites{X, P, self}` for each
-partition P in X's last safely observed footprint. Missing row, invalid continuity, or UNKNOWN
-footprint falls back to every topic partition. Each survivor retains every
+**Crash.** There is no self completion. Every continuous survivor that observes X disappear emits
+`NoMoreWrites{X, P, self}` for each partition P in X's last safely observed footprint, optionally
+after the bounded quiescence delay in §5. Missing row, invalid continuity, or UNKNOWN footprint
+falls back to every topic partition. Each survivor retains every
 `(departedNodeId, partition)` obligation until Kafka acknowledges it; asynchronous failure keeps the
 obligation pending and trips the local write gate. Duplicate retries are allowed.
 
-For a footprint tuple acknowledged by W witnesses, automatic peer completion remains guaranteed
-while at least one of those W remains completion-capable. The writer may fail together with at most
-W-1 witnesses. Loss of all W exhausts the configured failure boundary.
+For a footprint tuple covered by W peers with confirmed visibility, automatic peer completion
+remains guaranteed while at least one of those W remains completion-capable. The writer may fail
+together with at most W-1 such peers. Loss of all W exhausts the configured failure boundary.
 
 Every member computes departures from its own membership view, and any that notice may write.
 Duplicates are idempotent: the rule in §4.1 is keyed on the earliest such offset per (X, P), and
@@ -512,9 +521,8 @@ Everything is in-band and read-only.
 ### 4.1 Settling
 
 A writer-completion record settles connections that came before it. A peer-emitted record also
-establishes a terminal writer fence because §5's producer-quiescence bound has elapsed. That fence
-does not authorize discarding later traffic; later traffic is a fatal contradiction of the
-protocol.
+establishes the authoritative cutoff for later traffic from that writer and partition. This is
+consumer-side zombie containment, not producer fencing.
 
 | Observation | Conclusion |
 |---|---|
@@ -530,10 +538,11 @@ Both signals are usable while the replayer is lagging because both are positione
 partition as the traffic they describe. There is no out-of-band membership verdict: a present-time
 membership answer has no offset and therefore cannot prove which historical records it covers.
 
-**Post-completion violation rule.** A record arriving from X on P after
-`NoMoreWrites{X, P, emitter}` where `emitter != X` is retained and halts replay for that partition.
-Emit a fatal protocol-violation metric and diagnostic; never acknowledge it as ignored traffic.
-Records after a self-emitted `NoMoreWrites` remain valid and are processed normally.
+**Post-completion cutoff rule.** A record arriving from X on P after
+`NoMoreWrites{X, P, emitter}` where `emitter != X` is discarded and the consumer advances past it.
+Emit a high-severity log, metric, and alarm, including writer, emitter, partition, cutoff offset,
+and discarded-record offset. Records after a self-emitted `NoMoreWrites` remain valid and are
+processed normally.
 
 ### 4.2 Why only peer completion is terminal
 
@@ -544,14 +553,13 @@ of now." It is not a promise about the future, and §4.3 shows it cannot be one.
 writes to that partition again has not contradicted anything.
 
 A **peer-emitted** record describes a process that departed membership. Its purpose is to finish a
-writer that cannot speak for itself, so it must be terminal. It is emitted only after §5 proves that
-no accepted old-writer submission can still land:
+writer that cannot speak for itself, so its offset becomes the authoritative consumer cutoff:
 
 - If the node truly died, a replacement is a new process with a fresh `nodeId` (§3.3), so it is a
   different subject and the record does not touch it.
-- If the node was merely evicted or stalled, §3.5's one-way latch has already stopped it from
-  accepting new work, the final producer-submission gate rejects stale queued work, and the bounded
-  producer-delivery interval has elapsed.
+- If the node was merely evicted or stalled, its one-way latch and final producer-submission gate
+  should stop new work, but group departure does not fence its Kafka producer. Queued, retrying, or
+  briefly continuing sends can still land after the cutoff and are discarded and alarmed.
 
 Note also that a peer-emitted record about X never impedes another node: records are keyed per
 `(nodeId, partition)`, so `NoMoreWrites{B, P, A}` says nothing about A's own writes to P.
@@ -608,9 +616,9 @@ by A's own manifests, and B's stream is a different key.
 ## 5. Local zombie containment
 
 Broker-side fencing (`transactional.id` + producer epoch) would make a stale node's writes
-fail at the broker. We are not requiring transactions in this revision because the same
-no-later-append property can be established with bounded local submission and delivery contracts.
-Broker fencing remains the upgrade if those bounds cannot be enforced.
+fail at the broker. We are not requiring transactions in this revision. Therefore the protocol
+does not claim that group departure, local gates, or a delay can prevent every later append.
+Broker-side producer fencing is required if that stronger guarantee becomes a requirement.
 
 Instead, locally:
 
@@ -621,25 +629,26 @@ Instead, locally:
   reaching the producer later.
 - **Bounded `delivery.timeout.ms`.** Every accepted producer send succeeds or fails within that
   configured upper bound. Failure trips capture closed.
-- **Bounded peer-completion delay.** After observing departure, survivors wait at least
+- **Optional bounded peer-completion delay.** After observing departure, survivors may wait
   `membershipWriteStalenessBudget + producerDeliveryTimeout + safetyMargin` before sending peer
-  `NoMoreWrites`. The old process's last successful poll necessarily preceded coordinator
-  departure; after the staleness budget it can submit nothing new, and after one additional
-  delivery timeout nothing it previously submitted can still land.
+  `NoMoreWrites`. This reduces the chance that accepted, queued, or retrying traffic crosses the
+  cutoff. It is not producer fencing, does not prove that no later write can occur, and is not
+  required for consumer correctness.
 
 This is not a global membership-stability timer and is not a replayer expiry clock. Membership
-departure is the event; the delay is a hard producer-quiescence bound before materializing that
-event in the traffic log. If any component cannot enforce its bound, survivors must not emit peer
-completion and the fleet fails closed.
+departure is the event. The optional delay is a loss-reduction measure before materializing that
+event in the traffic log; the consumer remains correct by discarding and alarming on any later
+traffic after the peer cutoff.
 
 ## 6. Failure audit
 
-### 6.1 Traffic after peer completion — fatal protocol violation
+### 6.1 Traffic after peer completion — discard and alarm
 
-Under §5's contracts, no old-writer record can land after peer `NoMoreWrites`. Observing one means a
-staleness gate, publisher queue bound, producer delivery bound, or peer delay was violated. The
-replayer retains that record, stops advancing the partition, emits a fatal metric and diagnostic,
-and terminates the run. It does not ignore or commit the record.
+Group departure does not fence the departed producer. A queued, retrying, or briefly continuing
+send can land after peer `NoMoreWrites`. The peer record remains the authoritative cutoff: the
+replayer discards the later record, advances the partition, and emits a high-severity log, metric,
+and alarm. This is a capture-fidelity failure that must page, but it is not a fatal consumer error
+and must not wedge the replay partition.
 
 What determines the cost is the operator flag:
 
@@ -652,8 +661,8 @@ So the flag is availability versus **migration fidelity**, not availability vers
 strictness. That framing belongs in customer-facing docs.
 
 Fail-open can still create uncaptured source mutations after a local capture failure; that is an
-explicit operator-selected fidelity loss. It never authorizes the replayer to discard a captured
-Kafka record.
+explicit operator-selected fidelity loss. Independently, the peer cutoff authorizes the replayer
+to discard later zombie records from the departed `(nodeId, partition)` while recording the loss.
 
 ### 6.2 The last proxy crashing — retained, never inferred
 
@@ -682,8 +691,8 @@ direction remains "stall or stop," never "commit wrongly."
 
 ### 6.3 Not separate holes
 
-- **Evicted-but-healthy node**: bounded by §5. A post-completion write is the same fatal protocol
-  violation as §6.1, not a separate lossy path.
+- **Evicted-but-healthy node**: locally bounded by §5 but not broker-fenced. A post-completion write
+  follows §6.1's discard-and-alarm path.
 - **Uneven or duplicated assignment**, however caused: benign, per §2.
 
 ## 7. Code deltas
@@ -697,16 +706,16 @@ direction remains "stall or stop," never "commit wrongly."
 | Delete level-1 routing (nodeId hash → shard start) | `PartitionRoutingPlan.forTopic`; `selectedPartitions` becomes the assignment |
 | Drop `topicPartitionCount` from the plan digest, or drop `routingPlanId` outright | `PartitionRoutingPlan.makePlanId`. The mapping is fully determined by the stored per-connection partition, so the guard collapses to "a connection's partition stamp never changes", which `KafkaTrafficCaptureSource.java:648` already checks. |
 | Group membership client | **Foundation implemented, protocol revision required.** Subscribe, pause, and poll stay on the dedicated membership thread. |
-| Admission-aware cooperative assignor | Add `JOINING`/`READY`/`ACTIVE`, zero traffic assignments for non-ACTIVE members, full member-table assignment metadata, and debounced cohort promotion (§3.2.1–§3.2.2). |
-| Pairwise witness tracking | Add peer observation echoes and per-pair maturity. Do not reset mature pairs for unrelated joins. |
+| Admission-aware cooperative assignor | Add `PROBATIONARY`/`ACTIVE`, zero traffic assignments for PROBATIONARY members, full member-table assignment metadata, and debounced cohort promotion (§3.2.1–§3.2.2). |
+| Directional peer visibility | Add peer observation echoes and per-pair `confirmedPeerVisibility(A, B)`. Do not reset established relationships for unrelated joins. |
 | Versioned write footprint | Add conservative footprint/revision metadata, expansion-before-write gating, Kafka-acknowledged shrink eligibility, five-minute shrink coalescing, jittered `enforceRebalance()`, and assignment echo confirmation (§3.2.3). |
 | Peer departure emission | Every survivor emits only over its last observed footprint for the departed writer; UNKNOWN falls back to all partitions. Do not select one emitter. |
 | Relieve the proxy duration cap of its correctness role | no code deleted — `replayer-expiration-hardening.md` §5.3/§5.4 and `replayerHardenedArchitectureDesign.md` §10.8 stop citing the cap as the finite window a dead-proxy proof needs. The cap stays as operational policy. **No wall-clock setting is removed, because none exists**: force-expiry was rejected (§7 there) and banned (§10.5 row, §21 non-goal). Verified by grep — nothing clock-driven is reachable from the Kafka commit path. |
 | `NoMoreWrites` record | **Implemented.** `ProxyNoMoreWrites` is emitted through `CaptureKafkaPublisher`'s ordered lane with an offset-authoritative boundary and a strictly increasing diagnostic timestamp. |
 | Settle-on-writer-completion evidence | **Implemented.** `AbsenceProof.NoMoreWrites` carries emitter identity and the record offset; `KafkaLivenessScanner` settles only candidates whose last record precedes it. |
 | Rename vague provenance fields | Rename source-level `declaredBy` terminology to `emitterNodeId` while preserving protobuf field numbers. |
-| Traffic after peer completion | **Current behavior is unsound and must change.** Delete `KafkaSupersededTrafficRecord`; do not replace it with another synthetic record such as `KafkaPostDeclarationTrafficRecord`. Raise a `TrafficAfterPeerCompletionException`, retain the Kafka record, terminate replay, and emit `traffic_after_peer_completion`. |
-| Producer-quiescence bound | Add final-send staleness validation and delay peer completion by staleness budget + producer delivery timeout + margin (§5). |
+| Traffic after peer completion | **Existing containment behavior is retained.** The peer record is the authoritative cutoff. Preserve the synthetic commit-bearing discard path, advance past later zombie traffic, and emit a high-severity log, metric, and alarm. Do not introduce `TrafficAfterPeerCompletionException`. |
+| Optional producer-quiescence delay | Add final-send staleness validation and optionally delay peer completion by staleness budget + producer delivery timeout + margin to reduce cutoff crossings (§5). This is not producer fencing. |
 | Latch, staleness gate, failure-mode flag | `CaptureProxy`, `KafkaCaptureFactory` |
 
 ## 8. Out of scope for this round
@@ -735,23 +744,26 @@ See §4.1 and §6.2.
 **`emitterNodeId` stores the full `nodeId`,** not a self/peer bit. The size is irrelevant for these
 rare records, and storing the identity makes self completion checkable by comparison
 (`emitterNodeId == writerNodeId`) rather than an unverifiable flag. That comparison gates whether
-later traffic is interpreted as an ordinary post-reassignment write or as a fatal protocol
-contradiction that must be retained.
+later traffic is interpreted as an ordinary post-reassignment write or as a cutoff violation that
+must be discarded and alarmed.
 
 **Every survivor emits peer completion records.** A designated emitter would need durable handoff
 state to survive leader failure after observing departure but before publishing every required
 partition record. Assignment `userData` is intentionally not such a handoff log.
 
-**Admission evidence is pairwise.** Global membership stability and elapsed time do not prove that
-a survivor observed a short-lived writer. Only a peer's later subscription echo starts that
-candidate/peer maturity relationship.
+**Admission evidence is directional and pairwise.** Global membership stability and elapsed time
+do not prove that a survivor observed a short-lived writer. Only peer A's later subscription echo
+starts `confirmedPeerVisibility(A, B)` for candidate B. Unrelated joins do not reset it; A leaving
+removes only A's coverage.
 
 **Footprints are conservative.** Expansion is confirmed before writing; shrink happens only after
 Kafka acknowledgement and may wait. UNKNOWN always means every partition.
 
-**Peer completion waits for producer quiescence.** Group departure alone does not order one
-producer against another. Survivors wait the hard §5 bound before publishing, retain each
-partition obligation until Kafka acknowledgement, and treat any later writer traffic as fatal.
+**Peer completion may use a bounded quiescence delay.** Group departure alone does not order or
+fence one producer against another. Survivors may wait the §5 delay before publishing and retain
+each partition obligation until Kafka acknowledgement. Any later writer traffic is discarded,
+counted, logged, and alarmed. Only broker-side producer fencing could guarantee that it cannot
+occur.
 
 **Kafka membership timeouts are left at the client's defaults and are not set by us.** No values are
 pinned here deliberately — the client version documents them, and restating them in a design doc only
@@ -767,11 +779,16 @@ deferred to §8.
 
 Implement the remaining §7 rows and prove the following boundaries:
 
+If implementation requires a design change, or a test exposes behavior whose contract is not
+documented here, stop that implementation slice and review the revised contract before changing
+production code or adding test-driven production complexity.
+
 - deterministic assignor tests: cold-start cohorts, probation without assignment movement,
-  unrelated joins not resetting mature pairs, witness loss resetting only that pair, and ACTIVE
-  monotonicity; exact `N`/`N-1` witness-loss boundaries; quiet-group progress driven by
-  `enforceRebalance()`; and degraded-redundancy reporting after ACTIVE witness loss;
-- deterministic footprint tests: expansion blocks writes until echo plus witness acknowledgement,
+  unrelated joins not resetting established `confirmedPeerVisibility`, observer loss removing only
+  that directional relationship, continued tracking after ACTIVE, and ACTIVE monotonicity; exact
+  `N`/`N-1` peer-loss boundaries; quiet-group progress driven by `enforceRebalance()`; and
+  degraded-redundancy reporting after ACTIVE coverage loss;
+- deterministic footprint tests: expansion blocks writes until echo plus confirmed visibility,
   final-write acknowledgement precedes shrink eligibility, natural-rebalance coalescing, jittered
   five-minute enforcement, UNKNOWN fallback, stale/out-of-order revisions, crash before shrink
   echo, and activation assignments contained by the full-topic initial footprint;
@@ -780,7 +797,7 @@ Implement the remaining §7 rows and prove the following boundaries:
   its Kafka writes, footprint-version propagation with different peers on different revisions,
   metadata size limits, and broker restart during expansion/shrink;
 - live Kubernetes: pod kill before and after activation, membership-network isolation, insufficient
-  witness capacity, and total-fleet loss retention;
-- OTel assertions for admission phase, mature-witness count, active fleet count, footprint
-  revision/size, blocked expansion, forced rebalance, zero witness coverage, pending peer-completion
-  obligations, write-gate failure, and fatal traffic-after-peer-completion violations.
+  peer-visibility capacity, and total-fleet loss retention;
+- OTel assertions for admission phase, confirmed-peer-visibility count, active fleet count, footprint
+  revision/size, blocked expansion, forced rebalance, zero peer-visibility coverage, pending peer-completion
+  obligations, write-gate failure, and discarded traffic-after-peer-completion alarms.

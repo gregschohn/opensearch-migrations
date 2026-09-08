@@ -25,7 +25,7 @@ import org.opensearch.migrations.trafficcapture.kafkaoffloader.CaptureGroupProto
  */
 final class CaptureGroupProtocolCodec {
     private static final int MAGIC = 0x43504750;
-    private static final short VERSION = 1;
+    private static final short VERSION = 2;
     private static final byte SUBSCRIPTION = 1;
     private static final byte ASSIGNMENT = 2;
     private static final int MAX_METADATA_BYTES = 1024 * 1024;
@@ -122,7 +122,7 @@ final class CaptureGroupProtocolCodec {
         writePhase(output, subscription.advertisedPhase());
         writeFootprint(output, subscription.footprint());
         writeIdentities(output, subscription.observedFootprints());
-        writeIdentities(output, subscription.matureWitnesses());
+        writeIdentities(output, subscription.confirmedPeerVisibility());
     }
 
     private static Subscription readSubscription(DataInputStream input) throws IOException {
@@ -141,7 +141,7 @@ final class CaptureGroupProtocolCodec {
         writePhase(output, row.effectivePhase());
         writeFootprint(output, row.footprint());
         writeIdentities(output, row.observedFootprints());
-        writeIdentities(output, row.matureWitnesses());
+        writeIdentities(output, row.confirmedPeerVisibility());
     }
 
     private static MemberRow readMemberRow(DataInputStream input) throws IOException {

@@ -18,18 +18,18 @@ class CaptureGroupAssignmentPlannerTest {
     private static final Duration DEBOUNCE = Duration.ofSeconds(2);
 
     @Test
-    void readyRequiresAnExactCurrentPairwiseWitnessEcho() {
+    void activationRequiresAnExactCurrentConfirmedPeerVisibilityEcho() {
         var planner = new CaptureGroupAssignmentPlanner(1, 1, DEBOUNCE);
         var candidateFootprint = Footprint.known(2, List.of(0, 1));
         var staleFootprint = Footprint.known(1, List.of(0));
-        var witnessFootprint = Footprint.known(3, List.of(0, 1));
+        var observerFootprint = Footprint.known(3, List.of(0, 1));
 
         var plan = planner.plan(
             Map.of(
                 "member-a",
                 subscription(
                     "node-a",
-                    AdmissionPhase.READY,
+                    AdmissionPhase.PROBATIONARY,
                     candidateFootprint,
                     Map.of(),
                     Map.of("node-b", candidateFootprint.identity("node-a"))
@@ -38,7 +38,7 @@ class CaptureGroupAssignmentPlannerTest {
                 subscription(
                     "node-b",
                     AdmissionPhase.ACTIVE,
-                    witnessFootprint,
+                    observerFootprint,
                     Map.of("node-a", staleFootprint.identity("node-a")),
                     Map.of()
                 )
@@ -46,27 +46,75 @@ class CaptureGroupAssignmentPlannerTest {
             0
         );
 
-        assertEquals(AdmissionPhase.JOINING, plan.table().members().get("node-a").effectivePhase());
-        assertEquals(Map.of("node-a", java.util.Set.of(), "node-b", java.util.Set.of()), plan.validWitnesses());
+        assertEquals(AdmissionPhase.PROBATIONARY, plan.table().members().get("node-a").effectivePhase());
+        assertEquals(
+            Map.of("node-a", java.util.Set.of(), "node-b", java.util.Set.of()),
+            plan.confirmedPeerVisibilityByCandidate()
+        );
         assertNull(plan.activationDeadlineNanos());
     }
 
     @Test
-    void laterReadyMembersJoinTheCohortWithoutExtendingItsDeadline() {
+    void confirmedPeerVisibilityIsDirectional() {
+        var planner = new CaptureGroupAssignmentPlanner(1, 1, Duration.ZERO);
+        var nodeA = Footprint.known(1, List.of(0));
+        var nodeB = Footprint.known(1, List.of(0));
+
+        var plan = planner.plan(
+            subscriptions(
+                subscription(
+                    "node-a",
+                    AdmissionPhase.PROBATIONARY,
+                    nodeA,
+                    Map.of("node-b", nodeB.identity("node-b")),
+                    Map.of()
+                ),
+                subscription(
+                    "node-b",
+                    AdmissionPhase.PROBATIONARY,
+                    nodeB,
+                    Map.of(),
+                    Map.of("node-a", nodeB.identity("node-b"))
+                )
+            ),
+            0
+        );
+
+        assertEquals(
+            java.util.Set.of("node-a"),
+            plan.confirmedPeerVisibilityByCandidate().get("node-b")
+        );
+        assertEquals(
+            java.util.Set.of(),
+            plan.confirmedPeerVisibilityByCandidate().get("node-a")
+        );
+        assertEquals(java.util.Set.of("node-b"), plan.promotedNodeIds());
+        assertEquals(AdmissionPhase.PROBATIONARY, plan.table().members().get("node-a").effectivePhase());
+        assertEquals(AdmissionPhase.ACTIVE, plan.table().members().get("node-b").effectivePhase());
+    }
+
+    @Test
+    void laterEligibleMembersJoinTheCohortWithoutExtendingItsDeadline() {
         var planner = new CaptureGroupAssignmentPlanner(2, 1, DEBOUNCE);
         var nodeA = Footprint.known(1, List.of(0, 1));
         var nodeB = Footprint.known(1, List.of(0, 1));
         var first = subscriptions(
-            ready("node-a", nodeA, "node-b"),
-            joiningWitness("node-b", nodeB, "node-a", nodeA)
+            probationaryWithConfirmedObserver("node-a", nodeA, "node-b"),
+            probationaryObserver("node-b", nodeB, "node-a", nodeA)
         );
 
         var initial = planner.plan(first, 0);
         assertEquals(DEBOUNCE.toNanos(), initial.activationDeadlineNanos());
 
-        var bothReady = subscriptions(
-            readyWithObservations("node-a", nodeA, "node-b", nodeB, Map.of()),
-            readyWithObservations(
+        var bothEligible = subscriptions(
+            probationaryWithVisibility(
+                "node-a",
+                nodeA,
+                "node-b",
+                nodeB,
+                Map.of()
+            ),
+            probationaryWithVisibility(
                 "node-b",
                 nodeB,
                 "node-a",
@@ -74,10 +122,10 @@ class CaptureGroupAssignmentPlannerTest {
                 Map.of("node-a", nodeA.identity("node-a"))
             )
         );
-        var joined = planner.plan(bothReady, Duration.ofSeconds(1).toNanos());
+        var joined = planner.plan(bothEligible, Duration.ofSeconds(1).toNanos());
         assertEquals(DEBOUNCE.toNanos(), joined.activationDeadlineNanos());
 
-        var promoted = planner.plan(bothReady, DEBOUNCE.toNanos());
+        var promoted = planner.plan(bothEligible, DEBOUNCE.toNanos());
         assertEquals(
             java.util.Set.of("node-a", "node-b"),
             promoted.promotedNodeIds()
@@ -88,26 +136,32 @@ class CaptureGroupAssignmentPlannerTest {
     }
 
     @Test
-    void losingARequiredWitnessRevokesReadinessBeforePromotion() {
+    void losingRequiredPeerVisibilityRevokesEligibilityBeforePromotion() {
         var planner = new CaptureGroupAssignmentPlanner(1, 1, DEBOUNCE);
         var nodeA = Footprint.known(1, List.of(0));
         var nodeB = Footprint.known(1, List.of(0));
 
-        var ready = subscriptions(
-            ready("node-a", nodeA, "node-b"),
-            joiningWitness("node-b", nodeB, "node-a", nodeA)
+        var visible = subscriptions(
+            probationaryWithConfirmedObserver("node-a", nodeA, "node-b"),
+            probationaryObserver("node-b", nodeB, "node-a", nodeA)
         );
-        planner.plan(ready, 0);
+        planner.plan(visible, 0);
 
-        var lostWitness = planner.plan(Map.of("member-a", ready.get("member-node-a")), DEBOUNCE.toNanos());
+        var lostObserver = planner.plan(
+            Map.of("member-a", visible.get("member-node-a")),
+            DEBOUNCE.toNanos()
+        );
 
-        assertEquals(AdmissionPhase.JOINING, lostWitness.table().members().get("node-a").effectivePhase());
-        assertEquals(java.util.Set.of(), lostWitness.promotedNodeIds());
-        assertNull(lostWitness.activationDeadlineNanos());
+        assertEquals(
+            AdmissionPhase.PROBATIONARY,
+            lostObserver.table().members().get("node-a").effectivePhase()
+        );
+        assertEquals(java.util.Set.of(), lostObserver.promotedNodeIds());
+        assertNull(lostObserver.activationDeadlineNanos());
     }
 
     @Test
-    void activeIsMonotonicEvenAfterWitnessCoverageFalls() {
+    void activeIsMonotonicEvenAfterPeerVisibilityFalls() {
         var planner = new CaptureGroupAssignmentPlanner(2, 2, DEBOUNCE);
         var active = subscription(
             "node-a",
@@ -120,7 +174,10 @@ class CaptureGroupAssignmentPlannerTest {
         var plan = planner.plan(Map.of("member-a", active), 0);
 
         assertEquals(AdmissionPhase.ACTIVE, plan.table().members().get("node-a").effectivePhase());
-        assertEquals(java.util.Set.of(), plan.validWitnesses().get("node-a"));
+        assertEquals(
+            java.util.Set.of(),
+            plan.confirmedPeerVisibilityByCandidate().get("node-a")
+        );
         assertNull(plan.activationDeadlineNanos());
     }
 
@@ -129,7 +186,7 @@ class CaptureGroupAssignmentPlannerTest {
         var planner = new CaptureGroupAssignmentPlanner(1, 0, Duration.ZERO);
         var candidate = subscription(
             "node-a",
-            AdmissionPhase.READY,
+            AdmissionPhase.PROBATIONARY,
             Footprint.known(1, List.of(0)),
             Map.of(),
             Map.of()
@@ -149,17 +206,21 @@ class CaptureGroupAssignmentPlannerTest {
         return Map.copyOf(result);
     }
 
-    private static Subscription ready(String nodeId, Footprint footprint, String witnessNodeId) {
+    private static Subscription probationaryWithConfirmedObserver(
+        String nodeId,
+        Footprint footprint,
+        String observerNodeId
+    ) {
         return subscription(
             nodeId,
-            AdmissionPhase.READY,
+            AdmissionPhase.PROBATIONARY,
             footprint,
             Map.of(),
-            Map.of(witnessNodeId, footprint.identity(nodeId))
+            Map.of(observerNodeId, footprint.identity(nodeId))
         );
     }
 
-    private static Subscription joiningWitness(
+    private static Subscription probationaryObserver(
         String nodeId,
         Footprint footprint,
         String observedNodeId,
@@ -167,28 +228,28 @@ class CaptureGroupAssignmentPlannerTest {
     ) {
         return subscription(
             nodeId,
-            AdmissionPhase.JOINING,
+            AdmissionPhase.PROBATIONARY,
             footprint,
             Map.of(observedNodeId, observedFootprint.identity(observedNodeId)),
             Map.of()
         );
     }
 
-    private static Subscription readyWithObservations(
+    private static Subscription probationaryWithVisibility(
         String nodeId,
         Footprint footprint,
-        String witnessNodeId,
-        Footprint witnessFootprint,
+        String observerNodeId,
+        Footprint observerFootprint,
         Map<String, CaptureGroupProtocol.FootprintIdentity> additionalObservations
     ) {
         var observations = new LinkedHashMap<>(additionalObservations);
-        observations.put(witnessNodeId, witnessFootprint.identity(witnessNodeId));
+        observations.put(observerNodeId, observerFootprint.identity(observerNodeId));
         return subscription(
             nodeId,
-            AdmissionPhase.READY,
+            AdmissionPhase.PROBATIONARY,
             footprint,
             observations,
-            Map.of(witnessNodeId, footprint.identity(nodeId))
+            Map.of(observerNodeId, footprint.identity(nodeId))
         );
     }
 
@@ -197,8 +258,8 @@ class CaptureGroupAssignmentPlannerTest {
         AdmissionPhase phase,
         Footprint footprint,
         Map<String, CaptureGroupProtocol.FootprintIdentity> observations,
-        Map<String, CaptureGroupProtocol.FootprintIdentity> matureWitnesses
+        Map<String, CaptureGroupProtocol.FootprintIdentity> confirmedPeerVisibility
     ) {
-        return new Subscription(nodeId, phase, footprint, observations, matureWitnesses);
+        return new Subscription(nodeId, phase, footprint, observations, confirmedPeerVisibility);
     }
 }

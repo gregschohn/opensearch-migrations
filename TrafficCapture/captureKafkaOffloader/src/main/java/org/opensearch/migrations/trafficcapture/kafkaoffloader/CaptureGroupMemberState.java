@@ -15,7 +15,7 @@ import org.opensearch.migrations.trafficcapture.kafkaoffloader.CaptureGroupProto
 import org.opensearch.migrations.trafficcapture.kafkaoffloader.CaptureGroupProtocol.Subscription;
 
 /**
- * Member-side subscription echo, pairwise maturity, and advertised admission phase.
+ * Member-side subscription echo, directional peer-visibility confirmation, and admission phase.
  */
 final class CaptureGroupMemberState {
     record Update(
@@ -26,39 +26,29 @@ final class CaptureGroupMemberState {
     ) {}
 
     private final String nodeId;
-    private final int requiredPeerWitnesses;
-    private final long witnessMaturityNanos;
-    private final long activationDebounceNanos;
-    private final Map<String, Long> witnessObservedSinceNanos = new LinkedHashMap<>();
+    private final long peerVisibilityIntervalNanos;
+    private final Map<String, Long> peerVisibleSinceNanos = new LinkedHashMap<>();
     private Footprint footprint;
-    private AdmissionPhase advertisedPhase = AdmissionPhase.JOINING;
-    private AdmissionPhase effectivePhase = AdmissionPhase.JOINING;
+    private AdmissionPhase advertisedPhase = AdmissionPhase.PROBATIONARY;
+    private AdmissionPhase effectivePhase = AdmissionPhase.PROBATIONARY;
     private Map<String, FootprintIdentity> observedFootprints = Map.of();
-    private Map<String, FootprintIdentity> matureWitnesses = Map.of();
+    private Map<String, FootprintIdentity> confirmedPeerVisibility = Map.of();
 
     CaptureGroupMemberState(
         String nodeId,
         Footprint initialFootprint,
-        int requiredPeerWitnesses,
-        Duration witnessMaturity,
-        Duration activationDebounce
+        Duration peerVisibilityInterval
     ) {
         if (nodeId == null || nodeId.isBlank()) {
             throw new IllegalArgumentException("nodeId must not be blank");
         }
-        if (requiredPeerWitnesses < 0) {
-            throw new IllegalArgumentException("requiredPeerWitnesses must not be negative");
-        }
-        Objects.requireNonNull(witnessMaturity);
-        Objects.requireNonNull(activationDebounce);
-        if (witnessMaturity.isNegative() || activationDebounce.isNegative()) {
-            throw new IllegalArgumentException("membership durations must not be negative");
+        Objects.requireNonNull(peerVisibilityInterval);
+        if (peerVisibilityInterval.isNegative()) {
+            throw new IllegalArgumentException("peerVisibilityInterval must not be negative");
         }
         this.nodeId = nodeId;
         this.footprint = Objects.requireNonNull(initialFootprint);
-        this.requiredPeerWitnesses = requiredPeerWitnesses;
-        this.witnessMaturityNanos = witnessMaturity.toNanos();
-        this.activationDebounceNanos = activationDebounce.toNanos();
+        this.peerVisibilityIntervalNanos = peerVisibilityInterval.toNanos();
     }
 
     Subscription subscription() {
@@ -67,7 +57,7 @@ final class CaptureGroupMemberState {
             advertisedPhase,
             footprint,
             observedFootprints,
-            matureWitnesses
+            confirmedPeerVisibility
         );
     }
 
@@ -80,13 +70,19 @@ final class CaptureGroupMemberState {
         if (!footprint.equals(ownRow.footprint())) {
             throw new IllegalStateException("capture assignment table changed this node's footprint");
         }
+        if (advertisedPhase == AdmissionPhase.ACTIVE
+            && ownRow.effectivePhase() != AdmissionPhase.ACTIVE) {
+            throw new IllegalStateException("capture assignment table attempted to demote an active member");
+        }
 
         var previousSubscription = subscription();
         effectivePhase = ownRow.effectivePhase();
         observedFootprints = observedFootprints(table);
-        updateWitnessTimers(table, nowNanos);
-        matureWitnesses = matureWitnessClaims(nowNanos);
-        advertisedPhase = nextAdvertisedPhase();
+        updatePeerVisibilityTimers(table, nowNanos);
+        confirmedPeerVisibility = confirmedPeerVisibilityClaims(nowNanos);
+        advertisedPhase = effectivePhase == AdmissionPhase.ACTIVE
+            ? AdmissionPhase.ACTIVE
+            : AdmissionPhase.PROBATIONARY;
         var nextRebalanceAt = nextRebalanceAt(nowNanos);
         var currentSubscription = subscription();
         return new Update(
@@ -107,50 +103,35 @@ final class CaptureGroupMemberState {
         return Collections.unmodifiableMap(observations);
     }
 
-    private void updateWitnessTimers(AssignmentTable table, long nowNanos) {
+    private void updatePeerVisibilityTimers(AssignmentTable table, long nowNanos) {
         var ownIdentity = footprint.identity(nodeId);
-        witnessObservedSinceNanos.keySet().removeIf(witnessNodeId -> {
-            var witness = table.members().get(witnessNodeId);
-            return witness == null || !ownIdentity.equals(witness.observedFootprints().get(nodeId));
+        peerVisibleSinceNanos.keySet().removeIf(observerNodeId -> {
+            var observer = table.members().get(observerNodeId);
+            return observer == null || !ownIdentity.equals(observer.observedFootprints().get(nodeId));
         });
-        table.members().forEach((witnessNodeId, witness) -> {
-            if (!witnessNodeId.equals(nodeId)
-                && ownIdentity.equals(witness.observedFootprints().get(nodeId))) {
-                witnessObservedSinceNanos.putIfAbsent(witnessNodeId, nowNanos);
+        table.members().forEach((observerNodeId, observer) -> {
+            if (!observerNodeId.equals(nodeId)
+                && ownIdentity.equals(observer.observedFootprints().get(nodeId))) {
+                peerVisibleSinceNanos.putIfAbsent(observerNodeId, nowNanos);
             }
         });
     }
 
-    private Map<String, FootprintIdentity> matureWitnessClaims(long nowNanos) {
+    private Map<String, FootprintIdentity> confirmedPeerVisibilityClaims(long nowNanos) {
         var ownIdentity = footprint.identity(nodeId);
         var claims = new TreeMap<String, FootprintIdentity>();
-        witnessObservedSinceNanos.forEach((witnessNodeId, observedSinceNanos) -> {
-            if (elapsedAtLeast(nowNanos, observedSinceNanos, witnessMaturityNanos)) {
-                claims.put(witnessNodeId, ownIdentity);
+        peerVisibleSinceNanos.forEach((observerNodeId, visibleSinceNanos) -> {
+            if (elapsedAtLeast(nowNanos, visibleSinceNanos, peerVisibilityIntervalNanos)) {
+                claims.put(observerNodeId, ownIdentity);
             }
         });
         return Collections.unmodifiableMap(claims);
     }
 
-    private AdmissionPhase nextAdvertisedPhase() {
-        if (effectivePhase == AdmissionPhase.ACTIVE || advertisedPhase == AdmissionPhase.ACTIVE) {
-            return AdmissionPhase.ACTIVE;
-        }
-        return matureWitnesses.size() >= requiredPeerWitnesses
-            ? AdmissionPhase.READY
-            : AdmissionPhase.JOINING;
-    }
-
     private OptionalLong nextRebalanceAt(long nowNanos) {
-        if (effectivePhase == AdmissionPhase.READY) {
-            return OptionalLong.of(Math.addExact(nowNanos, activationDebounceNanos));
-        }
-        if (advertisedPhase == AdmissionPhase.READY && effectivePhase == AdmissionPhase.JOINING) {
-            return OptionalLong.of(nowNanos);
-        }
-        return witnessObservedSinceNanos.values()
+        return peerVisibleSinceNanos.values()
             .stream()
-            .mapToLong(start -> Math.addExact(start, witnessMaturityNanos))
+            .mapToLong(start -> Math.addExact(start, peerVisibilityIntervalNanos))
             .filter(deadline -> deadline > nowNanos)
             .min();
     }

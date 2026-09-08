@@ -13,43 +13,59 @@ import org.opensearch.migrations.trafficcapture.kafkaoffloader.CaptureGroupProto
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class CaptureGroupMemberStateTest {
-    private static final Duration MATURITY = Duration.ofSeconds(10);
-    private static final Duration ACTIVATION_DEBOUNCE = Duration.ofSeconds(2);
+    private static final Duration VISIBILITY_INTERVAL = Duration.ofSeconds(10);
 
     @Test
-    void pairMaturityStartsOnlyAfterThePeerEchoesThisExactFootprint() {
+    void confirmationStartsOnlyAfterThePeerEchoesThisExactFootprint() {
         var nodeA = Footprint.known(1, List.of(0, 1));
         var nodeB = Footprint.known(1, List.of(0, 1));
         var state = new CaptureGroupMemberState(
             "node-a",
             nodeA,
-            1,
-            MATURITY,
-            ACTIVATION_DEBOUNCE
+            VISIBILITY_INTERVAL
         );
 
         var first = state.installAssignment(
             table(
-                row("node-a", AdmissionPhase.JOINING, AdmissionPhase.JOINING, nodeA, Map.of()),
-                row("node-b", AdmissionPhase.JOINING, AdmissionPhase.JOINING, nodeB, Map.of())
+                row(
+                    "node-a",
+                    AdmissionPhase.PROBATIONARY,
+                    AdmissionPhase.PROBATIONARY,
+                    nodeA,
+                    Map.of()
+                ),
+                row(
+                    "node-b",
+                    AdmissionPhase.PROBATIONARY,
+                    AdmissionPhase.PROBATIONARY,
+                    nodeB,
+                    Map.of()
+                )
             ),
             0
         );
-        assertEquals(AdmissionPhase.JOINING, first.subscription().advertisedPhase());
+        assertEquals(AdmissionPhase.PROBATIONARY, first.subscription().advertisedPhase());
         assertEquals(Map.of("node-b", nodeB.identity("node-b")), first.subscription().observedFootprints());
         assertTrue(first.metadataChanged());
 
         var echoed = state.installAssignment(
             table(
-                row("node-a", AdmissionPhase.JOINING, AdmissionPhase.JOINING, nodeA, Map.of()),
+                row(
+                    "node-a",
+                    AdmissionPhase.PROBATIONARY,
+                    AdmissionPhase.PROBATIONARY,
+                    nodeA,
+                    Map.of()
+                ),
                 row(
                     "node-b",
-                    AdmissionPhase.JOINING,
-                    AdmissionPhase.JOINING,
+                    AdmissionPhase.PROBATIONARY,
+                    AdmissionPhase.PROBATIONARY,
                     nodeB,
                     Map.of("node-a", nodeA.identity("node-a"))
                 )
@@ -58,43 +74,56 @@ class CaptureGroupMemberStateTest {
         );
         assertEquals(Duration.ofSeconds(11).toNanos(), echoed.nextRebalanceAtNanos().orElseThrow());
 
-        var mature = state.installAssignment(
+        var confirmed = state.installAssignment(
             table(
-                row("node-a", AdmissionPhase.JOINING, AdmissionPhase.JOINING, nodeA, Map.of()),
+                row(
+                    "node-a",
+                    AdmissionPhase.PROBATIONARY,
+                    AdmissionPhase.PROBATIONARY,
+                    nodeA,
+                    Map.of()
+                ),
                 row(
                     "node-b",
-                    AdmissionPhase.JOINING,
-                    AdmissionPhase.JOINING,
+                    AdmissionPhase.PROBATIONARY,
+                    AdmissionPhase.PROBATIONARY,
                     nodeB,
                     Map.of("node-a", nodeA.identity("node-a"))
                 )
             ),
             Duration.ofSeconds(11).toNanos()
         );
-        assertEquals(AdmissionPhase.READY, mature.subscription().advertisedPhase());
-        assertEquals(Map.of("node-b", nodeA.identity("node-a")), mature.subscription().matureWitnesses());
-        assertEquals(Duration.ofSeconds(11).toNanos(), mature.nextRebalanceAtNanos().orElseThrow());
+        assertEquals(AdmissionPhase.PROBATIONARY, confirmed.subscription().advertisedPhase());
+        assertEquals(
+            Map.of("node-b", nodeA.identity("node-a")),
+            confirmed.subscription().confirmedPeerVisibility()
+        );
+        assertFalse(confirmed.nextRebalanceAtNanos().isPresent());
     }
 
     @Test
-    void unrelatedJoinDoesNotResetAnExistingMaturingPair() {
+    void unrelatedJoinDoesNotResetAnExistingVisibilityInterval() {
         var nodeA = Footprint.known(1, List.of(0));
         var nodeB = Footprint.known(1, List.of(0));
         var nodeC = Footprint.known(1, List.of(0));
         var state = new CaptureGroupMemberState(
             "node-a",
             nodeA,
-            1,
-            MATURITY,
-            ACTIVATION_DEBOUNCE
+            VISIBILITY_INTERVAL
         );
         state.installAssignment(
             table(
-                row("node-a", AdmissionPhase.JOINING, AdmissionPhase.JOINING, nodeA, Map.of()),
+                row(
+                    "node-a",
+                    AdmissionPhase.PROBATIONARY,
+                    AdmissionPhase.PROBATIONARY,
+                    nodeA,
+                    Map.of()
+                ),
                 row(
                     "node-b",
-                    AdmissionPhase.JOINING,
-                    AdmissionPhase.JOINING,
+                    AdmissionPhase.PROBATIONARY,
+                    AdmissionPhase.PROBATIONARY,
                     nodeB,
                     Map.of("node-a", nodeA.identity("node-a"))
                 )
@@ -104,103 +133,169 @@ class CaptureGroupMemberStateTest {
 
         var withLaterJoin = state.installAssignment(
             table(
-                row("node-a", AdmissionPhase.JOINING, AdmissionPhase.JOINING, nodeA, Map.of()),
+                row(
+                    "node-a",
+                    AdmissionPhase.PROBATIONARY,
+                    AdmissionPhase.PROBATIONARY,
+                    nodeA,
+                    Map.of()
+                ),
                 row(
                     "node-b",
-                    AdmissionPhase.JOINING,
-                    AdmissionPhase.JOINING,
+                    AdmissionPhase.PROBATIONARY,
+                    AdmissionPhase.PROBATIONARY,
                     nodeB,
                     Map.of("node-a", nodeA.identity("node-a"))
                 ),
-                row("node-c", AdmissionPhase.JOINING, AdmissionPhase.JOINING, nodeC, Map.of())
+                row(
+                    "node-c",
+                    AdmissionPhase.PROBATIONARY,
+                    AdmissionPhase.PROBATIONARY,
+                    nodeC,
+                    Map.of()
+                )
             ),
             Duration.ofSeconds(9).toNanos()
         );
-        assertEquals(MATURITY.toNanos(), withLaterJoin.nextRebalanceAtNanos().orElseThrow());
+        assertEquals(VISIBILITY_INTERVAL.toNanos(), withLaterJoin.nextRebalanceAtNanos().orElseThrow());
 
-        var mature = state.installAssignment(
+        var confirmed = state.installAssignment(
             table(
-                row("node-a", AdmissionPhase.JOINING, AdmissionPhase.JOINING, nodeA, Map.of()),
+                row(
+                    "node-a",
+                    AdmissionPhase.PROBATIONARY,
+                    AdmissionPhase.PROBATIONARY,
+                    nodeA,
+                    Map.of()
+                ),
                 row(
                     "node-b",
-                    AdmissionPhase.JOINING,
-                    AdmissionPhase.JOINING,
+                    AdmissionPhase.PROBATIONARY,
+                    AdmissionPhase.PROBATIONARY,
                     nodeB,
                     Map.of("node-a", nodeA.identity("node-a"))
                 ),
-                row("node-c", AdmissionPhase.JOINING, AdmissionPhase.JOINING, nodeC, Map.of())
+                row(
+                    "node-c",
+                    AdmissionPhase.PROBATIONARY,
+                    AdmissionPhase.PROBATIONARY,
+                    nodeC,
+                    Map.of()
+                )
             ),
-            MATURITY.toNanos()
+            VISIBILITY_INTERVAL.toNanos()
         );
-        assertEquals(AdmissionPhase.READY, mature.subscription().advertisedPhase());
+        assertEquals(
+            Map.of("node-b", nodeA.identity("node-a")),
+            confirmed.subscription().confirmedPeerVisibility()
+        );
     }
 
     @Test
-    void losingTheOnlyWitnessReturnsReadyToJoiningBeforeActivation() {
+    void losingOneObserverRemovesOnlyThatDirectionalConfirmation() {
         var nodeA = Footprint.known(1, List.of(0));
         var nodeB = Footprint.known(1, List.of(0));
+        var nodeC = Footprint.known(1, List.of(0));
         var state = new CaptureGroupMemberState(
             "node-a",
             nodeA,
-            1,
-            Duration.ZERO,
-            ACTIVATION_DEBOUNCE
+            Duration.ZERO
         );
         state.installAssignment(
             table(
-                row("node-a", AdmissionPhase.JOINING, AdmissionPhase.JOINING, nodeA, Map.of()),
+                row(
+                    "node-a",
+                    AdmissionPhase.PROBATIONARY,
+                    AdmissionPhase.PROBATIONARY,
+                    nodeA,
+                    Map.of()
+                ),
                 row(
                     "node-b",
-                    AdmissionPhase.JOINING,
-                    AdmissionPhase.JOINING,
+                    AdmissionPhase.PROBATIONARY,
+                    AdmissionPhase.PROBATIONARY,
                     nodeB,
+                    Map.of("node-a", nodeA.identity("node-a"))
+                ),
+                row(
+                    "node-c",
+                    AdmissionPhase.PROBATIONARY,
+                    AdmissionPhase.PROBATIONARY,
+                    nodeC,
                     Map.of("node-a", nodeA.identity("node-a"))
                 )
             ),
             0
         );
 
-        var lost = state.installAssignment(
-            table(row("node-a", AdmissionPhase.READY, AdmissionPhase.JOINING, nodeA, Map.of())),
+        var observerLeft = state.installAssignment(
+            table(
+                row(
+                    "node-a",
+                    AdmissionPhase.PROBATIONARY,
+                    AdmissionPhase.PROBATIONARY,
+                    nodeA,
+                    Map.of()
+                ),
+                row(
+                    "node-c",
+                    AdmissionPhase.PROBATIONARY,
+                    AdmissionPhase.PROBATIONARY,
+                    nodeC,
+                    Map.of("node-a", nodeA.identity("node-a"))
+                )
+            ),
             1
         );
 
-        assertEquals(AdmissionPhase.JOINING, lost.subscription().advertisedPhase());
-        assertEquals(Map.of(), lost.subscription().matureWitnesses());
+        assertEquals(
+            Map.of("node-c", nodeA.identity("node-a")),
+            observerLeft.subscription().confirmedPeerVisibility()
+        );
     }
 
     @Test
-    void activeNeverDemotesWhenWitnessesDisappear() {
+    void activeNeverDemotesAndContinuesTrackingReplacementPeers() {
         var nodeA = Footprint.known(1, List.of(0));
+        var nodeB = Footprint.known(1, List.of(0));
         var state = new CaptureGroupMemberState(
             "node-a",
             nodeA,
-            1,
-            Duration.ZERO,
-            ACTIVATION_DEBOUNCE
+            Duration.ZERO
         );
 
         state.installAssignment(
-            table(row("node-a", AdmissionPhase.READY, AdmissionPhase.ACTIVE, nodeA, Map.of())),
+            table(row("node-a", AdmissionPhase.PROBATIONARY, AdmissionPhase.ACTIVE, nodeA, Map.of())),
             0
         );
-        var alone = state.installAssignment(
-            table(row("node-a", AdmissionPhase.ACTIVE, AdmissionPhase.ACTIVE, nodeA, Map.of())),
+        var replacementVisible = state.installAssignment(
+            table(
+                row("node-a", AdmissionPhase.ACTIVE, AdmissionPhase.ACTIVE, nodeA, Map.of()),
+                row(
+                    "node-b",
+                    AdmissionPhase.PROBATIONARY,
+                    AdmissionPhase.PROBATIONARY,
+                    nodeB,
+                    Map.of("node-a", nodeA.identity("node-a"))
+                )
+            ),
             1
         );
 
-        assertEquals(AdmissionPhase.ACTIVE, alone.subscription().advertisedPhase());
-        assertEquals(Map.of(), alone.subscription().matureWitnesses());
+        assertEquals(AdmissionPhase.ACTIVE, replacementVisible.subscription().advertisedPhase());
+        assertEquals(
+            Map.of("node-b", nodeA.identity("node-a")),
+            replacementVisible.subscription().confirmedPeerVisibility()
+        );
     }
 
     @Test
-    void assignmentCannotReplaceTheLocalFootprint() {
-        var state = new CaptureGroupMemberState(
-            "node-a",
-            Footprint.known(1, List.of(0)),
-            0,
-            Duration.ZERO,
-            ACTIVATION_DEBOUNCE
+    void assignmentCannotDemoteAnActiveMember() {
+        var nodeA = Footprint.known(1, List.of(0));
+        var state = new CaptureGroupMemberState("node-a", nodeA, Duration.ZERO);
+        state.installAssignment(
+            table(row("node-a", AdmissionPhase.PROBATIONARY, AdmissionPhase.ACTIVE, nodeA, Map.of())),
+            0
         );
 
         assertThrows(
@@ -209,8 +304,33 @@ class CaptureGroupMemberStateTest {
                 table(
                     row(
                         "node-a",
-                        AdmissionPhase.JOINING,
-                        AdmissionPhase.JOINING,
+                        AdmissionPhase.ACTIVE,
+                        AdmissionPhase.PROBATIONARY,
+                        nodeA,
+                        Map.of()
+                    )
+                ),
+                1
+            )
+        );
+    }
+
+    @Test
+    void assignmentCannotReplaceTheLocalFootprint() {
+        var state = new CaptureGroupMemberState(
+            "node-a",
+            Footprint.known(1, List.of(0)),
+            Duration.ZERO
+        );
+
+        assertThrows(
+            IllegalStateException.class,
+            () -> state.installAssignment(
+                table(
+                    row(
+                        "node-a",
+                        AdmissionPhase.PROBATIONARY,
+                        AdmissionPhase.PROBATIONARY,
                         Footprint.known(2, List.of(0, 1)),
                         Map.of()
                     )
