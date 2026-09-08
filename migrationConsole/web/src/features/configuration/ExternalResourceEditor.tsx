@@ -188,7 +188,6 @@ function ManualExternalResourceForm({
     >
       <header>
         <div>
-          <strong>Enter reference manually</strong>
           <span>The server will validate it against the field descriptor.</span>
         </div>
         <button className="secondary-button" onClick={onBack} type="button">
@@ -257,6 +256,9 @@ function ManualExternalResourceForm({
         </p>
       ) : null}
       <div className="external-form-actions">
+        <button disabled={submitting} onClick={onBack} type="button">
+          Cancel
+        </button>
         <button
           className="primary-button"
           disabled={submitting || resourceTypes.length === 0}
@@ -264,9 +266,6 @@ function ManualExternalResourceForm({
         >
           {submitting ? <LoaderCircle className="spin" /> : <Keyboard />}
           Use unverified reference
-        </button>
-        <button disabled={submitting} onClick={onBack} type="button">
-          Cancel
         </button>
       </div>
     </form>
@@ -323,6 +322,13 @@ function ExternalResourceForm({
   const [saving, setSaving] = useState(false);
   const [formProblem, setFormProblem] = useState("");
   const formRef = useEscapeCancel<HTMLFormElement>(onBack, saving);
+  const mismatchedFields = new Set(descriptor.fields
+    .filter((field) => (
+      field.confirm
+      && (confirmations[field.name] ?? "") !== ""
+      && values[field.name] !== confirmations[field.name]
+    ))
+    .map((field) => field.name));
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -364,8 +370,15 @@ function ExternalResourceForm({
     >
       <header>
         <div>
-          <strong>{updating ? "Update" : "Create"} {descriptor.label}</strong>
-          {details?.message ? <span>{details.message}</span> : null}
+          {details?.message
+            ? <span>{details.message}</span>
+            : (
+              <span>
+                {updating
+                  ? "Changed values replace the deployed resource."
+                  : "The new resource is provisioned and selected here."}
+              </span>
+            )}
         </div>
         <button className="secondary-button" onClick={onBack} type="button">
           <ArrowLeft aria-hidden="true" />
@@ -435,6 +448,7 @@ function ExternalResourceForm({
                 <label>
                   <span>Confirm {field.label}</span>
                   <input
+                    aria-invalid={mismatchedFields.has(field.name) || undefined}
                     aria-label={`Confirm ${field.label}`}
                     disabled={saving}
                     onChange={(event) => setConfirmations((current) => ({
@@ -448,17 +462,26 @@ function ExternalResourceForm({
                   />
                 </label>
               ) : null}
+              {mismatchedFields.has(field.name) ? (
+                <p className="field-error" role="alert">
+                  {field.label} and confirmation do not match.
+                </p>
+              ) : null}
             </div>
           );
         })}
       </div>
       {formProblem ? <p className="field-error" role="alert">{formProblem}</p> : null}
       <div className="external-form-actions">
-        <button className="primary-button" disabled={saving} type="submit">
+        <button disabled={saving} onClick={onBack} type="button">Cancel</button>
+        <button
+          className="primary-button"
+          disabled={saving || mismatchedFields.size > 0}
+          type="submit"
+        >
           {saving ? <LoaderCircle className="spin" /> : updating ? <Pencil /> : <Plus />}
           {updating ? "Update resource" : "Create resource"}
         </button>
-        <button disabled={saving} onClick={onBack} type="button">Cancel</button>
       </div>
     </form>
   );
@@ -487,7 +510,6 @@ function ExternalResourceView({
     <section className="external-resource-view">
       <header>
         <div>
-          <strong>{details.name}</strong>
           <span>{details.kind}</span>
         </div>
         <div>
@@ -660,7 +682,7 @@ function ExternalResourceDialogContent({
   node,
   busy,
   onClose,
-  registerBackHandler,
+  registerPane,
   replaceDraft,
   reportError,
 }: Readonly<{
@@ -668,7 +690,9 @@ function ExternalResourceDialogContent({
   node: EditNode;
   busy: boolean;
   onClose: () => void;
-  registerBackHandler: (handler: (() => void) | null) => void;
+  registerPane: (
+    info: { title: string; back: () => void } | null,
+  ) => void;
   replaceDraft: (promise: Promise<ConfigDraft>) => Promise<boolean>;
   reportError: (message: string) => void;
 }>) {
@@ -697,12 +721,24 @@ function ExternalResourceDialogContent({
     () => setWarning(null),
     warning === null,
   );
+  const descriptorLabel = descriptor?.label ?? "resource";
   useEffect(() => {
-    // A visible sub-pane turns the header X into "back one level" so it
-    // matches what Escape does.
-    registerBackHandler(pane ? () => setPane(null) : null);
-    return () => registerBackHandler(null);
-  }, [pane, registerBackHandler]);
+    // A visible sub-pane folds its title into the dialog header and
+    // turns the header X into "back one level", matching Escape.
+    if (!pane) {
+      registerPane(null);
+      return () => registerPane(null);
+    }
+    const title = pane.mode === "create"
+      ? `Create ${descriptorLabel}`
+      : pane.mode === "update"
+        ? `Update ${descriptorLabel}`
+        : pane.mode === "manual"
+          ? "Enter reference manually"
+          : `Inspect ${pane.details.name}`;
+    registerPane({ title, back: () => setPane(null) });
+    return () => registerPane(null);
+  }, [descriptorLabel, pane, registerPane]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -876,7 +912,11 @@ function ExternalResourceDialogContent({
       <section className="external-picker">
         <header>
           <div>
-            <strong>{inventory.displayName}</strong>
+            <strong>
+              Existing {matchingRows[0]?.kind
+                ?? inventory.rows[0]?.kind
+                ?? "resource"}s
+            </strong>
             <span>
               {matchingRows.length} matching {
                 matchingRows.length === 1 ? "resource" : "resources"
@@ -922,11 +962,6 @@ function ExternalResourceDialogContent({
               Cancel
             </button>
           </div>
-        ) : null}
-        {matchingRows.length > 0 ? (
-          <p className="external-resource-group-label">
-            Existing {matchingRows[0].kind}s
-          </p>
         ) : null}
         <ExternalResourceRows
           busy={busy || loading}
@@ -1098,9 +1133,11 @@ export function ExternalResourceEditor({
 }>) {
   const displayName = externalResourceDisplayName(node);
   const backHandler = useRef<(() => void) | null>(null);
-  const registerBackHandler = useCallback(
-    (handler: (() => void) | null) => {
-      backHandler.current = handler;
+  const [paneTitle, setPaneTitle] = useState<string | null>(null);
+  const registerPane = useCallback(
+    (info: { title: string; back: () => void } | null) => {
+      backHandler.current = info?.back ?? null;
+      setPaneTitle(info?.title ?? null);
     },
     [],
   );
@@ -1110,13 +1147,13 @@ export function ExternalResourceEditor({
       closeLabel="Close Kubernetes resource selector"
       escapeDisabled={busy}
       icon={<Database aria-hidden="true" />}
-      kicker="Kubernetes resource"
       onClose={() => {
         if (backHandler.current) backHandler.current();
         else onClose();
       }}
       portal
-      title={<>Select {displayName}</>}
+      subtitle="Kubernetes resource"
+      title={paneTitle ?? displayName}
     >
       <div className="external-resource-dialog-body">
         <ExternalResourceDialogContent
@@ -1124,7 +1161,7 @@ export function ExternalResourceEditor({
           draft={draft}
           node={node}
           onClose={onClose}
-          registerBackHandler={registerBackHandler}
+          registerPane={registerPane}
           replaceDraft={replaceDraft}
           reportError={reportError}
         />

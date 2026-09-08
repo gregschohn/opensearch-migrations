@@ -4553,7 +4553,7 @@ test("shows ConfigMap keys and selects the map plus key together", async () => {
   }));
 
   const selector = await screen.findByRole("dialog", {
-    name: "Select Transform ConfigMap",
+    name: "Transform ConfigMap",
   });
   const useMainJs = await within(selector).findByRole("button", {
     name: "Use transform-code and key main.js",
@@ -4574,7 +4574,7 @@ test("shows ConfigMap keys and selects the map plus key together", async () => {
     manual: false,
   });
   expect(screen.queryByRole("dialog", {
-    name: "Select Transform ConfigMap",
+    name: "Transform ConfigMap",
   })).toBeNull();
 });
 
@@ -4682,7 +4682,7 @@ test("selects an HTTP Basic Auth Secret in the shared resource dialog", async ()
   }));
 
   const selector = await screen.findByRole("dialog", {
-    name: "Select HTTP Basic Auth Secret",
+    name: "HTTP Basic Auth Secret",
   });
   expect(await within(selector).findByText("source-creds"))
     .toBeInTheDocument();
@@ -4724,7 +4724,7 @@ test("selects an HTTP Basic Auth Secret in the shared resource dialog", async ()
     manual: false,
   });
   expect(screen.queryByRole("dialog", {
-    name: "Select HTTP Basic Auth Secret",
+    name: "HTTP Basic Auth Secret",
   })).toBeNull();
 });
 
@@ -4753,7 +4753,7 @@ test("allows an explicit ConfigMap and key when inventory is unavailable", async
     within(configMapRow).getByRole("button", { name: /Configure$/ }),
   );
   const selector = await screen.findByRole("dialog", {
-    name: "Select Transform ConfigMap",
+    name: "Transform ConfigMap",
   });
   await userEvent.click(within(selector).getByRole("button", {
     name: "Enter reference manually",
@@ -4783,7 +4783,7 @@ test("allows an explicit ConfigMap and key when inventory is unavailable", async
     manual: true,
   });
   expect(screen.queryByRole("dialog", {
-    name: "Select Transform ConfigMap",
+    name: "Transform ConfigMap",
   })).toBeNull();
 });
 
@@ -4803,7 +4803,7 @@ test("dismisses Kubernetes resource selection without persistent inline controls
   await userEvent.click(configure);
 
   const selector = await screen.findByRole("dialog", {
-    name: "Select Transform ConfigMap",
+    name: "Transform ConfigMap",
   });
   expect(within(selector).getByRole("button", {
     name: "Close Kubernetes resource selector",
@@ -4811,7 +4811,7 @@ test("dismisses Kubernetes resource selection without persistent inline controls
   await userEvent.keyboard("{Escape}");
 
   expect(screen.queryByRole("dialog", {
-    name: "Select Transform ConfigMap",
+    name: "Transform ConfigMap",
   })).toBeNull();
   expect(screen.queryByRole("button", {
     name: "Enter reference manually",
@@ -5486,7 +5486,7 @@ test("views and creates descriptor-driven ConfigMaps without raw YAML", async ()
     name: /Configure$/,
   }));
   const selector = await screen.findByRole("dialog", {
-    name: "Select Transform ConfigMap",
+    name: "Transform ConfigMap",
   });
 
   await userEvent.click(
@@ -5532,7 +5532,7 @@ test("views and creates descriptor-driven ConfigMaps without raw YAML", async ()
     existingName: null,
   });
   expect(screen.queryByRole("dialog", {
-    name: "Select Transform ConfigMap",
+    name: "Transform ConfigMap",
   })).toBeNull();
 });
 

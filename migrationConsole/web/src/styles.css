@@ -5666,6 +5666,8 @@ button.secondary-button:hover:not(:disabled) {
   margin-top: 2px;
   color: var(--text-muted);
   font-size: 11px;
+  font-weight: 400;
+  text-transform: none;
 }
 
 .external-picker-header-actions {
@@ -5694,15 +5696,10 @@ button.secondary-button:hover:not(:disabled) {
   overflow: auto;
 }
 
-.external-resource-group-label {
-  margin: 0;
-  padding: 9px 12px 5px;
-  border-bottom: 1px solid var(--border);
-  color: var(--text-muted);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
+/* Matched resources are indented under the "Existing …" header so the
+   free-form names read as group members, distinct from the create row. */
+.external-resource-list .external-resource-row {
+  padding-left: 26px;
 }
 
 .external-resource-empty {
@@ -5958,8 +5955,17 @@ button.secondary-button:hover:not(:disabled) {
 }
 
 .external-form-actions {
+  justify-content: flex-end;
   padding: 12px 14px;
   border-top: 1px solid var(--border);
+}
+
+/* The shared button group above resets background/border; primaries in
+   these forms previously rendered white-on-white until hovered. */
+.external-form-actions button.primary-button {
+  border-color: #155d68;
+  color: #fff;
+  background: var(--accent);
 }
 
 .external-resource-values {
