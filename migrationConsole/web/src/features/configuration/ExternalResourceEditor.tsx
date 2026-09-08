@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useRef,
   useState,
   type FormEvent,
 } from "react";
@@ -13,7 +14,6 @@ import {
   Pencil,
   Plus,
   RefreshCw,
-  X,
 } from "lucide-react";
 
 import {
@@ -491,6 +491,20 @@ function ExternalResourceView({
           <span>{details.kind}</span>
         </div>
         <div>
+          <button className="secondary-button" onClick={onBack} type="button">
+            <ArrowLeft aria-hidden="true" />
+            Back to resources
+          </button>
+          {descriptor ? (
+            <button
+              className="secondary-button"
+              onClick={onUpdate}
+              type="button"
+            >
+              <Pencil aria-hidden="true" />
+              Update resource
+            </button>
+          ) : null}
           {selectsKey ? details.keys.map((key) => (
             <button
               className="primary-button"
@@ -509,20 +523,6 @@ function ExternalResourceView({
               Use resource
             </button>
           )}
-          {descriptor ? (
-            <button
-              className="secondary-button"
-              onClick={onUpdate}
-              type="button"
-            >
-              <Pencil aria-hidden="true" />
-              Update resource
-            </button>
-          ) : null}
-          <button className="secondary-button" onClick={onBack} type="button">
-            <ArrowLeft aria-hidden="true" />
-            Back to resources
-          </button>
         </div>
       </header>
       {details.message ? <p className="field-help">{details.message}</p> : null}
@@ -588,7 +588,7 @@ function ExternalResourceRows({
         >
           <div className="external-resource-heading">
             <strong>{row.name}</strong>
-            <span>{row.kind}</span>
+            {showDetails ? <span>{row.kind}</span> : null}
             {row.current ? <em>Current</em> : null}
           </div>
           {row.message && (showDetails || row.status !== "matching") ? (
@@ -605,6 +605,26 @@ function ExternalResourceRows({
             ) : <span className="empty-keys">No keys reported</span>
           ) : null}
           <div className="external-resource-actions">
+            <button
+              aria-label={`Inspect ${row.name}`}
+              disabled={busy}
+              onClick={() => onInspect(row, "view")}
+              type="button"
+            >
+              <Eye aria-hidden="true" />
+              Inspect
+            </button>
+            {canUpdate ? (
+              <button
+                aria-label={`Update ${row.name}`}
+                disabled={busy}
+                onClick={() => onInspect(row, "update")}
+                type="button"
+              >
+                <Pencil aria-hidden="true" />
+                Update
+              </button>
+            ) : null}
             {selectsKey ? row.keys.map((key) => (
               <button
                 aria-label={`Use ${row.name} and key ${key}`}
@@ -627,26 +647,6 @@ function ExternalResourceRows({
                 Use resource
               </button>
             )}
-            <button
-              aria-label={`Inspect ${row.name}`}
-              disabled={busy}
-              onClick={() => onInspect(row, "view")}
-              type="button"
-            >
-              <Eye aria-hidden="true" />
-              Inspect
-            </button>
-            {canUpdate ? (
-              <button
-                aria-label={`Update ${row.name}`}
-                disabled={busy}
-                onClick={() => onInspect(row, "update")}
-                type="button"
-              >
-                <Pencil aria-hidden="true" />
-                Update
-              </button>
-            ) : null}
           </div>
         </div>
       ))}
@@ -660,6 +660,7 @@ function ExternalResourceDialogContent({
   node,
   busy,
   onClose,
+  registerBackHandler,
   replaceDraft,
   reportError,
 }: Readonly<{
@@ -667,6 +668,7 @@ function ExternalResourceDialogContent({
   node: EditNode;
   busy: boolean;
   onClose: () => void;
+  registerBackHandler: (handler: (() => void) | null) => void;
   replaceDraft: (promise: Promise<ConfigDraft>) => Promise<boolean>;
   reportError: (message: string) => void;
 }>) {
@@ -695,6 +697,13 @@ function ExternalResourceDialogContent({
     () => setWarning(null),
     warning === null,
   );
+  useEffect(() => {
+    // A visible sub-pane turns the header X into "back one level" so it
+    // matches what Escape does.
+    registerBackHandler(pane ? () => setPane(null) : null);
+    return () => registerBackHandler(null);
+  }, [pane, registerBackHandler]);
+
   const load = useCallback(async () => {
     setLoading(true);
     setWarning(null);
@@ -914,6 +923,11 @@ function ExternalResourceDialogContent({
             </button>
           </div>
         ) : null}
+        {matchingRows.length > 0 ? (
+          <p className="external-resource-group-label">
+            Existing {matchingRows[0].kind}s
+          </p>
+        ) : null}
         <ExternalResourceRows
           busy={busy || loading}
           canUpdate={Boolean(descriptor)}
@@ -969,22 +983,8 @@ function ExternalResourceDialogContent({
         <ModalDialog
           backdropClassName="nested-modal-backdrop"
           className="external-resource-dialog"
+          closeLabel="Close all Kubernetes resources"
           escapeDisabled={busy}
-          headerActions={(
-            <button
-              aria-label="Close all Kubernetes resources"
-              className="icon-button"
-              disabled={busy}
-              onClick={() => {
-                setAllResourcesPane(null);
-                setAllResourcesOpen(false);
-              }}
-              type="button"
-            >
-              <X aria-hidden="true" />
-            </button>
-          )}
-          hideCloseButton
           icon={<Database aria-hidden="true" />}
           kicker="Kubernetes resource inventory"
           onClose={() => {
@@ -1097,6 +1097,13 @@ export function ExternalResourceEditor({
   reportError: (message: string) => void;
 }>) {
   const displayName = externalResourceDisplayName(node);
+  const backHandler = useRef<(() => void) | null>(null);
+  const registerBackHandler = useCallback(
+    (handler: (() => void) | null) => {
+      backHandler.current = handler;
+    },
+    [],
+  );
   return (
     <ModalDialog
       className="external-resource-dialog"
@@ -1104,7 +1111,10 @@ export function ExternalResourceEditor({
       escapeDisabled={busy}
       icon={<Database aria-hidden="true" />}
       kicker="Kubernetes resource"
-      onClose={onClose}
+      onClose={() => {
+        if (backHandler.current) backHandler.current();
+        else onClose();
+      }}
       portal
       title={<>Select {displayName}</>}
     >
@@ -1114,6 +1124,7 @@ export function ExternalResourceEditor({
           draft={draft}
           node={node}
           onClose={onClose}
+          registerBackHandler={registerBackHandler}
           replaceDraft={replaceDraft}
           reportError={reportError}
         />

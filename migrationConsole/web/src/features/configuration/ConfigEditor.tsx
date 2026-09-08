@@ -1855,14 +1855,13 @@ export function ConfigEditor({
     [expanded, renderExpert, renderOptional, scopedNodes],
   );
   const measureRowTops = useCallback(() => {
-    const panel = configTablePanelRef.current;
     const tops = new Map<string, number>();
-    if (!panel) return tops;
-    // Scroll-invariant positions so a scrolled panel never reads as a
-    // layout change.
-    const panelTop = panel.getBoundingClientRect().top - panel.scrollTop;
+    // offsetTop is layout truth: unaffected by panel scroll AND by any
+    // in-flight transform animations, so a re-run during a transition
+    // (e.g. the inserted-row tracking commit) measures identical values
+    // and stacks no second animation on the moving rows.
     rowElements.current.forEach((element, nodeId) => {
-      tops.set(nodeId, element.getBoundingClientRect().top - panelTop);
+      tops.set(nodeId, element.offsetTop);
     });
     return tops;
   }, []);
