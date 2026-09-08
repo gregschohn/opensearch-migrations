@@ -83,10 +83,10 @@ live in the retained current classes (`TrackingKafkaConsumer`/`KafkaTrafficCaptu
 contracts here.
 
 **Future work** is concentrated in the final scaling protocol
-([proxyHorizontalScalingAndNodeDeath.md](proxyHorizontalScalingAndNodeDeath.md)), source/control
-ownership consolidation, removal of mailbox-loss recovery, mandatory lifecycle interfaces, and
-layered real-Kafka verification. Until the scaling protocol lands, this document's §10.5
-retain-and-halt row is the no-survivor behavior.
+([proxyHorizontalScalingAndNodeDeath.md](proxyHorizontalScalingAndNodeDeath.md)), separation of the
+Kafka source-I/O and replay-intake owners, removal of mailbox-loss recovery, mandatory lifecycle
+interfaces, and layered real-Kafka verification. Until the scaling protocol lands, this document's
+§10.5 retain-and-halt row is the no-survivor behavior.
 
 ---
 
@@ -275,19 +275,22 @@ This ambiguity is a real source of bugs, so the design keeps the five lexically 
   stay nonzero forever; it just tells you what is stuck.
 - **Out of runway** — we lost the right or the time to finish this work (partition reassigned,
   process shutting down). Never commit-eligible: someone else must be able to pick it up.
-- **Runway state** — generation-scoped authority to enter a commit disposition. The authoritative
-  state is owned by `RecordDispositionLedger` on the source/control thread shared with
-  `KafkaSourceActor`. It starts `Available` and may transition once to `Lost(REASSIGNMENT)` or
-  `Lost(SHUTDOWN)`. Transactions hold only a monotonic local observation delivered as `RunwayLost`,
-  so the ledger always rechecks the authoritative state before source acceptance. Runway is
-  orthogonal to source and target outcomes: reassignment can occur after both have already settled but
-  before evidence or disposition has finished. Losing runway never rewrites an existing outcome; it
-  vetoes any commit that the source has not already accepted.
+- **Runway state** — generation-scoped authority to enter a commit disposition. `KafkaSourceActor`
+  owns the authoritative source-generation state. `RecordDispositionLedger`, on the replay-intake
+  owner, keeps a monotonic observed runway so it can reject known-stale commits early, but source
+  acceptance is final only when the source actor processes the commit command in order with poll
+  and rebalance callbacks. It starts `Available` and may transition once to
+  `Lost(REASSIGNMENT)` or `Lost(SHUTDOWN)`. Transactions hold only a monotonic local observation
+  delivered as `RunwayLost`. Runway is orthogonal to source and target outcomes: reassignment can
+  occur after both have already settled but before evidence or disposition has finished. Losing
+  runway never rewrites an existing outcome; it vetoes any commit that the source actor has not
+  already accepted.
 - **Commit proposed / accepted / acknowledged** — three deliberately distinct stages. A transaction
-  proposes a commit disposition. The source accepts it only after checking the current generation and
-  registering the offset under the source/control thread's ownership. Kafka acknowledges it only when
-  the broker commit succeeds. Revocation before source acceptance selects `Retain`; after source
-  acceptance, the pending commit remains ledger-owned until acknowledgement or an explicit failure.
+  proposes a commit disposition to `RecordDispositionLedger`. The ledger sends a typed commit
+  command to `KafkaSourceActor`; the source accepts it only after checking the current generation
+  and registering the offset on its owner thread. Kafka acknowledges it only when the broker commit
+  succeeds. Revocation ordered before source acceptance selects `Retain`; after source acceptance,
+  the pending obligation remains ledger-owned until acknowledgement or an explicit failure.
 - **Confirmed dead** — the owning proxy produced a complete, offset-ordered manifest proving that
   it no longer owns the connection. Commit-eligible, because it is structural proof. Silence, elapsed
   time, and scanning to the current end of an unfenced producer's log are not confirmation.
@@ -331,16 +334,16 @@ machinery — it is §2 traced concretely.
 
 ### 4.1 The normal path
 
-1. **Read.** `KafkaSourceActor` polls a record on the source/control thread and registers a
-   `RecordObligation`: this record now *must* receive a disposition. It offers the decoded traffic
-   stream to `ReplayReadGate`, which admits it only if its source time is within
+1. **Read.** `KafkaSourceActor` polls and decodes records on its source-I/O owner thread. It sends
+   one immutable source batch, including generation identity, to the replay-intake owner.
+   `RecordDispositionLedger` registers each `RecordObligation`: this record now *must* receive a
+   disposition. `ReplayReadGate` admits the batch only if its source time is within
    `settledWatermark + epsilon`.
 
-2. **Reconstruct.** `SourceAssembler`, on that same source/control thread, feeds observations into
-   the per-connection state machine and recognizes the end of a request. "Replay intake" is a phase
-   of this control loop, not a second thread.
+2. **Reconstruct.** `SourceAssembler`, on the replay-intake owner, feeds observations into the
+   per-connection state machine and recognizes the end of a request.
 
-3. **Admit — the pivotal step.** `ReplayCoordinator`, still on the source/control thread and therefore
+3. **Admit — the pivotal step.** `ReplayCoordinator`, still on the replay-intake owner and therefore
    still in source order, does three things at once:
    - finds or creates the session's `ConnectionRuntime`, pinning it to one existing Netty event
      loop;
@@ -353,7 +356,7 @@ machinery — it is §2 traced concretely.
    all asynchrony, **the actor's queue is source order** — which is why no sorter is needed later.
    Admission itself is bounded O(1) control work (registry lookup, occasional runtime creation,
    token allocation, one event-loop enqueue); it never waits for a permit, transformation, signing,
-   a timer, target I/O, retry, or evidence output. Benchmarks should confirm the control thread
+   a timer, target I/O, retry, or evidence output. Benchmarks should confirm the intake owner
    stays cheap, but no expensive request processing moves onto it.
 
 4. **Prepare, concurrently.** The transaction asynchronously acquires a permit from
@@ -379,11 +382,11 @@ machinery — it is §2 traced concretely.
    `EvidenceWriter` to persist the tuple and waits for an `EvidenceOutcome`.
 
 9. **Dispose exactly once.** The transaction sends its record obligations, all three outcomes, and
-   its runway observation to `RecordDispositionLedger` on the source/control thread. The ledger
-   rechecks authoritative runway, closes each record's contexts and — this row being (Available,
-   Complete, Succeeded, Durable) — proposes `Commit` to the source adapter. The source accepts it only
-   after validating the generation and registering the offset; the ledger then joins the broker
-   acknowledgement.
+   its runway observation to `RecordDispositionLedger` on the replay-intake owner. The ledger
+   rechecks observed runway, closes each record's contexts and — this row being (Available,
+   Complete, Succeeded, Durable) — sends a `CommitProposed` command to `KafkaSourceActor`. The
+   source actor serializes it with rebalance and poll state, accepts or rejects it after validating
+   the generation, and reports the result; the ledger then joins the broker acknowledgement.
 
 10. **Release.** The transaction closes its owned resources exactly once: prepared request, permit,
     tracing contexts. Its completion gate completes only after disposition has settled, and the
@@ -397,19 +400,18 @@ machinery — it is §2 traced concretely.
 
 This is the failure path that motivated the design, and it shows where each mechanism earns its keep.
 
-1. `KafkaSourceActor`'s rebalance callback fires: this partition is revoked. It stops admitting
-   records from the old generation and emits an **interruption control event** into the same
-   serialized source/control mailbox the real records use — so it is *ordered against* them rather
-   than racing them.
+1. `KafkaSourceActor`'s rebalance callback fires: this partition is revoked. On its owner thread it
+   marks the old generation's authoritative runway `Lost(REASSIGNMENT)`, stops admitting records
+   from that generation, and sends one ordered **interruption control event** to replay intake.
 
-2. On the source/control thread, the source actor first marks the old generation's authoritative
-   runway `Lost(REASSIGNMENT)` in the disposition ledger. The assembler then applies the interruption
-   to the matching generation. An unfinished source side settles as `SourceOutcome.Interrupted`; an
-   already terminal source outcome is not rewritten. Independently, the coordinator posts
-   `RunwayLost(REASSIGNMENT)` to every still-active transaction in the generation. This covers a
-   request whose source and target already completed but whose evidence or record disposition has
-   not. Because runway revocation and source commit acceptance share one serialized owner, their
-   processing order resolves the race.
+2. The replay-intake owner applies that event in order with delivered source batches. The
+   disposition ledger marks its observed runway lost; the assembler settles an unfinished source
+   side as `SourceOutcome.Interrupted` without rewriting an already terminal outcome. Independently,
+   the coordinator posts `RunwayLost(REASSIGNMENT)` to every still-active transaction in the
+   generation. This covers a request whose source and target already completed but whose evidence or
+   record disposition has not. Source acceptance remains race-free because commit commands and
+   authoritative revocation are serialized by `KafkaSourceActor`; the intake-side runway is an
+   early rejection and drain signal.
 
 3. The coordinator aborts the matching connection actors **by typed `ConnectionSessionKey`** — not
    by a concatenated string, not via a placeholder session number. `abort()` returns a **session
@@ -587,13 +589,18 @@ completions. **Dotted arrows stay on one thread** and show phase order or direct
 
 ```mermaid
 flowchart LR
-    subgraph CONTROL["Source/control thread — exactly one"]
+    subgraph SOURCE["Kafka source-I/O owner — exactly one"]
         direction TB
-        KSA["KafkaSourceActor<br/>+ ReplayReadGate"]
+        KSA["KafkaSourceActor<br/>consumer + scanner + commit adapter"]
+    end
+
+    subgraph INTAKE["Replay-intake owner — exactly one"]
+        direction TB
+        READ["ReplayReadGate"]
         ASM["SourceAssembler"]
         COORD["ReplayCoordinator"]
         POOL["AsyncPermitPool"]
-        LEDGER["RecordDispositionLedger<br/>+ ReplayProgressController<br/>+ Kafka commit adapter"]
+        LEDGER["RecordDispositionLedger<br/>+ ReplayProgressController"]
     end
 
     subgraph LOOP["One session's ConnectionRuntime — its assigned Netty event loop"]
@@ -607,7 +614,10 @@ flowchart LR
     EVID["EvidenceWriter<br/>(evidence sink executor)"]
     TARGET["Target cluster"]
 
-    KSA -.->|"decoded observations"| ASM
+    READ -->|"read demand / pause"| KSA
+    KSA -->|"immutable source batch /<br/>lifecycle event"| ASM
+    LEDGER -->|"CommitProposed / release /<br/>source acknowledgement"| KSA
+    KSA -->|"CommitAccepted /<br/>CommitAcknowledged"| LEDGER
     ASM -.->|"completed request / close"| COORD
 
     COORD -->|"AdmitRequest"| ACTOR
@@ -626,7 +636,8 @@ flowchart LR
 
     TXN -->|"DispositionDecision ·<br/>settle work token ·<br/>PermitReleased"| LEDGER
 
-    style CONTROL fill:#e9f3fb,stroke:#2f6687
+    style SOURCE fill:#dcecf8,stroke:#2f6687
+    style INTAKE fill:#e9f3fb,stroke:#2f6687
     style LOOP fill:#fbe9dc,stroke:#9a5a2e
     style PREP fill:#eaf6e8,stroke:#4f7a46
     style EVID fill:#f5efdc,stroke:#7d6c32
@@ -638,12 +649,13 @@ appends its command to the actor's FIFO — so the actor, exchange, and transact
 share one event loop and exchange no cross-thread messages among themselves. Other sessions may use
 other loops from the existing group.
 
-Kafka polling, scanning, reconstruction, admission, permits, progress, and disposition are phases of
-the one source/control loop, so the control-thread components likewise pass no cross-thread messages
-among themselves. When source admission is closed, that loop keeps servicing mailbox commands, Kafka
-heartbeats, commits, rebalances, and bounded scans. `RecordDispositionLedger` owns authoritative
-runway on that thread; `ReplayTransaction` receives `RunwayLost` only so it can begin draining
-promptly.
+Kafka polling, scanning, source-generation state, and commit acceptance belong to the source-I/O
+actor. Reconstruction, admission, permits, progress, and disposition bookkeeping belong to replay
+intake. The two owners exchange immutable batches, lifecycle events, source commands, and
+acknowledgements. When source admission is closed, the source actor keeps servicing Kafka
+heartbeats, commits, rebalances, and bounded scans while replay intake continues draining mailbox
+work. `ReplayTransaction` receives `RunwayLost` so it can begin draining promptly; the source actor
+still makes the final source-acceptance decision.
 
 ### 7.2 One request: wait states and their releasing events
 
@@ -693,7 +705,7 @@ flowchart TD
 | 3 | Terminal target outcome | `ConnectionActor` (event loop) | `TargetExchange`: `TargetOutcome` or abort outcome |
 | 4 | Every policy-required source and target outcome | `ReplayTransaction` (event loop) | The last required outcome turning terminal |
 | 5 | Evidence outcome, when required | `ReplayTransaction` (event loop) | `EvidenceWriter`: `EvidenceOutcome`, or policy: not required |
-| 6 | Authoritative disposition, commit acknowledgement when accepted, owned-resource release | `ReplayTransaction` waits (event loop); `RecordDispositionLedger` decides (source/control) | Ledger settles the disposition; transaction closes its resources |
+| 6 | Authoritative disposition, source acceptance and commit acknowledgement when accepted, owned-resource release | `ReplayTransaction` waits (event loop); `RecordDispositionLedger` decides disposition (replay intake); `KafkaSourceActor` accepts and acknowledges commit (source I/O) | Source result settles the ledger; transaction closes its resources |
 
 The two side entries are orthogonal to the main path on purpose. The source slot may settle at any
 time relative to target work — state 4 simply requires both. Cancellation from any phase actively
@@ -711,10 +723,10 @@ releases nothing by itself.
 ```mermaid
 flowchart TD
     TXN(["Transaction gate<br/>ReplayTransaction · event loop"])
-    COMMIT(["Accepted-commit gate<br/>RecordDispositionLedger · source/control"])
+    COMMIT(["Accepted-commit gate<br/>KafkaSourceActor · source I/O"])
     SESSION(["Session termination gate<br/>ConnectionActor · event loop"])
-    DRAIN(["Replay quiescence gate<br/>ReplayProgressController · source/control"])
-    LIFE(["Rebalance / shutdown gate<br/>KafkaSourceActor · source/control"])
+    DRAIN(["Replay quiescence gate<br/>ReplayProgressController · replay intake"])
+    LIFE(["Rebalance / shutdown gate<br/>source I/O + replay intake"])
     GO(["Resume the next generation<br/>or finish shutdown"])
 
     TXN -->|"every session transaction joined"| SESSION
@@ -753,23 +765,27 @@ mutable future on its own thread, while other components hold only a non-mutable
 
 ## 8. Thread and Executor Model
 
-**The design introduces no new thread pool and uses one source-side control thread, not separate
-Kafka and replay-intake threads.** Kafka polling, scanning, reconstruction, admission, progress,
-permit accounting, and record disposition are phases or mailbox commands on that one owner.
-Transformation workers, the Netty event-loop group, and any evidence-sink executor remain
-asynchronous. That constraint is load-bearing and is checked explicitly by the acceptance criteria.
+**The design uses two explicit serialized source-side owners: one Kafka source-I/O actor and one
+replay-intake mailbox.** Kafka's consumer API is blocking and thread-confined, while replay intake
+must continue servicing actor completions, permits, progress, and disposition callbacks. Treating
+those as one thread forced the implementation toward locks and concurrently mutable maps. The
+sound boundary is two owners with typed messages, not three threads sharing lifecycle state.
 
 The application-owned execution domains on the normal request path are therefore:
 
-1. Exactly one source/control thread.
-2. The existing transformation worker pool, with its configured worker count.
-3. The existing Netty event-loop group, with its configured thread count; each session is pinned to
+1. Exactly one Kafka source-I/O owner thread.
+2. Exactly one replay-intake owner thread.
+3. The existing transformation worker pool, with its configured worker count.
+4. The existing Netty event-loop group, with its configured thread count; each session is pinned to
    one of those threads, not given a new thread.
-4. The sink-specific evidence executor, when the configured sink uses one.
+5. The sink-specific evidence executor, when the configured sink uses one.
 
 Actors, transactions, completion gates, permit waiters, and source accumulations do not create
 threads. Kafka or Netty libraries may own internal housekeeping threads, but those threads own none of
-the replay lifecycle state described here.
+the replay lifecycle state described here. A blocking read adapter may not own or mutate source
+lifecycle state and may not invoke the Kafka source from a third thread. The current
+`BlockingTrafficSource` executor is therefore migration residue: replace its blocking handoff with
+an asynchronous read-gate signal or fold it into replay intake.
 
 When the first command for a `ConnectionSessionKey` is admitted, `ReplayCoordinator` assigns a
 `ConnectionRuntime` to one existing Netty event loop and records that assignment in the session
@@ -780,46 +796,56 @@ not a dedicated thread.**
 
 | Owner | Thread/executor | Mutable state |
 | --- | --- | --- |
-| `KafkaSourceActor` | One source/control thread | Consumer assignment, replay positions, scan positions, offset trackers, pending commits |
-| `SourceAssembler` and `ReplayCoordinator` | Same source/control thread | Reconstruction state, session admission, affinity registry |
-| `AsyncPermitPool` | Same source/control thread | Permit queue and available capacity; releases are posted back to this owner |
+| `KafkaSourceActor` | One source-I/O owner thread | Consumer assignment, source-generation runway, replay/scan positions, offset trackers, commit acceptance and acknowledgement, source-side active-connection index |
+| `SourceAssembler` and `ReplayCoordinator` | One replay-intake owner thread | Reconstruction state, session admission, affinity registry |
+| `AsyncPermitPool` | Replay-intake owner | Permit queue and available capacity; releases are posted back to this owner |
 | `ConnectionRuntime` | One assigned existing Netty event loop | `ConnectionActor`, session transactions, command mailbox, timers, target channel, terminal state |
 | `RequestPreparationService` | Transformation/event-loop workers as appropriate | No shared connection lifecycle state |
 | `EvidenceWriter` | Sink-specific executor | Sink-local buffering and durability |
-| `ReplayProgressController` | Same source/control thread | Admitted-work tokens, replay-quiescence gate, and contiguous settled watermark |
-| `ReplayReadGate` | Same source/control thread | Source admission using settled watermark, epsilon, and lifecycle state |
-| `RecordDispositionLedger` | Same source/control thread, beside `KafkaSourceActor` | Generation runway, record obligations, context closure, commit staging, retained-record release |
+| `ReplayProgressController` | Replay-intake owner | Admitted-work tokens, replay-quiescence gate, and contiguous settled watermark |
+| `ReplayReadGate` | Replay-intake owner | Source admission using settled watermark, epsilon, and lifecycle state |
+| `RecordDispositionLedger` | Replay-intake owner | Record obligations, observed runway, context closure, disposition state, retained-record release |
 
 Cross-thread completions are converted into messages: `Prepared`, `SourceSettled`,
-`EvidenceSettled`, `PermitReleased`, `RunwayLost`, `AbortRequested`. Target exchange callbacks
-already run on the assigned Netty event loop, so **the actor and transaction communicate with no
-extra executor hop** — this is why co-locating the transaction with its actor matters rather than
-giving transactions their own executor. Thread-affinity assertions must reject any actor or
-transaction transition that runs off its assigned event loop. These are always-enabled runtime
-checks that emit owner-violation diagnostics and invoke the fatal replay handler; they are not Java
-`assert` statements, which production commonly disables.
+`EvidenceSettled`, `PermitReleased`, `RunwayLost`, `CommitProposed`, `CommitAccepted`,
+`CommitAcknowledged`, and `AbortRequested`. Target exchange callbacks already run on the assigned
+Netty event loop, so **the actor and transaction communicate with no extra executor hop** — this is
+why co-locating the transaction with its actor matters rather than giving transactions their own
+executor.
+
+Every mutable owner has an always-enabled `OwnerThreadGuard`. Every state-mutating method checks the
+guard and invokes the fatal replay handler on violation; this is not a Java `assert`, which
+production commonly disables. Interfaces exposed across owners accept immutable command values and
+return `CompletionStage` acknowledgements where ordering matters. They never expose live maps,
+queues, lifecycle registries, or callbacks that mutate foreign-owned state directly. A lock or
+`ConcurrentHashMap` is not a substitute for assigning an owner.
 
 The normal logical handoffs are bounded and explicit:
 
-1. Source/control thread → the assigned Netty event loop, with an immutable admission envelope.
-2. Netty event loop → source/control thread for permit acquisition, and back when granted.
-3. Netty event loop → a transformation worker, and back with `Prepared`.
-4. Netty event loop → the evidence sink, and back with `EvidenceSettled`.
-5. Netty event loop → source/control thread, with immutable disposition, progress, and permit-release
+1. Kafka source-I/O owner → replay-intake owner, with an immutable decoded batch or source-lifecycle
+   event.
+2. Replay-intake owner → Kafka source-I/O owner, with commit, release, scan-blocker, or session-
+   termination commands; the source replies with immutable acceptance/acknowledgement results.
+3. Replay-intake owner → the assigned Netty event loop, with an immutable admission envelope.
+4. Netty event loop → replay-intake owner for permit acquisition, and back when granted.
+5. Netty event loop → a transformation worker, and back with `Prepared`.
+6. Netty event loop → the evidence sink, and back with `EvidenceSettled`.
+7. Netty event loop → replay-intake owner, with immutable disposition, progress, and permit-release
    messages.
 
-Removed relative to today: the limiter-feeder thread, the post-transformation sorter handoff, the
-separate blocking-source/replay-intake handoff, the independent schedule executor, any
-actor-to-transaction hop, and any per-connection thread. Actual OS context switches remain
-scheduler-dependent.
+Removed relative to today: direct intake-thread mutation of `TrackingKafkaConsumer`,
+`commitDataLock`, source-state `ConcurrentHashMap` sharing, the blocking-source third-thread call
+into Kafka, the limiter-feeder thread, the post-transformation sorter handoff, the independent
+schedule executor, any actor-to-transaction hop, and any per-connection thread. Actual OS context
+switches remain scheduler-dependent.
 
-The control loop must remain responsive to Kafka's poll contract. It processes source records under a
-bounded record-count or elapsed-time budget, drains ready mailbox commands, and returns to Kafka
-before that budget can threaten `max.poll.interval.ms`. When `ReplayReadGate` closes, the loop pauses
-ordinary replay partitions rather than blocking its thread, then continues short polls or equivalent
-touches for heartbeats, commits, rebalance callbacks, source-control messages, and bounded scanner
-cycles. This is the mechanism that permits coalescing without starving Kafka or deadlocking progress
-updates behind a blocking read.
+The Kafka source actor must remain responsive to Kafka's poll contract. It processes source commands
+under a bounded record-count or elapsed-time budget and returns to Kafka before that budget can
+threaten `max.poll.interval.ms`. When `ReplayReadGate` closes, replay intake stops requesting
+ordinary data; the source actor continues short polls or equivalent touches for heartbeats, commits,
+rebalance callbacks, source-control messages, and bounded scanner cycles. The replay-intake mailbox
+continues servicing transaction completions independently, so neither owner blocks the other's
+progress.
 
 ---
 
@@ -984,12 +1010,12 @@ proof itself is the safety precondition for the commit.
 
 ### 10.4 Verdicts enter through the normal control loop
 
-The scanner does not call into mutable assembler state reentrantly. It enqueues a typed
-`SourceControlEvent.ConfirmedDead` into the same source/control mailbox used for source records.
-Although the scanner and assembler share one OS thread, the queued message boundary preserves an
-explicit ordering point and keeps scanner callbacks from mutating reconstruction state directly.
-`SourceAssembler` applies the event to the matching generation and emits a source outcome to the
-owning transaction or connection coordinator.
+The scanner does not call into mutable assembler state reentrantly. On the Kafka source actor it
+creates a typed `SourceControlEvent.ConfirmedDead` and delivers it through the same ordered
+source-batch channel used for traffic records. The explicit message boundary preserves ordering and
+keeps source-I/O callbacks from mutating reconstruction state directly. `SourceAssembler`, on
+replay intake, applies the event to the matching generation and emits a source outcome to the owning
+transaction or connection coordinator.
 
 This preserves the accumulator's single-threaded contract and — more valuably — provides **one
 ordering point** for five things that would otherwise race:
@@ -1404,7 +1430,7 @@ Requirements:
 * Queued acquisition can be cancelled by request, session, partition, or shutdown.
 * Pool shutdown settles **every** queued acquisition exceptionally.
 * Permit release is idempotence-guarded and owned by `ReplayTransaction`.
-* Queue mutation occurs on the source/control thread; cross-thread release posts a `PermitReleased`
+* Queue mutation occurs on the replay-intake owner; cross-thread release posts a `PermitReleased`
   event to that owner.
 * No dedicated feeder thread, and no bare callback accepting a `WorkItem`.
 
@@ -1462,7 +1488,7 @@ stateDiagram-v2
     DISPOSING --> TERMINATED
     note right of DISPOSING
         Runway lost while DISPOSING stays DISPOSING.
-        The source/control thread's ordering of runway
+        KafkaSourceActor's ordering of authoritative runway
         revocation vs. source acceptance decides the commit.
     end note
 ```
@@ -1477,7 +1503,7 @@ Two facts are deliberately *not* linear states:
   or disposition is in flight. It does not overwrite a terminal source or target outcome. It moves
   unfinished work through `DRAINING`, where cancellable children are actively settled and
   uncancellable children are joined or failed loudly before disposition. If disposition has already
-  been submitted, the transaction remains `DISPOSING`; the source/control thread's ordering of
+  been submitted, the transaction remains `DISPOSING`; `KafkaSourceActor`'s ordering of
   authoritative runway revocation versus source acceptance decides whether the commit was accepted.
 
 The invariant that matters: **`DISPOSING` is reached once and only once, from every path.**
@@ -1597,9 +1623,9 @@ Properties to internalize:
   `SourceOutcome.Complete`, `TargetOutcome.Succeeded`, and even durable evidence while still being
   retained because reassignment arrived before the source accepted its commit.
 - **Source acceptance is the linearization point.** A transaction's `Commit` disposition is only a
-  proposal. On the source/control thread, the ledger and Kafka adapter atomically check the generation
-  and register the offset as pending. Runway revocation and this source acceptance are therefore
-  serialized by one owner:
+  proposal. On the source-I/O owner, `KafkaSourceActor` checks the generation and registers the
+  offset as pending. Runway revocation and this source acceptance are therefore serialized by that
+  owner:
   - if revocation runs first, the proposal becomes `Retain` and no commit is registered;
   - if source acceptance runs first, the pending commit remains ledger-owned until broker
     acknowledgement or explicit failure and is not later relabeled as `Retain`.
@@ -1623,8 +1649,8 @@ not expand `EvidenceWriter` merely to persist an empty result.
 2. Tracks their current owner.
 3. **Rejects duplicate disposition** — this is F2, structurally prevented.
 4. Closes record and traffic-stream contexts exactly once.
-5. Serializes generation revocation with source commit acceptance on the source/control thread.
-6. Registers source-accepted records with the Kafka commit adapter and joins the broker
+5. Sends commit proposals to `KafkaSourceActor` and joins its acceptance result.
+6. Tracks source-accepted records and joins the broker
    acknowledgement.
 7. Rejects a commit from a lost or stale generation before submission.
 8. Releases retained records locally without advancing Kafka when ownership is lost.
@@ -1687,15 +1713,16 @@ nonzero (F3); shutdown relies on process exit.
 For each revoked partition:
 
 1. Stop admitting new records from the old generation.
-2. On the source/control thread, mark the old generation's authoritative runway lost in the
-   disposition ledger. This is the linearization point after which any newly proposed old-generation
-   commit is rejected.
+2. On the Kafka source-I/O owner, mark the old generation's authoritative runway lost. This is the
+   linearization point after which any newly processed old-generation commit command is rejected.
+   Deliver an ordered revocation event to replay intake so its ledger mirrors the loss and rejects
+   later proposals early.
 3. Deliver `RunwayLost` to every active old-generation transaction through its assigned mailbox.
    Await the mailbox acknowledgement so each transaction begins draining promptly; correctness does
    not depend on this notification winning a race with commit submission because step 2 is
    authoritative.
-4. Emit interruption events through the serialized source-control path. These settle unfinished
-   source sides without rewriting source outcomes that were already terminal.
+4. Deliver interruption events through the ordered source-batch channel to replay intake. These
+   settle unfinished source sides without rewriting source outcomes that were already terminal.
 5. Abort matching connection actors **by typed `ConnectionSessionKey`**.
 6. Settle queued and active target work as reassignment cancellation, join exchange cleanup, and let
    every transaction drain to its disposition. Lost runway selects `Retain` unless the source had
@@ -1722,7 +1749,8 @@ Shutdown is a structured operation:
 
 1. Stop source admission and scanner cycles.
 2. Copy transaction and connection registries into immutable shutdown work lists.
-3. On the source/control thread, revoke authoritative runway for every unfinished generation.
+3. On the Kafka source-I/O owner, revoke authoritative runway for every unfinished generation and
+   deliver the matching shutdown events to replay intake.
 4. Deliver `RunwayLost(SHUTDOWN)` to unfinished transactions.
 5. Abort all actors.
 6. Await their termination completion gates.
@@ -1873,6 +1901,11 @@ Use fake clocks, fake event loops, and manually controlled futures to enumerate:
 * writer completion after departure: producer-quiescence timing, one retained publication
   obligation per survivor and partition until Kafka acknowledgement, retry-safe duplicates, and
   later traffic after peer completion causing fatal retention rather than discard;
+* source-owner ordering: commit proposal before versus after revocation, broker acknowledgement
+  before versus after lifecycle notification, scan-blocker and connection-completion commands
+  ordered with reads, and shutdown while source commands remain queued;
+* owner-affinity enforcement: every source-I/O and replay-intake mutator succeeds on its owner,
+  fails fatally off-owner, and exposes only immutable diagnostic views across the boundary;
 * routing mismatches: partition stamp, routing-plan identity, and attempted plan mutation all halt
   rather than expire;
 * a `nodeId` that simply stops emitting remains inconclusive regardless of elapsed time, scan
@@ -1883,6 +1916,9 @@ Assertions:
 * one terminal outcome per command and transaction,
 * one disposition per record,
 * every actor and transaction transition occurs on its assigned Netty event loop,
+* every Kafka consumer, scan, source-generation, active-source-index, and source-commit mutation
+  occurs on the Kafka source-I/O owner,
+* every reconstruction, permit, progress, and disposition mutation occurs on replay intake,
 * no send, retry, decode, or finalization work starts after the actor accepts abort; already queued
   foreign callbacks may perform only fenced self-cleanup,
 * active-exchange abort does not complete before all owner-held contexts and resources are released,
@@ -1964,8 +2000,11 @@ The redesigned path is ready to replace the current path when:
     change.
 15. The old sorter/schedule/callback orchestration can be **deleted** rather than retained as a
     fallback inside the new path.
-16. Executor inventory shows no new replayer thread pool, and affinity tests show each actor and its
-    transactions remain on one existing Netty event loop.
+16. Executor inventory shows exactly one Kafka source-I/O owner and one replay-intake owner, with no
+    third blocking-source caller; affinity tests show each actor and its transactions remain on one
+    existing Netty event loop.
+17. Owner checks prove that `TrackingKafkaConsumer`, source scan state, reconstruction state,
+    disposition state, permits, and progress are each mutated only by their documented owner.
 
 Criterion 15 is the real gate. A migration that leaves the old orchestration reachable has added a
 second way to be wrong rather than removing the first.
