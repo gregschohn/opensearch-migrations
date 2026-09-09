@@ -93,6 +93,7 @@ def project_config_navigation(
         draft.draft_revision,
         draft.dirty,
     )
+    _prefer_resource_surfaces(nodes)
     return cast(ManageSnapshot, replace(
         configuration,
         revision=(
@@ -101,6 +102,81 @@ def project_config_navigation(
         root_ids=tuple(root_ids),
         nodes=nodes,
     ))
+
+
+def _node_edit_target(node: ManageNode) -> Optional[str]:
+    for capability in node.capabilities:
+        if capability.kind == "edit" and capability.target_id:
+            return capability.target_id
+    return None
+
+
+def _prefer_resource_surfaces(nodes: Dict[str, ManageNode]) -> None:
+    """Fold a definition entry into the resource that edits the same data.
+
+    A data snapshot, for example, has one definition inside its source
+    cluster; when the runtime resource for it exists, present a single
+    navigation entry (the resource, widened to edit the full definition)
+    instead of a resource entry plus a definition entry.
+    """
+    definition_ids = [
+        node_id for node_id, node in nodes.items()
+        if node.kind == "config-definition"
+    ]
+    for definition_id in definition_ids:
+        definition = nodes.get(definition_id)
+        if definition is None:
+            continue
+        target = _node_edit_target(definition)
+        if not target:
+            continue
+        owner_id = next(
+            (
+                node_id for node_id, node in nodes.items()
+                if node.kind == "resource"
+                and (edit_target := _node_edit_target(node)) is not None
+                and (
+                    edit_target == target
+                    or edit_target.startswith(f"{target}.")
+                )
+            ),
+            None,
+        )
+        if owner_id is None:
+            continue
+        resource = nodes[owner_id]
+        nodes[owner_id] = replace(resource, capabilities=tuple(
+            replace(capability, target_id=target)
+            if capability.kind == "edit" else capability
+            for capability in resource.capabilities
+        ))
+        previous_parent_id = nodes[owner_id].parent_id
+        definition_parent_id = definition.parent_id
+        if definition_parent_id and definition_parent_id in nodes:
+            parent = nodes[definition_parent_id]
+            nodes[definition_parent_id] = replace(parent, child_ids=tuple(
+                owner_id if child_id == definition_id else child_id
+                for child_id in parent.child_ids
+                if child_id != owner_id
+            ))
+        if (
+            previous_parent_id
+            and previous_parent_id != definition_parent_id
+            and previous_parent_id in nodes
+        ):
+            previous_parent = nodes[previous_parent_id]
+            nodes[previous_parent_id] = replace(
+                previous_parent,
+                child_ids=tuple(
+                    child_id for child_id in previous_parent.child_ids
+                    if child_id != owner_id
+                ),
+            )
+        nodes[owner_id] = replace(
+            nodes[owner_id],
+            parent_id=definition_parent_id,
+        )
+        del nodes[definition_id]
 
 
 def _without_workflow_steps(snapshot: ManageSnapshot) -> ManageSnapshot:

@@ -4693,6 +4693,11 @@ button.secondary-button:hover:not(:disabled) {
   font-size: 10px;
 }
 
+.config-outline-header .config-outline-note {
+  color: var(--approval-text);
+  font-size: 11px;
+}
+
 .config-scope-remove {
   display: grid;
   flex: 0 0 auto;
