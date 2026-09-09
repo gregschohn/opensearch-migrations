@@ -87,6 +87,12 @@ interface ConfigEditorProps {
 }
 
 
+interface CanonicalReference {
+  label: string;
+  targetId: string;
+}
+
+
 interface EditRow {
   node: EditNode;
   depth: number;
@@ -1334,7 +1340,9 @@ function ConfigPropertyRow({
             key={`${node.id}-${draft.draftRevision}`}
           >
             {valueEditor}
-            {referenceTargetId ? (
+            {referenceTargetId
+              && node.id !== referenceTargetId
+              && !node.id.startsWith(`${referenceTargetId}.`) ? (
               <button
                 className="inline-reference-link"
                 onClick={() => onNavigateEditTarget(referenceTargetId)}
@@ -1342,7 +1350,7 @@ function ConfigPropertyRow({
                 type="button"
               >
                 <Link2 aria-hidden="true" />
-                Open {referenceLabel}
+                Defined in {referenceLabel}
               </button>
             ) : null}
             {inlineCommands.length > 0 ? (
@@ -1724,6 +1732,58 @@ export function ConfigEditor({
     },
     [activeTargetId, globalTarget, nodes, scope, target],
   );
+  const editSurfaces = useMemo(() => {
+    const surfaces: { kind: string; label: string; targetId: string }[] = [];
+    Object.values(draft?.navigation?.nodes ?? {}).forEach((navNode) => {
+      if (!["resource", "config-definition"].includes(navNode.kind)) return;
+      navNode.capabilities.forEach((capability) => {
+        if (capability.kind !== "edit") return;
+        surfaces.push({
+          kind: navNode.kind,
+          label: navNode.label,
+          targetId: capability.editTargetId,
+        });
+      });
+    });
+    return surfaces;
+  }, [draft?.navigation]);
+  const scopeTargetId = scope?.id ?? null;
+  const usedIn = useMemo(() => {
+    if (!scopeTargetId) return [];
+    const users = new Map<string, CanonicalReference>();
+    const resourceSurfaces = editSurfaces.filter(
+      (surface) => surface.kind === "resource",
+    );
+    const visit = (node: EditNode) => {
+      const referenceTarget = node.referenceTargetId;
+      if (
+        referenceTarget
+        && (
+          scopeTargetId === referenceTarget
+          || scopeTargetId.startsWith(`${referenceTarget}.`)
+        )
+        // References from inside the definition's own subtree are
+        // structure, not usage.
+        && !node.id.startsWith(`${referenceTarget}.`)
+      ) {
+        const owner = resourceSurfaces
+          .filter((surface) => (
+            node.id === surface.targetId
+            || node.id.startsWith(`${surface.targetId}.`)
+          ))
+          .sort((a, b) => b.targetId.length - a.targetId.length)[0];
+        if (owner && owner.targetId !== scopeTargetId) {
+          users.set(owner.targetId, {
+            label: owner.label,
+            targetId: owner.targetId,
+          });
+        }
+      }
+      nodeChildren(node).forEach(visit);
+    };
+    nodes.forEach(visit);
+    return [...users.values()];
+  }, [editSurfaces, nodes, scopeTargetId]);
   const topLevelAdds = useMemo(
     () => topLevelAddContexts(nodes),
     [nodes],
@@ -2811,9 +2871,19 @@ export function ConfigEditor({
             <div>
               <strong>{scope?.label ?? "Workflow configuration"}</strong>
               <span>{rows.length} visible settings</span>
+              {scopeTargetId
+                && usedIn.length === 0
+                && resourceType.toLowerCase().includes("snapshot")
+                && !resourceType.toLowerCase().includes("migration") ? (
+                <span className="config-outline-note">
+                  No snapshot migrations use this snapshot yet; it is
+                  still created when the configuration is submitted.
+                </span>
+              ) : null}
             </div>
             <div className="config-outline-actions">
-              {scope?.referenceTargetId ? (
+              {scope?.referenceTargetId
+                && scope.referenceTargetId !== scope.id ? (
                 <button
                   className="inline-reference-link"
                   onClick={() =>
@@ -2822,9 +2892,21 @@ export function ConfigEditor({
                   type="button"
                 >
                   <Link2 aria-hidden="true" />
-                  From {scope.referenceLabel ?? "referenced definition"}
+                  Defined in {scope.referenceLabel ?? "referenced definition"}
                 </button>
               ) : null}
+              {usedIn.map((user) => (
+                <button
+                  className="inline-reference-link"
+                  key={user.targetId}
+                  onClick={() => onNavigateEditTarget(user.targetId)}
+                  title={`Go to ${user.label}`}
+                  type="button"
+                >
+                  <Link2 aria-hidden="true" />
+                  Used in {user.label}
+                </button>
+              ))}
               <button
                 className="secondary-button"
                 onClick={expandAll}

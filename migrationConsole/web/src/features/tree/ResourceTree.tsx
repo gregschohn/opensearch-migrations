@@ -111,6 +111,20 @@ function filterIds(
 }
 
 
+const CONTAINER_KINDS = new Set(["section", "group", "resource"]);
+
+
+function autoExpands(snapshot: ManageSnapshot, node: ManageNode): boolean {
+  if (node.childIds.length === 0) return false;
+  if (node.kind === "section" || node.kind === "group") return true;
+  // Resources auto-expand when they contain other containers (nested
+  // resources or definition groups), never for workflow steps alone.
+  return node.childIds.some((childId) => (
+    CONTAINER_KINDS.has(snapshot.nodes[childId]?.kind ?? "")
+  ));
+}
+
+
 function visibleRows(
   snapshot: ManageSnapshot,
   expanded: ReadonlySet<string>,
@@ -127,7 +141,23 @@ function visibleRows(
       node.childIds.forEach((childId) => visit(childId, depth + 1));
     }
   };
-  snapshot.rootIds.forEach((rootId) => visit(rootId, 1));
+  snapshot.rootIds.forEach((rootId) => {
+    // A section whose only group repeats its own name ("Sources" >
+    // "Sources") is one level of noise; promote the group to the root.
+    const section = snapshot.nodes[rootId];
+    const onlyChild = section?.childIds.length === 1
+      ? snapshot.nodes[section.childIds[0]]
+      : null;
+    if (
+      section?.kind === "section"
+      && onlyChild?.kind === "group"
+      && onlyChild.label === section.label
+    ) {
+      visit(onlyChild.id, 1);
+      return;
+    }
+    visit(rootId, 1);
+  });
   return rows;
 }
 
@@ -784,10 +814,7 @@ export function ResourceTree({
   const [expanded, setExpanded] = useState<Set<string>>(
     () => new Set(
       Object.values(snapshot.nodes)
-        .filter((node) => (
-          node.childIds.length > 0
-          && (node.kind === "section" || node.kind === "group")
-        ))
+        .filter((node) => autoExpands(snapshot, node))
         .map((node) => node.id),
     ),
   );
@@ -817,8 +844,7 @@ export function ResourceTree({
         [...current].filter((nodeId) => snapshot.nodes[nodeId]),
       );
       Object.values(snapshot.nodes).forEach((node) => {
-        if (node.childIds.length === 0) return;
-        if (node.kind !== "section" && node.kind !== "group") return;
+        if (!autoExpands(snapshot, node)) return;
         // Preserve the user's collapse state across polls; auto-expand
         // only containers that just appeared or just gained children so
         // adds, renames, and view switches still reveal their results.

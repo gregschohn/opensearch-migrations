@@ -2671,7 +2671,7 @@ test("renders an empty selected configuration group with its add action", async 
   });
   const targetGroup = within(tree).getAllByRole("treeitem", {
     name: /^Targets$/,
-  }).find((item) => item.getAttribute("aria-level") === "2");
+  }).find((item) => item.getAttribute("aria-level") === "1");
   if (!targetGroup) throw new Error("Missing target configuration group");
   await userEvent.click(targetGroup);
 
@@ -2816,18 +2816,20 @@ test("opens nested definitions from navigation and referenced fields", async () 
   const sourceItem = await within(tree).findByRole("treeitem", {
     name: /^legacy/,
   });
-  await userEvent.click(within(sourceItem).getByRole("button", {
-    name: "Expand legacy",
-  }));
+  // Containers with nested definitions auto-expand.
+  expect(within(sourceItem).getByRole("button", {
+    name: "Collapse legacy",
+  })).toBeInTheDocument();
   await userEvent.click(await within(tree).findByRole("treeitem", {
     name: /^nightly/,
   }));
 
   expect(await screen.findByRole("heading", { name: "Edit nightly" }))
     .toBeInTheDocument();
-  expect(screen.getByRole("button", {
-    name: "From Source Snapshot 'nightly'",
-  })).toBeInTheDocument();
+  // A self-referential backlink says nothing; the definition is home.
+  expect(screen.queryByRole("button", {
+    name: "Defined in Source Snapshot 'nightly'",
+  })).toBeNull();
   const config = screen.getByRole("table", {
     name: "Configuration fields",
   });
@@ -2838,17 +2840,19 @@ test("opens nested definitions from navigation and referenced fields", async () 
   await userEvent.click(sourceItem);
   expect(await screen.findByRole("heading", { name: "Edit legacy" }))
     .toBeInTheDocument();
+  // The snapshot definition is the source's own content: inlined, with
+  // no link row standing in for it.
   const snapshotRow = await within(config).findByRole("row", {
     name: /^nightly/,
   });
-  await userEvent.click(within(snapshotRow).getByRole("button", {
-    name: "Open Source Snapshot 'nightly'",
-  }));
-  expect(await screen.findByRole("heading", { name: "Edit nightly" }))
-    .toBeInTheDocument();
+  expect(within(snapshotRow).queryByRole("button", {
+    name: "Defined in Source Snapshot 'nightly'",
+  })).toBeNull();
+  expect(within(config).getAllByRole("row", { name: /Repository/ }).length)
+    .toBeGreaterThan(1);
 
   await userEvent.click(within(config).getByRole("button", {
-    name: "Open repo1",
+    name: "Defined in repo1",
   }));
 
   expect(await screen.findByRole("heading", { name: "Edit repo1" }))
@@ -2857,14 +2861,6 @@ test("opens nested definitions from navigation and referenced fields", async () 
     .toBeInTheDocument();
   expect(within(tree).getByRole("treeitem", { name: /^repo1/ }))
     .toHaveAttribute("aria-selected", "true");
-
-  expect(screen.getByRole("button", { name: "Back to nightly" }))
-    .toBeInTheDocument();
-  await userEvent.click(screen.getByRole("button", { name: "Back to nightly" }));
-  expect(await screen.findByRole("heading", { name: "Edit nightly" }))
-    .toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Back to legacy" }))
-    .toBeInTheDocument();
 
   await userEvent.click(screen.getByRole("button", { name: "Back to legacy" }));
   expect(await screen.findByRole("heading", { name: "Edit legacy" }))
@@ -3043,16 +3039,13 @@ test("taints validation errors and their configuration and navigation parents", 
   await enterEditMode();
 
   const tree = await screen.findByRole("tree", { name: "Workflow resources" });
-  const sourceSection = within(tree).getAllByRole("treeitem", {
-    name: /^Sources$/,
-  }).find((item) => item.getAttribute("aria-level") === "1");
+  // Sections whose only group repeats their name merge into one row.
   const sourceGroup = within(tree).getAllByRole("treeitem", {
     name: /^Sources$/,
-  }).find((item) => item.getAttribute("aria-level") === "2");
+  }).find((item) => item.getAttribute("aria-level") === "1");
   const sourceRow = within(tree).getByRole("treeitem", {
     name: /^legacy$/,
   });
-  expect(sourceSection).toHaveClass("validation-error-ancestor");
   expect(sourceGroup).toHaveClass("validation-error-ancestor");
   expect(sourceRow).toHaveClass("validation-error-item");
   expect(within(sourceRow).getByLabelText("1 validation issue"))
@@ -3485,7 +3478,7 @@ test("offers top-level add actions in navigation during scoped editing", async (
   });
   const sourceGroup = within(resourceNavigation)
     .getAllByRole("treeitem", { name: /^Sources$/ })
-    .find((item) => item.getAttribute("aria-level") === "2");
+    .find((item) => item.getAttribute("aria-level") === "1");
   expect(sourceGroup).toBeDefined();
   if (!sourceGroup) throw new Error("Source group was not rendered");
   await userEvent.click(await within(sourceGroup).findByRole("button", {
@@ -3546,9 +3539,10 @@ test("adds nested definitions from their left-navigation groups", async () => {
   const sourceItem = within(tree).getByRole("treeitem", {
     name: /^legacy/,
   });
-  await userEvent.click(within(sourceItem).getByRole("button", {
-    name: "Expand legacy",
-  }));
+  // Containers with nested definitions auto-expand.
+  expect(within(sourceItem).getByRole("button", {
+    name: "Collapse legacy",
+  })).toBeInTheDocument();
   const repositories = within(tree).getByRole("treeitem", {
     name: /^Repositories$/,
   });
@@ -5111,7 +5105,7 @@ test("shows a newly added resource while the server operation is pending", async
   const tree = await screen.findByRole("tree", { name: "Workflow resources" });
   const sourceGroup = screen.getAllByRole("treeitem", {
     name: /^Sources$/,
-  }).find((item) => item.getAttribute("aria-level") === "2");
+  }).find((item) => item.getAttribute("aria-level") === "1");
   expect(sourceGroup).toBeDefined();
   if (!sourceGroup) throw new Error("Source group was not rendered");
   const previousSelection = screen.getByRole("treeitem", {
@@ -5174,7 +5168,7 @@ test("cancels inline resource naming and restores tree selection and focus", asy
   capture.focus();
   const sourceGroup = screen.getAllByRole("treeitem", {
     name: /^Sources$/,
-  }).find((item) => item.getAttribute("aria-level") === "2");
+  }).find((item) => item.getAttribute("aria-level") === "1");
   expect(sourceGroup).toBeDefined();
   if (!sourceGroup) throw new Error("Source group was not rendered");
 
@@ -5238,7 +5232,7 @@ test("abandons inline resource naming when focus moves elsewhere", async () => {
   const tree = await screen.findByRole("tree", { name: "Workflow resources" });
   const sourceGroup = screen.getAllByRole("treeitem", {
     name: /^Sources$/,
-  }).find((item) => item.getAttribute("aria-level") === "2");
+  }).find((item) => item.getAttribute("aria-level") === "1");
   expect(sourceGroup).toBeDefined();
   if (!sourceGroup) throw new Error("Source group was not rendered");
 

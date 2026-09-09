@@ -397,6 +397,7 @@ class ManageStateService:
                     )
                     resource_parent.child_ids.append(resource_id)
 
+        _rehome_snapshot_resources(drafts, root_ids)
         _attach_reverse_relationships(drafts)
         nodes = _finalize_nodes(drafts)
         workflow = _workflow_summary(workflow_data)
@@ -998,6 +999,78 @@ def _resource_relationships(resource: ResourceNode) -> List[ManageRelationship]:
             target_status=_phase_status(phase),
         ))
     return relationships
+
+
+def _snapshot_owner_source(
+    draft: _NodeDraft,
+    sources: Mapping[str, _NodeDraft],
+) -> Optional[_NodeDraft]:
+    prefix = "edit:sourceClusters."
+    for capability in draft.capabilities:
+        if capability.kind != "edit" or not capability.target_id:
+            continue
+        if not capability.target_id.startswith(prefix):
+            continue
+        remainder = capability.target_id[len(prefix):]
+        owner_name = max(
+            (
+                name for name in sources
+                if remainder == name or remainder.startswith(f"{name}.")
+            ),
+            key=len,
+            default=None,
+        )
+        if owner_name is not None:
+            return sources[owner_name]
+    if len(sources) == 1:
+        return next(iter(sources.values()))
+    return None
+
+
+def _rehome_snapshot_resources(
+    drafts: Dict[str, _NodeDraft],
+    root_ids: List[str],
+) -> None:
+    """Nest data snapshots under the source cluster that defines them.
+
+    A snapshot has exactly one definition (inside its source cluster's
+    snapshotInfo); migrations only reference it. Presenting the resource
+    under its source keeps a single home in the tree instead of a second
+    copy inside the Snapshot Migration section.
+    """
+    sources = {
+        draft.resource_name: draft
+        for draft in drafts.values()
+        if draft.id.startswith("resource:sourceconfigs:")
+        and draft.resource_name
+    }
+    if not sources:
+        return
+    emptied_parent_ids = set()
+    for draft in list(drafts.values()):
+        if not draft.id.startswith("resource:datasnapshots:"):
+            continue
+        owner = _snapshot_owner_source(draft, sources)
+        if owner is None or draft.parent_id == owner.id:
+            continue
+        previous_parent = drafts.get(draft.parent_id or "")
+        if previous_parent and draft.id in previous_parent.child_ids:
+            previous_parent.child_ids.remove(draft.id)
+            emptied_parent_ids.add(previous_parent.id)
+        draft.parent_id = owner.id
+        owner.child_ids.insert(0, draft.id)
+    for parent_id in emptied_parent_ids:
+        parent = drafts.get(parent_id)
+        if parent is None or parent.kind != "group" or parent.child_ids:
+            continue
+        section = drafts.get(parent.parent_id or "")
+        if section is None:
+            continue
+        section.child_ids.remove(parent_id)
+        del drafts[parent_id]
+        if not section.child_ids and section.id in root_ids:
+            root_ids.remove(section.id)
+            del drafts[section.id]
 
 
 def _attach_reverse_relationships(drafts: Mapping[str, _NodeDraft]) -> None:
