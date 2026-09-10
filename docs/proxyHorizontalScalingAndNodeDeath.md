@@ -373,19 +373,26 @@ Before admitting the first connection for a newly writable partition, the proxy 
 an initial complete manifest through that partition's ordered lane. This prevents a connection from
 being created before the partition has any positive liveness baseline.
 
-### 5.4 Acknowledged-manifest time
+### 5.4 Proxy-local acknowledged-manifest freshness
 
 The proxy tracks, per partition:
 
 ```text
-lastAcknowledgedManifestTime[P]
+lastAcknowledgedManifestSubmissionMonotonicTime[P]
 ```
 
 “The last manifest went out” always means Kafka acknowledged the entire manifest. Enqueue,
 serialization, or producer submission is insufficient.
 
+The stored value is the proxy's local monotonic time from when that now-acknowledged manifest was
+created or submitted, not the later acknowledgement-callback time. Kafka acknowledgement makes the
+value valid; it does not make an old manifest fresh again.
+
 The manifest publisher treats a failed or incomplete manifest as a capture failure. It does not
-advance `lastAcknowledgedManifestTime`.
+advance `lastAcknowledgedManifestSubmissionMonotonicTime`.
+
+This value exists only for the proxy's local capture-health check. It is never written into Kafka,
+never compared with Kafka broker time, and never used by the replayer.
 
 ### 5.5 Pre-forward liveness check
 
@@ -395,7 +402,7 @@ For every source-forwarding step:
 2. for execution-enabling bytes of a mutating request, also ensure that the request's complete
    replay representation has been acknowledged;
 3. immediately before submitting the corresponding source bytes, read the current capture state
-   and `lastAcknowledgedManifestTime` for the request's partition;
+   and `lastAcknowledgedManifestSubmissionMonotonicTime` for the request's partition;
 4. permit source submission only if capture remains healthy and the manifest age is within
    `proxyManifestStaleTimeout`; and
 5. otherwise apply §7.
@@ -422,15 +429,16 @@ manifestInterval
 Deployments must include margin for:
 
 - manifest scheduling and Kafka acknowledgement latency;
-- bounded clock skew in the timestamp model used by replay;
 - scanner/read-ahead delay; and
 - ordinary transient retries.
 
 Setting both thresholds to the same value is invalid.
 
+This inequality compares configured durations only. It never subtracts a proxy-local monotonic
+timestamp from a Kafka broker timestamp.
+
 The concrete replayer setting is the existing `--packet-timeout-seconds` unless implementation work
-introduces a more precisely named replacement. §10 records the remaining time-basis integration
-issue.
+introduces a more precisely named replacement.
 
 ---
 
@@ -467,14 +475,39 @@ assignment drain; terminal `NoMoreWrites` supports irreversible retirement.
 If no prompt settlement evidence arrives, the replayer may expire **incomplete** state after its
 configured timeout.
 
-The liveness basis for an open connection is the latest of:
+The replayer defines a distinct Kafka broker-time value:
 
-- its latest traffic observation; and
-- a complete exact manifest from its writer and partition that lists it.
+```text
+lastPositiveLivenessBrokerTime[C]
+```
 
-Once the replay/scanner time horizon has advanced beyond that liveness point by
-`--packet-timeout-seconds`, and no later traffic or listing manifest exists within the scanned
-horizon, the state becomes `CONFIGURED_EXPIRED`.
+It is the latest Kafka `LogAppendTime` of:
+
+- a traffic record for C; or
+- a complete exact manifest from C's writer and partition that lists C.
+
+For a chunked manifest, its broker-time value is the maximum effective broker append time across
+all chunks, and it becomes usable only after the manifest is complete.
+
+The replayer also tracks:
+
+```text
+scannedThroughBrokerTime[P]
+```
+
+This is the greatest monotonically clamped Kafka `LogAppendTime` among partition records whose
+metadata the replay or scan cursor has actually covered. It is not the current broker wall clock,
+the consumer's poll time, or an estimate derived from offset position.
+
+Once:
+
+```text
+scannedThroughBrokerTime[P]
+    >= lastPositiveLivenessBrokerTime[C] + --packet-timeout-seconds
+```
+
+and no later traffic or complete listing manifest exists within that broker-time horizon, the
+incomplete state becomes `CONFIGURED_EXPIRED`.
 
 `CONFIGURED_EXPIRED` is commit-eligible, but it must remain distinguishable in metrics and audit
 logs from:
@@ -492,13 +525,42 @@ A connection with no traffic for hours remains live if complete manifests contin
 Every listing refreshes its liveness point. The timeout therefore detects loss of both traffic and
 positive manifests, not application idleness.
 
-### 6.5 Partition time
+### 6.5 Kafka broker time
 
-The replayer measures expiration using observations from the traffic partition rather than a
-standalone “time since the consumer noticed silence” watchdog. This preserves deterministic replay
-and prevents a paused replayer from expiring work merely because wall time elapsed.
+Kafka broker append time is the only timestamp domain used in replayer liveness and
+configured-expiration arithmetic. The traffic topic must use
+`message.timestamp.type=LogAppendTime`, and the replayer reads the stored timestamp from each Kafka
+record.
 
-The exact timestamp and skew contract must match the existing implementation; see §10.1.
+For each partition P, the effective broker-time horizon is monotonic:
+
+```text
+effectiveBrokerTime[P] =
+    max(previousEffectiveBrokerTime[P], currentRecordLogAppendTime)
+```
+
+This clamp protects the expiration state machine from a broker-clock regression. It does not permit
+producer timestamps to enter the calculation.
+
+`lastPositiveLivenessBrokerTime`, `scannedThroughBrokerTime`, and every intermediate timestamp in
+the comparison are broker-time values. The configured timeout is a duration added to a broker-time
+value. Code must not compare, subtract, choose between, or convert into this calculation any value
+from another clock domain.
+
+The following values are explicitly excluded from liveness and expiration arithmetic:
+
+- `TrafficObservation.ts`, which remains source event time for replay pacing;
+- manifest `emittedAtMillis`, which remains diagnostic only;
+- proxy-local monotonic manifest freshness from §5.4; and
+- replayer process wall clock or commit-head age.
+
+The replayer therefore measures expiration using durable observations from the traffic partition
+rather than “time since the consumer noticed silence.” A paused replayer cannot expire work merely
+because process wall time elapsed.
+
+If no later record appears in the partition, `scannedThroughBrokerTime` does not advance and the
+replayer does not expire the incomplete state. Later partition activity supplies the durable
+broker-time evidence needed to cross the configured horizon.
 
 ### 6.6 Commit behavior
 
@@ -525,7 +587,7 @@ The process emits a high-severity alarm containing at least:
 - `processId` and `writerNodeId`;
 - mode;
 - affected partitions;
-- last acknowledged manifest time and age;
+- last acknowledged manifest submission age from the proxy's local monotonic clock;
 - last acknowledged traffic offset when available;
 - producer error or stale-gate reason; and
 - whether source forwarding continued.
@@ -607,7 +669,7 @@ and must not recreate peer writer-completion authority.
 | Startup | Add out-of-group capability probes to representative leader brokers before joining as `PROBATIONARY`. |
 | Routing | Persist immutable connection-to-partition choice; move only new-connection admission during rebalance. |
 | Registry | Maintain exact all-open connection sets per writer and partition. |
-| Publisher | Use one ordered lane per partition for traffic, complete manifests, and terminal self `NoMoreWrites`; expose acknowledged-manifest time. |
+| Publisher | Use one ordered lane per partition for traffic, complete manifests, and terminal self `NoMoreWrites`; expose proxy-local acknowledged-manifest submission age. |
 | Source forwarding | Enforce complete-capture acknowledgement and the local pre-forward stale-manifest gate for mutating requests. |
 | Failure mode | Make capture abandonment irreversible per process; implement strict exit and permanent pass-through transitions. |
 | Record validation | Accept terminal self `NoMoreWrites` idempotently; reject peer completion; halt and alarm on later traffic or manifests from a retired writer-partition identity. |
@@ -635,7 +697,7 @@ Each proxy should expose:
 - membership phase and current admission assignment;
 - capture mode and whether the capture gate is open;
 - current connections by partition;
-- last acknowledged manifest time and age by partition;
+- proxy-local acknowledged-manifest submission age by partition;
 - oldest unacknowledged publisher work;
 - whether the process has permanently abandoned capture; and
 - capture-gap alarm state.
@@ -643,7 +705,7 @@ Each proxy should expose:
 The replayer should expose:
 
 - incomplete connections by writer and partition;
-- latest complete manifest offset and time;
+- latest complete manifest offset and Kafka broker append time;
 - terminal-disposition counts by normal close, manifest omission, terminal self `NoMoreWrites`, and
   configured expiration;
 - invalid peer-completion records; and
@@ -653,7 +715,7 @@ The replayer should expose:
 
 ## 10. Integration issues to resolve during implementation
 
-### 10.1 Timestamp and skew contract
+### 10.1 Kafka broker-time contract
 
 The documents require:
 
@@ -661,20 +723,27 @@ The documents require:
 proxyManifestStaleTimeout < replayer incomplete-state timeout
 ```
 
-The proxy check uses monotonic elapsed time since local Kafka acknowledgement. The current replayer
-expiration path advances from timestamps observed in the partition. Those are not automatically the
-same clock.
+The two sides use intentionally separate clocks:
+
+- the proxy capture-health gate uses only local monotonic elapsed time from §5.4; and
+- the replayer expiration state machine uses only Kafka `LogAppendTime` from §6.5.
+
+The timeout relationship compares durations and safety margins, never timestamp values from the two
+domains.
 
 Before implementation is declared complete, the code and deployment contract must state:
 
-- which record timestamp advances the replayer horizon;
-- the maximum permitted capture-proxy clock skew, if producer timestamps are used;
-- whether Kafka broker append time is available and appropriate;
-- how scanner lookahead affects the margin; and
-- startup validation that rejects unsafe timeout combinations.
-
-The design does not require perfectly synchronized clocks, but the configured margin must cover the
-chosen clock model.
+- the traffic topic is configured with `message.timestamp.type=LogAppendTime`;
+- proxy and replayer startup validate that setting and fail closed if it is absent;
+- every liveness-bearing scanner value has an explicit `BrokerTime` type or name;
+- complete-manifest broker time is derived only from its Kafka records;
+- per-partition broker time is monotonically clamped;
+- broker clocks are synchronized and monitored, with the permitted forward skew included in the
+  configured expiration margin;
+- no producer, payload, proxy-local, or replayer-wall-clock timestamp can enter expiration
+  arithmetic; and
+- timeout validation includes manifest cadence, publication and acknowledgement delay, and scanner
+  progress margin.
 
 ### 10.2 Source execution boundary
 
@@ -729,7 +798,8 @@ deferred and non-normative until rewritten around:
 - A stale manifest after capture acknowledgement blocks strict-mode source forwarding.
 - Closing the capture gate races safely with many source-forwarding threads.
 - A thread admitted before gate closure has a complete Kafka representation.
-- Failed or partial manifest publication does not refresh acknowledged-manifest time.
+- Failed or partial manifest publication does not refresh proxy-local acknowledged-manifest
+  freshness.
 - Terminal self `NoMoreWrites` waits for all related Netty connections to disconnect, an empty
   manifest to be acknowledged, and every previously accepted send to succeed.
 - Pass-through never resumes capture.
@@ -746,6 +816,10 @@ deferred and non-normative until rewritten around:
   violation; duplicate self completion is idempotent.
 - Peer `NoMoreWrites` does not settle state or discard later traffic.
 - Configured expiration settles only incomplete state and records `CONFIGURED_EXPIRED`.
+- `lastPositiveLivenessBrokerTime`, `scannedThroughBrokerTime`, and every intermediate expiration
+  value are derived only from monotonically clamped Kafka `LogAppendTime`.
+- Tests fail if `TrafficObservation.ts`, manifest `emittedAtMillis`, proxy-local monotonic time, or
+  replayer wall clock enters broker-time expiration arithmetic.
 - A complete request is replayed even when its connection later expires.
 - Commit accounting advances after every terminal path.
 
@@ -803,3 +877,6 @@ The design is complete when:
 - Pass-through mode may continue connections uncaptured, alarms loudly, and never rejoins capture.
 - Peer death observations remain operational signals only.
 - Recovery after a capture gap starts a new capture and replay run.
+- Replayer liveness and configured expiration use Kafka broker `LogAppendTime` exclusively.
+- Proxy manifest freshness uses a separate local monotonic clock; timestamp values never cross
+  those domains.

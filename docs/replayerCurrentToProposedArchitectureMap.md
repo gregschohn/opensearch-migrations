@@ -221,10 +221,10 @@ post-transformation sorter handoffs disappear.
 | Continuous scanner | Not implemented | Same-consumer scan cursor in `KafkaSourceActor` |
 | Metadata-only scan | Not implemented | Decode identity/timestamp/observation type; discard payload |
 | Partition affinity | Replay consumer owns assignment | Scanner uses same consumer and generation snapshot |
-| Scan horizon | Conceptual timeout plus proxy cap | Operational scan budget plus configured partition-time horizon carried in `ScanEvidence` |
+| Scan horizon | Conceptual timeout plus proxy cap | Operational scan budget plus `scannedThroughBrokerTime`, derived only from monotonically clamped Kafka `LogAppendTime` values on records actually covered |
 | Exact proxy manifests | Not implemented | Per-`(nodeId, partition)` all-open declarations; `ProxyManifestIndex` in `KafkaSourceActor` |
 | Offset-ordered absence proof | Not implemented; absence inferred from an empty window | `AbsenceProof.LivenessOmission` — one complete omission after the last record |
-| Configured incomplete-state expiration | Existing broad timestamp expiry | Explicit `ConfiguredExpired` carrying liveness point, scanned horizon, and timeout |
+| Configured incomplete-state expiration | Existing broad source-timestamp expiry | Explicit `ConfiguredExpired(lastPositiveLivenessBrokerTime, scannedThroughBrokerTime, timeout)`; both timestamps are broker time and no other clock enters the calculation |
 | Group-assigned partitions | Traffic keyed by bare `connectionId`; partition chosen by key hash | New admission follows group assignment; each connection stores one immutable partition used by traffic and manifests |
 | Per-process `nodeId` | `UUID.randomUUID()` per start (incidental) | Same value remains load-bearing for manifest provenance; it is not a producer fence |
 | Confirmed dead commits | Current `EXPIRED_PREMATURELY` broadly commits | Explicit `SourceOutcome.ConfirmedDead` plus proof |

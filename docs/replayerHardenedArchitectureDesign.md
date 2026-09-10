@@ -217,7 +217,7 @@ Three consequences make this worth doing:
 
 The design also carries the expiration-hardening policy: optional read-ahead bounded by a small
 epsilon and coupled to replay progress; exact manifest omission as structural proof; configured
-partition-time expiration for incomplete state under the capture-before-forward contract; optional
+Kafka broker-time expiration for incomplete state under the capture-before-forward contract; optional
 metadata scanning on the same Kafka consumer and assignment as replay; reassignment and shutdown
 retaining for redelivery; a capture-side maximum connection duration that produces ordinary close
 observations and bounds resource use; and an evidence API that can evolve toward independent tuple
@@ -260,8 +260,9 @@ This ambiguity is a real source of bugs, so the design keeps the five lexically 
     manifest contains* (§10.3's `ProxyOmissionProof`). A confirmed-dead discard requires this proof instead
     of replay evidence because it has no replay result to record.
   - **Configured incomplete-state expiration** — a policy-authorized discard after both traffic and
-    positive manifest liveness have been absent for the configured source-time interval. It is safe
-    only with the proxy contract in §10.8 and remains distinguishable from structural proof.
+    positive manifest liveness have been absent for the configured Kafka broker-append-time
+    interval. It is safe only with the proxy contract in §10.8 and remains distinguishable from
+    structural proof.
   The proxy omission proof requires one complete, exact manifest copied after the connection's last
   record and omitting that connection; that is separate from the choice between the two
   commit-authority alternatives. Confirmed-dead discard does not require a durable discard receipt
@@ -298,8 +299,12 @@ This ambiguity is a real source of bugs, so the design keeps the five lexically 
 - **Confirmed dead** — the owning proxy produced a complete, offset-ordered manifest proving that
   it no longer owns the connection. Commit-eligible, because it is structural proof.
 - **Configured expired** — an incomplete reconstruction was silent in both traffic and positive
-  manifests through the configured partition-time horizon. Commit-eligible by deployment policy
+  manifests through the configured Kafka broker-time horizon. Commit-eligible by deployment policy
   and the capture-before-forward invariant, but not renamed or reported as confirmed dead.
+- **Broker time** — the Kafka record timestamp from a traffic topic configured with
+  `message.timestamp.type=LogAppendTime`, monotonically clamped per partition. Every liveness and
+  configured-expiration timestamp and intermediate calculation uses this time domain exclusively.
+  The configured timeout is a duration added to a broker-time value.
 - **Epsilon** — an optional small read-ahead margin (~30s) that smooths source admission. It is not
   an expiry trigger, proof source, or hard memory bound.
 - **Settled watermark** — the contiguous point in source time up to which all admitted work has
@@ -907,7 +912,7 @@ See §10.8 for the distinction between structural omission and configured expira
 
 Lookahead answers two questions: *does a follow-up observation for this connection exist, or has its
 owning proxy produced an authoritative manifest that omits it?* It also determines whether the
-partition's source-time horizon has advanced beyond the configured incomplete-state timeout.
+partition's Kafka broker-time horizon has advanced beyond the configured incomplete-state timeout.
 
 A legitimately idle connection is not inferred dead from traffic silence. Exact periodic manifests
 list every open connection, so each listing refreshes its positive liveness. Configured expiration
@@ -942,7 +947,7 @@ A scan cycle:
 1. Copy assignment, generation, and the exact replay position for every partition.
 2. Select commit-head blockers and the required follow-up kind for each.
 3. Seek ahead within a bounded operational scan budget.
-4. Poll and decode **only** connection identity, timestamps, observation kinds, and proxy
+4. Poll and decode **only** connection identity, Kafka `LogAppendTime`, observation kinds, and proxy
    open-connection manifest chunks.
 5. Discard payloads.
 6. Stop early per blocker when a required follow-up is found or one complete, exact proxy manifest
@@ -952,7 +957,7 @@ A scan cycle:
 
 The scanner never advances replay positions, record lifecycles, replay time, or commit offsets.
 Exhausting the operational scan budget produces `Inconclusive`; only reaching the configured
-partition-time horizon without later traffic or a listing manifest can produce
+Kafka broker-time horizon without later traffic or a listing manifest can produce
 `ConfiguredExpired`.
 
 **Why the same consumer rather than a second consumer?** A separately grouped consumer does not
@@ -967,13 +972,15 @@ sealed interface ScanEvidence {
     record FollowUpPresent(...) implements ScanEvidence {}
     record ConfirmedAbsent(ProxyOmissionProof proof, ...) implements ScanEvidence {}
     record ConfiguredExpired(
-        Instant lastPositiveLiveness,
-        Instant scannedThrough,
+        BrokerTime lastPositiveLivenessBrokerTime,
+        BrokerTime scannedThroughBrokerTime,
         Duration configuredTimeout,
         ...
     ) implements ScanEvidence {}
     record Inconclusive(...) implements ScanEvidence {}
 }
+
+record BrokerTime(Instant value) {}
 
 /** The only proxy-omission proof available in the first implementation. */
 sealed interface ProxyOmissionProof {
@@ -1016,19 +1023,32 @@ invariants hold:
 `ConfiguredExpired` is a separate commit-eligible policy result. It requires:
 
 * the connection or request state is incomplete;
-* `lastPositiveLiveness` is the latest traffic observation or complete manifest listing;
-* the scanner or normal replay has reached
-  `lastPositiveLiveness + packetTimeout`;
+* `lastPositiveLivenessBrokerTime` is the effective Kafka `LogAppendTime` of the latest traffic
+  record or complete manifest listing;
+* `scannedThroughBrokerTime` is the greatest effective Kafka `LogAppendTime` among partition
+  records whose metadata the scanner or normal replay has actually covered;
+* `scannedThroughBrokerTime` has reached
+  `lastPositiveLivenessBrokerTime + packetTimeout`;
 * no later traffic or complete listing manifest exists through that horizon; and
 * the source is operating under the capture contract in §10.8.
 
-`lastPositiveLiveness` uses the replayer's partition-time coordinate for the traffic or manifest
-record. It is not the manifest's diagnostic `emittedAtMillis` field. §19.3 and the scaling
-document's §10.1 leave the exact clock/skew mapping as an implementation gate.
+`lastPositiveLivenessBrokerTime` and `scannedThroughBrokerTime` are `BrokerTime` values exclusively.
+For a complete chunked manifest, its liveness time is the maximum effective broker append time
+across its chunks. Neither value may be constructed from:
+
+* `TrafficObservation.ts`;
+* manifest `emittedAtMillis`;
+* proxy-local monotonic time;
+* producer create time; or
+* replayer wall clock.
 
 Elapsed time alone, a scan budget boundary, or the current end of a temporarily quiet partition
 does not satisfy those conditions. `ConfiguredExpired` never constructs a
 `ProxyOmissionProof` and must not be reported as `ConfirmedAbsent`.
+
+If a partition contains no later record, `scannedThroughBrokerTime` cannot advance. The incomplete
+state remains retained until later durable partition activity supplies enough Kafka broker-time
+progress. The replayer never substitutes its wall clock to force progress through a quiet period.
 
 The proof is retained in the in-process disposition decision and emitted to metrics and trace/debug
 logs. A durable discard receipt is not required in the first implementation (§19.2); the structural
@@ -1062,15 +1082,15 @@ ordering point** for five things that would otherwise race:
 | Proxy-confirmed absent | One complete, exact proxy open-connection manifest omits the connection after its last record | Yes | Settle source side as confirmed dead |
 | Follow-up found | Scan metadata, or presence in a proxy open-connection manifest | No expiration | Leave state alive |
 | Scan inconclusive | Incomplete proof | No | Continue or halt according to resource policy |
-| Configured incomplete-state expiration | No traffic or complete listing manifest through `lastPositiveLiveness + --packet-timeout-seconds` | Yes, under §10.8 | Settle as `ConfiguredExpired`; emit distinct metrics and audit reason |
+| Configured incomplete-state expiration | No traffic or complete listing manifest through `lastPositiveLivenessBrokerTime + --packet-timeout-seconds`, measured exclusively in Kafka broker time | Yes, under §10.8 | Settle as `ConfiguredExpired`; emit distinct metrics and audit reason |
 | Partition reassignment | Ownership lost | No | Abort old generation and redeliver |
 | Shutdown | Process runway ended | No | Abort and retain |
 | Replayer wall-clock age | Elapsed time since the replayer noticed a blocker | **Never** | Diagnostic only |
 
 The last row remains a hard rule: a watchdog based on how long the replayer process has been waiting
 is nondeterministic and can fire while the durable partition contains a later listing manifest or
-traffic record. Configured expiration instead advances from partition observations and requires the
-scanner or normal replay to cover the whole configured horizon.
+traffic record. Configured expiration instead advances from per-partition Kafka broker append times
+and requires the scanner or normal replay to cover the whole configured broker-time horizon.
 
 If a proxy dies with connections open and emits neither a final manifest nor self
 `NoMoreWrites`, the timeout fallback eventually releases only the incomplete reconstruction state.
@@ -1205,6 +1225,16 @@ that `(nodeId, partition)`, even if the wall clock stalls or moves backward. Cap
 retain their own source timestamps. These strict timestamp rules make diagnostics traceable; they do
 not participate in omission authority, which rests on Kafka offsets.
 
+The traffic topic must use `message.timestamp.type=LogAppendTime`. Replayer liveness uses only the
+Kafka record timestamp assigned by the broker and wraps it as `BrokerTime`. The replayer
+monotonically clamps that value per partition before using it. `emittedAtMillis` and captured
+observation timestamps remain outside all liveness and expiration calculations.
+
+The deployment must synchronize and monitor broker clocks. The permitted forward skew between a
+partition's current and replacement leader is part of the configured expiration safety margin; the
+monotonic clamp prevents backward movement but cannot make an arbitrary forward broker-clock jump
+safe.
+
 **The registry is exact, not weakly consistent.** A `ProxyOpenConnectionRegistry` linearizes
 connection registration, removal, and manifest-copy operations. Registration occurs before the first
 traffic record can be submitted. Removal occurs only through the idempotent close path, after Kafka
@@ -1232,8 +1262,8 @@ With those contracts in place, the rule is offset-ordered rather than time-order
 > after `C`'s last record omits it.
 
 When the latest complete manifest instead lists `C`, it refreshes C's positive liveness. If neither
-traffic nor a listing manifest appears through the configured source-time horizon, §10.5 may settle
-only C's incomplete state as `ConfiguredExpired`.
+traffic nor a listing manifest appears through the configured Kafka broker-time horizon, §10.5 may
+settle only C's incomplete state as `ConfiguredExpired`.
 
 One complete manifest is sufficient because the exact registry gives a simple ordering proof:
 registration precedes first traffic; while registered, every linearized manifest copy includes the
@@ -1579,8 +1609,9 @@ commit.
 * **There are no distinct structural and configured expiration values.**
   `EXPIRED_PREMATURELY` covers any expiry, so a timestamp sweep and an offset-ordered proxy manifest
   are indistinguishable at the commit site. `ConfirmedDead(proof)` cannot be constructed without
-  structural evidence. `ConfiguredExpired(livenessPoint, horizon, timeout)` requires the separate
-  policy conditions in §10.3 and cannot be reported as proof.
+  structural evidence.
+  `ConfiguredExpired(lastPositiveLivenessBrokerTime, scannedThroughBrokerTime, timeout)` requires
+  the separate policy conditions in §10.3 and cannot be reported as proof.
 * **Legacy finite sources still need an honest timeout value.** They have no durable offset to retain,
   but calling a timed-out reconstruction `Complete` would make the model lie. `LegacyExpired` preserves
   their existing local release behavior while making the compatibility boundary exhaustive and
@@ -1887,8 +1918,8 @@ open-connection manifest; the overloaded word "snapshot" is intentionally avoide
 
 Two cautions. Diagnostic heartbeat output must not mutate or expire state. Exact proxy manifests are
 different: they are ordered source records and intentionally refresh connection liveness.
-Commit-head *age* measured from insertion wall-clock remains a stall signal, not the partition-time
-horizon used by configured expiration.
+Commit-head *age* measured from insertion wall-clock remains a stall signal, not the Kafka
+broker-time horizon used by configured expiration.
 
 ### 18.2 Deterministic model tests
 
@@ -1917,8 +1948,9 @@ Use fake clocks, fake event loops, and manually controlled futures to enumerate:
   that acknowledgement;
 * chunk handling: missing, duplicate, reordered, oversized, and contradictory chunks all make the
   manifest unusable rather than empty;
-* manifest timestamps: every chunk shares one value, values strictly increase per proxy/partition
-  even under a stalled or backward wall clock, and timestamps never substitute for offset ordering;
+* manifest timestamps: diagnostic `emittedAtMillis` is never accepted as `BrokerTime`; every
+  complete manifest derives liveness only from its Kafka `LogAppendTime`, monotonically clamped per
+  partition;
 * publisher ordering and failure: traffic submission before a manifest, final close before removal,
   asynchronous send failure, and a publisher that must stop authoritative manifests and
   writer-completion records;
@@ -1944,8 +1976,9 @@ Use fake clocks, fake event loops, and manually controlled futures to enumerate:
   fails fatally off-owner, and exposes only immutable diagnostic views across the boundary;
 * routing mismatches: partition stamp mismatch and attempted connection-partition mutation both
   halt rather than expire;
-* a `nodeId` that stops emitting remains inconclusive before the configured partition-time horizon
-  and becomes `ConfiguredExpired`, never `ConfirmedDead`, only after that horizon is fully scanned.
+* a `nodeId` that stops emitting remains inconclusive before the configured Kafka broker-time
+  horizon and becomes `ConfiguredExpired`, never `ConfirmedDead`, only after that horizon is fully
+  scanned.
 
 Assertions:
 
@@ -1992,7 +2025,7 @@ fired).
 * Permanent writer retirement emits terminal self `NoMoreWrites` only after all related Netty
   connections and publisher work settle; injected later traffic halts and alarms.
 * Proxy killed with connections open (`SIGKILL`, no close observations): complete requests replay;
-  incomplete blockers reach `ConfiguredExpired` after the configured partition-time horizon.
+  incomplete blockers reach `ConfiguredExpired` after the configured Kafka broker-time horizon.
 * Stalled strict-mode proxy that resumes after the stale threshold: delayed records are consumed
   normally, but no newly completed source request lacks a complete earlier Kafka representation.
 * Manifest spanning the 1 MiB boundary: the proxy emits complete chunks, and dropping one chunk
@@ -2030,7 +2063,7 @@ The redesigned path is ready to replace the current path when:
    carries a well-formed `ProxyOmissionProof`; the latter carries its liveness point, scanned
    horizon, timeout, and explicit `ConfiguredExpired` reason.
 9. Long live connections found by the scanner are not expired.
-10. A silent writer expires only incomplete state after the configured partition-time horizon;
+10. A silent writer expires only incomplete state after the configured Kafka broker-time horizon;
     long idle connections remain live while manifests list them.
 11. Incomplete manifests, publisher failure, and partition mismatch halt instead of creating
     structural omission proof.
@@ -2097,14 +2130,18 @@ constructable `ProxyOmissionProof`.
 The Kafka source may also produce `ConfiguredExpired` after:
 
 ```text
-latest traffic or complete listing manifest
+lastPositiveLivenessBrokerTime
     + --packet-timeout-seconds
 ```
 
-has been fully covered by the partition-time horizon without later traffic or a listing manifest.
-This is commit-eligible only for incomplete reconstruction state and only under §10.8's
-capture-before-forward and stale-manifest gate. Metrics and audit records preserve the distinction
-between policy expiration and confirmed absence.
+has been fully covered by `scannedThroughBrokerTime` without later traffic or a listing manifest.
+Both values are Kafka `LogAppendTime` values wrapped as `BrokerTime`; no other clock may enter the
+calculation. This is commit-eligible only for incomplete reconstruction state and only under
+§10.8's capture-before-forward and stale-manifest gate. Metrics and audit records preserve the
+distinction between policy expiration and confirmed absence.
+
+A partition with no later records cannot advance `scannedThroughBrokerTime`, so the state remains
+retained until new partition activity provides the required broker-time horizon.
 
 `maxConnectionDuration` remains an optional proxy resource cap. The scanner's operational budget
 limits work per cycle; exhaustion yields `Inconclusive`. Neither value substitutes for
@@ -2118,13 +2155,18 @@ manifestInterval
     < packetTimeout
 ```
 
-with margin for acknowledgement latency, scanner progress, and the selected clock-skew model.
+with margin for acknowledgement latency, scanner progress, and permitted inter-broker forward
+clock skew. The inequality compares durations only. Proxy-local monotonic timestamps are never
+compared with Kafka broker timestamps.
 
 ### 19.4 Source-time progress uses the minimum partition watermark
 
 `ReplayReadGate` uses the minimum settled watermark across the currently assigned partition
 generation. This gives the simplest global memory-bound statement, accepting that one slow partition
 can throttle the others.
+
+This source-time watermark controls replay pacing only. It is derived from captured observation
+time and is never used as `BrokerTime` for liveness or configured expiration.
 
 An assigned partition with no outstanding admitted work advances toward the replay clock rather than
 contributing negative infinity. Revocation removes its watermark; assignment creates a new
