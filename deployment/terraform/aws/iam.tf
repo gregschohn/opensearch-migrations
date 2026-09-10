@@ -145,6 +145,13 @@ data "aws_iam_policy_document" "migration_pods" {
     ]
     resources = [
       "arn:${data.aws_partition.current.partition}:logs:${var.region}:${data.aws_caller_identity.current.account_id}:log-group:/migration-assistant-${var.stage}-${var.region}*",
+      # The otel collector's awsemf exporters (metrics/app, metrics/cadvisor in
+      # valuesEks.yaml) do not set log_group_name, so the exporter falls back to its
+      # default group of /metrics/default with stream otel-stream. Without these the
+      # collector cannot create the group or put events and EKS metrics never reach
+      # CloudWatch.
+      "arn:${data.aws_partition.current.partition}:logs:${var.region}:${data.aws_caller_identity.current.account_id}:log-group:/metrics/default",
+      "arn:${data.aws_partition.current.partition}:logs:${var.region}:${data.aws_caller_identity.current.account_id}:log-group:/metrics/default:*",
     ]
   }
 

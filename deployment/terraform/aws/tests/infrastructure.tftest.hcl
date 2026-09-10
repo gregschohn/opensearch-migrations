@@ -374,3 +374,34 @@ run "snapshot_role_omitted_when_disabled" {
     error_message = "The snapshot role and policy must not be created when disabled."
   }
 }
+
+# The otel collector's awsemf exporters do not set log_group_name, so they fall back
+# to the exporter's default /metrics/default group. Scoping the CloudWatchLogs
+# statement to only the migration-assistant group silently blocks every EKS metric.
+run "cloudwatch_logs_covers_the_otel_emf_default_group" {
+  command = plan
+
+  variables {
+    region = "us-east-1"
+    stage  = "dev"
+  }
+
+  assert {
+    condition = anytrue([
+      for s in data.aws_iam_policy_document.migration_pods.statement :
+      contains(s.resources, "arn:aws:logs:us-east-1:123456789012:log-group:/metrics/default") &&
+      contains(s.resources, "arn:aws:logs:us-east-1:123456789012:log-group:/metrics/default:*")
+      if s.sid == "CloudWatchLogs"
+    ])
+    error_message = "The CloudWatchLogs statement must cover the awsemf exporter's default /metrics/default log group and its streams."
+  }
+
+  assert {
+    condition = anytrue([
+      for s in data.aws_iam_policy_document.migration_pods.statement :
+      contains(s.resources, "arn:aws:logs:us-east-1:123456789012:log-group:/migration-assistant-dev-us-east-1*")
+      if s.sid == "CloudWatchLogs"
+    ])
+    error_message = "The CloudWatchLogs statement must still cover the Migration Assistant log group."
+  }
+}
