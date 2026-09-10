@@ -108,6 +108,43 @@ function appendAddition(
   valueSummary: string,
 ) {
   if (nodes[addition.id]) return;
+  if (
+    "sectionId" in addition
+    && addition.sectionId
+    && !nodes[addition.groupId]
+  ) {
+    const section = nodes[addition.sectionId];
+    if (section) {
+      nodes[addition.groupId] = {
+        id: addition.groupId,
+        revision: `${revision}:group`,
+        parentId: section.id,
+        childIds: [],
+        kind: "group",
+        label: addition.groupLabel,
+        description: null,
+        status: "ok",
+        phase: null,
+        valueSummary: null,
+        diagnostics: [],
+        capabilities: [],
+        details: [],
+        relationships: [],
+        comparisons: [],
+        resourcePlural: null,
+        resourceName: null,
+        resourceType: null,
+        configPresence: {},
+      };
+      nodes[section.id] = {
+        ...section,
+        revision: `${section.revision}:${revision}:group`,
+        childIds: section.childIds.includes(addition.groupId)
+          ? section.childIds
+          : [...section.childIds, addition.groupId],
+      };
+    }
+  }
   const group = nodes[addition.groupId];
   if (!group) return;
   nodes[addition.id] = {
@@ -179,7 +216,9 @@ function projectPendingRename(
     nodes[rename.id] = rename.status === "syncing"
       ? {
         ...renamed,
+        label: rename.label,
         revision: `rename:${rename.oldId}:${rename.id}:syncing`,
+        resourceName: rename.resourceName,
         status: "syncing",
         phase: "Syncing",
         valueSummary: "Syncing configuration",
@@ -187,6 +226,8 @@ function projectPendingRename(
       }
       : {
         ...renamed,
+        label: rename.label,
+        resourceName: rename.resourceName,
         valueSummary: "Rename pending submission",
       };
   }
@@ -243,13 +284,16 @@ export function projectEditSnapshot(
     return configurationSnapshot;
   }
   const nodes = { ...configurationSnapshot.nodes };
-  pendingAdditions.forEach((addition) => appendAddition(
-    nodes,
-    addition,
-    `optimistic:${addition.id}`,
-    "syncing",
-    "Syncing configuration",
-  ));
+  pendingAdditions.forEach((addition) => {
+    const syncing = addition.status === "syncing";
+    appendAddition(
+      nodes,
+      addition,
+      `optimistic:${addition.id}`,
+      syncing ? "syncing" : "changed",
+      syncing ? "Syncing configuration" : "Addition pending submission",
+    );
+  });
   pendingRenames.forEach((rename) => projectPendingRename(nodes, rename));
   return {
     ...configurationSnapshot,

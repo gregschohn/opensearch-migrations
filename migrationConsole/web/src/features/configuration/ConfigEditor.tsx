@@ -52,6 +52,7 @@ import {
   pendingResourceAddition,
   pendingResourceRename,
   resourceAddPlacement,
+  resourceRenameCollisionProblem,
   type PendingResourceAddition,
   type PendingResourceRename,
   type ResourceAddController,
@@ -66,6 +67,7 @@ interface ConfigEditorProps {
   onExitReady: (handler: (() => void) | null) => void;
   onSubmitReady: (handler: (() => void) | null) => void;
   onNavigateBack?: () => void;
+  onDraftReverted: () => void;
   onResourceAddStarted: (addition: PendingResourceAddition) => void;
   onResourceAddSettled: (
     addition: PendingResourceAddition,
@@ -80,6 +82,7 @@ interface ConfigEditorProps {
   onNavigateEditTarget: (targetId: string) => void;
   onSubmitted: () => void;
   removalState?: string | null;
+  resourceId: string;
   resourceLabel: string;
   resourceType: string;
   resourceSyncing?: boolean;
@@ -196,7 +199,11 @@ function resourceRenameOptions(nodes: EditNode[]): ResourceRenameOption[] {
   const visit = (node: EditNode) => {
     const placement = resourceAddPlacement(node);
     const command = addCommand(node);
-    if (placement && command?.command?.requiresName !== false) {
+    if (
+      placement
+      && placement.resourcePlural !== "snapshotmigrations"
+      && command?.command?.requiresName !== false
+    ) {
       const collectionDepth = node.path.length;
       propertyChildren(node).forEach((child) => {
         if (
@@ -234,10 +241,64 @@ function resourceRenameOptions(nodes: EditNode[]): ResourceRenameOption[] {
         });
       });
     }
+    if (placement?.resourcePlural === "snapshotmigrations") {
+      propertyChildren(node).forEach((migration) => {
+        const migrationValue = hintRecord(migration.value);
+        const source = typeof migrationValue.fromSource === "string"
+          ? migrationValue.fromSource
+          : "";
+        const target = typeof migrationValue.toTarget === "string"
+          ? migrationValue.toTarget
+          : "";
+        const snapshot = typeof migrationValue.fromSnapshot === "string"
+          ? migrationValue.fromSnapshot
+          : "";
+        const currentName = typeof migrationValue.slice === "string"
+          ? migrationValue.slice
+          : "";
+        const sliceField = propertyChildren(migration).find(
+          (child) => child.path.at(-1) === "slice",
+        );
+        const validation = hintRecord(sliceField?.validation);
+        const collisionScope = source && target && snapshot
+          ? `${source}-${target}-${snapshot}`
+          : undefined;
+        result.push({
+          collisionScope,
+          currentName,
+          editTargetStable: true,
+          editTargetId: migration.id,
+          label: `${source}-${target}-${snapshot}-${currentName}`,
+          labelPrefix: `${source}-${target}-${snapshot}-`,
+          operation: "set",
+          path: [...migration.path, "slice"],
+          pattern: typeof validation.pattern === "string"
+            ? validation.pattern
+            : KUBERNETES_NAME_PATTERN,
+          placement,
+          resourceNamePrefix: `${source}-${target}-${snapshot}-`,
+          validationMessage: typeof validation.message === "string"
+            ? validation.message
+            : KUBERNETES_NAME_MESSAGE,
+        });
+      });
+    }
     propertyChildren(node).forEach(visit);
   };
   nodes.forEach(visit);
-  return result;
+  return result.map((option) => (
+    option.collisionScope
+      ? {
+          ...option,
+          conflictingNames: result.flatMap((candidate) => (
+            candidate.editTargetId !== option.editTargetId
+            && candidate.collisionScope === option.collisionScope
+              ? [candidate.currentName]
+              : []
+          )),
+        }
+      : option
+  ));
 }
 
 
@@ -331,6 +392,23 @@ function validationErrorEmphasis(
   return selfHasError && (hasOwnDiagnostic || !childHasError)
     ? "item"
     : "ancestor";
+}
+
+
+function scopeActionMessage(message: string): string {
+  const normalized = message.toLocaleLowerCase();
+  const compact = normalized.replaceAll(/[^a-z]/g, "");
+  if (
+    compact.includes("metadata")
+    && compact.includes("documentbackfill")
+    && (
+      normalized.includes("at least one")
+      || normalized.startsWith("add metadata migration")
+    )
+  ) {
+    return "Add at least one migration path: metadata migration, document backfill, or both.";
+  }
+  return message;
 }
 
 
@@ -1003,12 +1081,13 @@ function runAddCommand(
 ): Promise<boolean> {
   const requiresName = node.command?.requiresName !== false;
   if (requiresName && !name) return Promise.resolve(false);
-  const nextIndex = Array.isArray(parent?.value)
-    ? parent.value.length
-    : propertyChildren(parent ?? node).length;
+  const nextIndex = nextCollectionIndex(parent ?? node);
+  const addedKey = parent?.valueKind === "array"
+    ? String(nextIndex)
+    : requiresName ? name : String(nextIndex);
   const addedPath = [
     ...node.path,
-    requiresName ? name : String(nextIndex),
+    addedKey,
   ];
   return commit({
     op: "add",
@@ -1020,6 +1099,13 @@ function runAddCommand(
     }
     return applied;
   });
+}
+
+function nextCollectionIndex(node: EditNode): number {
+  const children = propertyChildren(node);
+  return node.valueKind === "array"
+    ? children.filter((child) => child.valueKind !== "command").length
+    : children.length;
 }
 
 
@@ -1581,6 +1667,7 @@ export function ConfigEditor({
   onExitReady,
   onSubmitReady,
   onNavigateBack,
+  onDraftReverted,
   onResourceAddStarted,
   onResourceAddSettled,
   onResourceRenameStarted,
@@ -1589,6 +1676,7 @@ export function ConfigEditor({
   onNavigateEditTarget,
   onSubmitted,
   removalState,
+  resourceId,
   resourceLabel,
   resourceType,
   resourceSyncing = false,
@@ -1639,6 +1727,9 @@ export function ConfigEditor({
   const [busy, setBusy] = useState(false);
   const [actionPending, setActionPending] = useState(false);
   const [problem, setProblem] = useState("");
+  const [notice, setNotice] = useState("");
+  const [titleRenaming, setTitleRenaming] = useState(false);
+  const [titleRenameName, setTitleRenameName] = useState("");
   const [pendingRemoval, setPendingRemoval] =
     useState<PendingRemoval | null>(null);
   const [confirmSubmit, setConfirmSubmit] = useState(false);
@@ -1732,6 +1823,34 @@ export function ConfigEditor({
     },
     [activeTargetId, globalTarget, nodes, scope, target],
   );
+  const scopeCommands = useMemo(
+    () => (
+      scope && !scopedNodes.includes(scope)
+        ? addCommands(scope)
+        : []
+    ),
+    [scope, scopedNodes],
+  );
+  const scopeActionMessages = useMemo(
+    () => [...new Set([
+      ...scopeCommands.flatMap((command) => (
+        command.command?.blockedMessage
+          ? [scopeActionMessage(command.command.blockedMessage)]
+          : []
+      )),
+      ...(scope?.diagnostics ?? []).flatMap((diagnostic) => (
+        ["required", "error", "gated", "blocked"].includes(
+          diagnostic.severity,
+        )
+          ? [scopeActionMessage(diagnostic.message)]
+          : []
+      )),
+    ])],
+    [scope, scopeCommands],
+  );
+  const scopeHasValidationError = Boolean(
+    scope && nodeTreeHasValidationError(scope),
+  );
   const editSurfaces = useMemo(() => {
     const surfaces: { kind: string; label: string; targetId: string }[] = [];
     Object.values(draft?.navigation?.nodes ?? {}).forEach((navNode) => {
@@ -1818,10 +1937,51 @@ export function ConfigEditor({
     () => resourceRenameOptions(nodes),
     [nodes],
   );
+  const titleRenameOption = useMemo(
+    () => resourceRenames.find(
+      (option) => option.editTargetId === initialTargetId,
+    ) ?? resourceRenames.find((option) => (
+      option.label === resourceLabel
+      || `${option.resourceNamePrefix ?? ""}${option.currentName}`
+        === resourceLabel
+    )) ?? null,
+    [initialTargetId, resourceLabel, resourceRenames],
+  );
+  const titleRenameValidationProblem = fieldValidationProblem(
+    titleRenameName,
+    titleRenameOption?.pattern,
+    titleRenameOption?.validationMessage,
+  );
+  const titleRenameCollisionProblem = resourceRenameCollisionProblem(
+    titleRenameOption ?? undefined,
+    titleRenameName,
+  );
+  const titleRenameProblem = titleRenameValidationProblem
+    || titleRenameCollisionProblem;
+  const titleIdentityProblem = useMemo(() => {
+    if (!scope?.path[0]?.startsWith("snapshotMigrationConfigs")) return "";
+    return (scope.diagnostics ?? [])
+      .find((diagnostic) => (
+        diagnostic.severity === "error"
+        && diagnostic.message.includes("already configured")
+      ))?.message ?? "";
+  }, [scope]);
+  const titleRenameFormRef = useEscapeCancel<HTMLFormElement>(
+    () => setTitleRenaming(false),
+    !titleRenaming,
+  );
 
   useEffect(() => {
     setActiveTargetId(initialTargetId ?? null);
+    setTitleRenaming(false);
+    setTitleRenameName("");
   }, [initialTargetId]);
+
+  useEffect(() => {
+    if (!titleRenaming) {
+      setTitleRenameName(titleRenameOption?.currentName ?? "");
+    }
+  }, [titleRenameOption, titleRenaming]);
 
   useEffect(() => {
     if (!draft) return;
@@ -2349,6 +2509,7 @@ export function ConfigEditor({
     try {
       const next = await promise;
       queryClient.setQueryData(["config-draft"], next);
+      setNotice(next.notices?.[0] ?? "");
       return true;
     } catch (error) {
       if (error instanceof ConfigApiError && error.current) {
@@ -2455,6 +2616,7 @@ export function ConfigEditor({
       if (discarded) {
         setLocallyEditedIds(new Set());
         setRawYamlDirty(false);
+        onDraftReverted();
       }
       return discarded;
     } finally {
@@ -2530,9 +2692,7 @@ export function ConfigEditor({
       (candidate) => candidate.id === context.command.id,
     );
     if (!option) return Promise.resolve(false);
-    const nextIndex = Array.isArray(context.parent.value)
-      ? context.parent.value.length
-      : propertyChildren(context.parent).length;
+    const nextIndex = nextCollectionIndex(context.parent);
     const addition = pendingResourceAddition(option, name, nextIndex);
     onResourceAddStarted(addition);
     return runAddCommand(
@@ -2558,16 +2718,28 @@ export function ConfigEditor({
     const option = resourceRenames.find(
       (candidate) => candidate.editTargetId === editTargetId,
     );
-    if (!option || !newName.trim() || newName.trim() === option.currentName) {
+    if (
+      !option
+      || !newName.trim()
+      || newName.trim() === option.currentName
+      || resourceRenameCollisionProblem(option, newName)
+    ) {
       return Promise.resolve(false);
     }
     const rename = pendingResourceRename(option, resourceId, newName.trim());
     onResourceRenameStarted(rename);
-    return commit({
-      op: "renameConfig",
-      path: option.path,
-      newName: newName.trim(),
-    }).then((applied) => {
+    const operation: EditOperation = option.operation === "set"
+      ? {
+          op: "set",
+          path: option.path,
+          value: newName.trim(),
+        }
+      : {
+          op: "renameConfig",
+          path: option.path,
+          newName: newName.trim(),
+        };
+    return commit(operation).then((applied) => {
       if (applied) {
         setActiveTargetId(rename.editTargetId);
         setSelectedId(rename.editTargetId);
@@ -2696,7 +2868,100 @@ export function ConfigEditor({
         ) : null}
         <div className="config-toolbar-title">
           <span>Editing configuration</span>
-          <h2>Edit {resourceLabel}</h2>
+          {titleRenaming && titleRenameOption ? (
+            <form
+              className="title-rename-form"
+              data-escape-cancel-layer
+              onSubmit={(event: FormEvent) => {
+                event.preventDefault();
+                void resourceRenameRequest.current(
+                  titleRenameOption.editTargetId,
+                  resourceId,
+                  titleRenameName,
+                ).then((applied) => {
+                  if (applied) setTitleRenaming(false);
+                });
+              }}
+              ref={titleRenameFormRef}
+            >
+              <label>
+                <span className="sr-only">
+                  New name for {resourceLabel}
+                </span>
+                {titleRenameOption.labelPrefix ? (
+                  <span
+                    aria-hidden="true"
+                    className="title-rename-prefix"
+                  >
+                    {titleRenameOption.labelPrefix}
+                  </span>
+                ) : null}
+                <input
+                  aria-label={`New name for ${resourceLabel}`}
+                  autoFocus
+                  onChange={(event) =>
+                    setTitleRenameName(event.target.value)}
+                  pattern={titleRenameOption.pattern}
+                  required
+                  title={titleRenameOption.validationMessage
+                    ?? "Dependent workflow references will be updated."}
+                  value={titleRenameName}
+                />
+              </label>
+              <button
+                aria-label="Apply rename"
+                disabled={
+                  interactionPending
+                  || !titleRenameName.trim()
+                  || titleRenameName.trim() === titleRenameOption.currentName
+                  || Boolean(titleRenameProblem)
+                }
+                title="Apply rename"
+                type="submit"
+              >
+                <Check aria-hidden="true" />
+              </button>
+              <button
+                aria-label="Cancel rename"
+                disabled={interactionPending}
+                onClick={() => setTitleRenaming(false)}
+                title="Cancel rename"
+                type="button"
+              >
+                <X aria-hidden="true" />
+              </button>
+              {titleRenameProblem ? (
+                <span className="field-error" role="alert">
+                  {titleRenameProblem}
+                </span>
+              ) : null}
+            </form>
+          ) : (
+            <div className="config-toolbar-heading">
+              <h2>Edit {resourceLabel}</h2>
+              {titleRenameOption && !removalState ? (
+                <button
+                  aria-label={`Rename ${resourceLabel}`}
+                  className="icon-button title-rename-button"
+                  disabled={interactionPending}
+                  onClick={() => {
+                    setTitleRenameName(titleRenameOption.currentName);
+                    setTitleRenaming(true);
+                  }}
+                  title={`Rename ${resourceLabel}`}
+                  type="button"
+                >
+                  <Pencil aria-hidden="true" />
+                </button>
+              ) : null}
+              {titleIdentityProblem ? (
+                <span className="title-identity-error" role="alert">
+                  <AlertTriangle aria-hidden="true" />
+                  {titleIdentityProblem}
+                </span>
+              ) : null}
+            </div>
+          )}
           <span>
             {removalState
               ?? stateSummary
@@ -2786,6 +3051,13 @@ export function ConfigEditor({
           <button onClick={() => setProblem("")} type="button">Dismiss</button>
         </div>
       ) : null}
+      {notice ? (
+        <div className="config-notice" role="status">
+          <Check aria-hidden="true" />
+          <span>{notice}</span>
+          <button onClick={() => setNotice("")} type="button">Dismiss</button>
+        </div>
+      ) : null}
       {draft.rawYaml !== undefined ? (
         <section className="raw-config-repair">
           <header>
@@ -2858,7 +3130,10 @@ export function ConfigEditor({
       ) : (
         <div className="config-layout">
         <section
-          className="config-table-panel"
+          className={[
+            "config-table-panel",
+            scopeHasValidationError ? "scope-validation-error" : "",
+          ].join(" ")}
           onScroll={() => {
             if (removingIds.size > 0 && configTablePanelRef.current) {
               pendingScrollTop.current = configTablePanelRef.current.scrollTop;
@@ -3046,6 +3321,49 @@ export function ConfigEditor({
               })}
             </tbody>
           </table>
+          {scopeCommands.length > 0 || scopeActionMessages.length > 0 ? (
+            <div className="config-scope-add-actions">
+              {scopeCommands.length > 0 ? (
+                <div className="inline-add-actions">
+                  {scopeCommands.map((command) => {
+                    const commandName = fieldName(command);
+                    return (
+                      <button
+                        aria-label={`Add ${commandName}`}
+                        disabled={
+                          busy
+                          || Boolean(command.command?.blockedMessage)
+                        }
+                        key={command.id}
+                        onClick={() => {
+                          if (!scope) return;
+                          void runAddCommand(
+                            command,
+                            scope,
+                            "",
+                            commit,
+                            selectAdded,
+                          );
+                        }}
+                        title={command.command?.blockedMessage
+                          ?? `Add ${commandName}`}
+                        type="button"
+                      >
+                        <Plus aria-hidden="true" />
+                        Add {commandName}
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : null}
+              {scopeActionMessages.map((message) => (
+                <span className="config-scope-blocker" key={message}>
+                  <AlertTriangle aria-hidden="true" />
+                  {message}
+                </span>
+              ))}
+            </div>
+          ) : null}
           <div
             aria-hidden="true"
             className="config-scroll-space"

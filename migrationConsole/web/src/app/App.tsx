@@ -137,6 +137,26 @@ function navigationResourceId(
   return resource?.id ?? null;
 }
 
+function settledRenameResourceId(
+  draft: ConfigDraft | undefined,
+  rename: PendingResourceRename,
+): string | null {
+  const nodes = draft?.navigation?.nodes ?? {};
+  if (rename.id === rename.oldId) {
+    const stableNode = nodes[rename.id];
+    return (
+      stableNode?.resourceName === rename.resourceName
+      && editTarget(stableNode) === rename.editTargetId
+    )
+      ? rename.id
+      : null;
+  }
+  if (nodes[rename.oldId]) return null;
+  if (nodes[rename.id]) return rename.id;
+  const resourceId = navigationResourceId(draft, rename.editTargetId);
+  return resourceId === rename.oldId ? null : resourceId;
+}
+
 
 function hasPendingConfiguration(snapshot: ManageSnapshot): boolean {
   // Mirrors the server's value-summary derivation from configPresence
@@ -657,10 +677,7 @@ function ManageApp() {
     const currentDraft = queryClient.getQueryData<ConfigDraft>([
       "config-draft",
     ]);
-    const resourceId = navigationResourceId(
-      currentDraft,
-      rename.editTargetId,
-    );
+    const resourceId = settledRenameResourceId(currentDraft, rename);
     setPendingResourceRenames((current) => (
       resourceId
         ? current.filter((candidate) => candidate.oldId !== rename.oldId)
@@ -676,6 +693,35 @@ function ManageApp() {
       targetId: rename.editTargetId,
     });
   }, [queryClient]);
+  const resourceDraftReverted = useCallback(() => {
+    const addedIds = new Set(
+      pendingResourceAdditions.map((addition) => addition.id),
+    );
+    const renamedResources = new Map(
+      pendingResourceRenames.map((rename) => [rename.id, rename]),
+    );
+    setPendingResourceAdditions([]);
+    setPendingResourceRenames([]);
+    setSelectedId((current) => {
+      if (!current) return current;
+      if (addedIds.has(current)) return null;
+      return renamedResources.get(current)?.oldId ?? current;
+    });
+    setEditContext((current) => {
+      if (!current) return current;
+      if (addedIds.has(current.resourceId)) {
+        return {
+          resourceId: "",
+          targetId: "edit:workflowConfiguration",
+        };
+      }
+      const rename = renamedResources.get(current.resourceId);
+      return rename ? {
+        resourceId: rename.oldId,
+        targetId: rename.oldEditTargetId,
+      } : current;
+    });
+  }, [pendingResourceAdditions, pendingResourceRenames]);
 
   useEffect(() => {
     if (!configDraft.data) return;
@@ -689,7 +735,7 @@ function ManageApp() {
     setPendingResourceRenames((current) => {
       const next = current.filter((rename) => (
         rename.status === "syncing"
-        || !navigationResourceId(configDraft.data, rename.editTargetId)
+        || !settledRenameResourceId(configDraft.data, rename)
       ));
       return next.length === current.length ? current : next;
     });
@@ -718,7 +764,10 @@ function ManageApp() {
     });
   };
   const applyNodeSelection = (nodeId: string) => {
-    const node = displayedState?.nodes[nodeId];
+    const navigation = editContext
+      ? resourceNavigationState ?? displayedState
+      : displayedState;
+    const node = navigation?.nodes[nodeId];
     if (!node) return false;
     if (editContext) {
       const targetId = editTarget(node);
@@ -1330,6 +1379,7 @@ function ManageApp() {
                   onExitReady={registerEditExit}
                   onSubmitReady={registerEditSubmit}
                   onNavigateBack={navigateLinkedBack}
+                  onDraftReverted={resourceDraftReverted}
                   onResourceAddSettled={resourceAddSettled}
                   onResourceAddStarted={resourceAddStarted}
                   onResourceRenameSettled={resourceRenameSettled}
@@ -1351,12 +1401,15 @@ function ManageApp() {
                       ? selectedNode.valueSummary ?? "Marked for removal"
                       : null
                   }
+                  resourceId={editContext.resourceId}
                   resourceLabel={
-                    displayedState.nodes[editContext.resourceId]?.label
+                    (resourceNavigationState ?? displayedState)
+                      .nodes[editContext.resourceId]?.label
                     ?? "resource"
                   }
                   resourceType={
-                    displayedState.nodes[editContext.resourceId]?.resourceType
+                    (resourceNavigationState ?? displayedState)
+                      .nodes[editContext.resourceId]?.resourceType
                     ?? "Workflow configuration"
                   }
                   resourceSyncing={selectedNode?.status === "syncing"}
