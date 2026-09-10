@@ -414,6 +414,7 @@ class ConfigDraftV1(WebModel):
     edit_state: EditStateV1
     navigation: Optional[ManageSnapshotV1] = None
     raw_yaml: Optional[str] = None
+    notices: List[str] = Field(default_factory=list)
 
     @classmethod
     def from_domain(
@@ -432,6 +433,7 @@ class ConfigDraftV1(WebModel):
                 if navigation is not None else None
             ),
             "rawYaml": draft.repair_yaml,
+            "notices": list(draft.notices),
         })
 
 

@@ -237,7 +237,7 @@ exports[`resolved migration resources extracts resolved resource parameters from
       "metadataMigrationIndexAllowlist",
     ],
     "kind": "SnapshotMigration",
-    "name": "source-target-snap1-migration-0",
+    "name": "source-target-snap1-slice-0",
     "parameters": {
       "dataSnapshotResourceName": "source-snap1",
       "dependsOn": [
@@ -303,7 +303,7 @@ exports[`resolved migration resources extracts resolved resource parameters from
       "metadataMigrationTransformerConfigBase64": "",
       "metadataMigrationTransformerConfigFile": "",
       "metadataMigrationUseRecoverySource": false,
-      "migrationLabel": "migration-0",
+      "migrationLabel": "slice-0",
       "snapshotLabel": "snap1",
       "snapshotRepoAwsRegion": "us-east-2",
       "snapshotRepoEndpoint": "",

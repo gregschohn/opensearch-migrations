@@ -24,10 +24,11 @@ import {
 import type { ManageNode, ManageSnapshot } from "../../api/client";
 import { StatusIndicator } from "../status/StatusIndicator";
 import { statusLabel } from "../status/status";
-import type {
-  ResourceAddController,
-  ResourceAddOption,
-  ResourceRenameOption,
+import {
+  resourceRenameCollisionProblem,
+  type ResourceAddController,
+  type ResourceAddOption,
+  type ResourceRenameOption,
 } from "../configuration/resourceAdds";
 import type {
   ResourceDraftChangeState,
@@ -357,6 +358,10 @@ const TreeRow = memo(function TreeRow({
         renameOption.validationMessage,
       )
     : "";
+  const renameCollisionProblem = renaming
+    ? resourceRenameCollisionProblem(renameOption, renameValue)
+    : "";
+  const renameProblem = renameValidationProblem || renameCollisionProblem;
   return (
     <div
       aria-expanded={expandable ? expanded : undefined}
@@ -482,7 +487,7 @@ const TreeRow = memo(function TreeRow({
                 addPending
                 || !renameValue.trim()
                 || renameValue.trim() === renameOption.currentName
-                || Boolean(renameValidationProblem)
+                || Boolean(renameProblem)
               }
               onClick={(event) => event.stopPropagation()}
               title="Apply rename"
@@ -503,9 +508,9 @@ const TreeRow = memo(function TreeRow({
               <X aria-hidden="true" />
             </button>
           </span>
-          {renameValidationProblem ? (
+          {renameProblem ? (
             <small className="tree-inline-validation" role="alert">
-              {renameValidationProblem}
+              {renameProblem}
             </small>
           ) : null}
         </form>
@@ -1349,6 +1354,8 @@ export function ResourceTree({
             && node.resourcePlural === option.placement.resourcePlural
             && (
               node.resourceName === option.currentName
+              || node.resourceName
+                === `${option.resourceNamePrefix ?? ""}${option.currentName}`
               || node.label === option.label
             )
           )

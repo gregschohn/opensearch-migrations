@@ -53,6 +53,7 @@ from .models import (
     ManageValueState,
     ManageWorkflow,
 )
+from .config_navigation import group_snapshot_migration_navigation
 
 
 logger = logging.getLogger(__name__)
@@ -118,6 +119,7 @@ class _NodeDraft:
     resource_name: Optional[str] = None
     resource_type: Optional[str] = None
     config_presence: Mapping[str, bool] = field(default_factory=dict)
+    navigation_key: Tuple[str, ...] = ()
 
 
 def workflow_has_active_rollout(workflow_data: Mapping[str, Any]) -> bool:
@@ -411,7 +413,7 @@ class ManageStateService:
             "problems": [problem.to_dict() for problem in problems],
         }
         observed_at = _format_datetime(self._clock())
-        return ManageSnapshot(
+        return group_snapshot_migration_navigation(ManageSnapshot(
             format_version=1,
             revision=_revision(semantic),
             observed_at=observed_at,
@@ -421,7 +423,7 @@ class ManageStateService:
             root_ids=tuple(root_ids),
             nodes=nodes,
             problems=tuple(problems),
-        )
+        ))
 
     def _add_resource(
         self,
@@ -456,6 +458,16 @@ class ManageStateService:
             resource_name=resource.name,
             resource_type=resource_type_label_for_plural(resource.plural),
             config_presence=dict(resource.config_presence or {}),
+            navigation_key=(
+                (
+                    str(resource.spec.get("sourceLabel") or ""),
+                    str(resource.spec.get("targetLabel") or ""),
+                    str(resource.spec.get("snapshotLabel") or ""),
+                    str(resource.spec.get("migrationLabel") or ""),
+                )
+                if resource.plural == "snapshotmigrations"
+                else ()
+            ),
         )
         drafts[resource_id] = draft
 
@@ -1240,6 +1252,7 @@ def _finalize_nodes(drafts: Mapping[str, _NodeDraft]) -> Dict[str, ManageNode]:
             resource_name=draft.resource_name,
             resource_type=draft.resource_type,
             config_presence=draft.config_presence,
+            navigation_key=draft.navigation_key,
         )
     return nodes
 
@@ -1272,6 +1285,7 @@ def _draft_dict(draft: _NodeDraft) -> Dict[str, Any]:
         "status": draft.status,
         "parentId": draft.parent_id,
         "description": draft.description,
+        "navigationKey": list(draft.navigation_key),
         "phase": draft.phase,
         "valueSummary": draft.value_summary,
         "activityAt": draft.activity_at,

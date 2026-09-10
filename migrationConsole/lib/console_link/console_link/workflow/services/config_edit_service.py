@@ -66,6 +66,7 @@ class ConfigEditSession:
 class ConfigEditApplyResult:
     raw_yaml: str
     edit_state: Dict[str, Any]
+    notices: tuple[str, ...] = ()
 
 
 class AdmissionPreflightBlocked(ValueError):
@@ -115,8 +116,9 @@ class ConfigEditService:
         return self._run_edit_state(raw_yaml, validate_external_refs=True)
 
     def apply_operation(self, raw_yaml: str, operation: Dict[str, Any]) -> ConfigEditApplyResult:
+        prepared_operation, notices = self._prepare_operation(raw_yaml, operation)
         with tempfile.NamedTemporaryFile(mode="w", suffix=YAML_SUFFIX, delete=True) as operation_file:
-            json.dump(operation, operation_file)
+            json.dump(prepared_operation, operation_file)
             operation_file.flush()
 
             with tempfile.NamedTemporaryFile(mode="w", suffix=YAML_SUFFIX, delete=True) as config_file:
@@ -139,7 +141,15 @@ class ConfigEditService:
         return ConfigEditApplyResult(
             raw_yaml=result["yaml"],
             edit_state=result["editState"],
+            notices=notices,
         )
+
+    def _prepare_operation(
+        self,
+        raw_yaml: str,
+        operation: Dict[str, Any],
+    ) -> tuple[Dict[str, Any], tuple[str, ...]]:
+        return operation, ()
 
     def validate_operation(self, raw_yaml: str, operation: Dict[str, Any]) -> ConfigEditApplyResult:
         """Preview one operation through TS validation without saving the result."""

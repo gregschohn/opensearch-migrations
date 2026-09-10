@@ -1336,13 +1336,12 @@ button.secondary-button:hover:not(:disabled) {
 }
 
 .tree-row.selected {
-  border-color: #b6d6da;
-  background: var(--accent-soft);
+  background: #dcecef;
 }
 
 .tree-row:focus-visible {
-  border-color: var(--accent);
-  box-shadow: inset 0 0 0 1px var(--accent);
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 .tree-status-slot,
@@ -1358,7 +1357,6 @@ button.secondary-button:hover:not(:disabled) {
 }
 
 .tree-row.draft-change-ancestor {
-  border-color: #c8dfe2;
   background: #f5fafb;
 }
 
@@ -1367,42 +1365,31 @@ button.secondary-button:hover:not(:disabled) {
 }
 
 .tree-row.draft-change-item {
-  border-color: #8ebfc5;
   background: #eaf5f6;
 }
 
-.tree-row.draft-change-item:hover,
-.tree-row.draft-change-item.selected {
-  border-color: #69a8b0;
+.tree-row.draft-change-item:hover {
   background: #dff0f2;
 }
 
-.tree-row.draft-change-item.selected {
-  box-shadow: inset 3px 0 var(--accent);
-}
-
-.tree-row.validation-error-ancestor {
-  border-color: #efd0cd;
-  background: #fff8f7;
-}
-
-.tree-row.validation-error-ancestor:hover {
-  background: #fff3f2;
-}
-
+.tree-row.validation-error-ancestor,
 .tree-row.validation-error-item {
-  border-color: #d98d86;
   background: #fff0ef;
 }
 
-.tree-row.validation-error-item:hover,
-.tree-row.validation-error-item.selected {
-  border-color: #c86d65;
+.tree-row.validation-error-ancestor:hover,
+.tree-row.validation-error-item:hover {
   background: #fce7e5;
 }
 
+.tree-row.draft-change-ancestor.selected,
+.tree-row.draft-change-item.selected {
+  background: #d7ebee;
+}
+
+.tree-row.validation-error-ancestor.selected,
 .tree-row.validation-error-item.selected {
-  box-shadow: inset 3px 0 var(--danger);
+  background: #f4d6d3;
 }
 
 .tree-expander {
@@ -4041,6 +4028,125 @@ button.secondary-button:hover:not(:disabled) {
   min-width: 130px;
 }
 
+.config-toolbar-heading,
+.title-rename-form,
+.title-rename-form label {
+  display: flex;
+  align-items: center;
+}
+
+.config-toolbar-heading {
+  gap: 6px;
+}
+
+.title-identity-error {
+  display: inline-flex;
+  max-width: 520px;
+  align-items: center;
+  gap: 5px;
+  color: var(--danger);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.title-identity-error svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+}
+
+.title-rename-button {
+  width: 25px;
+  min-height: 25px;
+  padding: 0;
+}
+
+.title-rename-button svg {
+  width: 13px;
+  height: 13px;
+}
+
+.title-rename-form {
+  position: relative;
+  gap: 5px;
+  max-width: min(620px, 56vw);
+  margin: 2px 0;
+}
+
+.title-rename-form label {
+  min-width: 0;
+  flex: 1 1 auto;
+  gap: 0;
+}
+
+.title-rename-prefix {
+  min-height: 29px;
+  padding: 6px 0 6px 7px;
+  border: 1px solid var(--border-strong);
+  border-right: 0;
+  border-radius: 3px 0 0 3px;
+  color: var(--text-muted);
+  background: var(--surface-subtle);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.title-rename-form input {
+  min-width: 110px;
+  min-height: 29px;
+  padding: 5px 7px;
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  color: var(--text);
+  background: var(--surface);
+  font-size: 12px;
+}
+
+.title-rename-prefix + input {
+  border-radius: 0 3px 3px 0;
+}
+
+.title-rename-form > button {
+  display: inline-flex;
+  width: 29px;
+  min-height: 29px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  color: var(--text);
+  background: var(--surface);
+}
+
+.title-rename-form > button[type="submit"] {
+  border-color: #155d68;
+  color: #fff;
+  background: var(--accent);
+}
+
+.title-rename-form > button:disabled {
+  opacity: 0.5;
+}
+
+.title-rename-form > button svg {
+  width: 14px;
+  height: 14px;
+}
+
+.title-rename-form > .field-error {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 2;
+  max-width: 100%;
+  padding: 3px 6px;
+  border: 1px solid #dfaaa6;
+  border-radius: 3px;
+  background: #fff5f4;
+  font-size: 10px;
+}
+
 .config-toolbar-title > span {
   display: block;
   color: var(--text-muted);
@@ -4158,15 +4264,12 @@ button.secondary-button:hover:not(:disabled) {
 .tree-row.status-removed.selected,
 .tree-row.status-removed.validation-error-item,
 .tree-row.status-removed.validation-error-ancestor {
-  border-color: #c9ced1;
   background: #f2f4f5;
   box-shadow: none;
 }
 
 .tree-row.status-removed.selected {
-  border-color: #aab3b9;
-  background: #e9edef;
-  box-shadow: inset 3px 0 #78838c;
+  background: #dfe5e8;
 }
 
 .tree-row.status-removed .tree-row-copy strong {
@@ -4197,6 +4300,30 @@ button.secondary-button:hover:not(:disabled) {
 }
 
 .config-problem button {
+  margin-left: auto;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  text-decoration: underline;
+}
+
+.config-notice {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid #9fc7ab;
+  color: #215c35;
+  background: #edf8f0;
+  font-size: 12px;
+}
+
+.config-notice svg {
+  width: 16px;
+}
+
+.config-notice button {
   margin-left: auto;
   border: 0;
   color: inherit;
@@ -4788,12 +4915,7 @@ button.secondary-button:hover:not(:disabled) {
   background: #e4eef1;
 }
 
-.pinned-context-row.validation-error-ancestor {
-  border-bottom-color: #efd0cd;
-  box-shadow: inset 3px 0 #d98d86;
-  background: #fff5f4;
-}
-
+.pinned-context-row.validation-error-ancestor,
 .pinned-context-row.validation-error-item {
   border-bottom-color: #d98d86;
   box-shadow: inset 3px 0 var(--danger);
@@ -4904,12 +5026,7 @@ button.secondary-button:hover:not(:disabled) {
 }
 
 .config-property-row.validation-error-ancestor > th,
-.config-property-row.validation-error-ancestor > td {
-  border-top: 1px solid #efd0cd;
-  border-bottom-color: #efd0cd;
-  background: #fff5f4;
-}
-
+.config-property-row.validation-error-ancestor > td,
 .config-property-row.validation-error-item > th,
 .config-property-row.validation-error-item > td {
   border-top: 1px solid #d98d86;
@@ -4934,8 +5051,20 @@ button.secondary-button:hover:not(:disabled) {
   background: #fcebea;
 }
 
+.config-property-row.validation-error-ancestor.selected,
 .config-property-row.validation-error-item.selected {
   box-shadow: inset 3px 0 var(--danger);
+}
+
+.config-table-panel.scope-validation-error > .config-outline-header {
+  border-bottom-color: #d98d86;
+  box-shadow: inset 3px 0 var(--danger);
+  background: #fff0ef;
+}
+
+.config-table-panel.scope-validation-error .config-scope-add-actions {
+  border-top-color: #d98d86;
+  background: #fff0ef;
 }
 
 .config-property-row:focus-visible {
@@ -5120,6 +5249,33 @@ button.secondary-button:hover:not(:disabled) {
 }
 
 .inline-add-actions button svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+}
+
+.config-scope-add-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-subtle);
+}
+
+.config-scope-blocker {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+  color: var(--danger);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+}
+
+.config-scope-blocker svg {
   width: 14px;
   height: 14px;
   flex: 0 0 auto;

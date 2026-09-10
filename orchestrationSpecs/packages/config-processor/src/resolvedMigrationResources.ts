@@ -746,31 +746,32 @@ function unprefixedProjectionField(prefix: string, value: string): string | unde
 function userSnapshotMigrationItemFor(
     options: ResolvedMigrationResourcesOptions,
     migration: SnapshotMigrationConfig,
-): {migrationPath: string[]; migrationRecord: Record<string, unknown>; itemPath: string[]; itemRecord: Record<string, unknown>} | undefined {
+): {
+    migrationPath: string[];
+    migrationRecord: Record<string, unknown>;
+    slicePath: string[];
+    sliceRecord: Record<string, unknown>;
+} | undefined {
     const migrations = Array.isArray(sourceConfigRoot(options).snapshotMigrationConfigs)
         ? sourceConfigRoot(options).snapshotMigrationConfigs as unknown[]
         : [];
     for (let migrationIndex = 0; migrationIndex < migrations.length; migrationIndex++) {
         const migrationRecord = asRecord(migrations[migrationIndex]);
-        if (asString(migrationRecord.fromSource) !== migration.sourceLabel ||
-            asString(migrationRecord.toTarget) !== migration.targetConfig.label) {
+        if (
+            asString(migrationRecord.fromSource) !== migration.sourceLabel
+            || asString(migrationRecord.toTarget) !== migration.targetConfig.label
+            || asString(migrationRecord.fromSnapshot) !== migration.label
+            || asString(migrationRecord.slice) !== migration.migrationLabel
+        ) {
             continue;
         }
         const migrationPath = ["snapshotMigrationConfigs", String(migrationIndex)];
-        const items = asRecord(migrationRecord.perSnapshotConfig)[migration.label];
-        const itemList = Array.isArray(items) ? items : [items];
-        for (let itemIndex = 0; itemIndex < itemList.length; itemIndex++) {
-            const itemRecord = asRecord(itemList[itemIndex]);
-            const itemLabel = asString(itemRecord.label) ?? `migration-${itemIndex}`;
-            if (itemLabel === migration.migrationLabel) {
-                return {
-                    migrationPath,
-                    migrationRecord,
-                    itemPath: [...migrationPath, "perSnapshotConfig", migration.label, String(itemIndex)],
-                    itemRecord,
-                };
-            }
-        }
+        return {
+            migrationPath,
+            migrationRecord,
+            slicePath: migrationPath,
+            sliceRecord: migrationRecord,
+        };
     }
     return undefined;
 }
@@ -795,31 +796,31 @@ function snapshotMigrationParameterProvenance(
             return {presence: "inherited", sourcePath: item ? [...item.migrationPath, "toTarget"] : undefined};
         }
         if (samePath(parameterPath, ["snapshotLabel"])) {
-            return {presence: "inherited", sourcePath: item ? [...item.migrationPath, "perSnapshotConfig", migration.label] : undefined};
+            return {presence: "inherited", sourcePath: item ? [...item.migrationPath, "fromSnapshot"] : undefined};
         }
         if (samePath(parameterPath, ["sourceVersion"])) {
             return {presence: "inherited", sourcePath: ["sourceClusters", migration.sourceLabel, "version"]};
         }
         if (samePath(parameterPath, ["migrationLabel"])) {
-            const sourcePath = item ? [...item.itemPath, "label"] : undefined;
+            const sourcePath = item ? [...item.slicePath, "slice"] : undefined;
             return {
-                presence: item && hasPath(item.itemRecord, ["label"]) ? "authored" : "defaulted",
+                presence: item && hasPath(item.sliceRecord, ["slice"]) ? "authored" : "unknown",
                 sourcePath,
             };
         }
         const metadataField = unprefixedProjectionField("metadataMigration", parameterPath[0]);
         if (metadataField) {
-            const sourcePath = item ? [...item.itemPath, "metadataMigrationConfig", metadataField] : undefined;
+            const sourcePath = item ? [...item.slicePath, "metadataMigrationConfig", metadataField] : undefined;
             return {
-                presence: item && hasPath(item.itemRecord, ["metadataMigrationConfig", metadataField]) ? "authored" : "defaulted",
+                presence: item && hasPath(item.sliceRecord, ["metadataMigrationConfig", metadataField]) ? "authored" : "defaulted",
                 sourcePath,
             };
         }
         const documentField = unprefixedProjectionField("documentBackfill", parameterPath[0]);
         if (documentField) {
-            const sourcePath = item ? [...item.itemPath, "documentBackfillConfig", documentField] : undefined;
+            const sourcePath = item ? [...item.slicePath, "documentBackfillConfig", documentField] : undefined;
             return {
-                presence: item && hasPath(item.itemRecord, ["documentBackfillConfig", documentField]) ? "authored" : "defaulted",
+                presence: item && hasPath(item.sliceRecord, ["documentBackfillConfig", documentField]) ? "authored" : "defaulted",
                 sourcePath,
             };
         }
@@ -1218,19 +1219,19 @@ function looseTrafficReplayParameters(
 
 function looseSnapshotMigrationParameters(
     migration: Record<string, unknown>,
-    snapshotName: string,
-    item: Record<string, unknown>,
+    migrationLabel: string,
 ): Record<string, unknown> {
     const sourceLabel = asString(migration.fromSource);
     const targetLabel = asString(migration.toTarget);
+    const snapshotLabel = asString(migration.fromSnapshot);
     return {
-        ...prefixFields("metadataMigration", asRecord(item.metadataMigrationConfig)),
-        ...prefixFields("documentBackfill", asRecord(item.documentBackfillConfig)),
-        dependsOn: sourceLabel ? [`${sourceLabel}-${snapshotName}`] : [],
-        migrationLabel: asString(item.label) ?? "migration-0",
+        ...prefixFields("metadataMigration", asRecord(migration.metadataMigrationConfig)),
+        ...prefixFields("documentBackfill", asRecord(migration.documentBackfillConfig)),
+        dependsOn: sourceLabel && snapshotLabel ? [`${sourceLabel}-${snapshotLabel}`] : [],
+        migrationLabel,
         sourceLabel,
         targetLabel,
-        snapshotLabel: snapshotName,
+        snapshotLabel,
     };
 }
 
@@ -1241,6 +1242,7 @@ function snapshotMigrationPlaceholderParameters(
     return {
         fromSource: asString(migration.fromSource) ?? `source-${migrationIndex}`,
         toTarget: asString(migration.toTarget) ?? `target-${migrationIndex}`,
+        fromSnapshot: asString(migration.fromSnapshot) ?? `snapshot-${migrationIndex}`,
     };
 }
 
@@ -1280,7 +1282,8 @@ function hasSnapshotMigrationResourceFor(
         }
         return (
             resource.parameters.sourceLabel === parameters.fromSource &&
-            resource.parameters.targetLabel === parameters.toTarget
+            resource.parameters.targetLabel === parameters.toTarget &&
+            resource.parameters.snapshotLabel === parameters.fromSnapshot
         );
     });
 }
@@ -1310,7 +1313,7 @@ function looseSnapshotMigrationPlaceholderResources(
             return;
         }
 
-        const baseName = `snapshot migration: ${parameters.fromSource} -> ${parameters.toTarget}`;
+        const baseName = `snapshot migration: ${parameters.fromSource} -> ${parameters.toTarget} / ${parameters.fromSnapshot}`;
         const name = usedNames.has(baseName)
             ? `${baseName} (${migrationIndex + 1})`
             : baseName;
@@ -1657,37 +1660,61 @@ function buildLooseResourceList(
         }
         const sourceLabel = asString(migration.fromSource) ?? `source-${migrationIndex}`;
         const targetLabel = asString(migration.toTarget) ?? `target-${migrationIndex}`;
-        const perSnapshotConfig = asRecord(migration.perSnapshotConfig);
-        for (const [snapshotName, itemsValue] of Object.entries(perSnapshotConfig)) {
-            const items = Array.isArray(itemsValue) ? itemsValue : [itemsValue];
-            items.forEach((item, itemIndex) => {
-                if (!isRecord(item)) {
-                    return;
-                }
-                const migrationLabel = asString(item.label) ?? `migration-${itemIndex}`;
-                const parameters = looseSnapshotMigrationParameters(migration, snapshotName, item);
-                resources.push(resourceWithDiagnostics(
-                    "SnapshotMigration",
-                    [sourceLabel, targetLabel, snapshotName, migrationLabel].join("-"),
-                    parameters,
-                    validation,
-                    [["snapshotMigrationConfigs", String(migrationIndex)]],
-                    options,
-                    provenanceFromMatchingSource(
-                        parameters,
-                        {
-                            ...asRecord(item.metadataMigrationConfig),
-                            ...Object.fromEntries(Object.entries(asRecord(item.documentBackfillConfig)).map(([key, value]) => [
-                                `documentBackfill${key.charAt(0).toUpperCase()}${key.slice(1)}`,
-                                value,
-                            ])),
-                        },
-                        ["snapshotMigrationConfigs", String(migrationIndex), "perSnapshotConfig", snapshotName, String(itemIndex)],
-                        [["dependsOn"], ["sourceLabel"], ["targetLabel"], ["snapshotLabel"]],
-                    ),
-                ));
-            });
+        const snapshotLabel = asString(migration.fromSnapshot) ?? `snapshot-${migrationIndex}`;
+        const migrationLabel = asString(migration.slice) ?? `slice-${migrationIndex}`;
+        const parameters = looseSnapshotMigrationParameters(
+            migration,
+            migrationLabel,
+        );
+        const migrationPath = ["snapshotMigrationConfigs", String(migrationIndex)];
+        const parameterProvenance = provenanceFromMatchingSource(
+            parameters,
+            {
+                ...asRecord(migration.metadataMigrationConfig),
+                ...Object.fromEntries(Object.entries(asRecord(migration.documentBackfillConfig)).map(([key, value]) => [
+                    `documentBackfill${key.charAt(0).toUpperCase()}${key.slice(1)}`,
+                    value,
+                ])),
+            },
+            migrationPath,
+            [["dependsOn"], ["sourceLabel"], ["targetLabel"], ["snapshotLabel"], ["migrationLabel"]],
+        );
+        if (parameterProvenance) {
+            parameterProvenance.sourceLabel = {
+                path: ["sourceLabel"],
+                presence: "inherited",
+                sourcePath: [...migrationPath, "fromSource"],
+                value: sourceLabel,
+            };
+            parameterProvenance.targetLabel = {
+                path: ["targetLabel"],
+                presence: "inherited",
+                sourcePath: [...migrationPath, "toTarget"],
+                value: targetLabel,
+            };
+            parameterProvenance.snapshotLabel = {
+                path: ["snapshotLabel"],
+                presence: "inherited",
+                sourcePath: [...migrationPath, "fromSnapshot"],
+                value: snapshotLabel,
+            };
+            parameterProvenance.migrationLabel = {
+                path: ["migrationLabel"],
+                presence: hasPath(migration, ["slice"]) ? "authored" : "defaulted",
+                sourcePath: [...migrationPath, "slice"],
+                value: migrationLabel,
+                ...(hasPath(migration, ["slice"]) ? {} : {defaultValue: migrationLabel}),
+            };
         }
+        resources.push(resourceWithDiagnostics(
+            "SnapshotMigration",
+            [sourceLabel, targetLabel, snapshotLabel, migrationLabel].join("-"),
+            parameters,
+            validation,
+            [["snapshotMigrationConfigs", String(migrationIndex)]],
+            options,
+            parameterProvenance,
+        ));
     });
 
     resources.push(...looseSnapshotMigrationPlaceholderResources(rawConfig, validation, options, resources));

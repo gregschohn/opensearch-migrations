@@ -5,8 +5,10 @@ import {
     DENORMALIZED_REPO_CONFIG,
     DEFAULT_KAFKA_TOPIC_SPEC_OVERRIDES,
     OVERALL_MIGRATION_CONFIG,
+    normalizeLegacySnapshotMigrationSlices,
     REPO_CONFIG,
-    SOURCE_CLUSTER_REPOS_RECORD, USER_PER_INDICES_SNAPSHOT_MIGRATION_CONFIG,
+    SOURCE_CLUSTER_REPOS_RECORD,
+    USER_SNAPSHOT_MIGRATION_SLICE_CONFIG,
     ARGO_MIGRATION_CONFIG_PRE_ENRICH, KAFKA_CLUSTER_CONFIG, KAFKA_CLUSTER_CREATION_CONFIG, CAPTURE_CONFIG,
     PER_SOURCE_CREATE_SNAPSHOTS_CONFIG,
     SOURCE_CLUSTER_CONFIG,
@@ -160,33 +162,9 @@ async function rewriteRepoRecordEndpointIfLocalStack(
     return Object.fromEntries(rewrittenEntries);
 }
 
-function autoLabelMigrations(
-    migrations: z.infer<typeof USER_PER_INDICES_SNAPSHOT_MIGRATION_CONFIG>[]
-) {
-    return migrations.map((m, idx) => {
-        const {label, ...rest} = m;
-        return { ...rest, label: label || `migration-${idx}` };
-    });
-}
-
-/** Auto-label migration items within perSnapshotConfig records. */
+/** Retained as the normalization boundary used by callers before validation. */
 export function setNamesInUserConfig(userConfig: InputConfig): InputConfig {
-    const { snapshotMigrationConfigs, ...rest } = userConfig;
-    return {
-        ...rest,
-        snapshotMigrationConfigs: snapshotMigrationConfigs.map(mc => {
-            const { perSnapshotConfig, ...mcRest } = mc;
-            if (!perSnapshotConfig) return mc;
-            return {
-                ...mcRest,
-                perSnapshotConfig: Object.fromEntries(
-                    Object.entries(perSnapshotConfig).map(([snapshotName, migrations]) =>
-                        [snapshotName, autoLabelMigrations(migrations)]
-                    )
-                )
-            };
-        })
-    };
+    return userConfig;
 }
 
 function makeProxyServiceEndpoint(proxyName: string, listenPort: number, hasTls: boolean): string {
@@ -476,7 +454,7 @@ function lowerFileBackedContextValues(
 }
 
 function prepareMetadataConfig(
-    config: z.infer<typeof USER_PER_INDICES_SNAPSHOT_MIGRATION_CONFIG>["metadataMigrationConfig"],
+    config: z.infer<typeof USER_SNAPSHOT_MIGRATION_SLICE_CONFIG>["metadataMigrationConfig"],
     skipApprovals: boolean
 ) {
     if (config === undefined) {
@@ -547,7 +525,7 @@ export function resolveFailedDocumentStreamS3(
 }
 
 function prepareDocumentBackfillConfig(
-    config: z.infer<typeof USER_PER_INDICES_SNAPSHOT_MIGRATION_CONFIG>["documentBackfillConfig"],
+    config: z.infer<typeof USER_SNAPSHOT_MIGRATION_SLICE_CONFIG>["documentBackfillConfig"],
     repoConfig: { awsRegion?: string; endpoint?: string } | undefined,
     deploymentDefaults: z.infer<typeof DEPLOYMENT_DEFAULTS_CONFIG>,
     skipApprovals: boolean
@@ -950,7 +928,10 @@ export class MigrationConfigTransformer extends StreamSchemaTransformer<
         validateInputAgainstUnifiedSchema(validationNormalized);
 
         // Third pass: check for extra keys
-        validateNoExtraKeys(data, OVERALL_MIGRATION_CONFIG);
+        validateNoExtraKeys(
+            normalizeLegacySnapshotMigrationSlices(data),
+            OVERALL_MIGRATION_CONFIG,
+        );
 
         return normalizeUserConfig(parsed);
     }
@@ -1383,120 +1364,105 @@ export class MigrationConfigTransformer extends StreamSchemaTransformer<
         return results;
     }
 
-    /** Build snapshot migration configs from snapshotMigrationConfigs + perSnapshotConfig. */
+    /** Build one resolved SnapshotMigration config for each authored slice. */
     private async buildSnapshotMigrations(userConfig: NormalizedUserConfig) {
         const results: any[] = [];
 
         for (const mc of userConfig.snapshotMigrationConfigs) {
-            const { fromSource, toTarget, perSnapshotConfig } = mc;
-            const skipApprovals = mc.skipApprovals ?? userConfig.skipApprovals ?? false;
+            const {
+                fromSource,
+                toTarget,
+                fromSnapshot,
+                slice: migrationLabel,
+            } = mc;
 
             const sourceCluster = userConfig.sourceClusters[fromSource];
             const targetCluster = userConfig.targetClusters[toTarget];
+            if (!sourceCluster) {
+                throw new Error(`Migration references unknown source cluster '${fromSource}'`);
+            }
             if (!targetCluster) {
                 throw new Error(`Migration references unknown target cluster '${toTarget}'`);
             }
 
-            // When perSnapshotConfig is not provided, auto-generate it from the normalized
-            // snapshotInfo.snapshots map so the workflow creates/waits for snapshots the same way
-            // for both ES and Solr sources.
-            const effectivePerSnapshotConfig = perSnapshotConfig ?? (
-                sourceCluster.snapshotInfo?.snapshots
-                    ? Object.fromEntries(
-                        Object.keys(sourceCluster.snapshotInfo.snapshots).map(snapName => [
-                            snapName,
-                            [USER_PER_INDICES_SNAPSHOT_MIGRATION_CONFIG.parse({
-                                metadataMigrationConfig: {},
-                                documentBackfillConfig: {},
-                            })]
-                        ])
-                    )
-                    : undefined
-            );
-
-            if (!effectivePerSnapshotConfig) continue;
-
             const { snapshotInfo: _si, ...restOfSource } = sourceCluster;
 
-            for (const [snapshotName, migrations] of Object.entries(effectivePerSnapshotConfig)) {
-                const snapshotDef = sourceCluster.snapshotInfo?.snapshots[snapshotName];
-                if (!snapshotDef) {
-                    throw new Error(`Migration references snapshot '${snapshotName}' not defined in source '${fromSource}'`);
-                }
-
-                const globallyUniqueSnapshotName = `${fromSource}-${snapshotName}`;
-                const repoConfig = sourceCluster.snapshotInfo?.repos?.[snapshotDef.repoName];
-
-                const snapshotConfig = snapshotDef.config;
-                let snapshotNameResolution:
-                    | { externalSnapshotName: string }
-                    | { dataSnapshotResourceName: string }
-                    | { dataSnapshotResourceName: string; externalSnapshotName: string };
-                if (needsSolrExternalPrepare(sourceCluster, snapshotDef)) {
-                    // Solr external prepare creates a DataSnapshot CR (so the migration waits for
-                    // validation/schema capture), but the snapshot name used is the external,
-                    // pre-existing one -- not a workflow-generated name.
-                    snapshotNameResolution = {
-                        dataSnapshotResourceName: globallyUniqueSnapshotName,
-                        externalSnapshotName: snapshotDef.solrBackupConfig.externalBackupName,
-                    };
-                } else if (isExternalSnapshot(snapshotConfig)) {
-                    snapshotNameResolution = {
-                        externalSnapshotName: snapshotConfig.externallyManagedSnapshotName,
-                    };
-                } else {
-                    snapshotNameResolution = { dataSnapshotResourceName: globallyUniqueSnapshotName };
-                }
-
-                for (const migration of autoLabelMigrations(migrations)) {
-                    const solrCollectionAllowlist = isSolrSourceVersion(sourceCluster.version)
-                        ? solrCollectionAllowlistForSnapshot(snapshotDef)
-                        : [];
-                    const sourceConnectionIdentity = MigrationConfigTransformer.clusterConnectionIdentity({
-                        ...sourceCluster,
-                        label: fromSource,
-                    });
-                    const targetConnectionIdentity = MigrationConfigTransformer.clusterConnectionIdentity({
-                        ...targetCluster,
-                        label: toTarget,
-                    });
-                    const metadataMigrationConfig = prepareMetadataConfig(
-                        applySolrCollectionAllowlist(migration.metadataMigrationConfig, solrCollectionAllowlist),
-                        skipApprovals
-                    );
-                    const documentBackfillConfig = prepareDocumentBackfillConfig(
-                        applySolrCollectionAllowlist(migration.documentBackfillConfig, solrCollectionAllowlist),
-                        repoConfig,
-                        this.deploymentDefaults,
-                        skipApprovals
-                    );
-                    results.push({
-                        label: snapshotName,
-                        migrationLabel: migration.label,
-                        snapshotNameResolution,
-                        snapshotConfigChecksum: '',
-                        metadataMigrationConfig,
-                        documentBackfillConfig,
-                        sourceConnectionIdentity,
-                        targetConnectionIdentity,
-                        sourceVersion: sourceCluster.version || "",
-                        sourceLabel: fromSource,
-                        ...(sourceCluster.endpoint ? {sourceEndpoint: sourceCluster.endpoint} : {}),
-                        ...(sourceCluster.allowInsecure !== undefined ? {sourceAllowInsecure: sourceCluster.allowInsecure} : {}),
-                        ...(sourceCluster.authConfig ? {sourceAuth: sourceCluster.authConfig} : {}),
-                        targetConfig: { ...targetCluster, label: toTarget },
-                        snapshotConfig: {
-                            label: snapshotName,
-                            ...(repoConfig ? {
-                                repoConfig: {
-                                    ...repoConfig,
-                                    repoName: snapshotDef.repoName
-                                }
-                            } : {})
-                        }
-                    });
-                }
+            const snapshotDef = sourceCluster.snapshotInfo?.snapshots[fromSnapshot];
+            if (!snapshotDef) {
+                throw new Error(`Migration references snapshot '${fromSnapshot}' not defined in source '${fromSource}'`);
             }
+
+            const globallyUniqueSnapshotName = `${fromSource}-${fromSnapshot}`;
+            const repoConfig = sourceCluster.snapshotInfo?.repos?.[snapshotDef.repoName];
+
+            const snapshotConfig = snapshotDef.config;
+            let snapshotNameResolution:
+                | { externalSnapshotName: string }
+                | { dataSnapshotResourceName: string }
+                | { dataSnapshotResourceName: string; externalSnapshotName: string };
+            if (needsSolrExternalPrepare(sourceCluster, snapshotDef)) {
+                // Solr external prepare creates a DataSnapshot CR (so the migration waits for
+                // validation/schema capture), but the snapshot name used is the external,
+                // pre-existing one -- not a workflow-generated name.
+                snapshotNameResolution = {
+                    dataSnapshotResourceName: globallyUniqueSnapshotName,
+                    externalSnapshotName: snapshotDef.solrBackupConfig.externalBackupName,
+                };
+            } else if (isExternalSnapshot(snapshotConfig)) {
+                snapshotNameResolution = {
+                    externalSnapshotName: snapshotConfig.externallyManagedSnapshotName,
+                };
+            } else {
+                snapshotNameResolution = { dataSnapshotResourceName: globallyUniqueSnapshotName };
+            }
+
+            const skipApprovals = mc.skipApprovals ?? userConfig.skipApprovals ?? false;
+            const solrCollectionAllowlist = isSolrSourceVersion(sourceCluster.version)
+                ? solrCollectionAllowlistForSnapshot(snapshotDef)
+                : [];
+            const sourceConnectionIdentity = MigrationConfigTransformer.clusterConnectionIdentity({
+                ...sourceCluster,
+                label: fromSource,
+            });
+            const targetConnectionIdentity = MigrationConfigTransformer.clusterConnectionIdentity({
+                ...targetCluster,
+                label: toTarget,
+            });
+            const metadataMigrationConfig = prepareMetadataConfig(
+                applySolrCollectionAllowlist(mc.metadataMigrationConfig, solrCollectionAllowlist),
+                skipApprovals
+            );
+            const documentBackfillConfig = prepareDocumentBackfillConfig(
+                applySolrCollectionAllowlist(mc.documentBackfillConfig, solrCollectionAllowlist),
+                repoConfig,
+                this.deploymentDefaults,
+                skipApprovals
+            );
+            results.push({
+                    label: fromSnapshot,
+                    migrationLabel,
+                    snapshotNameResolution,
+                    snapshotConfigChecksum: '',
+                    metadataMigrationConfig,
+                    documentBackfillConfig,
+                    sourceConnectionIdentity,
+                    targetConnectionIdentity,
+                    sourceVersion: sourceCluster.version || "",
+                    sourceLabel: fromSource,
+                    ...(sourceCluster.endpoint ? {sourceEndpoint: sourceCluster.endpoint} : {}),
+                    ...(sourceCluster.allowInsecure !== undefined ? {sourceAllowInsecure: sourceCluster.allowInsecure} : {}),
+                    ...(sourceCluster.authConfig ? {sourceAuth: sourceCluster.authConfig} : {}),
+                    targetConfig: { ...targetCluster, label: toTarget },
+                    snapshotConfig: {
+                        label: fromSnapshot,
+                        ...(repoConfig ? {
+                            repoConfig: {
+                                ...repoConfig,
+                                repoName: snapshotDef.repoName
+                            }
+                        } : {})
+                    }
+                });
         }
         return results;
     }

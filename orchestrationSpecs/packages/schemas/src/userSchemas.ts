@@ -155,7 +155,7 @@ const SNAPSHOT_MIGRATION_RESOURCE_COLLECTION = resourceCollection(
     'SnapshotMigration',
     'snapshotmigrations',
     'Snapshot migration',
-    {kind: 'indexed-config', prefix: 'migration-', firstIndex: 1},
+    {kind: 'indexed-config', prefix: 'slice-', firstIndex: 0},
 );
 const KAFKA_RESOURCE_COLLECTION = resourceCollection(
     resourceNavigation(
@@ -864,6 +864,11 @@ export function snapshotRepoRequiresAwsRegion(repo: {repoPathUri?: unknown}): bo
 // S3 bucket names: 3-63 chars; GCS bucket names: up to 220 chars including dotted segments.
 export const REPO_CONFIG = z.object({
     repoPathUri: z.string().regex(/^(?:s3:\/\/[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]|gs:\/\/[a-z0-9][a-z0-9._-]{1,220}[a-z0-9])(\/[a-zA-Z0-9!\-_.*'()/]*)?$/)
+        .uiHint({
+            kind: 'text',
+            pattern: "^(?:s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]|gs://[a-z0-9][a-z0-9._-]{1,220}[a-z0-9])(/[a-zA-Z0-9!\\-_.*'()/]*)?$",
+            message: "Use s3://BUCKET/OPTIONAL_PATH or gs://BUCKET/OPTIONAL_PATH with a valid bucket name.",
+        })
         .describe("Repository URI in the format 's3://BUCKET_NAME/OPTIONAL_PATH' or 'gs://BUCKET_NAME/OPTIONAL_PATH'. " +
             "The scheme determines the backend. The bucket must already exist and be accessible from the source cluster. " +
             "For GCS, the source cluster must have the `repository-gcs` plugin installed with a configured client."),
@@ -2736,40 +2741,99 @@ export const NORMALIZED_COMPLETE_SNAPSHOT_CONFIG = z.object({
         .describe("Resolved name of the snapshot to use for migration.")
 }).describe("A fully resolved snapshot configuration with a concrete snapshot name.");
 
-export const USER_PER_INDICES_SNAPSHOT_MIGRATION_CONFIG = z.object({
-    label: z.string().regex(/^[a-zA-Z][a-zA-Z0-9]*/).default("").optional()
-        .describe("Unique label for this migration within its snapshot group. Auto-generated as 'migration-<index>' if not specified. Must start with a letter and contain only alphanumeric characters."),
+export function normalizeLegacySnapshotMigrationSlices(value: unknown): unknown {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        return value;
+    }
+    const config = value as Record<string, unknown>;
+    if (!Array.isArray(config.snapshotMigrationConfigs)) {
+        return value;
+    }
+    let changed = false;
+    const snapshotMigrationConfigs = config.snapshotMigrationConfigs.flatMap(migrationValue => {
+        if (!migrationValue || typeof migrationValue !== "object" || Array.isArray(migrationValue)) {
+            return [migrationValue];
+        }
+        const migration = migrationValue as Record<string, unknown>;
+        if (!Array.isArray(migration.slices) && (
+            !migration.slices
+            || typeof migration.slices !== "object"
+        )) {
+            return [migrationValue];
+        }
+        const entries: Array<[string, Record<string, unknown>]> = [];
+        const labels = new Set<string>();
+        if (Array.isArray(migration.slices)) {
+            for (const sliceValue of migration.slices) {
+                if (!sliceValue || typeof sliceValue !== "object" || Array.isArray(sliceValue)) {
+                    return [migrationValue];
+                }
+                const slice = sliceValue as Record<string, unknown>;
+                if (typeof slice.label !== "string" || labels.has(slice.label)) {
+                    return [migrationValue];
+                }
+                labels.add(slice.label);
+                const {label: _label, ...sliceConfig} = slice;
+                entries.push([slice.label, sliceConfig]);
+            }
+        } else {
+            for (const [sliceName, sliceValue] of Object.entries(
+                migration.slices as Record<string, unknown>
+            )) {
+                if (!sliceValue || typeof sliceValue !== "object" || Array.isArray(sliceValue)) {
+                    return [migrationValue];
+                }
+                entries.push([sliceName, sliceValue as Record<string, unknown>]);
+            }
+        }
+        changed = true;
+        const {slices: _slices, ...shared} = migration;
+        if (entries.length === 0) {
+            return [{
+                ...shared,
+                slice: "",
+            }];
+        }
+        return entries.map(([slice, sliceConfig]) => ({
+            ...shared,
+            slice,
+            ...sliceConfig,
+        }));
+    });
+    return changed
+        ? {...config, snapshotMigrationConfigs}
+        : value;
+}
+
+export const USER_SNAPSHOT_MIGRATION_SLICE_CONFIG = z.object({
+    skipApprovals: z.boolean().optional()
+        .describe("When true, skips manual approval gates for this snapshot migration. When omitted, the global skipApprovals setting applies."),
     metadataMigrationConfig: USER_METADATA_OPTIONS.optional()
         .describe("Configuration for migrating index metadata (mappings, settings, templates) from the snapshot to the target. Omit to skip metadata migration."),
     documentBackfillConfig: USER_RFS_OPTIONS.optional()
         .describe("Configuration for backfilling documents from the snapshot to the target using Reindex From Snapshot. Omit to skip document backfill."),
-}).describe("Configuration for a single migration pass from a snapshot. At least one of metadataMigrationConfig or documentBackfillConfig must be provided.").refine(data =>
+}).describe("Configuration for one independently deployed snapshot migration. At least one of metadataMigrationConfig or documentBackfillConfig must be provided.").refine(data =>
         data.metadataMigrationConfig !== undefined ||
         data.documentBackfillConfig !== undefined,
     {message: "At least one of metadataMigrationConfig or documentBackfillConfig must be provided"});
 
-export const SNAPSHOT_MIGRATION_CONFIG_ARRAY =
-    z.array(USER_PER_INDICES_SNAPSHOT_MIGRATION_CONFIG)
-    .min(1)
-    .uiHint({kind: 'array', addLabel: 'migration pass'})
-    .describe("List of migrations to execute for a single snapshot. " +
-        " Each migration must configure metadata migration, document backfill, or both." +
-        " These migrations will execute concurrently as dependent snapshots finish.");
-
-export const PER_SNAPSHOT_MIGRATION_CONFIG_RECORD =
-    z.record(z.string().regex(/^[a-zA-Z][a-zA-Z0-9]*/),
-        SNAPSHOT_MIGRATION_CONFIG_ARRAY.min(1))
+export const SNAPSHOT_MIGRATION_SLICES =
+    z.record(WORKFLOW_RESOURCE_ALIAS, USER_SNAPSHOT_MIGRATION_SLICE_CONFIG)
+    .refine(slices => Object.keys(slices).length > 0, {
+        message: "Add at least one migration slice.",
+    })
     .uiHint({
         kind: 'record',
-        addLabel: 'snapshot name',
-        keyPattern: '^[a-zA-Z][a-zA-Z0-9]*',
-        message: "Use a snapshot or backup name defined under the selected source cluster's snapshotInfo.",
+        addLabel: 'slice',
+        keyFormat: 'k8s-name',
+        keyPattern: K8S_NAMING_PATTERN.source,
+        message: WORKFLOW_RESOURCE_ALIAS_MESSAGE,
     })
-    .describe("Map of snapshot names to their migration configurations. Keys must match snapshot names defined in the source cluster's snapshotInfo.snapshots or snapshotInfo.backups.");
+    .describe("Independent migration slices for this source, target, and snapshot tuple. " +
+        "Each key is the slice suffix used in the generated SnapshotMigration resource name. " +
+        "Each slice can migrate metadata, backfill documents, or both.");
 
 export const NORMALIZED_PARAMETERIZED_MIGRATION_CONFIG = z.object({
-    skipApprovals : z.boolean().optional()
-        .describe("When true, skips all manual approval gates for migrations in this configuration block."),
     fromSource: z.string()
         .describe("Label of the source cluster to migrate from. Must match a key in sourceClusters.")
         .uiHint({
@@ -2784,29 +2848,37 @@ export const NORMALIZED_PARAMETERIZED_MIGRATION_CONFIG = z.object({
             sourcePath: ['targetClusters'],
             message: "Choose one target cluster from targetClusters.",
         }),
-    perSnapshotConfig: PER_SNAPSHOT_MIGRATION_CONFIG_RECORD
-        .describe("Per-snapshot migration configurations. Each entry maps a snapshot name to one or more migration passes (metadata + document backfill).")
-        .essential(),
-}).describe("A snapshot-based migration configuration binding a source cluster to a target cluster with per-snapshot migration settings.").superRefine((data, ctx) => {
-    if (Object.keys(data.perSnapshotConfig).length === 0) {
-        ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: "At least one metadata migration or document backfill configuration is required.",
-            path: ["perSnapshotConfig"],
+    fromSnapshot: z.string()
+        .describe("Label of the snapshot or backup to migrate. It must be defined by the selected source cluster.")
+        .uiHint({
+            kind: 'reference',
+            sourcePathTemplate: [
+                'sourceClusters',
+                {valueFrom: ['..', 'fromSource']},
+                'snapshotInfo',
+                'snapshots',
+            ],
+            allowCustom: false,
+            message: "Choose a snapshot or backup defined by the selected source cluster.",
+    }),
+    slice: WORKFLOW_RESOURCE_ALIAS
+        .describe("User-provided name used in the generated SnapshotMigration resource name.")
+        .uiHint({
+            kind: 'text',
+            format: 'k8s-name',
+            pattern: K8S_NAMING_PATTERN.source,
+            message: WORKFLOW_RESOURCE_ALIAS_MESSAGE,
+        }),
+    skipApprovals: USER_SNAPSHOT_MIGRATION_SLICE_CONFIG.shape.skipApprovals,
+    metadataMigrationConfig: USER_SNAPSHOT_MIGRATION_SLICE_CONFIG.shape.metadataMigrationConfig,
+    documentBackfillConfig: USER_SNAPSHOT_MIGRATION_SLICE_CONFIG.shape.documentBackfillConfig,
+}).describe("One independently deployed snapshot migration binding a source, target, and source snapshot.")
+    .refine(data =>
+            data.metadataMigrationConfig !== undefined ||
+            data.documentBackfillConfig !== undefined,
+        {
+            message: "At least one of metadataMigrationConfig or documentBackfillConfig must be provided",
         });
-    }
-    if (!data.perSnapshotConfig) return;
-    for (const [snapName, migrations] of Object.entries(data.perSnapshotConfig)) {
-        const labels = migrations.map(m => m.label).filter(Boolean);
-        if (labels.length !== new Set(labels).size) {
-            ctx.addIssue({
-                code: z.ZodIssueCode.custom,
-                message: `Duplicate labels in perSnapshotConfig['${snapName}']`,
-                path: ['perSnapshotConfig', snapName]
-            });
-        }
-    }
-});
 
 export const SOURCE_CLUSTERS_MAP = z.record(WORKFLOW_RESOURCE_ALIAS, SOURCE_CLUSTER_CONFIG)
     .describe("Map of source cluster names to their configurations. Keys are used as labels throughout the migration workflow.")
@@ -2829,7 +2901,7 @@ export const TARGET_CLUSTERS_MAP = z.record(WORKFLOW_RESOURCE_ALIAS, TARGET_CLUS
         resourceCollection: TARGET_RESOURCE_COLLECTION,
     });
 
-export const OVERALL_MIGRATION_CONFIG = //validateOptionalDefaultConsistency
+const OVERALL_MIGRATION_CONFIG_OBJECT = //validateOptionalDefaultConsistency
 (
     z.object({
         skipApprovals : z.boolean().default(false).optional()
@@ -2842,7 +2914,7 @@ export const OVERALL_MIGRATION_CONFIG = //validateOptionalDefaultConsistency
             .describe("Target OpenSearch clusters to migrate to."),
         snapshotMigrationConfigs: z.array(NORMALIZED_PARAMETERIZED_MIGRATION_CONFIG)
             .default([])
-            .describe("List of snapshot-based migration configurations. Each entry binds a source cluster to a target cluster and defines which snapshots to migrate with what settings.")
+            .describe("List of independently deployed snapshot migrations.")
             .uiHint({
                 kind: 'array',
                 addLabel: 'snapshot migration',
@@ -2873,8 +2945,29 @@ export const OVERALL_MIGRATION_CONFIG = //validateOptionalDefaultConsistency
             });
         }
 
+        const migrationIdentityIndexes = new Map<string, number>();
+
         for (let i = 0; i < data.snapshotMigrationConfigs.length; i++) {
             const mc = data.snapshotMigrationConfigs[i];
+            const identityParts = [
+                mc.fromSource,
+                mc.toTarget,
+                mc.fromSnapshot,
+                mc.slice,
+            ];
+            if (identityParts.every(Boolean)) {
+                const identityKey = JSON.stringify(identityParts);
+                const previousIndex = migrationIdentityIndexes.get(identityKey);
+                if (previousIndex !== undefined) {
+                    ctx.addIssue({
+                        code: z.ZodIssueCode.custom,
+                        message: `Snapshot migration '${identityParts.join("-")}' is already configured at snapshotMigrationConfigs[${previousIndex}]. Choose a different name, source, target, or snapshot.`,
+                        path: ['snapshotMigrationConfigs', i, 'slice'],
+                    });
+                } else {
+                    migrationIdentityIndexes.set(identityKey, i);
+                }
+            }
 
             if (!(mc.fromSource in data.sourceClusters)) {
                 ctx.addIssue({
@@ -2884,8 +2977,7 @@ export const OVERALL_MIGRATION_CONFIG = //validateOptionalDefaultConsistency
                 });
             } else {
                 const source = data.sourceClusters[mc.fromSource];
-                if (Object.keys(mc.perSnapshotConfig).some(snapshotName =>
-                    snapshotRequiresSourceEndpoint(source.snapshotInfo, snapshotName))) {
+                if (snapshotRequiresSourceEndpoint(source.snapshotInfo, mc.fromSnapshot)) {
                     addSourceEndpointRequirement(mc.fromSource, `snapshotMigrationConfigs[${i}]`);
                 }
             }
@@ -2898,23 +2990,21 @@ export const OVERALL_MIGRATION_CONFIG = //validateOptionalDefaultConsistency
                 });
             }
 
-            if (mc.perSnapshotConfig) {
+            if (mc.fromSource in data.sourceClusters) {
                 const sourceCluster = data.sourceClusters[mc.fromSource];
                 const availableSnapshots = snapshotInfoEntries(sourceCluster?.snapshotInfo);
-                for (const snapName of Object.keys(mc.perSnapshotConfig)) {
-                    if (!(snapName in availableSnapshots)) {
-                        const available = Object.keys(availableSnapshots);
-                        ctx.addIssue({
-                            code: z.ZodIssueCode.custom,
-                            message: `perSnapshotConfig references unknown snapshot '${snapName}' in source '${mc.fromSource}'. ` +
-                                `Define sourceClusters.${mc.fromSource}.snapshotInfo.snapshots.${snapName}, ` +
-                                (available.length
-                                    ? `rename this entry to one of: ${available.join(', ')}, `
-                                    : "define at least one source snapshot, ") +
-                                "or remove this perSnapshotConfig entry.",
-                            path: ['snapshotMigrationConfigs', i, 'perSnapshotConfig', snapName]
-                        });
-                    }
+                if (!(mc.fromSnapshot in availableSnapshots)) {
+                    const available = Object.keys(availableSnapshots);
+                    ctx.addIssue({
+                        code: z.ZodIssueCode.custom,
+                        message: `fromSnapshot references unknown snapshot '${mc.fromSnapshot}' in source '${mc.fromSource}'. ` +
+                            `Define sourceClusters.${mc.fromSource}.snapshotInfo.snapshots.${mc.fromSnapshot}, ` +
+                            (available.length
+                                ? `choose one of: ${available.join(', ')}, `
+                                : "define at least one source snapshot, ") +
+                            "or remove this snapshot migration tuple.",
+                        path: ['snapshotMigrationConfigs', i, 'fromSnapshot']
+                    });
                 }
             }
         }
@@ -3012,4 +3102,9 @@ export const OVERALL_MIGRATION_CONFIG = //validateOptionalDefaultConsistency
             });
         }
     })
+);
+
+export const OVERALL_MIGRATION_CONFIG = z.preprocess(
+    normalizeLegacySnapshotMigrationSlices,
+    OVERALL_MIGRATION_CONFIG_OBJECT,
 );

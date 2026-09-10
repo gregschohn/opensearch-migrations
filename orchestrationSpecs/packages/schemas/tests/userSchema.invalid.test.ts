@@ -19,6 +19,14 @@ describe("invalid configs fail validation", () => {
                 foo: {
                     endpoint: "https://foo.example.com:9200",
                     version: "ES 7.10.2",
+                    snapshotInfo: {
+                        snapshots: {
+                            snap: {
+                                repoName: "",
+                                config: {externallyManagedSnapshotName: "snap"},
+                            },
+                        },
+                    },
                 },
             },
             targetClusters: {
@@ -29,7 +37,8 @@ describe("invalid configs fail validation", () => {
             snapshotMigrationConfigs: [{
                 fromSource: "foo",
                 toTarget: "target",
-                perSnapshotConfig: {},
+                fromSnapshot: "snap",
+                slices: {"slice-0": {}},
             }],
         });
 
@@ -37,8 +46,8 @@ describe("invalid configs fail validation", () => {
         if (!result.success) {
             expect(result.error.issues).toEqual(expect.arrayContaining([
                 expect.objectContaining({
-                    message: "At least one metadata migration or document backfill configuration is required.",
-                    path: ["snapshotMigrationConfigs", 0, "perSnapshotConfig"],
+                    message: "At least one of metadataMigrationConfig or documentBackfillConfig must be provided",
+                    path: ["snapshotMigrationConfigs", 0],
                 }),
             ]));
         }

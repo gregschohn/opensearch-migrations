@@ -3054,6 +3054,8 @@ test("taints validation errors and their configuration and navigation parents", 
   const config = screen.getByRole("table", {
     name: "Configuration fields",
   });
+  expect(config.closest(".config-table-panel"))
+    .toHaveClass("scope-validation-error");
   expect(within(config).getByRole("row", { name: /^Authentication/ }))
     .toHaveClass("validation-error-ancestor");
   expect(within(config).getByRole("row", { name: /^Credentials secret/ }))
@@ -3574,7 +3576,7 @@ test("adds nested definitions from their left-navigation groups", async () => {
 });
 
 
-test("adds a snapshot migration from its section without naming it first", async () => {
+test("names a snapshot migration before adding it and cancels title rename on navigation", async () => {
   const snapshot = structuredClone(manageSnapshot);
   const sectionId = "section:Snapshot Migration";
   const snapshotGroupId = "group:Snapshot Migration:Snapshot";
@@ -3625,9 +3627,19 @@ test("adds a snapshot migration from its section without naming it first", async
     status: "ok",
     statusCounts: counts,
     command: {
-      requiresName: false,
+      requiresName: true,
       editAdded: false,
       autoEditAdded: true,
+    },
+    inputHint: {
+      kind: "text" as const,
+      format: "k8s-name",
+      pattern: "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+      message: "Use a lowercase Kubernetes-compatible name.",
+    },
+    validation: {
+      pattern: "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+      message: "Use a lowercase Kubernetes-compatible name.",
     },
     diagnostics: [],
     children: [],
@@ -3658,15 +3670,15 @@ test("adds a snapshot migration from its section without naming it first", async
           typeLabel: "Snapshot migration",
           identity: {
             kind: "indexed-config",
-            prefix: "migration-",
-            firstIndex: 1,
+            prefix: "slice-",
+            firstIndex: 0,
           },
         },
       },
     },
     diagnostics: [{
       severity: "warning" as const,
-      message: "Define a source snapshot before configuring migration passes.",
+      message: "Define a source snapshot before configuring migration slices.",
       path: ["snapshotMigrationConfigs"],
     }],
     children: [addCommand],
@@ -3689,11 +3701,17 @@ test("adds a snapshot migration from its section without naming it first", async
   updatedCollection.children = [{
     id: "edit:snapshotMigrationConfigs.0",
     path: ["snapshotMigrationConfigs", "0"],
-    label: "snapshot migration: <source> -> <target>",
+    label: "<source> -> <target> / snap1",
+    value: {
+      fromSource: "source",
+      toTarget: "target",
+      fromSnapshot: "snap1",
+      slice: "slice-0",
+    },
     valueKind: "object",
     removable: true,
     status: "required",
-    statusCounts: { ...counts, required: 2 },
+    statusCounts: { ...counts, required: 3 },
     diagnostics: [],
     children: [{
       id: "edit:snapshotMigrationConfigs.0.fromSource",
@@ -3736,94 +3754,114 @@ test("adds a snapshot migration from its section without naming it first", async
       }],
       children: [],
     }, {
-      id: "edit:snapshotMigrationConfigs.0.perSnapshotConfig",
-      path: ["snapshotMigrationConfigs", "0", "perSnapshotConfig"],
-      label: "Source snapshot migrations: 1 configured, 0 unconfigured",
+      id: "edit:snapshotMigrationConfigs.0.fromSnapshot",
+      path: ["snapshotMigrationConfigs", "0", "fromSnapshot"],
+      label: "From snapshot",
+      value: "snap1",
+      valueKind: "scalar",
+      valueType: "string",
+      required: true,
+      status: "ok",
+      statusCounts: counts,
+      inputHint: {
+        kind: "reference",
+        options: [{
+          label: "snap1",
+          value: "snap1",
+        }],
+      },
+      diagnostics: [],
+      children: [],
+    }, {
+      id: "edit:snapshotMigrationConfigs.0.slices",
+      path: ["snapshotMigrationConfigs", "0", "slices"],
+      label: "Slices: 1",
       valueKind: "record",
       status: "required",
       statusCounts: { ...counts, required: 1 },
       diagnostics: [],
       children: [{
-        id: "edit:snapshotMigrationConfigs.0.perSnapshotConfig.snap1",
+        id: "edit:snapshotMigrationConfigs.0.slices.slice-0",
         path: [
           "snapshotMigrationConfigs",
           "0",
-          "perSnapshotConfig",
-          "snap1",
+          "slices",
+          "slice-0",
         ],
-        label: "snap1: 1 item",
-        valueKind: "array",
+        label: "slice-0: choose metadata and/or document backfill",
+        value: {},
+        valueKind: "object",
         status: "required",
         statusCounts: { ...counts, required: 1 },
-        diagnostics: [],
-        children: [{
-          id: "edit:snapshotMigrationConfigs.0.perSnapshotConfig.snap1.0",
+        diagnostics: [{
+          severity: "required",
+          message: "Add metadata migration, document backfill, or both.",
           path: [
             "snapshotMigrationConfigs",
             "0",
-            "perSnapshotConfig",
-            "snap1",
-            "0",
+            "slices",
+            "slice-0",
           ],
-          label: "migration pass 1: choose metadata and/or document backfill",
-          valueKind: "object",
-          status: "required",
-          statusCounts: { ...counts, required: 1 },
-          diagnostics: [{
-            severity: "required",
-            message: "Add metadata migration, document backfill, or both.",
-            path: [
-              "snapshotMigrationConfigs",
-              "0",
-              "perSnapshotConfig",
-              "snap1",
-              "0",
-            ],
-          }],
-          children: [{
-            id: "edit:snapshotMigrationConfigs.0.perSnapshotConfig.snap1.0.metadataMigrationConfig:add",
-            path: [
-              "snapshotMigrationConfigs",
-              "0",
-              "perSnapshotConfig",
-              "snap1",
-              "0",
-              "metadataMigrationConfig",
-            ],
-            label: "+ Add metadata migration",
-            valueKind: "command",
-            status: "ok",
-            statusCounts: counts,
-            command: {
-              requiresName: false,
-              editAdded: false,
-              autoEditAdded: false,
-            },
-            diagnostics: [],
-            children: [],
-          }, {
-            id: "edit:snapshotMigrationConfigs.0.perSnapshotConfig.snap1.0.documentBackfillConfig:add",
-            path: [
-              "snapshotMigrationConfigs",
-              "0",
-              "perSnapshotConfig",
-              "snap1",
-              "0",
-              "documentBackfillConfig",
-            ],
-            label: "+ Add document backfill",
-            valueKind: "command",
-            status: "ok",
-            statusCounts: counts,
-            command: {
-              requiresName: false,
-              editAdded: false,
-              autoEditAdded: false,
-            },
-            diagnostics: [],
-            children: [],
-          }],
         }],
+        children: [{
+          id: "edit:snapshotMigrationConfigs.0.slices.slice-0.metadataMigrationConfig:add",
+          path: [
+            "snapshotMigrationConfigs",
+            "0",
+            "slices",
+            "slice-0",
+            "metadataMigrationConfig",
+          ],
+          label: "+ Add metadata migration",
+          valueKind: "command",
+          status: "ok",
+          statusCounts: counts,
+          command: {
+            requiresName: false,
+            editAdded: false,
+            autoEditAdded: false,
+          },
+          diagnostics: [],
+          children: [],
+        }, {
+          id: "edit:snapshotMigrationConfigs.0.slices.slice-0.documentBackfillConfig:add",
+          path: [
+            "snapshotMigrationConfigs",
+            "0",
+            "slices",
+            "slice-0",
+            "documentBackfillConfig",
+          ],
+          label: "+ Add document backfill",
+          valueKind: "command",
+          status: "ok",
+          statusCounts: counts,
+          command: {
+            requiresName: false,
+            editAdded: false,
+            autoEditAdded: false,
+          },
+          diagnostics: [],
+          children: [],
+        }],
+      }, {
+        id: "edit:snapshotMigrationConfigs.0.slices:add",
+        path: [
+          "snapshotMigrationConfigs",
+          "0",
+          "slices",
+        ],
+        label: "+ Add slice",
+        valueKind: "command",
+        status: "ok",
+        statusCounts: counts,
+        command: {
+          requiresName: true,
+          editAdded: false,
+          autoEditAdded: false,
+        },
+        diagnostics: [],
+        children: [],
       }],
     }],
   }, addCommand];
@@ -3833,9 +3871,9 @@ test("adds a snapshot migration from its section without naming it first", async
     throw new Error("Missing snapshot navigation fixture");
   }
   addConfigNavigationResource(updatedDraft.navigation, {
-    id: "config:snapshotMigrationConfigs:0",
+    id: "resource:snapshotmigrations:source-target-snap1-slice-0",
     groupId: "group:Snapshot Migration:Backfill",
-    label: "migration-1",
+    label: "source-target-snap1-slice-0",
     editTargetId: "edit:snapshotMigrationConfigs.0",
     resourcePlural: "snapshotmigrations",
     resourceType: "Snapshot migration",
@@ -3846,16 +3884,14 @@ test("adds a snapshot migration from its section without naming it first", async
   const configuredPass = configuredDraft.editState.nodes.at(-1)
     ?.children[0]
     ?.children[0]
-    ?.children[2]
-    ?.children[0]
+    ?.children[3]
     ?.children[0];
-  if (!configuredPass) throw new Error("Missing configured migration pass");
+  if (!configuredPass) throw new Error("Missing configured migration slice");
   const passPath = [
     "snapshotMigrationConfigs",
     "0",
-    "perSnapshotConfig",
-    "snap1",
-    "0",
+    "slices",
+    "slice-0",
   ];
   configuredPass.children = [{
     id: `edit:${[...passPath, "metadataMigrationConfig"].join(".")}`,
@@ -3926,17 +3962,52 @@ test("adds a snapshot migration from its section without naming it first", async
   await userEvent.click(within(section).getByRole("button", {
     name: "Add snapshot migration",
   }));
+  const addName = within(tree).getByRole("textbox", {
+    name: "snapshot migration name",
+  });
+  await userEvent.type(addName, "slice-0");
+  await userEvent.keyboard("{Enter}");
 
   await waitFor(() => expect(operations).toEqual([{
     op: "add",
     path: ["snapshotMigrationConfigs"],
-    value: {},
+    value: { name: "slice-0" },
   }]));
-  expect(await within(tree).findByRole("treeitem", {
-    name: /^migration-1, Addition pending submission$/,
-  })).toHaveAttribute("aria-selected", "true");
+  const addedMigration = await within(tree).findByRole("treeitem", {
+    name: /^source-target-snap1-slice-0, Addition pending submission$/,
+  });
+  expect(addedMigration).toHaveAttribute("aria-selected", "true");
+  expect(within(addedMigration).getByRole("button", {
+    name: "Rename source-target-snap1-slice-0",
+  })).toBeInTheDocument();
+  const titleHeading = await screen.findByRole("heading", {
+    name: "Edit source-target-snap1-slice-0",
+  });
+  const title = titleHeading.closest(".config-toolbar-title");
+  if (!title) throw new Error("Missing configuration title");
+  await userEvent.click(within(title).getByRole("button", {
+    name: "Rename source-target-snap1-slice-0",
+  }));
+  const titleName = within(title).getByRole("textbox", {
+    name: "New name for source-target-snap1-slice-0",
+  });
+  expect(titleName).toHaveValue("slice-0");
+  expect(titleName).toHaveAttribute(
+    "pattern",
+    "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$",
+  );
+  expect(within(title).getByText("source-target-snap1-")).toBeInTheDocument();
+  await userEvent.click(within(tree).getByRole("treeitem", {
+    name: /^capture$/,
+  }));
+  expect(screen.queryByRole("textbox", {
+    name: "New name for source-target-snap1-slice-0",
+  })).not.toBeInTheDocument();
+  await userEvent.click(await within(tree).findByRole("treeitem", {
+    name: /^source-target-snap1-slice-0,/,
+  }));
   expect(await screen.findByRole("heading", {
-    name: "Edit migration-1",
+    name: "Edit source-target-snap1-slice-0",
   })).toBeInTheDocument();
   expect(screen.queryByRole("textbox", { name: "From source" }))
     .not.toBeInTheDocument();
@@ -3958,9 +4029,8 @@ test("adds a snapshot migration from its section without naming it first", async
     path: [
       "snapshotMigrationConfigs",
       "0",
-      "perSnapshotConfig",
-      "snap1",
-      "0",
+      "slices",
+      "slice-0",
       "metadataMigrationConfig",
     ],
     value: {},
@@ -3974,9 +4044,8 @@ test("adds a snapshot migration from its section without naming it first", async
     path: [
       "snapshotMigrationConfigs",
       "0",
-      "perSnapshotConfig",
-      "snap1",
-      "0",
+      "slices",
+      "slice-0",
       "documentBackfillConfig",
     ],
     value: {},
@@ -5274,7 +5343,10 @@ test("abandons inline resource naming when focus moves elsewhere", async () => {
 test("renames a named resource from the tree and follows its new identity", async () => {
   let operation: unknown;
   const initialDraft = addLegacySourceNavigation(structuredClone(configDraft));
-  const renamedDraft = structuredClone(configDraft);
+  // The server can report both identities until the renamed draft is saved.
+  // Keep the old navigation entry here to verify the optimistic projection
+  // continues to hide it during that interval.
+  const renamedDraft = structuredClone(initialDraft);
   const sourceCollection = renamedDraft.editState.nodes.find(
     (node) => node.id === "edit:sourceClusters",
   );

@@ -1,6 +1,7 @@
 """Project configuration-edit navigation from runtime state and schema hints."""
 
 from dataclasses import dataclass, replace
+import re
 from typing import Any, Dict, Iterable, Mapping, Optional, Tuple, cast
 
 from ..manage_tree_schema import EDIT_ID_BY_TREE_ID
@@ -67,12 +68,14 @@ def project_config_navigation(
     definition_placements = _definition_placements(
         draft.edit_state.get("nodes") or ()
     )
+    snapshot_migration_targets = _snapshot_migration_edit_targets(edit_nodes)
     nodes = {
         node_id: _project_existing_node(
             node,
             draft,
             edit_nodes,
             placements,
+            snapshot_migration_targets,
         )
         for node_id, node in configuration.nodes.items()
     }
@@ -94,7 +97,7 @@ def project_config_navigation(
         draft.dirty,
     )
     _prefer_resource_surfaces(nodes)
-    return cast(ManageSnapshot, replace(
+    projected = cast(ManageSnapshot, replace(
         configuration,
         revision=(
             f"{snapshot.revision}:{draft.draft_revision}:configuration"
@@ -102,6 +105,212 @@ def project_config_navigation(
         root_ids=tuple(root_ids),
         nodes=nodes,
     ))
+    return group_snapshot_migration_navigation(projected)
+
+
+_SNAPSHOT_SECTION_ID = "section:Snapshot Migration"
+_SNAPSHOT_BASE_GROUP_ID = "group:Snapshot Migration:Backfill"
+_SNAPSHOT_DYNAMIC_GROUP_PREFIX = "snapshot-navigation:"
+_NAVIGATION_STATUS_RANK = {
+    "ok": 0,
+    "unknown": 1,
+    "changed": 2,
+    "removed": 3,
+    "warning": 4,
+    "required": 5,
+    "blocked": 6,
+    "error": 7,
+}
+
+
+def _natural_component(value: str) -> Tuple[Tuple[int, Any], ...]:
+    return tuple(
+        (1, int(part)) if part.isdigit() else (0, part.casefold())
+        for part in re.split(r"(\d+)", value)
+        if part
+    )
+
+
+def _snapshot_sort_key(node: ManageNode) -> Tuple[Any, ...]:
+    return tuple(
+        _natural_component(value)
+        for value in node.navigation_key
+    )
+
+
+def _snapshot_group_id(prefix: Tuple[str, ...]) -> str:
+    return (
+        f"{_SNAPSHOT_DYNAMIC_GROUP_PREFIX}{len(prefix)}:"
+        + ":".join(prefix)
+    )
+
+
+def _snapshot_group_label(
+    prefix: Tuple[str, ...],
+    parent_id: str,
+) -> str:
+    parent_depth = (
+        int(parent_id.split(":", 2)[1])
+        if parent_id.startswith(_SNAPSHOT_DYNAMIC_GROUP_PREFIX)
+        else 0
+    )
+    visible = prefix[parent_depth:]
+    labels = ("Source", "Target", "Snapshot")
+    return " / ".join(
+        f"{labels[parent_depth + index]}: {value}"
+        for index, value in enumerate(visible)
+    )
+
+
+def _snapshot_group_status(
+    nodes: Mapping[str, ManageNode],
+    child_ids: Iterable[str],
+) -> str:
+    return max(
+        (nodes[child_id].status for child_id in child_ids),
+        key=lambda status: _NAVIGATION_STATUS_RANK.get(status, 0),
+        default="ok",
+    )
+
+
+def group_snapshot_migration_navigation(
+    snapshot: ManageSnapshot,
+) -> ManageSnapshot:
+    """Sort SnapshotMigration leaves and add only useful semantic groups.
+
+    Edit and runtime projections call this same function with different leaf
+    sets. A source/target/snapshot prefix becomes collapsible only when it
+    contains at least three leaves and would have at least two direct children.
+    """
+    nodes = {
+        node_id: node
+        for node_id, node in snapshot.nodes.items()
+        if not node_id.startswith(_SNAPSHOT_DYNAMIC_GROUP_PREFIX)
+    }
+    resources = sorted(
+        (
+            node for node in nodes.values()
+            if (
+                node.kind == "resource"
+                and node.resource_plural == "snapshotmigrations"
+                and len(node.navigation_key) == 4
+                and all(node.navigation_key)
+            )
+        ),
+        key=_snapshot_sort_key,
+    )
+    base_group = nodes.get(_SNAPSHOT_BASE_GROUP_ID)
+    if base_group is None:
+        return snapshot
+
+    resource_ids = {node.id for node in resources}
+    nodes[_SNAPSHOT_BASE_GROUP_ID] = replace(
+        base_group,
+        label="Snapshot migrations",
+        child_ids=tuple(
+            child_id for child_id in base_group.child_ids
+            if child_id not in resource_ids
+            and not child_id.startswith(_SNAPSHOT_DYNAMIC_GROUP_PREFIX)
+        ),
+    )
+    for resource in resources:
+        nodes[resource.id] = replace(
+            resource,
+            parent_id=_SNAPSHOT_BASE_GROUP_ID,
+            label=_snapshot_migration_name(*resource.navigation_key),
+        )
+
+    def representations(
+        items: Tuple[ManageNode, ...],
+        level: int,
+        parent_id: str,
+    ) -> list[str]:
+        if level >= 3:
+            result = []
+            for item in items:
+                nodes[item.id] = replace(item, parent_id=parent_id)
+                result.append(item.id)
+            return result
+
+        buckets: Dict[str, list[ManageNode]] = {}
+        for item in items:
+            buckets.setdefault(item.navigation_key[level], []).append(item)
+        result: list[str] = []
+        for value in sorted(buckets, key=_natural_component):
+            bucket = tuple(sorted(buckets[value], key=_snapshot_sort_key))
+            prefix = bucket[0].navigation_key[:level + 1]
+            prospective_parent = _snapshot_group_id(prefix)
+            children = representations(bucket, level + 1, prospective_parent)
+            if len(bucket) >= 3 and len(children) >= 2:
+                group_id = prospective_parent
+                nodes[group_id] = ManageNode(
+                    id=group_id,
+                    revision=f"{snapshot.revision}:{group_id}",
+                    parent_id=parent_id,
+                    kind="group",
+                    label=_snapshot_group_label(prefix, parent_id),
+                    status=_snapshot_group_status(nodes, children),
+                    child_ids=tuple(children),
+                )
+                result.append(group_id)
+                continue
+            for child_id in children:
+                nodes[child_id] = replace(nodes[child_id], parent_id=parent_id)
+            result.extend(children)
+        return result
+
+    grouped_ids = representations(
+        tuple(resources),
+        0,
+        _SNAPSHOT_BASE_GROUP_ID,
+    )
+    base = nodes[_SNAPSHOT_BASE_GROUP_ID]
+    nodes[_SNAPSHOT_BASE_GROUP_ID] = replace(
+        base,
+        child_ids=(*base.child_ids, *grouped_ids),
+        status=_snapshot_group_status(nodes, grouped_ids) if grouped_ids else base.status,
+    )
+    for resource in resources:
+        grouped_resource = nodes[resource.id]
+        parent_depth = (
+            int(grouped_resource.parent_id.split(":", 2)[1])
+            if (
+                grouped_resource.parent_id
+                and grouped_resource.parent_id.startswith(
+                    _SNAPSHOT_DYNAMIC_GROUP_PREFIX
+                )
+            )
+            else 0
+        )
+        nodes[resource.id] = replace(
+            grouped_resource,
+            label=_snapshot_migration_name(
+                *resource.navigation_key[parent_depth:]
+            ),
+        )
+    section = nodes.get(_SNAPSHOT_SECTION_ID)
+    base_group = nodes.get(_SNAPSHOT_BASE_GROUP_ID)
+    if (
+        section is not None
+        and base_group is not None
+        and base_group.parent_id == section.id
+    ):
+        flattened_ids = []
+        for child_id in section.child_ids:
+            if child_id == base_group.id:
+                flattened_ids.extend(base_group.child_ids)
+            else:
+                flattened_ids.append(child_id)
+        for child_id in base_group.child_ids:
+            child = nodes.get(child_id)
+            if child is not None:
+                nodes[child_id] = replace(child, parent_id=section.id)
+        nodes[section.id] = replace(
+            section,
+            child_ids=tuple(dict.fromkeys(flattened_ids)),
+        )
+        del nodes[base_group.id]
+    return cast(ManageSnapshot, replace(snapshot, nodes=nodes))
 
 
 def _node_edit_target(node: ManageNode) -> Optional[str]:
@@ -214,9 +423,38 @@ def _project_existing_node(
     draft: ConfigDraft,
     edit_nodes: Mapping[str, Mapping[str, Any]],
     placements: Tuple[_Placement, ...],
+    snapshot_migration_targets: Mapping[
+        Tuple[str, ...],
+        Tuple[str, ...],
+    ],
 ) -> ManageNode:
     if node.kind != "resource":
         return node
+    semantic_removal = False
+    if (
+        draft.dirty
+        and node.resource_plural == "snapshotmigrations"
+        and len(node.navigation_key) == 4
+        and all(node.navigation_key)
+        and _snapshot_migration_collection_changed(edit_nodes)
+    ):
+        matching_targets = snapshot_migration_targets.get(
+            node.navigation_key,
+            (),
+        )
+        if matching_targets:
+            current_target = _edit_target(node)
+            node = _with_edit_capability(
+                node,
+                (
+                    current_target
+                    if current_target in matching_targets
+                    else matching_targets[0]
+                ),
+            )
+        else:
+            semantic_removal = True
+            node = _without_edit_capability(node)
     target_id = _edit_target(node)
     edit_node = edit_nodes.get(target_id) if target_id is not None else None
     config_state = (
@@ -232,14 +470,17 @@ def _project_existing_node(
         )
     )
     removed_from_draft = (
-        draft.dirty
-        and target_id is not None
-        and _is_resource_target(target_id, placements)
-        and target_id not in edit_nodes
-        and _resource_collection_changed(
-            target_id,
-            edit_nodes,
-            placements,
+        semantic_removal
+        or (
+            draft.dirty
+            and target_id is not None
+            and _is_resource_target(target_id, placements)
+            and target_id not in edit_nodes
+            and _resource_collection_changed(
+                target_id,
+                edit_nodes,
+                placements,
+            )
         )
     )
     if not explicit_removal and not removed_from_draft:
@@ -264,6 +505,64 @@ def _edit_target(node: ManageNode) -> Optional[str]:
             if capability.kind == "edit"
         ),
         None,
+    )
+
+
+def _without_edit_capability(node: ManageNode) -> ManageNode:
+    return cast(ManageNode, replace(
+        node,
+        capabilities=tuple(
+            capability
+            for capability in node.capabilities
+            if capability.kind != "edit"
+        ),
+    ))
+
+
+def _snapshot_migration_key(
+    node: Mapping[str, Any],
+) -> Optional[Tuple[str, ...]]:
+    path = node.get("path")
+    if (
+        not isinstance(path, list)
+        or len(path) != 2
+        or path[0] != "snapshotMigrationConfigs"
+    ):
+        return None
+    value = _mapping(node.get("value"))
+    key = tuple(
+        str(value.get(field) or "")
+        for field in (
+            "fromSource",
+            "toTarget",
+            "fromSnapshot",
+            "slice",
+        )
+    )
+    return key if all(key) else None
+
+
+def _snapshot_migration_edit_targets(
+    edit_nodes: Mapping[str, Mapping[str, Any]],
+) -> Dict[Tuple[str, ...], Tuple[str, ...]]:
+    targets: Dict[Tuple[str, ...], list[str]] = {}
+    for target_id, edit_node in edit_nodes.items():
+        key = _snapshot_migration_key(edit_node)
+        if key is not None:
+            targets.setdefault(key, []).append(target_id)
+    return {
+        key: tuple(target_ids)
+        for key, target_ids in targets.items()
+    }
+
+
+def _snapshot_migration_collection_changed(
+    edit_nodes: Mapping[str, Mapping[str, Any]],
+) -> bool:
+    collection = edit_nodes.get("edit:snapshotMigrationConfigs")
+    return (
+        collection is not None
+        and _draft_change_count(collection) > 0
     )
 
 
@@ -739,6 +1038,84 @@ def _new_draft_resource(
     )
 
 
+def _snapshot_migration_name(*parts: str) -> str:
+    return re.sub(r"[^a-z0-9.]+", "-", "-".join(parts).lower()).strip("-.")
+
+
+def _new_draft_snapshot_resources(
+    placement: _Placement,
+    tuple_node: Mapping[str, Any],
+    revision: str,
+    dirty: bool,
+    existing_targets: set[str],
+) -> Tuple[Tuple[ManageNode, str], ...]:
+    value = _mapping(tuple_node.get("value"))
+    source = str(value.get("fromSource") or "")
+    target = str(value.get("toTarget") or "")
+    snapshot = str(value.get("fromSnapshot") or "")
+    label = str(value.get("slice") or "")
+    target_id = tuple_node.get("id")
+    if (
+        not label
+        or not isinstance(target_id, str)
+        or target_id in existing_targets
+    ):
+        return ()
+    identity_complete = all((source, target, snapshot))
+    resource_name = (
+        _snapshot_migration_name(source, target, snapshot, label)
+        if identity_complete
+        else label
+    )
+    stable_path = target_id.removeprefix(f"{EDIT_TARGET_PREFIX}")
+    node_id = f"config:{stable_path.replace('.', ':')}"
+    status_value = tuple_node.get("status")
+    status = (
+        status_value
+        if isinstance(status_value, str) and status_value != "ok"
+        else "changed"
+    )
+    phase = "Pending Config"
+    return ((
+        ManageNode(
+            id=node_id,
+            revision=f"{revision}:{target_id}:added",
+            parent_id=placement.group_id,
+            kind="resource",
+            label=resource_name,
+            description=f"{placement.resource_plural}/{resource_name}",
+            status=status,
+            phase=phase,
+            value_summary="Addition pending submission",
+            diagnostics=_diagnostics(tuple_node),
+            capabilities=(
+                ManageCapability(
+                    kind="edit",
+                    target_id=target_id,
+                    label=f"Edit {label}",
+                ),
+            ),
+            details=(
+                ManageDetail(
+                    label="Phase",
+                    value=phase,
+                    kind="phase",
+                ),
+            ),
+            resource_plural=placement.resource_plural,
+            resource_name=resource_name,
+            resource_type=placement.resource_type,
+            config_presence={
+                "deployed": False,
+                "pending": True,
+            },
+            config_state=_config_state(tuple_node, dirty),
+            navigation_key=(source, target, snapshot, label),
+        ),
+        target_id,
+    ),)
+
+
 def _append_child(
     nodes: Dict[str, ManageNode],
     parent_id: str,
@@ -773,6 +1150,36 @@ def _add_draft_resources(
         )
         collection = edit_nodes.get(collection_id)
         if collection is None:
+            continue
+        if placement.collection_path == ("snapshotMigrationConfigs",):
+            for tuple_node in _mapping_children(collection):
+                for node, target_id in _new_draft_snapshot_resources(
+                    placement,
+                    tuple_node,
+                    revision,
+                    dirty,
+                    existing_targets,
+                ):
+                    existing = nodes.get(node.id)
+                    if existing is None:
+                        nodes[node.id] = node
+                    else:
+                        retained_capabilities = tuple(
+                            capability
+                            for capability in existing.capabilities
+                            if capability.kind != "edit"
+                        )
+                        nodes[node.id] = cast(ManageNode, replace(
+                            existing,
+                            capabilities=(
+                                *retained_capabilities,
+                                *node.capabilities,
+                            ),
+                            config_state=node.config_state,
+                            navigation_key=node.navigation_key,
+                        ))
+                    existing_targets.add(target_id)
+                    _append_child(nodes, placement.group_id, node.id, revision)
             continue
         for index, child in enumerate(_mapping_children(collection)):
             candidate = _new_draft_resource(
