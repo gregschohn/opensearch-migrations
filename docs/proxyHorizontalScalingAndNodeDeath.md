@@ -28,8 +28,8 @@ declare the departed proxy instance finished.
 
 The system must:
 
-- ensure that every request the proxy allowed to execute at the source has a complete acknowledged
-  Kafka representation before an omission may break that connection interval;
+- ensure that Netty's terminal observation and every earlier TrafficStream observation for a closed
+  connection are acknowledged by Kafka before that connection is removed from the active set;
 - replay every complete request that the capture parser recognized and detached before its
   connection interval was reset;
 - capture every mutating request completely before allowing that request to complete at the source
@@ -47,12 +47,10 @@ The system must:
 The design accepts:
 
 - a complete request may be captured even though it never reaches the source;
-- an omitting manifest intentionally prevents the replayer from joining predecessor and successor
-  observations into one request; the proxy-side removal barrier guarantees that such a
-  cross-boundary sequence is not a source-executed request still owed to the target;
-- best-effort bytes that were never source-authorized and become syntactically complete only by
-  combining delayed predecessor data at or before an omitting cycle may be discarded by that
-  omission;
+- manifest M may omit C without affecting an observation for C stamped M+1 when C first became
+  active after M's boundary; M is not applicable to that connection lifecycle;
+- once an applicable manifest omits C, that connection identity is retired and any later
+  observation for it is a protocol violation;
 - an incomplete accumulation from a hard-crashed proxy may remain retained when no later exact
   manifest or terminal self `NoMoreWrites` can settle it;
 - hard process death may prevent a final proxy-completion record;
@@ -98,10 +96,13 @@ This ordering is what makes a manifest-cycle reset safe:
 - if the source completed the request, Kafka already contains the complete request;
 - if Kafka contains only an incomplete request, strict mode could not have completed it at the
   source;
-- before a captured client connection is removed from the next manifest, every request that was
-  allowed to execute at the source has a complete, acknowledged Kafka representation; and
-- observations that race after that removal may begin a new per-connection HTTP accumulation, but
-  they cannot describe a source-executed request still owed to the target.
+- after Netty reports a connection closed, the kernel and Netty deliver no more network traffic for
+  that connection;
+- the connection's event-loop owner submits the terminal connection observation after every earlier
+  observation in the connection-local Kafka submission chain; and
+- only after Kafka acknowledges the terminal observation and every earlier observation does the
+  event-loop owner remove the connection from the active set. An applicable omitting manifest is
+  therefore prepared after all valid observations for that connection are durable.
 
 This invariant does **not** by itself make elapsed-time expiration safe. Configured expiration is
 disabled as commit authority in this design until the unresolved questions in §6.3 are answered.
@@ -134,6 +135,18 @@ connectionId -> trafficPartition
 ```
 
 That mapping is immutable for the life of the connection.
+
+This document reserves **drain** for two aggregate operations:
+
+- **partition drain** — stop assigning new connections to a previously used partition while the
+  proxy continues serving its existing connection set; and
+- **proxy connection-set drain** — wait for the proxy's connections to close naturally or close
+  them during proxy shutdown.
+
+The lifecycle of one closed connection is **connection retirement**, as defined in §5.1.
+The `DRAINING` process state and “still-draining proxy” wording below mean that the proxy's
+connection set is undergoing the second aggregate operation; they do not name a third kind of
+drain.
 
 ### 2.4 Capture modes
 
@@ -204,7 +217,9 @@ While in `PROBING`, it:
 5. refreshes metadata again before joining the group as `PROBATIONARY`.
 
 The replayer recognizes `CaptureCapabilityProbe` as a semantically inert record. It never creates
-replay work, opens a connection, or affects manifest-cycle interpretation.
+reconstruction or target-replay work, opens a connection, or affects manifest-cycle interpretation.
+Normal replay accounts for it as one direct control child and commits its parent through the
+ordinary record-disposition path.
 
 This probe qualifies current producer reachability. It does not guarantee future availability.
 Normal runtime failures are handled by §5 and §7.
@@ -220,8 +235,8 @@ When member B joins:
 5. A continues writing existing connections to their original partitions.
 6. B accepts new connections for its assigned partitions only after the
    initial-manifest rule in §5.3 is satisfied.
-7. A emits manifests for its remaining connections until each drains.
-8. After A's final connection on a transferred partition drains, A emits and acknowledges a final
+7. A emits manifests while its connection set on transferred partitions drains.
+8. After A's connection set on a transferred partition is empty, A emits and acknowledges a final
    empty manifest. It does not emit `NoMoreWrites`, because ordinary assignment may later return
    that partition to A.
 
@@ -234,11 +249,11 @@ A planned process retirement first becomes `DRAINING`:
 1. it stops accepting new connections;
 2. another member becomes the member accepting new captured client connections for its partitions;
 3. existing connections continue in place;
-4. the draining proxy instance continues traffic and manifest publication;
-5. after all connections drain, it follows §4.3 and emits terminal self `NoMoreWrites` for each
+4. the proxy continues traffic and manifest publication while its connection set drains;
+5. after its connection set is empty, it follows §4.3 and emits terminal self `NoMoreWrites` for each
    partition the proxy instance used; and
 6. it leaves the group and exits after those records are acknowledged, or after the operator's
-   drain deadline expires.
+   proxy connection-set-drain deadline expires.
 
 If the deadline expires, the process applies the configured strict or pass-through behavior in §7.
 
@@ -286,8 +301,8 @@ TrafficRecord {
     writerNodeId
     connectionId
     partition
-    manifestCycle
     observations[] {
+        manifestCycle
         connectionObservationSequence
         captureTimestamp
         ...
@@ -314,6 +329,7 @@ NoMoreWrites {
 CaptureCapabilityProbe {
     writerNodeId
     probeId
+    captureSessionId?  // required for controller-managed mode; absent only in unmanaged mode
 }
 ```
 
@@ -332,16 +348,28 @@ The emitter field may remain in the wire format for compatibility.
 `(writerNodeId, partition)`. It is the logical boundary described in §5.1. It is not a wall-clock
 timestamp, Kafka offset, group generation, or Kafka producer epoch.
 
-Every reconstruction-relevant observation logically carries the cycle that was current when the
-proxy accepted it. Serialization may hoist the value to the `TrafficRecord` envelope only because a
-record is required to be homogeneous in `(writerNodeId, partition, connectionId, manifestCycle)`.
-A batch is flushed before accepting an observation with a different value. One Kafka record
-therefore never mixes predecessor and successor obligations across a manifest boundary.
+Every reconstruction-relevant observation carries the cycle that was current when the proxy
+accepted it. A `TrafficRecord` remains scoped to one
+`(writerNodeId, partition, connectionId)`, but its observations may carry different manifest
+cycles. The replayer creates exactly one deterministic child obligation for each observation. A
+manifest decision may satisfy the incomplete-accumulator WorkClaims it covers while transaction or
+other WorkClaims beneath the same child remain unresolved. The parent Kafka offset becomes
+commit-eligible only after every child obligation is terminal `Satisfied`; any
+`RetainRequired` or unresolved child prevents parent commit.
+
+The publisher may flush a batch when `manifestCycle` changes because that simplifies diagnostics
+and reduces the number of child fates within one record. That is an optimization, not a correctness
+invariant. Flushed and mixed batching must preserve the same per-observation semantics and
+WorkClaim decisions without loss or duplication, but may produce different parent-record
+identities, commit timing, and redelivery granularity.
 
 `connectionObservationSequence` is a monotonically increasing connection-local value assigned by
 the connection's single event-loop owner. It validates the order of reconstruction-relevant
 observations for that captured client connection. It is not shared across connections and needs no
-contended atomic increment.
+contended atomic increment. Because the event-loop owner reads an atomic `manifestCycle` that only
+increments, `manifestCycle` must be nondecreasing as
+`connectionObservationSequence` increases. A later sequence value carrying a lower cycle is a
+protocol violation.
 
 Reconstruction-relevant records for one connection enter the producer through a connection-local
 submission chain in contiguous sequence order. Other connections and manifest chunks may interleave
@@ -351,6 +379,12 @@ regression is a protocol failure that closes capture or halts replay; the replay
 indefinitely for a lower sequence. Truly incidental packet diagnostics that cannot affect HTTP
 request completion, expiration, source forwarding, or target replay are outside this sequence and
 may be best effort.
+
+Netty's terminal connection observation is the final sequence value for C. Once the replayer
+consumes it, any later reconstruction-relevant observation for C is a protocol violation, including
+a contiguous next sequence value. A listing manifest may still list C because it was prepared
+before acknowledged active-set removal; that listing is valid but cannot reopen C's
+traffic-observation state.
 
 ### 4.2 Publisher ordering and acknowledgement
 
@@ -396,9 +430,12 @@ OPEN -> RETIRING -> RETIRED
 Publisher initialization and shutdown are completion-gated lifecycle operations. The composition
 root owns any newly created producer and executor until publisher construction succeeds. A failed
 initialization closes and joins both before returning failure; successful construction transfers
-their sole lifecycle ownership to `CaptureKafkaPublisher`. Publisher shutdown quiesces callbacks,
-closes the producer, terminates its executor, and completes only after those postconditions hold.
-There is no optional no-op lifecycle callback or default method that can omit this cleanup.
+their sole lifecycle ownership to `CaptureKafkaPublisher`. Clean process shutdown first runs the
+§4.3 retirement barrier for every used partition; only after each terminal self `NoMoreWrites` is
+acknowledged does publisher shutdown close the producer and terminate its executor. A capture
+failure may instead close the producer without claiming terminal completion. Publisher shutdown
+completes only after callback quiescence, producer closure, and executor termination. There is no
+optional no-op lifecycle callback or default method that can omit this cleanup.
 
 ### 4.3 Terminal self `NoMoreWrites` barrier
 
@@ -478,18 +515,25 @@ prepareManifest(partition P):
 ```
 
 Creating captured client connection C linearizes its addition to the exact registry **before** the
-proxy accepts C's first reconstruction-relevant observation. Removal is a short protocol rather
-than one callback:
+proxy accepts C's first reconstruction-relevant observation.
 
-1. atomically close C's one-way source-forward gate so no new source operation can be authorized;
-2. wait until every source operation authorized before gate closure has a complete acknowledged
-   Kafka representation; and
-3. linearize C's registry removal under P's lifecycle boundary.
+**Connection retirement** is the lifecycle of one closed connection:
 
-A manifest prepared while step 2 is waiting still lists C. Ordinary packet capture does not take
-the lifecycle boundary and continues concurrently, but it cannot reopen source-forward
-authorization after step 1. Preparing manifest M linearizes the exact-registry copy and counter
-increment shown above.
+1. Netty reports C closed because of remote closure, local closure, or channel failure.
+2. After that notification, the kernel and Netty provide no further network traffic for C.
+3. C's event-loop owner submits C's terminal connection observation through the Kafka publisher's
+   connection-local submission chain after every earlier observation for C.
+4. C's event-loop owner waits for Kafka to acknowledge the terminal observation and every earlier
+   `TrafficStream` observation for C.
+5. Only after those acknowledgements does C's event-loop owner remove C from the exact active set
+   under P's lifecycle boundary.
+
+A manifest prepared before step 5 lists C. A manifest prepared after step 5 may omit C. If any
+required Kafka acknowledgement fails or becomes ambiguous, C is not removed under this protocol;
+capture fails closed instead of publishing an authoritative omission.
+
+Ordinary packet capture does not take the partition lifecycle boundary. Preparing manifest M
+linearizes only the exact-registry copy and counter increment shown above.
 
 Every reconstruction-relevant observation reads the current `manifestCycle[P]` when the proxy
 accepts it and carries that value to Kafka. Kafka records may arrive in a different order from the
@@ -502,26 +546,27 @@ race:
 - if C was removed before M's boundary, M omits C;
 - if C was removed after the boundary, M still lists C and a later manifest may omit it.
 
-The Kafka-order inversions are therefore explicit:
+Manifest omission is relative to the connection's first observed cycle:
 
-1. An open observation accepted before M may arrive after M. If C remains active at M's boundary,
-   M lists C and the replayer initializes or continues C normally.
-2. C may instead be removed before M's boundary. Then M omits C, and an observation accepted before
-   the boundary remains delayed predecessor data because its cycle is at most M.
-3. An open observation accepted after M's boundary may arrive before M. It carries a cycle greater
-   than M, so M cannot reset the per-connection HTTP accumulation that observation began.
+- If C first becomes active after manifest M's boundary, C's observations carry cycle M+1. M may
+  omit C, but M is not applicable to C.
+- Manifest M+1 is the first applicable manifest. If M+1 lists C, C remained open across that
+  boundary. If M+1 omits C, connection retirement completed before that boundary.
+- If C was already active before M's boundary and M omits C, M is applicable and terminally retires
+  that connection identity.
 
-An observation accepted before M's boundary carries a cycle at most M even if Kafka appends it
-after M. If M omits C, that observation is delayed predecessor data covered by M's reset; it does
-not start a successor accumulation merely because its Kafka offset is later. Only an observation
-whose `manifestCycle` is greater than M begins or contributes to the successor.
+Two Kafka-order inversions remain valid:
 
-The close/removal rule is deliberately narrower than “all packets are globally ordered.” The proxy
-may still emit a late observation after removal because packet handling is concurrent. Even if that
-observation looks reconstruction-relevant in isolation, the proxy guarantees that it cannot
-describe a request that was sent to the source but is still owed to the target. A late observation
-with a cycle greater than the omitting manifest may begin a fresh per-connection HTTP accumulation;
-a delayed observation from the omitted cycle or earlier is settled as predecessor data.
+1. An observation accepted before listing manifest M may be appended after M because C remained in
+   the active set at M's boundary.
+2. An observation accepted after M's boundary may be appended before M. Its cycle is greater than
+   M, so an omission by M does not cover a connection lifecycle that began after M.
+
+An applicable omitting manifest is different. Connection retirement waits for the terminal
+observation and every earlier observation to be acknowledged before active-set removal. The
+applicable omission is prepared only after removal, so every valid observation for C precedes chunk
+0 of that manifest in the Kafka partition. Any observation for C at or after the first chunk offset
+is a protocol violation.
 
 This is the complete linearization requirement. The implementation must not claim or require a
 stop-the-world ordering across ordinary packets.
@@ -537,13 +582,23 @@ coalesce into the next run; they cannot submit M+1 before M. A failed or ambiguo
 the capture gate, so no later cycle is authoritative.
 
 The manifest may be chunked. All chunks share one `manifestCycle`, `chunkCount`, `writerNodeId`,
-partition, and diagnostic emission time. Chunks are numbered exactly `0..chunkCount-1`.
+partition, and diagnostic emission time. Chunks are numbered exactly `0..chunkCount-1` and are
+submitted through the partition lane in increasing `chunkIndex` order. Unrelated traffic records
+may interleave, but the Kafka offsets of this manifest's chunks must increase with `chunkIndex`.
 
 The replayer uses a manifest only after every chunk is present exactly once. A partial,
-inconsistent, or duplicate-index manifest is non-authoritative and produces an alarm.
+inconsistent, duplicate-index, or index/offset-reordered manifest is non-authoritative and produces
+an alarm.
 
 An empty complete manifest is a positive statement that the proxy instance currently has no open
 connections on that partition.
+
+For a chunked applicable omission, chunk 0's offset—the lowest Kafka offset occupied by the
+manifest—is the connection-retirement cutoff. The omission becomes usable only after chunk
+`chunkCount-1`—the manifest's highest chunk offset—and every intervening offset have been scanned
+and validated. Every valid observation for an omitted connection must have an offset lower than
+chunk 0. An observation for that connection interleaved between manifest chunks is therefore a
+protocol violation, not pre-completion traffic.
 
 ### 5.3 Initial manifest
 
@@ -615,8 +670,7 @@ expiration is not enabled as commit authority by this design.
 
 A request that the capture parser already recognized as complete and detached from its connection
 before an applicable reset is processed normally regardless of later manifests, `NoMoreWrites`, or
-proxy health. Bytes that would become syntactically complete only by joining delayed predecessor
-observations after an omitting manifest are not such a detached complete request.
+proxy health.
 
 Reset and terminal completion apply only to incomplete per-connection HTTP accumulation. They must
 never discard an already detached complete request merely because its proxy later became silent.
@@ -627,23 +681,32 @@ For captured client connection C emitted by proxy instance X on partition P:
 
 | Observation | Replayer action |
 |---|---|
-| normal connection-close record | Finish C through the ordinary close path |
+| normal terminal connection-close record | Finish C through the ordinary close path and reject every later reconstruction-relevant observation for C; a listing manifest prepared before active-set removal remains valid but cannot reopen C |
 | complete manifest M from X on P lists C | Preserve C's current per-connection HTTP accumulation |
-| complete manifest M omits C and C's current accumulation began in cycle M or earlier | Expire and reset that current incomplete per-connection HTTP accumulation |
-| complete manifest M omits C but C's current accumulation began after M | Do nothing; M precedes that accumulation's proxy-side lifecycle interval |
-| observation for C with cycle at most M that is consumed after omitting M | Settle it as delayed predecessor data covered by M; do not reopen C from Kafka offset order alone |
-| observation for C with cycle greater than M after a manifest reset | Accept it into a newly initialized successor per-connection HTTP accumulation; never join it to the pre-reset accumulation |
+| complete manifest M omits C and C first appeared in cycle M or earlier | Settle C's current incomplete per-connection HTTP accumulation and terminally retire that connection identity |
+| complete manifest M omits C but C first appeared after M | Do nothing; M is not applicable to that connection lifecycle |
+| scan-ahead reconstructs an applicable omitting M and scans every offset through M's last chunk | Satisfy only the covered incomplete-accumulator WorkClaims; preserve ordinary processing of valid observations below M's first chunk offset |
+| observation for C at or above the first chunk offset of its applicable omitting manifest | Retain, halt, and alarm on a protocol violation |
 | terminal self `NoMoreWrites{X, P, X}` | Settle all incomplete state already known for X on P and permanently retire that proxy-partition identity |
 | traffic or manifest from X on P at a Kafka offset above terminal self-completion cutoff K | Halt and alarm on a protocol violation; do not treat it as a new activation |
 | duplicate self `NoMoreWrites{X, P, X}` | Treat idempotently as the same terminal retirement |
 | peer `NoMoreWrites{X, P, E}` where `E != X` | Ignore for settlement, alarm as invalid provenance |
 
-Manifest omission is not a tombstone for C. It resets only the incomplete per-connection HTTP
-accumulation whose proxy-side lifecycle interval ended no later than M. If observations for C later
-appear with a cycle greater than M, the replayer starts from the same empty state used for a newly
-observed connection. Delayed observations from cycle M or earlier remain predecessor data covered
-by the reset. If a later complete manifest again omits C, that later incomplete accumulation may be
-reset again.
+The terminal connection observation is already a traffic-observation cutoff for C. Complete
+manifests may still list C while its acknowledged removal is pending, but those listings do not
+reopen it. An applicable omission is the later exact-registry retirement fact for C. `connectionId` is unique
+within the capture activation and is not reused. A greater-cycle observation after an omission is
+valid only when the omission was not applicable because C first appeared after that manifest's
+boundary. Once an applicable omission retires C, any later observation or listing manifest for C is
+a protocol violation.
+
+Kafka record composition does not weaken this rule. Replay intake splits each mixed-cycle record
+into observation children before sealing the parent record obligation. A manifest satisfies only
+the incomplete-accumulator WorkClaims it resolves. A transaction claim beneath the same child, or
+another child's claims, may remain pending. The parent Kafka offset is proposed for commit only
+when every child is terminal `Satisfied`. For the current one-connection `TrafficRecord`, a
+greater-cycle observation for a connection already retired by an applicable omission is invalid
+rather than a valid post-retirement continuation.
 
 Only self `NoMoreWrites` permanently retires `(writerNodeId, partition)`. A hard crash emits no such
 record.
@@ -735,7 +798,7 @@ After the gate closes:
 - acceptance of new captured client connections stops;
 - existing connections are closed or terminated;
 - the process begins immediate exit or restart;
-- accepted Kafka sends are drained only while their outcome remains trustworthy; and
+- previously accepted Kafka sends are awaited only while their outcome remains trustworthy; and
 - terminal self `NoMoreWrites` is attempted only after every related Netty connection is
   disconnected and the §4.3 barrier succeeds.
 
@@ -811,12 +874,12 @@ regrant, and coverage restoration remain future work.
 | Group assignor | Remove designated-witness graphs, peer visibility, and partition-footprint dissemination. Retain cooperative ownership for accepting new captured client connections and the member phases. |
 | Startup | Add out-of-group capability probes to representative leader brokers before joining as `PROBATIONARY`. |
 | Routing | Persist immutable connection-to-partition choice; move only eligibility to accept new captured client connections during rebalance. |
-| Registry | Maintain exact all-open connection sets and one atomic `manifestCycle` per proxy activation and partition. |
-| Publisher | Stamp every reconstruction-relevant observation with its current `manifestCycle`; publish complete manifests with the cycle closed by their copy-and-increment boundary; preserve acknowledgement and terminal self-`NoMoreWrites` ordering without globally serializing packet capture. |
+| Registry | Maintain exact all-open connection sets and one atomic `manifestCycle` per proxy activation and partition; remove a closed connection only after its terminal and all earlier observations are acknowledged. |
+| Publisher | Stamp every reconstruction-relevant observation with its current `manifestCycle`; permit mixed-cycle records; publish complete manifests with the cycle closed by their copy-and-increment boundary; preserve connection-local acknowledgement and terminal self-`NoMoreWrites` ordering without globally serializing packet capture. |
 | Source forwarding | Enforce complete-capture acknowledgement and the local pre-forward stale-manifest gate for mutating requests. |
 | Failure mode | Make capture abandonment irreversible per process; implement strict exit and permanent pass-through transitions. |
 | Record validation | Accept terminal self `NoMoreWrites` idempotently; reject peer completion; halt and alarm on later traffic or manifests from a retired proxy-partition identity. |
-| Replayer | Reset only the predecessor per-connection HTTP accumulation covered by a complete omitting manifest. Settle delayed observations from that cycle or earlier as predecessor data; accept only greater-cycle observations into a fresh successor accumulation. Keep elapsed-time expiration non-committing. |
+| Replayer | Apply omission only when the manifest is applicable to the connection's first observed cycle; terminally retire that connection identity, reject later observations, and reduce mixed-cycle Kafka records through child obligations before committing the parent offset. Keep elapsed-time expiration non-committing. |
 | Observability | Replace witness and peer-cutoff metrics with manifest-cycle reset, manifest-age, capture-gate, retained-incomplete-state, and capture-gap metrics. |
 
 ### 9.1 Removed concepts
@@ -840,6 +903,7 @@ Each proxy should expose:
 - membership phase and current new-connection assignment;
 - capture mode and whether the capture gate is open;
 - current connections by partition;
+- pending connection retirements and the oldest unacknowledged terminal-or-earlier observation;
 - proxy-local acknowledged-manifest submission age by partition;
 - oldest unacknowledged publisher work;
 - whether the process has permanently abandoned capture; and
@@ -851,6 +915,8 @@ The replayer should expose:
 - latest complete `manifestCycle` and the Kafka offsets containing its chunks;
 - terminal-disposition counts by normal close, manifest-cycle reset, and terminal self
   `NoMoreWrites`;
+- unresolved parent-record, observation/control-child, and WorkClaim counts;
+- post-applicable-omission protocol violations;
 - retained state for which no sound terminal disposition exists;
 - invalid peer-completion records; and
 - the oldest commit-blocking state.
@@ -871,8 +937,19 @@ Before implementation is declared complete:
 - connection add, connection remove, and manifest copy-and-increment use the same partition-local
   lifecycle boundary;
 - ordinary packet capture only reads the counter and is not serialized by that boundary;
+- Netty's terminal connection observation is the final contiguous
+  `connectionObservationSequence` value for C;
+- any later reconstruction-relevant observation for C is rejected even when its sequence is
+  contiguous; a listing manifest prepared before active-set removal remains valid but cannot reopen
+  C;
+- C remains in the exact active set until Kafka acknowledges that terminal observation and every
+  earlier observation for C;
+- a `TrafficRecord` may contain observations from multiple manifest cycles, and replay intake
+  creates complete, disjoint observation children plus attributable WorkClaims before the parent
+  record obligation is sealed;
 - manifest completeness is validated before omission has any effect; and
-- tests cover both Kafka-order inversions from §5.1.
+- tests cover both valid Kafka-order inversions from §5.1 and reject any observation at or above the
+  first chunk offset of an applicable omitting manifest.
 
 An implementation may use a stronger local serialization mechanism if measurement justifies it,
 but correctness claims and interfaces must depend only on the narrow boundary above.
@@ -960,32 +1037,48 @@ orchestration around:
 - Registry addition precedes acceptance of the connection's first reconstruction-relevant
   observation.
 - A connection added after M's boundary stamps observations with a cycle greater than M.
-- A connection removed before M's boundary is omitted by M; one removed after it remains listed
-  until a later manifest.
-- Removal atomically closes source-forward authorization and waits until every previously
-  authorized source operation has a complete acknowledged Kafka representation.
-- A manifest prepared while removal waits for those acknowledgements still lists the connection.
+- Netty close caused by remote closure, local closure, or channel failure produces exactly one
+  terminal connection observation after every earlier observation in C's event-loop submission
+  chain.
+- The kernel and Netty produce no later network traffic for C after Netty reports closure.
+- Netty's terminal observation immediately becomes the replayer's traffic-observation cutoff for C;
+  a later contiguous sequence value halts and alarms.
+- C remains in the active set until Kafka acknowledges its terminal observation and every earlier
+  TrafficStream observation.
+- A manifest prepared while those acknowledgements are pending lists C; a manifest prepared after
+  acknowledged connection retirement may omit C.
+- A listing manifest consumed after C's terminal observation is valid when prepared before removal,
+  but it does not reopen C.
 - An open observation accepted before M but appended after M continues normally when M lists the
-  connection; if removal preceded M, it is instead predecessor data covered by M's omission.
+  connection.
 - An open observation accepted after M but appended before M is protected from M's omission by its
   greater `manifestCycle`.
-- A delayed observation with cycle M or earlier that is appended after omitting M is settled as
-  predecessor data; only a greater cycle starts the successor.
-- A traffic batch flushes at a manifest-cycle boundary and never creates one Kafka record containing
-  both predecessor and successor observations.
+- If C first appears in cycle M+1, omission by M is non-applicable; M+1 is the first applicable
+  manifest.
+- An applicable omission retires C, and any observation at or above that manifest's first chunk
+  offset halts and alarms as a protocol violation, including an observation between chunks.
+- Mixed-cycle Kafka records are split into observation children. A manifest may satisfy a covered
+  incomplete-accumulator WorkClaim while a transaction claim beneath the same child remains
+  pending, and the parent offset commits only after every child is terminal `Satisfied`.
+- Flushing a traffic batch at a manifest-cycle boundary and not flushing it preserve the same
+  per-observation semantics and WorkClaim decisions without loss or duplication. Parent-record
+  identity, commit timing, and redelivery granularity may differ; flushing is only a batching
+  optimization.
 - The connection-local submission chain preserves same-connection Kafka order, and
   `connectionObservationSequence` detects a gap, regression, or conflicting duplicate rather than
   asking the replayer to reorder records.
+- `manifestCycle` is nondecreasing as `connectionObservationSequence` increases; a later sequence
+  carrying a lower cycle closes capture or halts replay.
 - Repeated periodic callbacks never submit manifest M+1 before M is completely acknowledged.
 - Ordinary packets continue concurrently while add, remove, and manifest copy-and-increment are
   repeatedly raced.
-- Removing a connection is impossible until every request allowed to execute at the source has a
-  complete acknowledged Kafka representation.
+- Removing a closed connection from the active set is impossible until Kafka acknowledges its
+  terminal observation and every earlier TrafficStream observation.
 - Terminal self `NoMoreWrites` waits for all related Netty connections to disconnect, an empty
   manifest to be acknowledged, every previously accepted send to succeed, and the periodic
   manifest publisher to become quiescent.
-- A periodic manifest callback racing permanent retirement either enters the lane before
-  `RETIRING` and is drained or exits without submission; it never publishes after terminal
+- A periodic manifest callback racing permanent proxy-partition retirement either entered the lane
+  before `RETIRING` and completes or exits without submission; it never publishes after terminal
   `NoMoreWrites`.
 - Producer configuration cannot disable idempotence, weaken `acks=all`, or set
   `max.in.flight.requests.per.connection` above the ordering-preserving limit.
@@ -997,12 +1090,22 @@ orchestration around:
 ### 11.2 Manifest and replayer tests
 
 - Complete manifests list active and idle connections.
-- Chunk loss, conflicting metadata, and duplicate indexes make a manifest non-authoritative.
+- Chunk loss, conflicting metadata, duplicate indexes, or chunk offsets that do not increase with
+  `chunkIndex` make a manifest non-authoritative.
 - A listing manifest preserves an idle connection's current per-connection HTTP accumulation.
-- Manifest M omitting a connection resets only an accumulation begun in cycle M or earlier.
-- A greater-cycle observation after reset starts from an empty per-connection HTTP state machine
-  and is never joined to the pre-reset accumulation.
-- A later manifest may reset that new incomplete accumulation again.
+- Manifest M omitting a connection first observed in cycle M or earlier settles its incomplete
+  accumulation and terminally retires that connection identity.
+- Manifest M omitting a connection first observed in cycle M+1 has no effect; M+1 is the first
+  applicable manifest.
+- Any observation at or above the first chunk offset of an applicable omitting manifest is retained
+  and halts replay as a protocol violation, including an observation interleaved between chunks.
+- A reconstruction-relevant observation after C's terminal observation is also a protocol
+  violation; a later listing manifest prepared before active-set removal remains valid but cannot
+  reopen C.
+- One Kafka record containing observations from multiple manifest cycles creates exactly one child
+  obligation per observation. An incomplete-accumulator WorkClaim may become `Satisfied` while a
+  transaction claim beneath the same child remains pending, and the parent offset remains
+  uncommitted until every child is terminal `Satisfied`.
 - Terminal self `NoMoreWrites` settles prior incomplete state and retires the proxy-partition.
 - Scan-ahead discovery of self `NoMoreWrites` records its Kafka cutoff; traffic below the cutoff
   remains valid. Every traffic or manifest record above it violates the protocol; only duplicate
@@ -1011,9 +1114,12 @@ orchestration around:
   violation; duplicate self completion is idempotent.
 - Peer `NoMoreWrites` does not settle state or discard later traffic.
 - Elapsed-time expiration never produces a commit-eligible disposition.
+- Cycle-boundary batch flushing is optional. It does not change per-observation semantics or
+  WorkClaim decisions, but it may change parent-record boundaries, commit timing, and redelivery
+  granularity.
 - `manifestCycle`, source event time, proxy monotonic time, Kafka offset, and Kafka timestamp remain
   separate domains.
-- A complete request is replayed even when its connection's later incomplete accumulation is reset.
+- A complete request is replayed even when an applicable later manifest retires its connection.
 - Every terminal path settles its process-local accounting exactly once; only contiguous
   `Commit` dispositions advance Kafka's commit watermark.
 
@@ -1021,9 +1127,9 @@ orchestration around:
 
 - A process completes leader-broker probes before joining.
 - `PROBATIONARY` members receive no new traffic.
-- Scale-up moves eligibility to accept new captured client connections while old connections drain
-  in place.
-- Temporary assignment drain ends with an acknowledged empty manifest.
+- Scale-up moves eligibility to accept new captured client connections while the existing proxy
+  connection set drains in place.
+- Temporary partition drain ends with an acknowledged empty manifest.
 - Reacquisition after temporary drain begins only after a new initial manifest is acknowledged.
 - Reacquisition after terminal `NoMoreWrites` requires a fresh process and `writerNodeId`.
 - The active-capacity gate closes below `minimumActiveProxyCount`.
@@ -1056,7 +1162,10 @@ The design is complete when:
 7. pass-through creates a loud, explicit capture gap and never resumes capture;
 8. manifest cycle, Kafka offset, source event time, and local monotonic time are kept as distinct
    domains; and
-9. all terminal paths settle their local obligations through the normal accounting path, while
+9. every accepted observation belongs to exactly one child obligation, every semantic dependency
+   has one attributable WorkClaim, partial claim or child settlement never advances the parent
+   Kafka offset, and all terminal paths settle their local obligations through the normal accounting
+   path, while
    retained offsets continue to block Kafka commit progress.
 
 ---
@@ -1070,9 +1179,14 @@ The design is complete when:
   packet capture remains concurrent.
 - Kafka append order may differ from proxy lifecycle order, so observations carry
   `manifestCycle`.
-- A manifest omission resets only the current incomplete per-connection HTTP accumulation whose
-  start cycle is not newer than that manifest.
-- A greater-cycle observation may start a new accumulation for the same captured client connection.
+- A complete manifest omission applies only when the connection first appeared no later than that
+  manifest cycle. An applicable omission settles incomplete state and retires that connection
+  identity.
+- A greater-cycle observation may validly survive an earlier omission only when the connection
+  first became active after that earlier manifest boundary; it is not a resurrection after
+  applicable retirement.
+- Mixed-cycle records use observation children and attributable WorkClaims; parent Kafka commit
+  waits for every child to become terminal `Satisfied`.
 - Manifest age advances only after acknowledgement of a complete manifest.
 - Capture-before-forward is the primary completeness guarantee.
 - Capture-before-forward in this round assumes non-streaming source execution; chunked wire framing

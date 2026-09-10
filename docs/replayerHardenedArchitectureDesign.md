@@ -8,12 +8,15 @@
 and hardens §10's capture-side open-connection manifest design. Exact manifests remain complete and
 chunked, but omission correctness now comes from an explicit per-proxy, per-partition
 `manifestCycle`, not an assumption that all concurrent proxy activity reaches Kafka in proxy-side
-execution order. A complete manifest omission resets only an incomplete per-connection HTTP
-accumulation that began in that cycle or earlier. Later observations for the same captured client
-connection begin a new accumulation only when their `manifestCycle` is greater than the omitting
-manifest. Elapsed-time expiration is not commit authority until a
+execution order. An omission is applicable only to a connection first observed no later than that
+manifest cycle. Applicable omission settles incomplete state and terminally retires the unique
+connection identity; later observations for that identity are protocol violations. Traffic records
+may contain observations from multiple manifest cycles, so replay intake creates child observation
+obligations and commits the parent Kafka offset only after every child settles. Elapsed-time
+expiration is not commit authority until a
 separate design resolves delayed suffixes and broker-clock jumps. `NoMoreWrites` is self-emitted
-only, follows full connection teardown and publisher drain, and terminally retires one
+only, follows full connection-set teardown, publisher quiescence, and accepted-send acknowledgement,
+and terminally retires one
 proxy-partition identity. The cancellation
 review additionally made two contracts explicit: aborting an active target
 exchange must actively settle and clean up every owned sub-operation rather than wait for the normal
@@ -31,7 +34,7 @@ they must not override these three documents.
 [proxyHorizontalScalingAndNodeDeath.md](proxyHorizontalScalingAndNodeDeath.md)
 — horizontal proxy scaling uses consumer-group membership only for new-connection routing.
 Exact manifests define cycle-scoped reset boundaries. An acknowledged empty manifest closes a
-temporary assignment drain, and terminal self `NoMoreWrites` closes permanent proxy-partition
+temporary partition drain, and terminal self `NoMoreWrites` closes permanent proxy-partition
 retirement. A hard crash that emits neither may leave incomplete state retained; group departure
 only triggers group rebalance and never authorizes replay settlement.
 For this redesign, capture-before-forward assumes that mutating source handlers cannot apply effects
@@ -142,7 +145,7 @@ instances of the same structural defect.
 | --- | --- |
 | F1 | A request spanning two Kafka records hit a `connectionException`. The handler reset state and discarded the held record keys *without committing them*. Those offsets pinned their partition forever. |
 | F2 | An expiring keep-alive connection committed its held keys, then a `finally` block committed the same keys again and threw. Because commits are only staged, the crash meant Kafka never learned — so restart re-delivered the records and re-crashed. |
-| F3 | `BlockingTrafficSource` implements the traffic-source interface but did not override two lifecycle methods, which are `default {}` no-ops. Production wires the close callback *through* that wrapper, so every close notification was swallowed and the drain gate never reopened. |
+| F3 | `BlockingTrafficSource` implements the traffic-source interface but did not override two lifecycle methods, which are `default {}` no-ops. Production wires the close callback *through* that wrapper, so every close notification was swallowed and the termination gate never reopened. |
 | F4 | Closing a connection called `schedule.clear()`, dropping pending futures without completing them. Everything waiting on them — limiter permits, tracker entries, the ordering sorter — waited forever. |
 
 None of these is an exotic race. Each is a **required notification or decision that had no
@@ -156,24 +159,24 @@ Four structural properties, each of which this design targets directly.
 **Ordering is reconstructed after the fact.** Requests are admitted in source order, then pass
 through a concurrency limiter, asynchronous transformation, and an event-loop submission — after
 which an `OnlineRadixSorter` puts them *back* in order using a request index. Ordering is a repair
-operation, and the repair needs its own cancellation and drain semantics, which are themselves
+operation, and the repair needs its own cancellation and settlement semantics, which are themselves
 state that can leak (that is F4).
 
 **Terminal decisions are inferred rather than stated.** Whether to commit an offset is derived
 from a `ReconstructionStatus` plus a boolean, at a call site that may or may not be reached.
 `EXPIRED_PREMATURELY` commits; `CLOSED_PREMATURELY` does not. One status therefore cannot express
-"reset because complete manifest M omitted the predecessor interval" (limited commit authority)
+"reset because complete applicable manifest M omitted this connection" (limited commit authority)
 versus "timed out or ran out of runway" (must not commit) — and the code has no precise value to
 reach for.
 
 **Cancellation can masquerade as success, or as nothing at all.** A cancelled send produces an
 exception that is rethrown during tuple packaging, *before* the commit decision. So the request's
-local bookkeeping drains — making dashboards look healthy — while its offsets stay pinned and its
+local bookkeeping closes — making dashboards look healthy — while its offsets stay pinned and its
 tracing contexts stay open. Cancellation is neither success nor failure in the current vocabulary.
 It is a gap.
 
 **"Done" is not represented by anything.** `cancelConnection` returns an already-completed future
-while its drain, channel close, and acknowledgement are still in flight. A synthetic-close gate is
+while its cleanup, channel close, and acknowledgement are still in flight. A synthetic-close gate is
 an `AtomicInteger` that a missing callback can leave nonzero forever. Shutdown relies on the
 process exiting. No object anywhere means "this operation's entire effect has settled."
 
@@ -194,9 +197,10 @@ the single exchange in flight, and the connection's terminal state. It processes
 time, in admission order.
 
 **A replay transaction** owns everything about one request: source request and response state, the
-Kafka records carrying it, the concurrency permit, the transformed request buffers, the target
-outcome, the evidence outcome, its generation-scoped runway state, the tracing contexts, and —
-crucially — the single typed disposition proposal for that request's Kafka offsets.
+WorkClaims that attribute Kafka observations to it, the concurrency permit, the transformed
+request buffers, the target outcome, the evidence outcome, its generation-scoped runway state, the
+tracing contexts, and—crucially—the single typed decision for each WorkClaim it owns. It never
+selects a Kafka-record disposition.
 
 Everything else becomes a *producer of typed messages* to one of those two. The assembler produces
 source outcomes. Preparation produces a `Prepared` message. Netty produces a target outcome. The
@@ -212,15 +216,17 @@ Three consequences make this worth doing:
 
 - **Every policy decision has one home.** The transaction invokes one pure exhaustive policy over
   what the source did, what the target did, whether evidence is durable, and its runway
-  observation. It produces one typed proposal. The ledger validates and applies that proposal to
-  its obligations; it does not independently rerun policy. Cancellation becomes a first-class
-  outcome that can never select a commit.
+  observation. It produces one typed WorkClaim decision. The ledger validates and applies that
+  decision; it does not independently rerun replay policy. Cancellation becomes a first-class
+  outcome that can never satisfy a claim.
 
 - **"Done" becomes checkable.** Aborting an actor returns a gate that completes only after its
   queue is settled, its in-flight exchange has been actively cancelled and its owned cleanup joined,
-  its channel is closed, every transaction has dispositioned, and its source acknowledgement is
-  delivered. Gates await real completions instead of counting or passively waiting for a normal
-  callback that cancellation made impossible.
+  its channel is closed, every transaction has submitted terminal WorkClaim decisions and released
+  its resources, and its source acknowledgement is delivered. The generation ledger-settlement gate
+  separately covers parent Kafka-record disposition and any broker acknowledgement. Gates await real
+  completions instead of counting or passively waiting for a normal callback that cancellation made
+  impossible.
 
 The design also carries the expiration-hardening policy: optional read-ahead bounded by a small
 epsilon and coupled to replay progress; exact manifest-cycle reset for incomplete per-connection
@@ -241,6 +247,11 @@ work item, registered its obligations, and become responsible for driving it to 
 disposition. It does not mean that a proxy may accept a new client connection, that the target has
 accepted a request, or that Kafka has accepted a commit.
 
+This document reserves **drain** for the two aggregate proxy operations defined by the proxy
+design: temporary partition drain and proxy connection-set drain. Replayer lifecycle descriptions
+use **settlement**, **quiescence**, or **termination** instead. The lifecycle of one closed captured
+connection is **connection retirement**.
+
 ### 3.1 The five different things called "close"
 
 This ambiguity is a real source of bugs, so the design keeps the five lexically distinct:
@@ -251,7 +262,7 @@ This ambiguity is a real source of bugs, so the design keeps the five lexically 
 | **Source-side settlement** | The assembler's conclusion that a captured request or one incomplete accumulation segment is finished, for example complete request, captured close, manifest-cycle reset, terminal self completion, interruption, or shutdown. |
 | **Ordered close command** | A target-side close placed in a connection actor's queue at its time-shifted position, so it happens *after* the requests preceding it. |
 | **Channel close** | The Netty target socket actually closing. |
-| **Source acknowledgement** | Telling the Kafka layer "that session is gone," which is what releases its drain gate. **Not** an offset commit. |
+| **Source acknowledgement** | Telling the Kafka layer "that session is gone," which releases its termination gate. **Not** an offset commit. |
 
 ### 3.2 Terminal-decision vocabulary
 
@@ -268,9 +279,9 @@ This ambiguity is a real source of bugs, so the design keeps the five lexically 
   - **Replay evidence** — durable output written to a store (today, the tuple) recording *what replay
     did*. Normal replay requires this evidence.
   - **Manifest-cycle reset** — a complete exact manifest M omits captured client connection C, and
-    C's current incomplete per-connection HTTP accumulation began in cycle M or earlier. This
-    authorizes disposing only the Kafka obligations held by that accumulation. It is not a claim
-    that C can never appear again.
+    C first appeared in cycle M or earlier. This authorizes satisfying the covered
+    incomplete-accumulator WorkClaims and terminally retires that unique connection identity. If C
+    first appeared after M, the omission is non-applicable and authorizes nothing for C.
   - **Terminal self completion** — valid self `NoMoreWrites` permanently retires one
     `(writerNodeId, partition)` after the proxy's terminal barrier and authorizes settling its
     already-known incomplete accumulations.
@@ -280,17 +291,23 @@ This ambiguity is a real source of bugs, so the design keeps the five lexically 
   reset or terminal self completion is commit authority, but is not an `EvidenceWriter` artifact.
 - **Completion gate** — see §6.4. A future for a whole lifecycle operation, with an owner and
   documented postconditions that are already true when it completes successfully.
-- **Record obligation and claim** — the ledger owns one obligation per Kafka record. Each
-  accumulation or transaction that depends on observations in that record owns one attributable
-  claim against it. Every claim settles exactly once as `Commit` or `Retain`; the record can commit
-  only when all claims are `Commit`, and any `Retain` keeps the record eligible for redelivery. This
-  replaces anonymous counters because an unfulfilled claim names the connection, session, record,
-  and work still owed, and double fulfillment becomes structurally impossible. Claim registration
-  has an explicit seal: an obligation cannot reduce or close until the replay-intake owner has
-  declared that every observation in the record has been assigned to a leaf claim.
+- **Parent record obligation, child obligation, and work claim** — the ledger owns one parent
+  obligation per Kafka record. `Commit` and `Retain` are reserved for that indivisible parent
+  record. A valid traffic record creates one deterministic observation child per wire-array index.
+  A valid control record, or a record rejected by a record-level rule such as managed-session
+  mismatch, creates one deterministic control child. An observation that contributes to one or
+  more accumulations or transactions carries distinct attributable work claims beneath its one
+  child; multiple claims may depend on the same observation bytes. Each claim and child reaches
+  one local decision: `Satisfied` or `RetainRequired`. `RetainRequired` may become known early, but
+  the claim, child, and parent remain lifecycle-active until every owned dependency and sibling has
+  settled. Only after every child is terminal may the ledger reduce the parent: any
+  `RetainRequired` child selects parent `Retain`; all-`Satisfied` children create a
+  `CommitCandidate` that still requires source-owner acceptance. Child obligations are accounting
+  units, not independently committable Kafka offsets. Registration has explicit child and claim
+  seals so reduction cannot race discovery of another dependency.
 - **Out of runway** — we lost the right or the time to finish this work (partition reassigned,
   process shutting down). Never commit-eligible: someone else must be able to pick it up.
-- **Runway state** — generation-scoped authority to enter a commit disposition. `KafkaSourceActor`
+- **Runway state** — generation-scoped authority to accept a parent commit. `KafkaSourceActor`
   owns the authoritative source-generation state. `RecordDispositionLedger`, on the replay-intake
   owner, keeps a monotonic observed runway so it can reject known-stale commits early, but source
   acceptance is final only when the source actor processes the commit command in order with poll
@@ -300,18 +317,21 @@ This ambiguity is a real source of bugs, so the design keeps the five lexically 
   occur after both have already settled but before evidence or disposition has finished. Losing
   runway never rewrites an existing outcome; it vetoes any commit that the source actor has not
   already accepted.
-- **Commit proposed / accepted / acknowledged** — three deliberately distinct stages. A transaction
-  proposes a commit disposition to `RecordDispositionLedger`. The ledger sends a typed commit
-  command to `KafkaSourceActor`; the source accepts it only after checking the current generation
-  and registering the offset on its owner thread. Kafka acknowledges it only when the broker commit
-  succeeds. Revocation ordered before source acceptance selects `Retain`; after source acceptance,
-  `KafkaSourceActor` owns the pending broker-commit operation until acknowledgement or explicit
-  failure. The ledger continues to own the record obligation and waits on that source-owned result.
+- **Parent reduced / commit accepted / commit acknowledged** — three deliberately distinct stages.
+  Transactions and accumulations decide only their WorkClaims. After every child is terminal,
+  `RecordDispositionLedger` reduces the parent either to final `Retain` or to nonterminal
+  `CommitCandidate`. The ledger sends the candidate to `KafkaSourceActor`; only source-owner
+  generation validation and pending-offset registration select final parent `Commit`. A typed
+  generation rejection instead selects parent `Retain`. Kafka acknowledges the accepted commit
+  only when the broker commit succeeds. After source acceptance, `KafkaSourceActor` owns the
+  pending broker-commit operation until acknowledgement or explicit failure. The ledger continues
+  to own the parent obligation and its generation-scoped settlement gate until that source-owned
+  result arrives.
 - **Per-connection HTTP accumulation** — the source-side state currently assembling HTTP
   observations for one captured client connection. A manifest-cycle reset discards only the
-  incomplete accumulation that the manifest covers. An observation with a greater manifest cycle
-  may initialize a new accumulation for the same `connectionId`; delayed observations from the
-  omitted cycle or earlier remain covered predecessor data.
+  incomplete accumulation covered by an applicable omission and retires that `connectionId`.
+  An observation with a greater manifest cycle survives an earlier omission only when that earlier
+  manifest predates the connection's first observed cycle.
 - **Manifest cycle** — a monotonically increasing logical value scoped to one
   `(writerNodeId, partition)`. The proxy stamps each reconstruction-relevant observation with the
   current value and closes one cycle when it atomically copies its exact active-connection set and
@@ -343,9 +363,9 @@ originates so a proxy manifest is not mistaken for a direct replayer observation
 | `RequestPreparationService` | Replayer | Transformation and signing; yields an owned prepared request |
 | `ConnectionActor` | Replayer | FIFO command queue, one head timer, channel, one live exchange |
 | `TargetExchange` | Replayer | Owner-controlled target attempt, retry, response/finalizer, abort, and cleanup lifecycle |
-| `ReplayTransaction` | Replayer | One request's resources, outcomes, and disposition |
+| `ReplayTransaction` | Replayer | One request's resources, outcomes, and WorkClaim decisions |
 | `EvidenceWriter` | Replayer | Durable whole-tuple output; internal adapters may model future parts |
-| `RecordDispositionLedger` | Replayer | Owns record obligations, context closure, disposition tracking, and commit proposals; source-generation runway authority remains with `KafkaSourceActor` |
+| `RecordDispositionLedger` | Replayer | Owns parent Kafka-record obligations, observation and control children, WorkClaims, context closure, reduction, generation settlement, and parent commit commands; source-generation runway authority remains with `KafkaSourceActor` |
 
 ---
 
@@ -356,10 +376,16 @@ machinery — it is §2 traced concretely.
 
 ### 4.1 The normal path
 
-1. **Read.** `KafkaSourceActor` polls and decodes records on its source-I/O owner thread. It sends
-   one immutable source batch, including generation identity, to the replay-intake owner.
-   `RecordDispositionLedger` registers each `RecordObligation`: this record now *must* receive a
-   disposition. `ReplayReadGate` admits the batch only if its source time is within
+1. **Read.** `KafkaSourceActor` polls immutable raw record envelopes on its source-I/O owner thread.
+   It sends one immutable batch, including generation identity, to the replay-intake owner.
+   Replay intake registers each parent `KafkaRecordObligation`, validates the minimal wire envelope,
+   and, for a managed run, checks its session before payload decode. A valid nonmatching session
+   takes the authorized record-level discard path without parsing the untrusted payload. A matching
+   or unmanaged record then receives full semantic decode and creates the required observation or
+   control children. An unparseable envelope or malformed expected-session payload takes the
+   explicit decode-failure path in §14.1 instead of exposing partial observations. The parent now
+   *must* receive one disposition.
+   `ReplayReadGate` admits the batch only if its source time is within
    `settledWatermark + epsilon`.
 
 2. **Reconstruct.** `SourceAssembler`, on the replay-intake owner, feeds observations into the
@@ -369,7 +395,8 @@ machinery — it is §2 traced concretely.
    still in source order, does three things at once:
    - finds or creates the session's `ConnectionRuntime`, pinning it to one existing Netty event
      loop;
-   - registers the new transaction's claims against the ledger-owned record obligations and
+   - registers the new transaction's WorkClaims beneath the ledger-owned child observation
+     obligations and
      registers a work token with `ReplayProgressController`;
    - posts one immutable `AdmitRequest` envelope to the assigned event loop. That event loop creates
      the mutable `ReplayTransaction` and appends its `ReplayRequest` command to the actor's FIFO queue.
@@ -403,19 +430,23 @@ machinery — it is §2 traced concretely.
 8. **Join and write evidence.** With every required outcome terminal, the transaction asks
    `EvidenceWriter` to persist the tuple and waits for an `EvidenceOutcome`.
 
-9. **Dispose exactly once.** On its event-loop owner, the transaction invokes the exhaustive
-   `ReplayDispositionPolicy` over its three outcomes and runway observation and produces one typed
-   proposal for each claim. It sends those proposals—not the raw outcomes for a second policy
-   decision—to `RecordDispositionLedger` on replay intake. The ledger validates and reduces the
-   sealed record's claims and, when every claim is `Commit`, sends a `CommitProposed` command to
-   `KafkaSourceActor`. The source actor serializes it with rebalance and poll state, accepts or
-   rejects it after validating the generation, and reports the result; the ledger then joins the
-   broker acknowledgement.
+9. **Decide each WorkClaim exactly once.** On its event-loop owner, the transaction invokes the
+   exhaustive `ReplayWorkClaimPolicy` over its three outcomes and runway observation and produces
+   one typed `Satisfied` or `RetainRequired` decision for each WorkClaim. It sends those
+   decisions—not the raw outcomes for a second policy decision—to `RecordDispositionLedger` on
+   replay intake. The ledger validates them and reduces each sealed child independently. After
+   every child is terminal, the ledger reduces the parent to final `Retain` or nonterminal
+   `CommitCandidate`. It sends a candidate to `KafkaSourceActor`. The source actor serializes it
+   with rebalance and poll state, accepts or rejects it after validating the generation, and
+   reports the result. Acceptance selects final parent `Commit`; generation rejection selects final
+   parent `Retain`; an accepted commit remains ledger-owned until broker acknowledgement.
 
 10. **Release.** The transaction closes its owned resources exactly once: prepared request, permit,
-    tracing contexts. Its completion gate completes only after disposition has settled, and the
-    coordinator removes it from the registry then — so registry drain genuinely implies "offset
-    decided, contexts closed."
+    tracing contexts. Its completion gate completes after all of its WorkClaim decisions have been
+    accepted by the ledger and its owned resources are closed. It does not wait for unrelated
+    sibling claims or children, the parent disposition, or a broker commit acknowledgement. The
+    ledger independently owns unresolved child reduction, parent disposition, and broker
+    acknowledgement.
 
 11. **Progress.** The transaction gate settles its work token, `ReplayProgressController` advances
     the settled watermark, `ReplayReadGate` raises, and step 1 can happen again.
@@ -435,7 +466,7 @@ This is the failure path that motivated the design, and it shows where each mech
    generation. This covers a request whose source and target already completed but whose evidence or
    record disposition has not. Source acceptance remains race-free because commit commands and
    authoritative revocation are serialized by `KafkaSourceActor`; the intake-side runway is an
-   early rejection and drain signal.
+   early rejection and settlement signal.
 
 3. The coordinator aborts the matching connection actors **by typed `ConnectionSessionKey`** — not
    by a concatenated string, not via a placeholder session number. `abort()` returns a **session
@@ -448,26 +479,28 @@ This is the failure path that motivated the design, and it shows where each mech
    sending, response decoding/finalization, attempt resources, and the owner-controlled exchange
    result. It does not mean closing the channel and then waiting for the ordinary response future.
 
-5. Each active transaction drains its owned children and reaches `DISPOSING`. Transactions that were
-   still reconstructing usually have source `Interrupted` and target `Cancelled`; transactions that
-   had progressed further may retain earlier terminal source or target outcomes. In both cases lost
-   runway selects `Retain` unless the source had already accepted the commit by validating the
-   generation and registering the offset. The ledger closes every record context exactly once. Any
-   source-accepted broker commit remains source-actor-owned and must reach a broker acknowledgement
-   or an explicit failure before the session can terminate; the ledger owns the waiting record
-   obligation, and a transaction-level proposal alone has no such status.
+5. Each active transaction actively settles its owned asynchronous operations and reaches
+   `DECIDING_CLAIMS`.
+   Transactions that were still reconstructing usually have source `Interrupted` and target
+   `Cancelled`; transactions that had progressed further may retain earlier terminal source or
+   target outcomes. Lost runway makes every still-undecided owned claim `RetainRequired`. The
+   transaction terminates after the ledger accepts those decisions and its resources close. The
+   ledger separately keeps every parent record active until all sibling claims and children settle,
+   selects parent `Retain` or `Commit`, closes each record context exactly once, and joins any
+   source-accepted broker commit.
 
-6. Only now — after step 5 has settled for *every* transaction of the session — does the actor deliver
-   its source acknowledgement and its session termination gate complete. Per §6.4 rule 5, transaction
-   settlement is one of that gate's postconditions, so step 4's channel-level teardown is a *child* of
-   the gate, not the whole of it. An actor whose channel is closed but whose transactions have not
-   yet disposed is not terminated.
+6. Only now—after step 5 has settled for *every* transaction of the session—does the actor deliver
+   its source acknowledgement and its session termination gate complete. Per §6.4 rule 5,
+   transaction settlement is one of that gate's postconditions, so step 4's channel-level teardown
+   is a *child* of the gate, not the whole of it. An actor whose channel is closed but whose
+   transactions have not submitted terminal claim decisions is not terminated.
 
-7. The coordinator awaits every session termination gate for the revoked generation, including an
-   explicit acknowledgement for connections that never opened a session at all. Real records for
-   the new generation resume only after all of them complete — which, by step 6, means after every
-   affected record has been dispositioned and no actor, transaction, target exchange, timer, permit,
-   target context, or in-memory source obligation from the old generation remains.
+7. The lifecycle owner awaits every session termination gate, the generation ledger-settlement
+   gate, and replay quiescence for the revoked generation. The session set includes an explicit
+   acknowledgement for connections that never opened a session at all. Real records for the new
+   generation resume only after all three gate classes complete, which means every parent record
+   has a terminal disposition and no actor, transaction, target exchange, timer, permit, target
+   context, or in-memory source obligation from the old generation remains.
 
 **What joining an exchange means.** The exchange adapter owns a terminal result and a cleanup gate
 that it can settle without cooperation from the normal response path. A library future may be
@@ -485,8 +518,9 @@ complete a transaction a second time, or find mutable state belonging to a newer
 2. Preserve source ordering for requests on the same connection.
 3. Preserve replay timing where possible without weakening connection ordering.
 4. Guarantee that every admitted request and connection command terminates exactly once.
-5. Guarantee that every accepted Kafka record receives exactly one explicit disposition decision
-   within a process — never zero, never two. This is not exactly-once delivery; Kafka may still
+5. Guarantee that every accepted Kafka record receives exactly one parent disposition, every
+   decoded observation receives exactly one terminal child decision, and every attributable
+   WorkClaim settles exactly once within a process. This is not exactly-once delivery; Kafka may still
    redeliver a retained or unacknowledged record (§0).
 6. Guarantee that cancellation cannot be interpreted as successful replay.
 7. Bound read-ahead and make every incomplete-state reset fact-based.
@@ -521,7 +555,7 @@ optional for test convenience.
 
 | Rule | Without it |
 | --- | --- |
-| Connection commands are admitted while source order is still known | You need a sorter, and the sorter needs its own cancellation and drain semantics — more state to leak (**F4**) |
+| Connection commands are admitted while source order is still known | You need a sorter, and the sorter needs its own cancellation and teardown semantics — more state to leak (**F4**) |
 | An actor executes one command at a time in FIFO admission order | Out-of-order sends on one connection |
 | Asynchronous preparation may complete out of order but cannot reorder execution | A fast-transforming request overtaking a slow one ahead of it |
 | Sequence numbers are validation and diagnostic data, not the ordering mechanism | Ordering silently depends on an index staying consistent across rebuilds |
@@ -566,11 +600,19 @@ while work is still in flight.
 7. A timeout or watchdog may report or fail the operation. It may never reset state or complete the
    gate successfully while postconditions remain false.
 8. Reusable shutdown does not rely on process exit for cleanup.
-9. End-of-input drain uses a replay-quiescence gate owned by `ReplayProgressController`. Admission
+9. End-of-input completion uses a replay-quiescence gate owned by `ReplayProgressController`. Admission
    opens a new interval when outstanding work changes from zero to one; settlement completes that
-   interval only when the count returns to zero. The top-level drain joins this gate with request
+   interval only when the count returns to zero. Top-level completion joins this gate with request
    tracking while servicing the replay-intake mailbox. It does not poll `isWorkOutstanding()`, and
    cancellation of a caller's aggregate waiter cannot cancel the controller's authoritative gate.
+10. Every source generation has one ledger-settlement gate owned by
+    `RecordDispositionLedger`. It covers every parent record obligation registered for that
+    generation, including committed, retained, decode-failed, and still-unresolved parents. It
+    succeeds only after child and WorkClaim registration is sealed, every local obligation is
+    lifecycle-terminal, every parent disposition is selected, all record contexts are closed, and
+    every source-accepted commit has reached broker acknowledgement or explicit failure. A
+    transaction gate does not substitute for this gate because one transaction may cover only some
+    WorkClaims beneath one child, and one parent may contain work for several transactions.
 
 Callers chain subsequent lifecycle work from the gate. They do not infer completion from a callback
 firing, a counter reaching zero, a cache entry disappearing, or the cancellation of a separate
@@ -602,7 +644,7 @@ produce a false successful result or leave state that the next generation can ob
 ## 7. Proposed System
 
 Three views answer three different questions: §7.1 which thread owns which state, §7.2 what one
-request waits on and what releases each wait, §7.3 what must drain before a lifecycle operation may
+request waits on and what releases each wait, §7.3 what must settle before a lifecycle operation may
 complete. In every diagram an arrow is a message, a future completion, or a network exchange — never
 direct cross-thread mutation, and never a thread blocking.
 
@@ -641,7 +683,7 @@ flowchart LR
 
     READ -->|"read demand / pause"| KSA
     KSA -->|"immutable source batch /<br/>lifecycle event"| ASM
-    LEDGER -->|"CommitProposed / release /<br/>source acknowledgement"| KSA
+    LEDGER -->|"ParentCommitCommand / release /<br/>source acknowledgement"| KSA
     KSA -->|"CommitAccepted /<br/>CommitAcknowledged"| LEDGER
     ASM -.->|"completed request / close"| COORD
 
@@ -659,7 +701,7 @@ flowchart LR
     ACTOR -.->|"execute head"| EXCH
     EXCH -.->|"TargetOutcome"| TXN
 
-    TXN -->|"DispositionDecision ·<br/>settle work token ·<br/>PermitReleased"| LEDGER
+    TXN -->|"WorkClaimDecision ·<br/>settle work token ·<br/>PermitReleased"| LEDGER
 
     style SOURCE fill:#dcecf8,stroke:#2f6687
     style INTAKE fill:#e9f3fb,stroke:#2f6687
@@ -678,8 +720,8 @@ Kafka polling, scanning, source-generation state, and commit acceptance belong t
 actor. Reconstruction, admission, permits, progress, and disposition bookkeeping belong to replay
 intake. The two owners exchange immutable batches, lifecycle events, source commands, and
 acknowledgements. When source admission is closed, the source actor keeps servicing Kafka
-heartbeats, commits, rebalances, and bounded scans while replay intake continues draining mailbox
-work. `ReplayTransaction` receives `RunwayLost` so it can begin draining promptly; the source actor
+heartbeats, commits, rebalances, and bounded scans while replay intake continues processing mailbox
+work. `ReplayTransaction` receives `RunwayLost` so it can begin settlement promptly; the source actor
 still makes the final source-acceptance decision.
 
 ### 7.2 One request: wait states and their releasing events
@@ -697,12 +739,12 @@ flowchart TD
     W3["3 · awaiting terminal target outcome"]
     W4["4 · awaiting join: every required<br/>source and target outcome terminal"]
     W5["5 · awaiting evidence durability<br/>(when required)"]
-    W6["6 · awaiting disposition, commit ack<br/>when accepted, and resource release"]
+    W6["6 · awaiting WorkClaim decisions<br/>accepted and owned resources released"]
     DONE(["Transaction completion gate succeeds"])
 
     SRC["Source slot — settles independently:<br/>before, during, or after target work"]
     CANCEL["Cancellation or runway loss — any phase"]
-    DRAIN["DRAINING — actively settle timers, permit<br/>acquisition, preparation, exchange, resources"]
+    SETTLING["SETTLING — actively settle timers, permit<br/>acquisition, preparation, exchange, resources"]
 
     ADMITTED -->|"permit acquisition and preparation<br/>start concurrently"| W1
     W1 -->|"PermitGranted AND Prepared"| W2
@@ -711,15 +753,15 @@ flowchart TD
     SRC -->|"SourceOutcome"| W4
     W4 -->|"last required outcome terminal"| W5
     W5 -->|"EvidenceOutcome, or not required"| W6
-    W6 -->|"DispositionSettled AND resources closed"| DONE
-    CANCEL -->|"never skips disposition"| DRAIN
-    DRAIN -->|"owned children terminal"| W6
+    W6 -->|"claim decisions accepted AND resources closed"| DONE
+    CANCEL -->|"never skips disposition"| SETTLING
+    SETTLING -->|"owned children terminal"| W6
 
     classDef wait fill:#fff2cc,stroke:#9a6700,stroke-width:2px
     classDef action fill:#e9f3fb,stroke:#2f6687
     classDef terminal fill:#eaf6e8,stroke:#4f7a46,stroke-width:2px
     class W1,W2,W3,W4,W5,W6 wait
-    class ADMITTED,SRC,CANCEL,DRAIN action
+    class ADMITTED,SRC,CANCEL,SETTLING action
     class DONE terminal
 ```
 
@@ -730,15 +772,15 @@ flowchart TD
 | 3 | Terminal target outcome | `ConnectionActor` (event loop) | `TargetExchange`: `TargetOutcome` or abort outcome |
 | 4 | Every policy-required source and target outcome | `ReplayTransaction` (event loop) | The last required outcome turning terminal |
 | 5 | Evidence outcome, when required | `ReplayTransaction` (event loop) | `EvidenceWriter`: `EvidenceOutcome`, or policy: not required |
-| 6 | Disposition proposal applied, source acceptance and commit acknowledgement when accepted, owned-resource release | `ReplayTransaction` computes one proposal (event loop); `RecordDispositionLedger` validates and applies it (replay intake); `KafkaSourceActor` accepts and acknowledges commit (source I/O) | Source result settles the ledger; transaction closes its resources |
+| 6 | WorkClaim decisions accepted by the ledger and owned-resource release | `ReplayTransaction` computes one decision per owned claim (event loop); `RecordDispositionLedger` validates and applies it (replay intake) | Ledger acceptance and transaction resource closure; this wait does not include sibling claims, parent reduction, source acceptance, or broker acknowledgement |
 
 The two side entries are orthogonal to the main path on purpose. The source slot may settle at any
-time relative to target work — state 4 simply requires both. Cancellation from any phase actively
-settles every owned child, then rejoins the same disposition path; it never jumps to successful
-completion. And a later request may already hold `Prepared` yet sit in state 2 until it is the FIFO
-head — that is the ordering rule.
+time relative to target work—state 4 simply requires both. Cancellation from any phase actively
+settles every owned asynchronous operation, then rejoins the same WorkClaim-decision path; it never
+jumps to successful completion. And a later request may already hold `Prepared` yet sit in state 2
+until it is the FIFO head—that is the ordering rule.
 
-### 7.3 Drain dependencies and completion gates
+### 7.3 Lifecycle dependencies and completion gates
 
 An arrow means the downstream gate cannot complete until the upstream gate has completed. Each gate
 additionally has local postconditions (table below) that must already be true when it completes.
@@ -748,33 +790,33 @@ releases nothing by itself.
 ```mermaid
 flowchart TD
     TXN(["Transaction gate<br/>ReplayTransaction · event loop"])
-    COMMIT(["Accepted-commit gate<br/>KafkaSourceActor · source I/O"])
+    LEDGER(["Generation ledger-settlement gate<br/>RecordDispositionLedger · replay intake"])
     SESSION(["Session termination gate<br/>ConnectionActor · event loop"])
-    DRAIN(["Replay quiescence gate<br/>ReplayProgressController · replay intake"])
+    QUIESCENCE(["Replay quiescence gate<br/>ReplayProgressController · replay intake"])
     LIFE(["Rebalance / shutdown gate<br/>source I/O + replay intake"])
     GO(["Resume the next generation<br/>or finish shutdown"])
 
     TXN -->|"every session transaction joined"| SESSION
-    COMMIT -->|"every session commit joined"| SESSION
-    TXN -->|"settles its request work token"| DRAIN
-    SESSION -->|"settles its session work token"| DRAIN
+    TXN -->|"settles its request work token"| QUIESCENCE
+    SESSION -->|"settles its session work token"| QUIESCENCE
     SESSION -->|"every in-scope session joined"| LIFE
-    DRAIN -->|"replay quiescent"| LIFE
+    LEDGER -->|"every parent obligation terminal"| LIFE
+    QUIESCENCE -->|"replay quiescent"| LIFE
     LIFE -->|"all joined gates succeeded"| GO
 
     classDef gate fill:#f4f4f4,stroke:#555555,stroke-width:2px
     classDef terminal fill:#eaf6e8,stroke:#4f7a46,stroke-width:2px
-    class TXN,COMMIT,SESSION,DRAIN,LIFE gate
+    class TXN,LEDGER,SESSION,QUIESCENCE,LIFE gate
     class GO terminal
 ```
 
 | Gate | Local postconditions, beyond joined child gates |
 | --- | --- |
-| Transaction | Required outcomes terminal; disposition accepted; contexts and resources released |
-| Accepted commit | Generation-valid broker acknowledgement received, or an explicit failure |
+| Transaction | Required outcomes terminal; all owned WorkClaim decisions accepted by the ledger; transaction contexts and resources released. It does not wait for parent disposition or commit acknowledgement. |
+| Generation ledger settlement | Every registered parent has sealed coverage or an explicit decode-failure transition; every child and WorkClaim is lifecycle-terminal; every parent disposition is terminal; all record contexts are closed; every source-accepted commit has broker acknowledgement or explicit failure. |
 | Session termination | Queue empty; `TargetExchange` cleanup joined; channel closed; cache entry removed; source acknowledgement delivered |
 | Replay quiescence | Every admitted request and session work token settled — outstanding work reaches zero |
-| Rebalance / shutdown | Every in-scope transaction, accepted-commit, session, and quiescence gate succeeded. Transactions and commits join through their session gates in the picture, but the lifecycle owner verifies all four kinds. |
+| Rebalance / shutdown | Every in-scope transaction, session, generation ledger-settlement, and quiescence gate succeeded. |
 
 Two further waits gate record flow rather than lifecycle completion: `ReplayReadGate` admits another
 source record only when the settled watermark plus epsilon allows it and lifecycle intake is open,
@@ -822,18 +864,18 @@ not a dedicated thread.**
 
 | Owner | Thread/executor | Mutable state |
 | --- | --- | --- |
-| `KafkaSourceActor` | One source-I/O owner thread | Consumer assignment, source-generation runway, replay/scan positions, offset trackers, commit acceptance and acknowledgement, source-side active-connection index |
-| `SourceAssembler` and `ReplayCoordinator` | One replay-intake owner thread | Reconstruction state, session admission, affinity registry |
+| `KafkaSourceActor` | One source-I/O owner thread | Consumer assignment, source-generation runway, replay/scan positions, offset trackers, commit acceptance and acknowledgement |
+| `SourceAssembler`, `ReplayCoordinator`, and `ProxyManifestIndex` | One replay-intake owner thread | Reconstruction state, manifest/control-record state, session admission, affinity registry |
 | `AsyncPermitPool` | Replay-intake owner | Permit queue and available capacity; releases are posted back to this owner |
 | `ConnectionRuntime` | One assigned existing Netty event loop | `ConnectionActor`, session transactions, command mailbox, timers, target channel, terminal state |
 | `RequestPreparationService` | Transformation/event-loop workers as appropriate | No shared connection lifecycle state |
 | `EvidenceWriter` | Sink-specific executor | Sink-local buffering and durability |
 | `ReplayProgressController` | Replay-intake owner | Admitted-work tokens, replay-quiescence gate, and contiguous settled watermark |
 | `ReplayReadGate` | Replay-intake owner | Source admission using settled watermark, epsilon, and lifecycle state |
-| `RecordDispositionLedger` | Replay-intake owner | Record obligations, observed runway, context closure, disposition state, retained-record release |
+| `RecordDispositionLedger` | Replay-intake owner | Parent record obligations, observation and control children, WorkClaims, observed runway, context closure, reduction state, generation ledger-settlement gate |
 
 Cross-thread completions are converted into messages: `Prepared`, `SourceSettled`,
-`EvidenceSettled`, `PermitReleased`, `RunwayLost`, `CommitProposed`, `CommitAccepted`,
+`EvidenceSettled`, `PermitReleased`, `RunwayLost`, `ParentCommitCommand`, `CommitAccepted`,
 `CommitAcknowledged`, and `AbortRequested`. Target exchange callbacks already run on the assigned
 Netty event loop, so **the actor and transaction communicate with no extra executor hop** — this is
 why co-locating the transaction with its actor matters rather than giving transactions their own
@@ -861,8 +903,9 @@ impossible.
 
 The normal logical handoffs are bounded and explicit:
 
-1. Kafka source-I/O owner → replay-intake owner, with an immutable decoded batch or source-lifecycle
-   event.
+1. Kafka source-I/O owner → replay-intake owner, with an immutable raw-record batch or
+   source-lifecycle event. Replay intake is the only full semantic decoder on the normal replay
+   path.
 2. Replay-intake owner → Kafka source-I/O owner, with commit, release, scan-blocker, or session-
    termination commands; the source replies with immutable acceptance/acknowledgement results.
 3. Replay-intake owner → the assigned Netty event loop, with an immutable admission envelope.
@@ -892,7 +935,7 @@ progress.
 
 **The problem.** Identity is currently assembled ad hoc — `connectionId + ":" + sessionNumber +
 ":" + generation` strings, with a `PENDING_CLOSE_SESSION_NUMBER_PLACEHOLDER` constant that three
-separate call sites must keep in lockstep or the drain gate leaks forever. Elsewhere identity is
+separate call sites must keep in lockstep or the termination gate leaks forever. Elsewhere identity is
 recovered from "whichever traffic-stream key is still in this list," which is why a normal close
 with an empty key list can skip a required notification.
 
@@ -913,6 +956,24 @@ record ReplayRequestId(
 ) {}
 
 record KafkaRecordId(String topic, int partition, long offset, int generation) {}
+
+sealed interface ChildObligationId
+    permits ObservationObligationId, ControlObligationId {}
+
+record ObservationObligationId(
+    KafkaRecordId parent,
+    int observationIndex
+) implements ChildObligationId {}
+
+record ControlObligationId(
+    KafkaRecordId parent,
+    ControlKind kind
+) implements ChildObligationId {}
+
+record WorkClaimId(
+    ChildObligationId child,
+    int claimIndex
+) {}
 
 record ManagedCaptureRunKey(
     String captureDomainId,
@@ -990,7 +1051,10 @@ A scan cycle:
 8. Discard all scan results if assignment or generation changed during the cycle.
 
 The scanner never advances replay positions, record lifecycles, replay time, or commit offsets.
-Exhausting the operational scan budget produces `Inconclusive`.
+Exhausting the operational scan budget produces `Inconclusive`. Its parser is a separate,
+stateless, read-only metadata decoder. It recognizes only enough framing to extract the fields
+listed above, creates no parent, child, or WorkClaim obligations, and must agree with the full
+replay decoder on record type and identity. Replay intake remains the sole full semantic decoder.
 
 **Why the same consumer rather than a second consumer?** A separately grouped consumer does not
 automatically share assignment or generation with replay; manual assignment could reproduce that
@@ -1025,8 +1089,8 @@ sealed interface ManifestCycleDecision {
 
 record CompleteManifest(
     long manifestCycle,
-    long firstOffset,
-    long lastOffset,
+    long firstOffset, // chunk 0 / lowest chunk offset; applicable-omission cutoff
+    long lastOffset,  // final chunk / highest chunk offset; completeness/scan boundary
     Set<String> openConnectionIds
 ) {}
 
@@ -1046,7 +1110,9 @@ enum FollowUpRequirement {
 `ManifestCycleResolved` is usable only when:
 
 - every index in `0..chunkCount-1` was consumed exactly once and all
-  chunks carry a consistent header.
+  chunks carry a consistent header;
+- chunk Kafka offsets increase with `chunkIndex`, making `firstOffset` chunk 0's offset and
+  `lastOffset` chunk `chunkCount-1`'s offset;
 - the observations and manifest use the same `writerNodeId` and partition;
 - the partition stamped inside every traffic record and manifest chunk equals the Kafka partition
   from which it was consumed.
@@ -1055,56 +1121,49 @@ enum FollowUpRequirement {
   regression have made neither the manifest nor its decision ambiguous.
 
 A complete manifest M that lists C resolves continuity across boundary M. A complete manifest M
-that omits C resets only the predecessor accumulation segment containing observations whose cycle
-is at most M. The omission is not a permanent tombstone for C.
+that omits C has one of two meanings:
 
-Because each `TrafficRecord` is cycle-homogeneous, the record-level rule is exact and idempotent:
+- if C's first observed `manifestCycle` is greater than M, M predates C and is non-applicable; or
+- if C first appeared in cycle M or earlier, M is applicable, settles C's remaining incomplete
+  assembly, and terminally retires that unique connection identity.
 
-- a record for C with `manifestCycle <= M` belongs to the predecessor covered by an omitting M,
-  even if Kafka appended or delivered that record after the manifest chunks;
-- a record for C with `manifestCycle > M` belongs to the successor and is not committed by M; and
-- a record that mixes cycles is malformed and halts rather than creating sub-offset obligations.
+The proxy's connection-retirement ordering makes the second case strong. Netty reports closure,
+the kernel and Netty provide no further network traffic for C, C's event-loop owner submits the
+terminal connection observation after every earlier observation, Kafka acknowledges the terminal
+and all earlier observations, and only then does the event-loop owner remove C from the active set.
+An applicable omitting manifest is prepared after that removal. Therefore every valid observation
+for C has a Kafka offset lower than the complete manifest's `firstOffset`. An observation or listing
+manifest for C at or above that cutoff is a protocol violation, including one interleaved between
+chunks.
 
-The Kafka-order inversion requires one additional source-assembler rule. The concrete race is:
+Scan-ahead may discover the applicable omission before normal replay consumes lower-offset records.
+That is cursor inversion, not publication after retirement. The scanner may settle a blocker only
+after it has reconstructed every chunk and scanned every intervening offset through
+`lastOffset` without finding a required follow-up. Normal replay still processes the valid
+lower-offset observations in Kafka order.
 
-1. The replayer holds an incomplete per-connection HTTP request prefix for C whose observations
-   carry cycle M.
-2. The proxy closes C's source-forward gate, drains every previously source-authorized operation,
-   and removes C from the exact active-connection registry.
-3. The next manifest snapshots that registry as manifest M, omits C, and advances the partition
-   counter to M+1.
-4. A late, non-source-authoritative callback for C reads M+1. Kafka may append or deliver that
-   observation before the chunks of manifest M.
+`TrafficRecord` may contain observations from multiple manifest cycles. Replay intake fully decodes
+and validates the parent, then creates deterministic child observation obligations in wire-array
+order. For one connection, `manifestCycle` must be nondecreasing as
+`connectionObservationSequence` increases; a later sequence carrying a lower cycle is a protocol
+violation. Classification is per observation, but a manifest decision acts only on the
+incomplete-accumulator WorkClaims that it actually resolves:
 
-The cycle-M prefix and the cycle-M+1 observation can therefore both be present at the replayer
-before the omitting manifest is resolved. They are not two simultaneously valid versions of one
-request. Until M is resolved, the newer observation is held separately as a **successor
-accumulation segment** and is not irreversibly merged with the predecessor prefix. When M resolves,
-the replayer performs this exact per-connection transition:
+- an incomplete-accumulator WorkClaim attached to an observation with cycle at most M is eligible
+  for `Satisfied(MANIFEST_CYCLE_RESET)` only if M is applicable to that connection lifecycle;
+- a transaction WorkClaim beneath the same child remains pending until that transaction settles;
+- a child becomes terminal only after every WorkClaim beneath it is terminal; and
+- a child with cycle greater than M is outside M's coverage when M predates the connection.
 
-- if M lists C, merge the predecessor and successor according to the ordinary TrafficStream
-  observation-ordering rules;
-- if M omits C, terminally dispose only the incomplete cycle-M-or-earlier request-assembly state,
-  create an empty per-connection HTTP request accumulator, and feed the already-held
-  cycle-M+1-or-later observations into that new accumulator;
-- Kafka offsets belonging to the successor remain obligations of the successor and are not
-  committed by M's omission; and
-- a request already recognized as complete is detached from connection liveness and is never
-  discarded merely because a later manifest omits its connection.
+No local claim or child decision commits part of a Kafka offset. The parent record obligation
+becomes commit-eligible only after every child is terminal `Satisfied`; a `RetainRequired` or
+unresolved child prevents parent commit. Under the current one-connection record schema and clean
+connection-retirement protocol, an applicable omission plus a greater-cycle observation for that
+same retired C is a protocol violation, not a valid partial-coverage case. If M predates C, M
+covers no WorkClaim for C and has no effect.
 
-This “reset” is only a reset of the replayer's per-connection HTTP request-assembly state. It does
-not reset, reopen, or otherwise act on the proxy's connection. A later observation for C is treated
-as the first observation of a new accumulation segment and still requires subsequent manifests or
-ordinary protocol completion to settle.
-
-A byte sequence would not be considered one complete request if recognizing it requires joining
-predecessor observations through M with successor observations after an omitting M. The omission
-intentionally breaks that continuity. Under the proxy contract, such a cross-boundary sequence
-cannot represent a mutating request that the proxy allowed to execute at the source while still
-owing replay to the target.
-
-This segmenting is internal replayer state. It is not a proxy epoch and must not appear as another
-wire protocol identity.
+A request already recognized as complete is detached from connection liveness and is never
+discarded merely because a later applicable manifest retires its connection.
 
 Terminal self completion is offset-scoped. Scan-ahead may install cutoff K immediately, but it may
 settle only the particular blocker for which the scanner covered every intervening offset through K
@@ -1141,8 +1200,9 @@ ordering point** for five things that would otherwise race:
 | --- | --- | --- | --- |
 | Complete request/response | Captured observations | Yes | Finish transaction and evidence requirements; later liveness facts cannot discard it |
 | Captured close with incomplete request | Captured close plus explicit close policy | Policy must be explicit | Settle only the incomplete accumulator; do not claim replay success |
-| Manifest M lists C | Complete exact manifest-cycle decision | No reset | Resolve continuity across M and merge predecessor/successor segments |
-| Manifest M omits C | Complete exact manifest-cycle decision | Yes, for predecessor only | Dispose the incomplete predecessor segment through M; initialize empty state and preserve/re-feed observations after M |
+| Manifest M lists C | Complete exact manifest-cycle decision | No reset | Preserve continuity across M |
+| Manifest M omits C, but C first appeared after M | Complete exact manifest-cycle decision | No | M predates C and has no effect |
+| Manifest M applicably omits C | Complete exact manifest-cycle decision | Yes, for covered incomplete-accumulator WorkClaims | Mark only those WorkClaims `Satisfied`, terminally retire C, and leave transaction or other sibling claims to settle normally; later observations or listings for C are protocol violations |
 | Terminal self `NoMoreWrites` | Valid self completion after proxy barrier | Yes, for already-known incomplete state | Settle incomplete state for that proxy-partition and permanently retire the identity |
 | Follow-up found before a cycle decision | Scan metadata | No terminal decision | Preserve it in the applicable segment |
 | Scan inconclusive | Incomplete or ambiguous manifest information | No | Continue or halt according to resource policy |
@@ -1211,7 +1271,8 @@ The authoritative proxy contract is
 [`proxyHorizontalScalingAndNodeDeath.md`](proxyHorizontalScalingAndNodeDeath.md). Membership assigns
 partitions for new captured client connections. Group departure triggers rebalance and has no replay
 meaning. Exact manifests resolve `manifestCycle` boundaries. A listing preserves continuity across
-the boundary; an omission resets only the covered incomplete predecessor accumulation.
+the boundary; an applicable omission settles the covered incomplete per-connection accumulation
+and retires that connection identity.
 
 `NoMoreWrites{writerNodeId, partition, emitterNodeId}` is valid only when
 `emitterNodeId == writerNodeId`. It is emitted only for permanent proxy-partition retirement,
@@ -1224,7 +1285,7 @@ completion moves the publisher to `RETIRED`, which rejects every later submissio
 `NoMoreWrites` promptly settles prior incomplete state and terminally retires that
 proxy-partition identity.
 
-Ordinary assignment drain uses the acknowledged empty manifest and does not emit
+Ordinary partition drain uses the acknowledged empty manifest and does not emit
 `NoMoreWrites`, so the same live proxy activation may later reacquire the partition after acknowledging a new
 initial manifest. The `NoMoreWrites` Kafka offset is its terminal cutoff. Traffic and manifests
 below that offset remain valid even when scan-ahead discovered completion first. Every traffic or
@@ -1273,12 +1334,12 @@ message TrafficRecord {
   string writerNodeId = 1;
   bytes connectionId = 2;
   int32 partition = 3;
-  int64 manifestCycle = 4;
-  repeated TrafficObservation observations = 5;
+  repeated TrafficObservation observations = 4;
 }
 
 message TrafficObservation {
   int64 connectionObservationSequence = 1;
+  int64 manifestCycle = 2;
   // existing observation fields follow
 }
 
@@ -1293,19 +1354,37 @@ message ProxyOpenConnectionManifestChunk {
 }
 ```
 
-Every `TrafficRecord` is homogeneous in
-`(writerNodeId, partition, connectionId, manifestCycle)`. A batching layer flushes before any of
-those values changes. This is load-bearing because Kafka offsets are indivisible: an omitting
-manifest may authorize committing predecessor records while successor records must remain retained.
-The protocol does not introduce sub-offset obligations.
+Every `TrafficRecord` remains homogeneous in `(writerNodeId, partition, connectionId)`, but may
+contain observations from multiple manifest cycles. Replay intake fully decodes and validates the
+record, creates one `ChildObservationObligation` per wire-array index, and only then seals the
+parent `KafkaRecordObligation`. Manifest-cycle decisions satisfy only the
+incomplete-accumulator WorkClaims they resolve; transaction or other claims beneath the same child
+remain pending. Kafka offsets remain indivisible at the broker: claims and children are accounting
+units, not partial offset commits, and the parent offset commits only after every child is terminal
+`Satisfied`.
+
+The proxy may flush a batch when the cycle changes. That is a batching optimization, not a
+correctness invariant. Flushed and mixed batching must produce the same per-observation semantics,
+the same WorkClaim decisions, and no loss or duplication. They need not produce the same parent
+record identities, commit timing, or redelivery granularity: one mixed record can remain
+uncommitted because of one pending child where two flushed records would allow the predecessor
+record to commit.
 
 `connectionObservationSequence` is monotonically increasing for one captured client connection and
-validates the order of its reconstruction-relevant observations. The proxy submits those records
-through one connection-local chain, so the replayer consumes them in contiguous sequence order even
-though unrelated connection records and manifests interleave. `SourceAssembler` tracks
+validates the order of its reconstruction-relevant observations. Netty's terminal connection
+observation is the final sequence value. The proxy submits all observations, including that
+terminal value, through one connection-local chain, so the replayer consumes them in contiguous
+sequence order even though unrelated connection records and manifests interleave. `SourceAssembler` tracks
 `nextExpectedConnectionObservationSequence`; a gap, regression, or conflicting duplicate halts and
-retains rather than buffering indefinitely or guessing. Incidental diagnostics that cannot affect
-HTTP reconstruction are not part of this sequence.
+retains rather than buffering indefinitely or guessing. It also tracks the last cycle seen for C;
+a lower `manifestCycle` on a later sequence value is a protocol violation. Incidental diagnostics
+that cannot affect HTTP reconstruction are not part of this sequence.
+
+Consuming the terminal observation immediately closes C's traffic-observation state. Any later
+reconstruction-relevant observation for C is a protocol violation even if it carries the next
+contiguous sequence number. A manifest prepared before acknowledged active-set removal may still
+list C and may be consumed after the terminal observation; that listing is valid registry history
+but cannot reopen C's traffic-observation state.
 
 The replayer validates and reconstructs complete manifests into its `ProxyManifestIndex`. The
 index is derived replayer state; it is not the proxy registry and does not independently observe
@@ -1329,19 +1408,20 @@ linearizes only:
    M+1.
 
 Addition precedes acceptance of the connection's first reconstruction-relevant observation.
-Removal first atomically closes the connection's one-way source-forward gate, then waits until every
-previously authorized source operation has a complete acknowledged Kafka representation, and only
-then removes the connection under the partition lifecycle boundary. A manifest prepared while that
-wait is in progress still lists the connection.
+For connection retirement, Netty reports remote closure, local closure, or channel failure. The
+kernel and Netty then provide no further network traffic for C. C's event-loop owner submits the
+terminal connection observation through the Kafka publisher's connection-local chain after all
+earlier observations, waits for Kafka to acknowledge the terminal and every earlier TrafficStream
+observation, and only then removes C under the partition lifecycle boundary. A manifest prepared
+before removal lists C; one prepared after removal may omit C.
 
 Ordinary packet capture does not take this boundary. Each reconstruction-relevant observation reads
 the current counter and carries it to Kafka. The manifest is published after the copy-and-increment
 operation and may be appended before or after concurrent observations.
 
-Before removing C, the proxy guarantees that every request on C that was allowed to execute at the
-source already has a complete acknowledged Kafka representation. This does not require every packet
-to have been published before removal. A late observation may still appear, but it cannot represent
-a source-executed request still owed to the target.
+If any required acknowledgement fails or becomes ambiguous, C remains in the active set under this
+protocol and capture fails closed. No reconstruction-relevant observation may be published after
+connection retirement removes C.
 
 Complete manifests are prepared and acknowledged through a non-overlapping per-partition chain. The
 proxy does not prepare or submit cycle M+1 until every chunk of M is acknowledged. Cycle regression
@@ -1359,18 +1439,24 @@ A synchronous or asynchronous send failure closes the proxy capture gate and fai
 It does not continue emitting authoritative manifests or terminal self completion after publication
 outcomes become ambiguous.
 
-The resulting rule is logical rather than offset-based:
+The resulting rule combines cycle applicability with terminal connection retirement:
 
-> Complete manifest M omitting C resets the incomplete predecessor accumulation through cycle M.
-> Observations with cycle greater than M belong to a successor accumulation and remain obligations.
+> Manifest M omitting C is non-applicable when C first appeared after M.
+> Otherwise the omission satisfies C's covered incomplete-accumulator WorkClaims and terminally
+> retires C.
+> Any later observation or listing manifest for that retired connection identity is a protocol
+> violation.
 
 The required inversion cases are:
 
-- an open observation accepted before M but appended after M is continued if M lists C;
-- if C was also removed before M, the same delayed observation is predecessor data because its
-  cycle is at most M; and
+- an observation accepted before M but appended after M is continued when M lists C; and
 - an open observation accepted after M's lifecycle boundary but appended before M is safe because
-  its cycle is greater than M.
+  its cycle is greater than M and M predates that connection lifecycle.
+
+Scan-ahead may encounter an applicable omission before normal replay reaches lower-offset
+observations. That cursor inversion is valid because connection retirement guarantees those
+observations were appended before the omission's `firstOffset`. Publication at or after that cutoff
+is not valid.
 
 **Structural requirements this places on the rest of the design.**
 
@@ -1381,20 +1467,26 @@ The required inversion cases are:
 | The explicit partition is stamped in every traffic record and manifest chunk and asserted on read | A mismatch invalidates the record and halts loudly; validation detects routing bugs instead of trusting that publishers used the same helper |
 | Every reconstruction-relevant observation is stamped with `manifestCycle` | Kafka order alone cannot distinguish an observation accepted before the manifest boundary from one accepted after it |
 | Add, remove, and manifest copy-and-increment share one partition-local lifecycle boundary | A manifest must be an exact statement about the active set at one logical point |
-| Observations after an unresolved boundary remain separable from the predecessor accumulator | An omission must not commit a newer suffix that Kafka delivered first |
+| Every decoded observation has exactly one deterministic child obligation, and every semantic dependency has one attributable WorkClaim | A mixed-cycle parent must not lose or duplicate observations or dependencies; several claims may legitimately depend on the same observation |
+| Parent reduction waits for every child; any `RetainRequired` or unresolved child blocks parent commit | Kafka offset indivisibility is preserved without requiring cycle-homogeneous records |
+| The terminal connection observation is C's final traffic-observation sequence value | A contiguous later value must not be mistaken for valid traffic merely because an omitting manifest has not arrived yet |
+| Netty terminal observation and all earlier observations are acknowledged before active-set removal | An applicable omission can terminally retire C; later traffic is a violation rather than a second accumulation |
+| `CompleteManifest.firstOffset` is the cutoff and `lastOffset` is the completeness/scan boundary | Interleaved records between chunks cannot receive ambiguous pre/post-retirement treatment |
 | Manifest batches are complete and size-bounded before submission | A truncated manifest must never look like an empty one |
-| Manifest chunks do not create replay accumulations or long-lived record obligations | When encountered by the replay cursor they are immediately marked settled, subject to the partition's ordinary contiguous commit low-watermark; scan-cursor decoding remains read-only |
+| Manifest chunks create one control child, not replay accumulations | The replay cursor validates and applies the control semantics before marking that child `Satisfied`; scan-cursor decoding remains read-only and creates no obligations |
 
 Kafka metadata discovery and producer qualification happen in `PROBING` before the process joins
 the group. The proxy writes semantically inert capability probes to one representative traffic
 partition per current leader broker, waits for acknowledgement, refreshes metadata, and then joins
 as `PROBATIONARY`. It accepts no captured connections until an assignment promotes it to `ACTIVE`.
-A probe creates no replay work and does not affect manifest-cycle interpretation.
+A probe creates no reconstruction or target-replay work and does not affect manifest-cycle
+interpretation. When consumed by the replay cursor, its parent record has one direct control child
+that becomes `Satisfied` after validation.
 
 For each newly accepted connection, the current group assignment chooses one traffic partition.
 The proxy stores that choice and uses it for every traffic record and manifest entry for the life of
 the connection. Later rebalances move only eligibility to accept new captured client connections;
-existing connections drain on their stored partitions. Topic recreation or loss of a stored
+the existing proxy connection set drains on its stored partitions. Topic recreation or loss of a stored
 partition fails capture rather than silently selecting a different partition.
 
 **Why `writerNodeId` is per capture activation.** A stable per-host identity would let a replacement
@@ -1410,7 +1502,7 @@ meaning, and why elapsed-time expiration remains non-committing.
 
 **The problem.** Per-connection ordering is currently reconstructed *after* transformation by a
 sorter, alongside a separate due-time schedule map, a separate transformation-timer collection, a
-volatile cancellation flag, and a close-callback graph. Each is state with its own drain and
+volatile cancellation flag, and a close-callback graph. Each is state with its own teardown and
 cancellation semantics, and F4 is what happens when one of them is cleared without settling.
 
 **The mechanism.** One actor per connection session owns all of it.
@@ -1541,7 +1633,7 @@ inactivity timer, while cancellation settles the timer as part of the exchange's
 
 `abort` and `close` are idempotent. Repeated calls join the same cleanup rather than starting another
 teardown. This contract is what makes a never-completing response finalizer a test case instead of a
-permanent session drain.
+permanently stuck session.
 
 ---
 
@@ -1604,17 +1696,17 @@ all the same story — the last link breaks and nothing owns the decision.
 A `ReplayTransaction` owns:
 
 * source request and response state,
-* references to its ledger-owned traffic-stream record claims,
+* references to its ledger-owned WorkClaims beneath child observation obligations,
 * the permit lease,
 * transformed-request ownership,
 * the target outcome,
 * the tuple/evidence outcome,
 * the latest monotonic observation of generation-scoped runway,
 * tracing contexts,
-* and its single terminal disposition proposal.
+* and one terminal decision for every WorkClaim it owns.
 
 The transaction does not close Kafka record contexts or advance offsets. `RecordDispositionLedger`
-owns those obligations and applies the accepted terminal proposal exactly once. All transaction
+owns those obligations and applies each accepted WorkClaim decision exactly once. All transaction
 transitions execute on the same assigned Netty event loop as the owning connection actor. Source,
 preparation, evidence, runway-loss, and abort inputs arriving from other threads are mailbox
 messages; target outcomes are delivered directly on that event loop.
@@ -1633,14 +1725,14 @@ stateDiagram-v2
         ADMITTED --> WAITING_FOR_JOIN: target not required
         WAITING_FOR_JOIN --> WRITING_EVIDENCE: all required outcomes settled
     }
-    RUNNING --> DRAINING: runway lost in any normal state
-    WRITING_EVIDENCE --> DISPOSING
-    DRAINING --> DISPOSING: outcomes and owned child cleanup settled
-    DISPOSING --> TERMINATED
-    note right of DISPOSING
-        Runway lost while DISPOSING stays DISPOSING.
-        KafkaSourceActor's ordering of authoritative runway
-        revocation vs. source acceptance decides the commit.
+    RUNNING --> SETTLING: runway lost in any normal state
+    WRITING_EVIDENCE --> DECIDING_CLAIMS
+    SETTLING --> DECIDING_CLAIMS: outcomes and owned child cleanup settled
+    DECIDING_CLAIMS --> TERMINATED
+    note right of DECIDING_CLAIMS
+        Runway lost while claim decisions are pending
+        requires RetainRequired. Parent disposition and
+        broker acknowledgement belong to the ledger.
     end note
 ```
 
@@ -1651,14 +1743,15 @@ Two facts are deliberately *not* linear states:
   terminal, including source completion, target completion or explicit target omission, and any
   required preparation result.
 * **Runway is orthogonal.** Reassignment or shutdown may arrive in any phase, including while evidence
-  or disposition is in flight. It does not overwrite a terminal source or target outcome. It moves
-  unfinished work through `DRAINING`, where cancellable children are actively settled and
-  uncancellable children are joined or failed loudly before disposition. If disposition has already
-  been submitted, the transaction remains `DISPOSING`; `KafkaSourceActor`'s ordering of
-  authoritative runway revocation versus source acceptance decides whether the commit was accepted.
+  or WorkClaim decisions are in flight. It does not overwrite a terminal source or target outcome. It moves
+  unfinished work through `SETTLING`, where cancellable children are actively settled and
+  uncancellable children are joined or failed loudly before a claim decision. Once the ledger has
+  accepted every decision owned by the transaction, the transaction has no further authority over
+  parent disposition. `KafkaSourceActor` later serializes authoritative runway revocation against
+  parent commit acceptance.
 
-The invariant that matters: **`DISPOSING` is reached once and only once, from every path.**
-Cancellation does not bypass it — it drains into it.
+The invariant that matters: **`DECIDING_CLAIMS` is reached once and only once, from every path.**
+Cancellation does not bypass it—it settles through it.
 
 ### 13.3 Outcomes
 
@@ -1697,9 +1790,9 @@ gap: it is a value the disposition matrix must have a row for, and the compiler 
 outcome to be considered everywhere. `RunwayObservation` is different: it is monotonic local state,
 not a replacement outcome or the authoritative Kafka generation fence. Its only transition is
 `Available -> Lost`, and the transaction mailbox serializes that transition with entry into
-disposition. The ledger validates its monotonic observed runway before forwarding a commit proposal,
-and `KafkaSourceActor` makes the authoritative generation check when it accepts or rejects the
-commit command.
+WorkClaim decision. The ledger validates its monotonic observed runway before selecting a parent
+commit, and `KafkaSourceActor` makes the authoritative generation check when it accepts or rejects
+the parent commit command.
 
 `SourceOutcome` is also where the overloaded-status problem is fixed — but the problem is narrower than
 "today everything collapses into one status," so it is worth stating exactly.
@@ -1707,8 +1800,8 @@ commit command.
 `TRAFFIC_SOURCE_READER_INTERRUPTED`, and the commit path already suppresses both. The three real gaps:
 
 * **Manifest-cycle reset is not represented precisely.** `EXPIRED_PREMATURELY` does not say which
-  manifest cycle authorizes disposing which predecessor obligations, and it cannot preserve a
-  newer successor segment. `ManifestCycleReset` carries that exact decision.
+  manifest cycle authorizes satisfying which incomplete-accumulator WorkClaims or whether the
+  manifest is applicable to that connection. `ManifestCycleReset` carries that exact decision.
 * **Elapsed-time expiration must not reach Kafka commit policy.** Existing `ConfiguredExpired`
   production paths are migration residue to disable or remove for Kafka input.
 * **Legacy finite sources still need an honest timeout value.** They have no durable offset to retain,
@@ -1734,66 +1827,151 @@ failures of that arrangement.
 
 ### 14.1 Record obligations
 
-Each accepted Kafka record creates one ledger-owned `RecordObligation`. An observation consumer—a
-source accumulation, transaction, or explicit discard path—registers a `RecordClaim` before it can
-depend on that record. Claims are explicit and attributable. A record containing observations for
-more than one request may therefore have more than one claim without giving the Kafka offset more
-than one owner.
+Each accepted Kafka record creates one ledger-owned parent `KafkaRecordObligation`. Replay intake
+owns both stages of normal-path decoding:
 
-The claim-registration lifecycle is:
+1. validate the minimal wire envelope needed to trust wire version, record type, Kafka partition
+   stamp, `writerNodeId`, and managed `captureSessionId`; then
+2. only for an unmanaged or expected-session record, perform full semantic payload decode.
+
+The envelope is framing, not a Kafka-source-owner interpretation. If it is missing, malformed, or
+cannot establish a trustworthy session identity, the parent takes the decode-failure path. If the
+envelope is valid and its managed session is nonmatching, replay intake does not parse the payload:
+it takes the explicit authorized-discard branch. This prevents a corrupt abandoned-session payload
+from blocking the current run without allowing malformed session framing to bypass validation.
+Replay intake then takes exactly one of these branches:
 
 ```text
-OPEN_FOR_CLAIMS
-  -> root assembler claim registered
-  -> root claim may transfer or split into leaf claims
-  -> CLAIMS_SEALED
-  -> every leaf claim has one proposal
-  -> record disposition reduced exactly once
+PARENT_DECODING
+  -> valid traffic record
+       -> one ObservationObligation per wire-array index
+  -> valid control record or record-level authorized discard
+       -> one ControlRecordObligation
+  -> malformed envelope or partial/failed expected-session payload decode
+       -> PARENT_DECODE_FAILED_RETAINED
 ```
 
-- At record delivery, `SourceAssembler` receives one root claim covering every observation in that
-  record.
-- Transfer moves that same claim from an accumulation to one transaction; it neither settles the
-  claim nor creates a gap.
-- If observations in the record feed multiple work owners, replay intake atomically replaces the
-  root with a known set of child claims before any child can settle.
-- After every observation has been assigned, replay intake seals the obligation. No later claim may
-  be registered.
-- The ledger may reduce proposals, close record contexts, or send a Kafka commit only after sealing
-  and after every leaf claim is terminal.
+A traffic child is the accounting identity for one observation, including its connection and
+`manifestCycle`. If that observation contributes to several transactions or accumulations, those
+dependencies receive separate `WorkClaimId`s beneath the same child; claims may depend on the same
+bytes and therefore are not “disjoint coverage.” The disjointness rule applies to children: every
+wire-array index appears in exactly one child.
+
+A valid control record—manifest chunk, self `NoMoreWrites`, capability probe, fleet reset, or
+coverage-establishment record—creates one `ControlRecordObligation`. A managed-session mismatch
+also creates one control child representing the required payload discard, log, metric, alarm, and
+authorization to continue processing. The child becomes `Satisfied` only after that semantic
+action completes; Kafka offset advancement then follows the ordinary parent commit path. Control records do not
+manufacture observation children. A malformed or partially decoded record instead takes the direct
+parent transition `PARENT_DECODING -> PARENT_DECODE_FAILED_RETAINED`: it creates no settleable
+children, closes its local context, selects parent `Retain(DECODE_FAILURE)`, and halts.
+
+An observation or control child takes one of two shapes:
+
+```text
+ChildObligation
+  -> zero WorkClaims + one typed direct decision
+  OR
+  -> one or more uniquely identified WorkClaims + CLAIMS_SEALED
+```
+
+The zero-claim branch is used for semantically inert observations and authorized direct discards;
+it does not allow a child to disappear without a decision. Every other semantic dependency gets one
+attributable WorkClaim. Replay intake assigns deterministic `claimIndex` values before sealing the
+child. Transferring a claim from an accumulation to a transaction preserves its `WorkClaimId`,
+revokes the old owner's authority, and gives exactly one new owner the right to decide it.
+
+The registration lifecycle is:
+
+```text
+PARENT_DECODING
+  -> all required child obligations created
+  -> PARENT_CHILDREN_SEALED
+  -> each child registers and seals its WorkClaims, or records a direct decision
+  -> every WorkClaim or direct child decision is lifecycle-terminal
+  -> each child decision reduced exactly once
+  -> parent reduction:
+       any RetainRequired child -> PARENT_RETAIN
+       all Satisfied children -> PARENT_COMMIT_CANDIDATE
+  -> candidate source result:
+       generation accepted -> PARENT_COMMIT
+       generation rejected -> PARENT_RETAIN
+  -> accepted commit broker acknowledgement or explicit failure
+```
+
+- Parent child coverage is total and disjoint. A valid traffic record covers every decoded
+  observation index exactly once. A valid control or record-level-discard path has exactly one
+  control child.
+- WorkClaim attribution is total, but claims need not cover disjoint bytes: one observation can
+  support an incomplete-accumulator claim and one or more transaction claims.
+- Claim registration seals only after replay intake has assigned every semantic dependency of the
+  child. Registration after seal, duplicate identity, or a decision from a revoked owner is fatal.
+- `RetainRequired` is a monotonic veto, not permission to abandon cleanup. A claim may record that
+  decision before all of its owned resources settle, but the claim is lifecycle-terminal only after
+  both the decision and its owner-settlement acknowledgement exist.
+- A child may know that its eventual decision is `RetainRequired` as soon as one claim records that
+  veto, but the child becomes terminal only after every claim is lifecycle-terminal.
+- The parent may know that `Commit` is impossible as soon as one child has a retain veto, but it
+  selects no parent disposition until child registration is sealed and every child is terminal.
+  All-`Satisfied` children create only a `CommitCandidate`; they do not select `Commit`.
 
 All split, transfer, and seal operations execute on replay intake. Event-loop transactions hold
-only immutable claim IDs and return proposals.
+only immutable `WorkClaimId`s and return decisions.
 
 ```java
+sealed interface ObligationDecision {
+    record Satisfied(SatisfactionReason reason) implements ObligationDecision {}
+    record RetainRequired(RetainReason reason) implements ObligationDecision {}
+}
+
 sealed interface RecordDisposition {
     record Commit(CommitReason reason) implements RecordDisposition {}
     record Retain(RetainReason reason) implements RecordDisposition {}
 }
 ```
 
-There is no nullable or boolean disposition. Both variants carry a *reason*, which is what makes "why
-did this commit?" answerable from metrics.
+There is no nullable or boolean decision. `Satisfied` and `RetainRequired` describe local semantic
+obligations; `Commit` and `Retain` describe only the parent Kafka record. Every variant carries a
+reason, which makes reduction and operator diagnostics auditable.
 
-The ledger reduces claim proposals mechanically:
+The ledger reduces terminal local decisions mechanically:
 
-- every claim `Commit` permits the record obligation to propose commit;
-- any claim `Retain` makes the record obligation retained; and
-- a missing claim decision leaves the record unresolved.
+- all terminal WorkClaims `Satisfied` makes their child `Satisfied`;
+- any WorkClaim `RetainRequired` makes the child's eventual decision `RetainRequired`, but the child
+  still waits for every claim to become lifecycle-terminal;
+- a missing decision or owner-settlement acknowledgement leaves the claim and child unresolved;
+- after every child is terminal, all children `Satisfied` creates one parent `CommitCandidate`;
+- after every child is terminal, any child `RetainRequired` selects parent `Retain`; and
+- before every child is terminal, the parent remains lifecycle-unresolved even if retention is
+  already inevitable.
 
 This reduction is not a second replay policy engine. The transaction or accumulation computes each
-claim proposal from its own outcomes; the ledger only joins claims for the indivisible Kafka offset.
+WorkClaim decision from its own outcomes; the ledger only joins claims into child decisions and
+children into the one indivisible Kafka-offset disposition. Retaining a mixed parent redelivers all
+of its children, including children that were `Satisfied` in the previous attempt, under the
+system's at-least-once contract.
+
+`CommitCandidate` is a ledger reduction state, not a `RecordDisposition`. The source owner converts
+it exactly once:
+
+- generation-valid acceptance and pending-offset registration select `Commit`;
+- authoritative generation loss before acceptance selects `Retain(RUNWAY_LOST)`; and
+- an unclassified rejection or fatal-fence closure fails the lifecycle loudly rather than silently
+  inventing either disposition.
 
 ### 14.2 Decision matrix
 
-Runway is evaluated first. The transaction and ledger observations control early rejection and
-draining, but `KafkaSourceActor` owns the authoritative generation state at commit acceptance. A
-lost-runway row supersedes the source/target/evidence rows below it.
+Runway is evaluated before deciding an undecided WorkClaim. A local lost-runway observation makes
+that claim `RetainRequired`, but it never rewrites a claim decision already accepted by the ledger.
+Independently, `KafkaSourceActor` owns authoritative generation state at parent commit acceptance:
+it may reject an all-`Satisfied` parent's `CommitCandidate` and thereby select parent
+`Retain(RUNWAY_LOST)`.
 
-`ReplayDispositionPolicy` is a pure exhaustive function invoked exactly once by the transaction on
-its owner event loop. Its result is the transaction's typed `Commit` or `Retain` proposal. The
-ledger validates that the proposal references obligations it owns, has not already been applied,
-and is not already vetoed by observed runway loss. It never recomputes the matrix from outcomes.
+`ReplayWorkClaimPolicy` is a pure exhaustive function invoked exactly once by the transaction on
+its owner event loop. Its result is the transaction's typed `Satisfied` or `RetainRequired`
+decision for each WorkClaim. The ledger validates that each decision references an owned claim,
+comes from the current owner, and has not already been applied. It never recomputes the matrix from
+outcomes.
 
 A complete captured request leaves the liveness accumulator as soon as it is recognized. It may be
 sent to the target without waiting for a complete captured source response or connection close.
@@ -1801,39 +1979,41 @@ Evidence must represent a complete, incomplete, or absent source response explic
 response data is not permission to discard the request. Later manifest-cycle decisions affect only
 the remaining incomplete connection accumulator.
 
-| Runway state | Source outcome | Target outcome | Evidence outcome | Disposition |
+| Runway state | Source outcome | Target outcome | Evidence outcome | Local WorkClaim decision |
 | --- | --- | --- | --- | --- |
-| Lost by reassignment before source acceptance | Any | Any | Any | Retain |
-| Lost by shutdown before source acceptance | Any | Any | Any | Retain |
-| Available | Complete request; source response complete, incomplete, or absent | Succeeded | Durable evidence encodes the source-response state | Commit |
-| Available | Captured close with incomplete request | Not sent | Not required; captured close is durable | Commit as incomplete-capture discard under the non-streaming source contract |
-| Available | Manifest-cycle reset of incomplete predecessor | Not sent | Not required; complete applicable manifest present | Commit only predecessor obligations through that cycle |
-| Available | Terminal self completion with incomplete state | Not sent | Not required; valid self `NoMoreWrites` present | Commit the already-known incomplete obligations for that proxy-partition |
-| Available | Elapsed-time expiration or silence | Not sent | None | Retain and alarm |
-| Available | Captured explicit drop/ignore | Not sent | Durable discard evidence | Commit as deliberate discard |
-| Available | Deterministic poison | Failed | Durable classified-skip evidence | Commit only when configured |
-| Available | Transient failure | Failed | Any | Retain and halt after retry exhaustion |
-| Available | Tuple/evidence failure | Any | Failed | Retain and halt |
-| Any | Unknown combination | Any | Any | **Retain and halt** |
+| Locally observed reassignment before this WorkClaim's decision | Any | Any | Any | `RetainRequired(REASSIGNMENT)` |
+| Locally observed shutdown before this WorkClaim's decision | Any | Any | Any | `RetainRequired(SHUTDOWN)` |
+| Available | Complete request; source response complete, incomplete, or absent | Succeeded | Durable evidence encodes the source-response state | `Satisfied(REPLAY_EVIDENCE_DURABLE)` |
+| Available | Captured close with incomplete request | Not sent | Not required; captured close is durable | `Satisfied(INCOMPLETE_CAPTURE_DISCARD)` under the non-streaming source contract |
+| Available | Manifest-cycle reset of an incomplete accumulator | Not sent | Not required; complete applicable manifest present | `Satisfied(MANIFEST_CYCLE_RESET)` for that accumulator claim only |
+| Available | Terminal self completion with incomplete state | Not sent | Not required; valid self `NoMoreWrites` present | `Satisfied(TERMINAL_SELF_COMPLETION)` for the already-known incomplete claims |
+| Available | Elapsed-time expiration or silence | Not sent | None | `RetainRequired(NON_AUTHORITATIVE_TIMEOUT)` and alarm |
+| Available | Captured explicit drop/ignore | Not sent | Durable discard evidence | `Satisfied(DELIBERATE_DISCARD)` |
+| Available | Deterministic poison | Failed | Durable classified-skip evidence | `Satisfied(CLASSIFIED_SKIP)` only when configured |
+| Available | Transient failure | Failed | Any | `RetainRequired(TRANSIENT_FAILURE)` and halt after retry exhaustion |
+| Available | Tuple/evidence failure | Any | Failed | `RetainRequired(EVIDENCE_FAILURE)` and halt |
+| Any | Unknown combination | Any | Any | **`RetainRequired(UNCLASSIFIED)` and halt** |
 
 Properties to internalize:
 
-- **Context closure happens for both `Commit` and `Retain`.** Kafka commit happens only for `Commit`.
-  Separating the two actions is the point; conflating them is how retained records leaked open
-  contexts.
+- **Context closure happens for both parent `Commit` and parent `Retain`.** Kafka commit happens only
+  for parent `Commit`. Separating the two actions is the point; conflating them is how retained
+  records leaked open contexts.
 - **The default is fail-closed.** An unrecognized combination retains and halts loudly. A failure
   that forces a human to look is strictly better than a silent skip.
 - **Runway loss is not represented by rewriting outcomes.** A request may legitimately retain
   `SourceOutcome.Complete`, `TargetOutcome.Succeeded`, and even durable evidence while still being
-  retained because reassignment arrived before the source accepted its commit.
-- **Source acceptance is the linearization point.** A transaction's `Commit` disposition is only a
-  proposal. On the source-I/O owner, `KafkaSourceActor` checks the generation and registers the
-  offset as pending. Runway revocation and this source acceptance are therefore serialized by that
-  owner:
-  - if revocation runs first, the proposal becomes `Retain` and no commit is registered;
-  - if source acceptance runs first, `KafkaSourceActor` owns the pending broker commit until
+  `RetainRequired` because reassignment arrived before the source accepted the parent commit.
+- **Parent source acceptance is the linearization point.** Transactions do not submit commits. Once
+  every child is terminal `Satisfied`, the ledger creates a `CommitCandidate` and asks the
+  source-I/O owner to register the offset as pending. Runway revocation and this source acceptance are
+  serialized by that owner:
+  - if revocation runs first, candidate rejection selects parent `Retain` and no commit is
+    registered;
+  - if source acceptance runs first, acceptance selects parent `Commit` and `KafkaSourceActor` owns
+    the pending broker commit until
     acknowledgement or explicit failure; the ledger waits on that result and does not later relabel
-    the obligation as `Retain`.
+    the parent as `Retain`.
 - **Broker acknowledgement is a later stage.** It may fail, including after a rebalance. Such a failure
   completes the lifecycle exceptionally; it does not retroactively claim that an already accepted
   commit was deliberately retained.
@@ -1841,11 +2021,12 @@ Properties to internalize:
 Failure classification cannot be judged at catch time, so it comes from retries plus an
 operator-declared poison classifier — see §19.1.
 
-A manifest-cycle reset has no replay result to preserve for the incomplete predecessor. The
-complete manifest and cycle are the fact authorizing that limited commit. Emit a reason-coded metric
-and a trace/debug diagnostic containing the proxy activation, partition, connection, manifest
-cycle, and affected obligation range. Do not expand `EvidenceWriter` merely to persist an empty
-result.
+A manifest-cycle reset has no replay result to preserve for the incomplete-accumulator WorkClaims it
+resolves. The complete applicable manifest authorizes those claims to become
+`Satisfied(MANIFEST_CYCLE_RESET)`. It does not decide transaction claims beneath the same child and
+does not partially commit the parent Kafka offset. Emit a reason-coded metric and a trace/debug
+diagnostic containing the proxy activation, partition, connection, manifest cycle, and affected
+claim and child identities. Do not expand `EvidenceWriter` merely to persist an empty result.
 
 The captured-close row relies on the same supported-source boundary as capture-before-forward: a
 source handler cannot apply a mutating request before receiving the complete request. If a
@@ -1856,22 +2037,34 @@ outside the protocol.
 
 `RecordDispositionLedger`:
 
-1. Accepts record obligations.
-2. Registers, splits, transfers, and seals every dependent `RecordClaim` under the lifecycle above.
-3. **Rejects duplicate claim disposition and duplicate record disposition** — this is F2,
-   structurally prevented.
-4. Closes record and traffic-stream contexts exactly once.
-5. Validates and applies each owner's one typed claim proposal without recomputing policy, then
-   mechanically reduces all claims for the record.
-6. Sends accepted commit proposals to `KafkaSourceActor` and joins its acceptance result.
-7. Tracks source-accepted records and joins the broker
-   acknowledgement.
-8. Rejects a commit when its observed generation is already lost or stale before submission;
-   `KafkaSourceActor` repeats the authoritative check.
-9. Closes retained records' process-local contexts without advancing the Kafka commit watermark.
+1. Accepts one parent obligation per Kafka record.
+2. Owns full semantic decode on replay intake. A decode failure takes the direct retained-parent
+   transition and exposes no partial children.
+3. For a valid traffic record, registers and seals one observation child per wire-array index. For
+   a valid control record or record-level authorized discard, registers one control child.
+4. Registers, transfers, and seals every dependent `WorkClaimId` beneath its child, preserving the
+   identity and revoking the old owner on transfer.
+5. **Rejects duplicate registration, post-seal registration, decisions from revoked owners, and
+   conflicting WorkClaim, child, or parent decisions**—this is F2 structurally prevented.
+6. Records early retain vetoes but keeps claims, children, and parents lifecycle-active until all
+   required owner-settlement acknowledgements and sibling decisions arrive.
+7. Closes child and parent contexts exactly once after their process-local lifecycle is terminal.
+8. Validates and applies each owner's one typed WorkClaim decision without recomputing policy, then
+   mechanically reduces claims into children and children into the parent.
+9. Sends only reduced parent `CommitCandidate`s to `KafkaSourceActor`; generation-valid acceptance
+   selects final `Commit`, while authoritative generation rejection selects final
+   `Retain(RUNWAY_LOST)`.
+10. Tracks source-accepted parent `Commit` dispositions and joins broker acknowledgement or explicit
+    failure.
+11. Rejects a parent commit when its observed generation is already lost or stale before submission;
+    `KafkaSourceActor` repeats the authoritative check.
+12. Closes retained records' process-local contexts without advancing the Kafka commit watermark.
    The retained offset continues to block every later offset in that partition from being committed
    past it.
-10. Exposes unresolved obligations for shutdown and diagnostics.
+13. Keeps unresolved cleanup explicit after a retain veto; inevitable parent retention is not
+    permission to abandon child or claim resources.
+14. Owns one generation-scoped ledger-settlement gate covering every registered parent and exposes
+    unresolved parent, child, and WorkClaim identities for shutdown and diagnostics.
 
 The existing `OffsetLifecycleTracker` may remain behind the commit adapter initially.
 
@@ -1914,8 +2107,8 @@ answer per handle.
 The same ownership rule applies to tracing contexts, permits, timers, sink handles, and record
 obligations. `TargetExchange` owns target request/response contexts, attempt payloads, response
 finalization, and any adapter future that fences a foreign callback. `ReplayTransaction` owns the
-prepared request, permit, references to ledger-owned record claims, evidence handle, and
-transaction tracing scopes. A
+prepared request, permit, references to ledger-owned WorkClaims, evidence handle, and transaction
+tracing scopes. A
 resource must not be owned by both merely because both have a completion callback that can see it.
 
 ---
@@ -1937,7 +2130,7 @@ For each revoked partition:
 3. Return from the Kafka rebalance callback after that bounded owner-thread work. The callback must
    not await replay intake, actor mailboxes, target cancellation, evidence, disposition, or channel
    closure. Waiting there can violate Kafka's poll contract and deadlock the very completions needed
-   to drain.
+   for settlement.
 4. Replay intake applies that one event idempotently and in order with source batches. It first
    marks the ledger's observed runway lost, then settles unfinished assembler state as
    `SourceOutcome.Interrupted`, then delivers `RunwayLost` to active transactions, and finally
@@ -1945,24 +2138,27 @@ For each revoked partition:
    Correctness does not depend on mailbox delivery winning a race with commit submission because
    step 2 is authoritative.
 5. Abort matching connection actors **by typed `ConnectionSessionKey`**.
-6. Settle queued and active target work as reassignment cancellation, join exchange cleanup, and let
-   every transaction drain to its disposition. Lost runway selects `Retain` unless the source had
-   already accepted the commit.
+6. Settle queued and active target work as reassignment cancellation, join exchange cleanup, and
+   drive every transaction to terminal WorkClaim decisions. Lost runway makes undecided claims
+   `RetainRequired`; transactions do not select parent `Retain` or `Commit`.
 7. Close target channels and remove actors from the registry.
 8. Acknowledge **every** registered old-generation session — including an explicit acknowledgement
    for sessions that never existed, so absence is an *answer* rather than a missing callback. A
-   session's acknowledgement comes after its transactions have dispositioned, per §6.4 rule 5; steps
-   6 and 7 are children of the termination gate, not substitutes for it.
-9. Continue short Kafka polls while the asynchronous drain runs. Records from a newly assigned
+   session's acknowledgement comes after its transactions have submitted terminal claim decisions
+   and released their resources, per §6.4 rule 5; steps 6 and 7 are children of the termination
+   gate, not substitutes for it.
+9. Continue short Kafka polls while asynchronous settlement runs. Records from a newly assigned
    generation may be polled or buffered under a hard bound, but replay intake does not deliver them
-   until all old-generation termination gates complete successfully — which
-   therefore means after every affected record has been dispositioned.
+   until all old-generation session gates, the generation ledger-settlement gate, and replay
+   quiescence complete successfully. The ledger gate—not transaction or session completion—proves
+   that every affected parent record has a terminal disposition and any accepted commit has a
+   broker acknowledgement or explicit failure.
 10. Before delivering the next generation, assert that old-generation actor, transaction, exchange,
    timer, permit, target-context, and in-memory source-obligation registries are empty. Deliberately
    retained Kafka records are not live in-memory obligations.
 11. Do not commit unfinished old-generation obligations.
 
-**No timeout is allowed to reset the drain gate and continue lossily.** A timeout may halt loudly. A
+**No timeout is allowed to reset the termination gate and continue lossily.** A timeout may halt loudly. A
 watchdog that discards records on a timer is impatience wearing a safety vest; when it eventually
 fires it will be for an unrelated reason and it will cause a fresh incident.
 
@@ -1977,9 +2173,11 @@ Shutdown is a structured operation:
 4. Deliver `RunwayLost(SHUTDOWN)` to unfinished transactions.
 5. Abort all actors.
 6. Await their termination completion gates.
-7. Finalize every transaction with retain/no-commit unless the source already accepted its commit.
-8. Flush and acknowledge eligible Kafka commits.
-9. Close Kafka, evidence sinks, transformation resources, and event loops.
+7. Drive every unfinished WorkClaim to `RetainRequired(SHUTDOWN)` unless it was already terminal,
+   and await the generation ledger-settlement gates.
+8. Flush and acknowledge eligible parent Kafka commits.
+9. Close Kafka, evidence sinks, transformation resources, and event loops only after ledger
+   settlement has completed or the shutdown has failed loudly.
 
 Normal shutdown remains a reusable, testable completion-gate protocol. Unexpected event-loop death
 is different: it invalidates the owner itself and is process-fatal.
@@ -2084,8 +2282,8 @@ callbacks: the commit policy must stay with the disposition owner.
 | Transaction | count by phase, runway state/loss reason, terminal outcome, retry class, disposition reason |
 | Permits | available, queued, held duration, cancellation count |
 | Evidence | tuple-write latency, failures, retries, durable receipts |
-| Kafka | unresolved obligations, commit head identity/age, staged commits, pending commit acknowledgements by generation, commit latency |
-| Capture proxy | membership phase, active member count, capture-gate state, open connections, acknowledged-manifest age by partition, manifest cycle, manifest chunks/bytes, incomplete manifests, publisher failures, capture-abandoned transitions, pass-through gap alarms |
+| Kafka | unresolved parent records, observation/control children, and WorkClaims; generation ledger-settlement gate age; commit head identity/age; staged commits; pending commit acknowledgements by generation; commit latency |
+| Capture proxy | membership phase, active member count, capture-gate state, open connections, pending connection retirements and oldest acknowledgement wait, acknowledged-manifest age by partition, manifest cycle, manifest chunks/bytes, incomplete manifests, post-applicable-omission violations, publisher failures, capture-abandoned transitions, pass-through gap alarms |
 | Resources | owned buffer counts/bytes, duplicate-close attempts, leaked-owner assertions |
 
 Here, **monitoring** means code that reports health without owning lifecycle decisions: OTel metric
@@ -2120,33 +2318,70 @@ the production interface rather than adding callback configuration to the test.
   connection identity;
 * runway loss after source completion, target completion, evidence durability, immediately before
   source acceptance, and immediately after source acceptance but before broker acknowledgement;
+* runway loss after some WorkClaims are already terminal leaves those decisions unchanged, makes
+  only undecided active claims `RetainRequired`, and independently causes the source owner to reject
+  an unaccepted parent `CommitCandidate` as `Retain(RUNWAY_LOST)`;
 * at least two consecutive generation terminations in one process, with the second beginning only
   after every first-generation registry and ownership counter has returned to baseline;
 * duplicate and missing lifecycle events;
 * scanner follow-up, manifest-listed, manifest-omitted, terminal-self-completion, inconclusive, and
   generation-change results;
 * manifest-cycle cases: an incomplete manifest has no effect; M listing C joins continuity across
-  M; M omitting C resets only the predecessor through M; observations after M remain successor
-  obligations;
+  M; M omitting C is non-applicable when C first appears after M; an applicable omission settles
+  C's incomplete per-connection accumulation and terminally retires that connection identity;
 * the Kafka-order inversions: an open accepted before M and appended after M, and an open accepted
   after M but appended before it;
-* delayed predecessor observations with cycle M or earlier consumed after omitting M are settled by
-  M, while only greater-cycle observations enter the successor;
-* a malformed Kafka record mixing manifest cycles halts; a cycle-homogeneous record can be committed
-  or retained without sub-offset accounting;
-* a race where the replayer holds an incomplete cycle-M prefix and receives a cycle-M+1 late
-  observation before manifest M: listing M continues the existing state, while omitting M disposes
-  only the old prefix and feeds the held M+1 observation into empty per-connection HTTP state;
+* connection retirement after remote close, local close, and channel failure: Netty reports
+  closure, the kernel and Netty provide no later network traffic for C, C's event-loop owner submits
+  exactly one terminal observation through the Kafka publisher after every earlier C observation,
+  Kafka acknowledges all of them, and only then may the owner remove C from the active set;
+* consuming C's terminal observation rejects a later reconstruction-relevant observation even when
+  it has the next contiguous sequence value; a listing manifest prepared before removal remains
+  valid but cannot reopen C;
+* a manifest prepared while any C acknowledgement is pending lists C; the first manifest prepared
+  after acknowledged retirement may omit C;
+* an observation or listing manifest for C at or above its applicable omitting manifest's
+  `firstOffset` retains the affected parent, halts replay, and emits the protocol-violation alarm,
+  including when the record is interleaved between manifest chunks;
+* scan-ahead uses `lastOffset` to prove that the complete chunk set and intervening offsets were
+  examined, while using `firstOffset` as the connection-retirement cutoff;
+* a mixed-cycle Kafka record fully decodes before any child can settle, creates exactly one child
+  per wire-array index, and seals total, disjoint child coverage;
+* one observation child may have both an incomplete-accumulator WorkClaim and a transaction
+  WorkClaim; an applicable manifest satisfies only the accumulator claim, so the child and parent
+  remain pending until the transaction claim settles;
+* one child with multiple WorkClaims, including one `Satisfied` and one `RetainRequired`, records an
+  early retain veto but does not become terminal until every claim's owner-settlement
+  acknowledgement arrives;
+* all-`Satisfied` children permit exactly one parent commit command; any terminal
+  `RetainRequired` child selects parent `Retain`; any unresolved claim or child keeps the parent
+  lifecycle-unresolved even after retention is inevitable; redelivery of a retained mixed parent
+  includes all children;
+* WorkClaim transfer preserves `WorkClaimId`, revokes the old owner, accepts one decision from the
+  new owner, and rejects a late decision from the old owner;
+* a valid direct-decision observation child has zero WorkClaims and one typed local decision;
+* a valid manifest, self-completion, probe, reset, coverage record, or managed-session mismatch has
+  one control child whose semantic handling must finish before it becomes `Satisfied`;
+* malformed or partial decode creates no children, selects direct parent
+  `Retain(DECODE_FAILURE)`, and halts; internal fault injection covers duplicate child
+  registration, registration after seal, duplicate WorkClaim identity, and parent reduction before
+  sealing;
+* registration/sealing races cannot omit a child or WorkClaim and cannot reduce a parent early;
+* cycle-boundary flushing and mixed-cycle batching produce the same per-observation semantics and
+  WorkClaim decisions with no loss or duplication, while allowing different parent identities,
+  commit latency, and redelivery granularity;
 * exact-registry races: connection add during manifest preparation, remove during preparation, and
   manifest copy-and-increment on each side of those lifecycle operations while ordinary packets
   continue concurrently;
 * same-connection callbacks become ready out of order, but the connection-local submission chain
   preserves sequence order; an injected Kafka sequence gap, regression, or conflicting duplicate
   halts rather than being reordered;
+* `manifestCycle` is nondecreasing with increasing `connectionObservationSequence`; a later
+  sequence carrying a lower cycle retains, halts, and alarms;
 * overlapping manifest timer callbacks coalesce, and M+1 is never prepared or submitted before M
   is completely acknowledged;
-* chunk handling: missing, duplicate, reordered, oversized, and contradictory chunks all make the
-  manifest unusable rather than empty;
+* chunk handling: missing, duplicate, oversized, contradictory, or index/offset-reordered chunks
+  all make the manifest unusable rather than empty; unrelated traffic may still interleave;
 * timestamp separation: `manifestCycle`, captured observation time, proxy-local monotonic time,
   Kafka timestamp, and Kafka offset never substitute for one another;
 * publisher failure: asynchronous or ambiguous send failure closes the capture gate and prevents
@@ -2158,7 +2393,7 @@ the production interface rather than adding callback configuration to the test.
   manifests remain on their stored partitions;
 * proxy completion: permanent new-connection and publication revocation, complete Netty teardown, an empty manifest,
   manifest-publisher quiescence, and every accepted send precede terminal self `NoMoreWrites`; a
-  periodic callback racing `RETIRING` is either drained as earlier accepted work or exits without
+  periodic callback racing `RETIRING` either settles as earlier accepted work or exits without
   submission; peer completion is rejected, duplicate self completion is idempotent, and later
   traffic or manifests halt as a protocol violation;
 * scan-ahead self completion: offset K may settle known blockers below K, replay later accepts
@@ -2173,6 +2408,9 @@ the production interface rather than adding callback configuration to the test.
 * source-owner ordering: commit proposal before versus after revocation, broker acknowledgement
   before versus after lifecycle notification, scan-blocker and connection-completion commands
   ordered with reads, and shutdown while source commands remain queued;
+* decode ownership: the source owner transfers immutable raw envelopes, replay intake performs the
+  only full semantic decode, and the scanner's limited metadata decoder creates no obligations and
+  agrees with the full decoder on record type and identity;
 * fatal-fence ordering: commit registration paused inside the bounded acceptance section versus
   event-loop fatal closure, proving exactly one order and no check-then-register gap;
 * owner-affinity enforcement: every source-I/O and replay-intake mutator succeeds on its owner,
@@ -2185,13 +2423,15 @@ the production interface rather than adding callback configuration to the test.
 Assertions:
 
 * one terminal outcome per command and transaction,
-* one disposition per record,
+* one disposition per parent Kafka record, one terminal local decision per child, and one terminal
+  local decision per WorkClaim,
 * every actor and transaction transition occurs on its assigned Netty event loop,
-* every Kafka consumer, scan, source-generation, active-source-index, and source-commit mutation
-  occurs on the Kafka source-I/O owner,
-* every reconstruction, permit, progress, and disposition mutation occurs on replay intake,
-* no send, retry, decode, or finalization work starts after the actor accepts abort; already queued
-  foreign callbacks may perform only fenced self-cleanup,
+* every Kafka consumer, scan-cursor, source-generation, and source-commit mutation occurs on the
+  Kafka source-I/O owner,
+* every full semantic decode, reconstruction, manifest-index, permit, progress, and disposition
+  mutation occurs on replay intake,
+* no send, retry, target-response decode, or response-finalization work starts for an exchange after
+  its actor accepts abort; already queued foreign callbacks may perform only fenced self-cleanup,
 * active-exchange abort does not complete before all owner-held contexts and resources are released,
 * runway loss before source acceptance prevents commit submission,
 * no commit on teardown,
@@ -2211,14 +2451,23 @@ fired).
 
 * Kafka rebalance with active requests, and with no replay session at all.
 * Two or more consecutive rebalances in one long-lived replayer, proving that each generation
-  drains independently and later Kafka reads resume.
+  settles independently and later Kafka reads resume.
 * Deleting or recreating the traffic topic while a replay is running is unsupported. An observed
   offset rewind fails the replay closed; operators must restart against a deliberately selected
   source rather than merge two unrelated offset namespaces in one process.
 * Same-consumer partition round trip.
 * Dead and slow targets under epsilon lookahead.
 * Long legitimate connection with scanner follow-up present.
-* Manifest-cycle omission at the commit head, including a newer successor segment already observed.
+* Manifest M at the commit head omits C whose first observation is stamped M+1; M is non-applicable,
+  and M+1 is the first manifest allowed to list or retire C.
+* An applicable omitting manifest at the commit head settles C's incomplete accumulation and retires
+  C; injected traffic or a listing manifest for C at or above the manifest's first chunk offset
+  retains, halts, and alarms, including a record interleaved between chunks.
+* A mixed-cycle parent has one child become `Satisfied` through ordinary replay while another child
+  remains pending; the parent offset stays uncommitted. Separately, an applicable manifest
+  satisfies one incomplete-accumulator WorkClaim while a transaction claim beneath the same child
+  remains pending. A terminal `RetainRequired` sibling selects parent `Retain` only after all
+  siblings finish lifecycle settlement, and redelivery includes every child.
 * Proxy duration cap producing exactly one real close through ordinary channel teardown.
 * Open keep-alive connection retained across many manifest intervals, then closed — its incomplete
   remainder resets on the applicable omission, not before.
@@ -2244,9 +2493,11 @@ fired).
 
 ### 18.5 Leak tests
 
-Enable Netty leak detection and instrument permits, contexts, actor entries, record obligations, and
-evidence handles. Every test finishes with all registries empty. Repeated-generation tests assert
-that the same baseline is reached after each cycle, not only when the process exits.
+Enable Netty leak detection and instrument permits, contexts, actor entries, parent record
+obligations, observation and control children, WorkClaims, generation ledger-settlement gates, and
+evidence handles. Every test finishes
+with all registries empty. Repeated-generation tests assert that the same baseline is reached after
+each cycle, not only when the process exits.
 
 ### 18.6 Acceptance criteria
 
@@ -2256,37 +2507,43 @@ The redesigned path is ready to replace the current path when:
 2. All deterministic terminal-transition tests pass.
 3. Active target-exchange abort passes at every phase, including retry delay, channel acquisition,
    response wait, and a finalizer that never completes normally.
-4. Rebalance and shutdown completion gates prove their documented drain postconditions.
+4. Rebalance and shutdown completion gates prove their documented termination and quiescence
+   postconditions.
 5. Consecutive generation turnovers in one long-lived process return all ownership counters and
    registries to baseline before the next generation is admitted.
 6. No teardown test commits work whose runway was lost before source acceptance.
 7. Hard byte, record, and owned-resource budgets remain bounded during a stalled target; scanner and
    epsilon settings affect latency and resource use, not disposition.
-8. Scanner settlement validates a complete manifest and applies its cycle only to the covered
-   predecessor segment; no elapsed-time path is commit eligible.
+8. Scanner settlement validates a complete manifest, applies an applicable omission only to covered
+   incomplete-accumulator WorkClaims, and retires that connection identity; no elapsed-time path is
+   commit eligible.
 9. Long live connections listed by manifests preserve continuity.
 10. A silent proxy activation without an applicable manifest or terminal self completion remains
     retained and visible in alarms.
 11. Incomplete manifests, publisher failure, and partition mismatch halt instead of creating a
     manifest-cycle reset.
-12. Add, remove, and manifest copy-and-increment share the narrow proxy lifecycle boundary;
-    ordinary packet capture remains concurrent and carries `manifestCycle`.
-13. Netty leak detection and ownership counters remain clean.
-14. Existing replay timing and ordering integration tests pass, or have an explicitly approved policy
+12. Connection addition, removal after acknowledged connection retirement, and manifest
+    copy-and-increment share the narrow proxy lifecycle boundary; ordinary packet capture remains
+    concurrent and carries `manifestCycle`.
+13. Mixed-cycle records have total, disjoint child coverage and attributable WorkClaims; partial
+    claim or child settlement never advances the parent offset, and any `RetainRequired` or
+    unresolved child blocks parent commit. Batch flushing is not required for correctness.
+14. Netty leak detection and ownership counters remain clean.
+15. Existing replay timing and ordering integration tests pass, or have an explicitly approved policy
     change.
-15. The old sorter/schedule/callback orchestration can be **deleted** rather than retained as a
+16. The old sorter/schedule/callback orchestration can be **deleted** rather than retained as a
     fallback inside the new path.
-16. Executor inventory shows exactly one Kafka source-I/O owner and one replay-intake owner, with no
+17. Executor inventory shows exactly one Kafka source-I/O owner and one replay-intake owner, with no
     third blocking-source caller; affinity tests show each actor and its transactions remain on one
     existing Netty event loop.
-17. Owner checks prove that `TrackingKafkaConsumer`, source scan state, reconstruction state,
+18. Owner checks prove that `TrackingKafkaConsumer`, source scan state, reconstruction state,
     disposition state, permits, and progress are each mutated only by their documented owner.
-18. Reflection/architecture tests reject Java default methods and built-in `NO_OP` instances on
+19. Reflection/architecture tests reject Java default methods and built-in `NO_OP` instances on
     every required lifecycle interface. Lifecycle tests use hand-written state-recording
     implementations and in-memory OTel exporters; no mocking framework stands in for an owner,
     completion gate, mailbox, Kafka authority, or resource lifecycle.
 
-Criterion 15 is the real gate. A migration that leaves the old orchestration reachable has added a
+Criterion 16 is the real gate. A migration that leaves the old orchestration reachable has added a
 second way to be wrong rather than removing the first.
 
 ---
@@ -2314,8 +2571,11 @@ commit.
 
 ### 19.2 Manifest-cycle resets do not require durable replay evidence initially
 
-A manifest-cycle reset has no replay result to preserve for the incomplete predecessor. The
-complete manifest and cycle-scoped decision are the commit authority. The first implementation
+A manifest-cycle reset has no replay result to preserve for the incomplete-accumulator WorkClaims it
+resolves. The complete applicable manifest and cycle-scoped decision make those claims
+`Satisfied(MANIFEST_CYCLE_RESET)`; transaction or other claims beneath the same child remain
+independent. Parent commit authority exists only after every child is terminal `Satisfied`. The
+first implementation
 emits:
 
 * a reason-coded metric without high-cardinality connection labels;
@@ -2324,7 +2584,8 @@ emits:
 
 It does not write a durable discard receipt and does not expand `EvidenceWriter` for this case.
 Accordingly, the matrix row is
-`(ManifestCycleReset, NotSent, NotRequired) -> CommitPredecessorOnly`.
+`(ManifestCycleReset, NotSent, NotRequired) -> Satisfied(MANIFEST_CYCLE_RESET)` for the covered
+incomplete-accumulator WorkClaims.
 
 ### 19.3 Duration configuration is diagnostic, not commit authority
 
@@ -2373,16 +2634,17 @@ The accepted routing design is
 [`proxyHorizontalScalingAndNodeDeath.md`](proxyHorizontalScalingAndNodeDeath.md). A custom
 cooperative assignor moves members through `PROBATIONARY` and `ACTIVE`; PROBATIONARY members
 receive no traffic assignments. New connections choose once from the ACTIVE member's traffic
-assignments and store that partition immutably. Existing connections drain in place through later
-assignment changes.
+assignments and store that partition immutably. The existing proxy connection set drains in place
+through later assignment changes.
 
 No witness, peer-visibility, or writer-footprint contract is required. Therefore the old `nodeId`
 hash range and startup-only shard-width setting are migration residue, not the target architecture.
 Remove them after the group-aware assignor is active.
 
 The manifest interval defaults to 30 seconds and must be positive. A complete listing manifest
-resolves continuity across its cycle; a complete omission resets only the covered incomplete
-predecessor. Manifest chunking remains mandatory regardless of assignment width.
+resolves continuity across its cycle; an applicable omission settles the covered incomplete
+per-connection accumulation and retires that connection identity. Manifest chunking remains
+mandatory regardless of assignment width.
 
 ---
 

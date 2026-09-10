@@ -13,9 +13,11 @@ This addendum extends those rules for a controller-managed Kubernetes fleet:
 - a writer node id identifies one capture activation and is never reused after capture is
   abandoned;
 - temporary partition drain uses an acknowledged empty manifest;
-- `NoMoreWrites` is partition-scoped, self-emitted after full connection/publisher teardown, and
-  terminal for that proxy-partition identity; publisher teardown includes asynchronous quiescence
-  of periodic manifest callbacks before the final empty manifest;
+- `NoMoreWrites` is partition-scoped, self-emitted after the proxy connection set is empty and the
+  publisher retirement barrier has quiesced periodic manifest callbacks and acknowledged the final
+  empty manifest, and terminal for that proxy-partition identity; each closed connection completes
+  the base connection-retirement protocol first, and the producer closes only after
+  `NoMoreWrites` is acknowledged;
 - elapsed time and Kafka `LogAppendTime` are not commit authority for incomplete Kafka state;
 - every reconstruction-relevant observation and complete manifest carries the base protocol's
   per-activation, per-partition `manifestCycle`;
@@ -337,9 +339,10 @@ The managed fleet uses the exact base capability probe rather than defining a se
 
 `captureCapability=true` means that complete sequence succeeded for the reported activation and
 metadata view. A metadata lookup or TCP connection alone is insufficient. The probe is a necessary
-precondition for a grant, not a durability promise: normal publication failure still closes the
-capture gate. Before accepting a captured client connection on an assigned partition, the proxy
-also satisfies the base initial-manifest acknowledgement rule for that partition.
+precondition for capture eligibility, not for the controller's earlier session binding and probe
+authorization. It is not a durability promise: normal publication failure still closes the capture
+gate. Before accepting a captured client connection on an assigned partition, the proxy also
+satisfies the base initial-manifest acknowledgement rule for that partition.
 
 ## 5. Managed session fencing: data-plane record changes
 
@@ -352,9 +355,9 @@ TrafficRecord {
     captureSessionId
     connectionId
     partition
-    manifestCycle
     observations[] {
         connectionObservationSequence
+        manifestCycle
         ...
     }
 }
@@ -375,12 +378,26 @@ NoMoreWrites {
     partition
     emitterNodeId
 }
+
+CaptureCapabilityProbe {
+    writerNodeId
+    captureSessionId
+    probeId
+}
 ```
 
 The session field is optional only for unmanaged legacy mode. A controller-managed process fails
-startup if the configured wire version cannot carry it. `manifestCycle` keeps the exact meaning defined by the base protocol;
-`captureSessionId` does not replace or reset it. Traffic records retain the base requirement that
-one Kafka record is homogeneous in activation, session, partition, connection, and manifest cycle.
+startup if the configured wire version cannot carry it. `manifestCycle` keeps the exact meaning
+defined by the base protocol; `captureSessionId` does not replace or reset it. One Kafka record is
+homogeneous in activation, session, partition, and connection, but its observations may carry
+different manifest cycles. Replay intake creates one deterministic child obligation per
+observation after fully decoding and validating the parent. Manifest decisions satisfy only
+covered incomplete-accumulator WorkClaims; transaction or other claims beneath the same child may
+remain pending. The parent Kafka offset becomes commit-eligible only after every child is terminal
+`Satisfied`. Flushing when the cycle changes is an optional batching optimization, not a
+correctness requirement. Flushed and mixed batching preserve per-observation semantics and
+WorkClaim decisions without loss or duplication, but may have different parent-record identities,
+commit timing, and redelivery granularity.
 
 A fresh run that reuses a Kafka topic additionally requires the partition-scoped
 `FleetCaptureReset` record. Future automatic coverage restoration also adds
@@ -406,7 +423,10 @@ CaptureCoverageEstablished {
 
 Each control record is written independently to every traffic partition and acknowledged on every
 partition before the controller advances. Timestamps may be included for diagnostics, but they do
-not establish ordering or authority.
+not establish ordering or authority. On normal replay, each valid control record creates exactly
+one control child. That child becomes `Satisfied` only after the record's validation and semantic
+effect complete; the parent Kafka offset remains indivisible and follows the ordinary parent
+disposition path.
 
 `FleetCaptureReset` and `CaptureCoverageEstablished` are record names. “Reset marker” and “coverage
 marker” are informal shorthand and should not appear in protocol APIs.
@@ -615,7 +635,8 @@ fleet reset, establish coverage, or authorize a source snapshot. A fresh workflo
 resource UID and new run identity.
 
 The fresh workflow cannot declare capture ready while a failed-run pass-through workload can still
-receive or forward source traffic. Those workloads must drain, terminate, or be fenced under §8.3.
+receive or forward source traffic. Each such workload's proxy connection set must become empty, or
+the workload must terminate or be fenced under §8.3.
 
 Two further restart preconditions are load-bearing and unresolved for the current round:
 
@@ -660,17 +681,23 @@ A proxy may acknowledge `CAPTURE_SUPPRESSED_AND_QUIESCENT` only when:
 1. eligibility to accept new captured client connections for the old activation is irreversibly
    closed;
 2. no new traffic or manifest submission can enter its publisher;
-3. every previously accepted producer send completed successfully;
-4. every connection is permanently non-capturing or closed, and no source-forwarding operation
-   remains able to create capture work under the old activation;
-5. the periodic manifest publisher is quiescent;
-6. a final empty manifest and terminal self `NoMoreWrites` are acknowledged for every used
+3. for every closed captured connection C, Netty has reported closure, the kernel and Netty provide
+   no further network traffic for C, C's event-loop owner has submitted C's terminal observation
+   through the Kafka publisher after every earlier observation, Kafka has acknowledged all of those
+   observations, and only then has the event-loop owner removed C from the active set;
+4. the old activation's proxy connection set is empty;
+5. every previously accepted producer send completed successfully;
+6. the periodic manifest publisher is quiescent;
+7. a final empty manifest and terminal self `NoMoreWrites` are acknowledged for every used
    partition;
-7. the producer is closed; and
-8. the activation left membership and will never rejoin under that `writerNodeId`.
+8. the producer is closed; and
+9. the activation left membership and will never rejoin under that `writerNodeId`.
 
 This is a strong local proof and may allow a healthy process to receive a later capture grant with
-a fresh `writerNodeId` and capture session.
+a fresh `writerNodeId` and capture session. Individual connection retirement is exactly the base
+protocol above. The source-side in-flight-request barrier and Kubernetes workload traffic
+retirement remain separate fleet-level obligations in §§8.3–8.4; neither is part of one
+connection's retirement lifecycle.
 
 ### 8.2 Failed or ambiguous producer
 
@@ -830,13 +857,16 @@ do block coverage establishment and the next source snapshot.
 
 ### 9.2 New capture grants
 
-After reset fan-out completes and the replay-boundary plan is durable, the controller grants the
-new session and plan id to eligible processes. Each process creates a fresh `writerNodeId` and
-follows the base `PROBATIONARY`-to-`ACTIVE` membership protocol, including capability probing and
-eligibility for assigned new captured client connections.
+After reset fan-out completes and the replay-boundary plan is durable, the controller binds eligible
+processes to the new session and plan id and authorizes only session-fenced capability probing.
+Each process creates a fresh `writerNodeId`, emits probes carrying that `captureSessionId`, and
+joins as `PROBATIONARY` only after every probe is acknowledged and its producer configuration is
+validated. Promotion to `ACTIVE` is the capture-eligibility grant for assigned new captured client
+connections.
 
 New connections use strict capture only after activation. Existing pass-through connections never
-upgrade in place; they drain or are force-closed.
+upgrade in place; the proxy connection set is allowed to drain, or those connections are
+force-closed.
 
 ### 9.3 Coverage establishment
 
@@ -996,9 +1026,14 @@ For an incident that actually forwarded uncaptured traffic:
 5. Strict replacement capacity is started and probed.
 6. Every previous capture activation is retired by healthy suppression or the permanent
    failed-activation rules under §8.1 and §8.2.
-7. The controller creates session S, persists one immutable reset intent, and fans its exact
-   `FleetCaptureReset{D,R,S,I}` payload to every partition.
-8. After all reset acknowledgements, the controller grants S to eligible proxies.
+7. The controller creates session S and chooses the trusted Kafka input branch:
+   - **same topic:** persist one immutable reset intent, fan its exact
+     `FleetCaptureReset{D,R,S,I}` payload to every partition, await every acknowledgement, and
+     record start offset `resetOffset+1`; or
+   - **distinct immutable topic:** create and verify the new topic namespace, complete inert setup
+     probes, record the pre-grant broker end offset for every partition, and emit no fleet reset.
+8. After the selected branch's complete boundary plan is durable, the controller grants S to
+   eligible proxies.
 9. Proxies become `ACTIVE` under the base capability and group-assignment protocol.
 10. Remaining pass-through processes and off-load-balancer connections become traffic-retired
     under §8.3.
@@ -1021,23 +1056,23 @@ replacement-snapshot automation remain future deltas.
 
 | Change | Scope | Required behavior |
 |---|---|---|
-| Managed configuration | Current | Add `suppressCaptureByDefault`, controller-authorized fallback, retry, authorization, drain, and handoff settings. |
+| Managed configuration | Current | Add `suppressCaptureByDefault`, controller-authorized fallback, retry, authorization, proxy connection-set-drain, and handoff settings. |
 | Separate status/control interface | Current | Expose local state and authenticated idempotent commands without sharing the source listener. |
 | Capture Replay status | Current | Add complete/false/unknown coverage, immutable terminal-workflow status, recovery identity, and transition timestamps. |
 | Durable grant ledger | Current | Persist every process, capture activation, grant, and retirement state across controller failover. |
 | Completeness certificate | Current | Persist immutable evidence before atomically publishing its revision with `CaptureCoverageComplete=True`; failover treats missing or invalid evidence as unknown. |
-| Traffic-affecting inventory | Current | Track load-balanced processes, draining processes, off-LB live connections, and unreachable grants. |
+| Traffic-affecting inventory | Current | Track load-balanced processes, processes whose connection sets are draining, off-LB live connections, and unreachable grants. |
 | Kubernetes workload identity | Current | Track Pod UID, container ID, node UID, and process identity; never retire by Pod name or replacement readiness. |
 | Kubernetes fencing | Current | Prove traffic retirement through trusted healthy quiescence, runtime-confirmed termination, or infrastructure fencing that cuts existing connectivity; force deletion and node timeout are insufficient. |
 | Controller command fence | Current | Allocate a domain fence token, persist immutable command intents, target immutable Pod and process identity, and reject stale same-recovery commands independently of leader election. |
-| Record schema | Current | Carry `captureSessionId` on every managed traffic, manifest, and proxy-completion record. If a fresh run reuses the same Kafka topic, add per-partition reset records now; add coverage-establishment records for future automatic recovery. |
+| Record schema | Current | Carry `captureSessionId` on every managed traffic, manifest, and proxy-completion record; carry `manifestCycle` per traffic observation; permit mixed-cycle parents with one child obligation per observation and parent commit only after every child is terminal `Satisfied`. Valid control records and record-level session rejection use one control child. If a fresh run reuses the same Kafka topic, add per-partition reset records now; add coverage-establishment records for future automatic recovery. |
 | Proxy state machine | Current | Implement retry, pending authorization, same-process pass-through, healthy suppression, and permanent failed-activation rules. |
 | Session-aware replayer | Current | Enforce the expected session, reject nonmatching-session records, persist bootstrap, and invalidate a run on a superseding reset when reset records exist. |
 | Snapshot replay plan | Current | Persist the capture domain, accepted session, domain sequence, immutable Kafka IDs, and partition start offsets; include reset offsets when reusing a topic. |
 | Capability probe | Current | Implement the base acknowledged per-leader capability probe and initial-manifest gate rather than metadata connectivity. |
 | Source retirement proof | Current fresh-run precondition; future automation | Define how forced termination excludes source operations completing after the recovery boundary. |
 | Security | Current | Authenticate and authorize every mutation and control-record emission. |
-| Observability | Current and future | Export terminal failure, inventory, compromise, suppression, drain, and rejection metrics now; add session, fan-out, and replacement-snapshot metrics with future recovery. |
+| Observability | Current and future | Export terminal failure, inventory, compromise, suppression, proxy connection-set-drain, and rejection metrics now; add session, fan-out, and replacement-snapshot metrics with future recovery. |
 
 ## 14. Failure boundaries
 
@@ -1124,7 +1159,17 @@ Current round:
 - same-process and replacement-process pass-through only after durable incomplete and terminal
   status;
 - controller timeout causing block or exit, never autonomous degradation;
-- healthy suppression acknowledgement only after every producer future succeeds;
+- healthy suppression acknowledgement only after every closed connection completes the base
+  connection-retirement order, the proxy connection set is empty, and every producer future
+  succeeds;
+- a manifest prepared before a closed connection's acknowledged active-set removal listing that
+  connection, and a manifest prepared afterward being allowed to omit it;
+- managed mixed-cycle traffic records creating exactly one child obligation per observation,
+  settling WorkClaims and children independently, and withholding the parent offset until every
+  child is terminal `Satisfied`;
+- cycle-boundary flushing and mixed-cycle managed batching preserving the same per-observation
+  semantics and WorkClaim decisions without loss or duplication, while permitting different
+  parent-record identities, commit timing, and redelivery granularity;
 - failed or ambiguous sends preventing healthy suppression;
 - off-load-balancer live connections blocking completeness;
 - unreachable processes producing false or unknown, never true.
@@ -1134,7 +1179,9 @@ Conditional current tests when a fresh run reuses a Kafka topic:
 - reset fan-out idempotence and partial failure;
 - reset offsets becoming the immutable per-partition replay start offsets;
 - reset-intent payload immutability and identical retry after ambiguous send;
-- session mismatch rejection for known and previously unseen capture activations; and
+- session mismatch rejection for known and previously unseen capture activations through one
+  control child that becomes `Satisfied` only after discard, advance, logging, metrics, and alarm;
+  and
 - a later trusted reset invalidating an older snapshot/replay run.
 
 Future automatic recovery:
@@ -1147,7 +1194,10 @@ Future automatic recovery:
 
 Current session-fencing tests:
 
-- a record from a nonmatching session being discarded, advanced past, and alarmed;
+- a record from a nonmatching session creating one control child, then being discarded, advanced
+  past, logged, counted, alarmed, and marked `Satisfied`;
+- an expected-session mixed-cycle record settling WorkClaims and children independently while the
+  parent offset remains uncommitted until every child is terminal `Satisfied`;
 - restart from a trusted replay plan after its boundary records have aged out; and
 - checkpoints rejecting a different capture domain, session, domain sequence, or immutable Kafka
   identity.
