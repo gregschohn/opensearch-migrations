@@ -692,8 +692,8 @@ The schema keeps Kafka username separate from the Secret. The picker should offe
 | `traffic.proxies.<proxy>.proxyConfig.loggingConfigurationOverrideConfigMap` | ConfigMap | single key, recommended `log4j2.properties` | List ConfigMaps with one key or `log4j2.properties` | Single-file ConfigMap |
 | `traffic.replayers.<replayer>.replayerConfig.loggingConfigurationOverrideConfigMap` | ConfigMap | single key, recommended `log4j2.properties` | Same | Single-file ConfigMap |
 | `sourceClusters.<source>.snapshotInfo.snapshots.<snapshot>.config.createSnapshotConfig.loggingConfigurationOverrideConfigMap` | ConfigMap | single key, recommended `log4j2.properties` | Same | Single-file ConfigMap |
-| `snapshotMigrationConfigs[<i>].perSnapshotConfig.<snapshot>[<j>].metadataMigrationConfig.loggingConfigurationOverrideConfigMap` | ConfigMap | single key, recommended `log4j2.properties` | Same | Single-file ConfigMap |
-| `snapshotMigrationConfigs[<i>].perSnapshotConfig.<snapshot>[<j>].documentBackfillConfig.loggingConfigurationOverrideConfigMap` | ConfigMap | single key, recommended `log4j2.properties` | Same | Single-file ConfigMap |
+| `snapshotMigrationConfigs[<i>].metadataMigrationConfig.loggingConfigurationOverrideConfigMap` | ConfigMap | single key, recommended `log4j2.properties` | Same | Single-file ConfigMap |
+| `snapshotMigrationConfigs[<i>].documentBackfillConfig.loggingConfigurationOverrideConfigMap` | ConfigMap | single key, recommended `log4j2.properties` | Same | Single-file ConfigMap |
 
 The runtime description says the ConfigMap should have a single key whose value is Log4j2 properties content. The picker treats exactly one key as `matching`. It treats `log4j2.properties` plus extra keys as `warn` so users understand why it is not the preferred shape.
 
@@ -703,8 +703,8 @@ The following pipeline fields can appear in four places:
 
 - `traffic.replayers.<replayer>.replayerConfig.requestTransforms[]`
 - `traffic.replayers.<replayer>.replayerConfig.tupleTransforms[]`
-- `snapshotMigrationConfigs[<i>].perSnapshotConfig.<snapshot>[<j>].metadataMigrationConfig.metadataTransforms[]`
-- `snapshotMigrationConfigs[<i>].perSnapshotConfig.<snapshot>[<j>].documentBackfillConfig.documentTransforms[]`
+- `snapshotMigrationConfigs[<i>].metadataMigrationConfig.metadataTransforms[]`
+- `snapshotMigrationConfigs[<i>].documentBackfillConfig.documentTransforms[]`
 
 Within each transform item:
 
@@ -728,8 +728,8 @@ These fields mention files but are not currently workflow-wired external referen
 - `traffic.replayers.<replayer>.replayerConfig.kafkaTrafficPropertyFile`
 - `traffic.replayers.<replayer>.replayerConfig.transformerConfigFile`
 - `traffic.replayers.<replayer>.replayerConfig.tupleTransformerConfigFile`
-- `snapshotMigrationConfigs[].perSnapshotConfig.*[].metadataMigrationConfig.transformerConfigFile`
-- `snapshotMigrationConfigs[].perSnapshotConfig.*[].documentBackfillConfig.docTransformerConfigFile`
+- `snapshotMigrationConfigs[].metadataMigrationConfig.transformerConfigFile`
+- `snapshotMigrationConfigs[].documentBackfillConfig.docTransformerConfigFile`
 
 They are expert raw container paths. Manage should not list ConfigMaps, Secrets, or images for them until the schema converts those fields to `FILE_REF` or another explicit mounted-file type.
 

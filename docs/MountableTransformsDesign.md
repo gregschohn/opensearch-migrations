@@ -466,20 +466,20 @@ targetClusters:
 snapshotMigrationConfigs:
   - fromSource: prod-es
     toTarget: prod-os
-    perSnapshotConfig:
-      main-snapshot:
-        - metadataMigrationConfig:
-            transformsSource: my-transforms
-            metadataTransforms:
-              language: javascript
-              # file omitted; uses metadata.js and passes /transforms/metadata.js to Java
-          documentBackfillConfig:
-            transformsSource: my-transforms
-            documentTransforms:
-              - language: python
-                file: rfs/document.py
-                bindingsObject:
-                  indexPrefix: migrated-
+    fromSnapshot: main-snapshot
+    slice: slice-0
+    metadataMigrationConfig:
+      transformsSource: my-transforms
+      metadataTransforms:
+        language: javascript
+        # file omitted; uses metadata.js and passes /transforms/metadata.js to Java
+    documentBackfillConfig:
+      transformsSource: my-transforms
+      documentTransforms:
+        - language: python
+          file: rfs/document.py
+          bindingsObject:
+            indexPrefix: migrated-
 
 traffic:
   proxies:
