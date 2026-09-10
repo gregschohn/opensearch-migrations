@@ -13,7 +13,7 @@ import {main as resolveConsoleResourcesMain} from "../src/resolveConsoleResource
 function multiResourceConfig() {
     return {
         sourceClusters: {
-            sourceA: {
+            sourcea: {
                 endpoint: "https://source-a.example.com",
                 allowInsecure: true,
                 version: "ES 7.10.2",
@@ -39,7 +39,7 @@ function multiResourceConfig() {
                     },
                 },
             },
-            sourceB: {
+            sourceb: {
                 endpoint: "https://source-b.example.com",
                 allowInsecure: false,
                 version: "OS 1.3.0",
@@ -52,7 +52,7 @@ function multiResourceConfig() {
             },
         },
         targetClusters: {
-            targetX: {
+            targetx: {
                 endpoint: "https://target-x.example.com",
                 allowInsecure: true,
                 authConfig: {
@@ -61,20 +61,21 @@ function multiResourceConfig() {
                     },
                 },
             },
-            targetY: {
+            targety: {
                 endpoint: "https://target-y.example.com",
                 allowInsecure: false,
             },
         },
         snapshotMigrationConfigs: [{
-            fromSource: "sourceA",
-            toTarget: "targetX",
-            perSnapshotConfig: {
-                snapA: [{
+            fromSource: "sourcea",
+            toTarget: "targetx",
+                fromSnapshot: "snapA",
+                slices: {
+                    "slice-0": {
                     metadataMigrationConfig: {},
-                }],
-            },
-        }],
+                    },
+                },
+            },],
         traffic: {
             kafkaClusters: {
                 default: {
@@ -90,7 +91,7 @@ function multiResourceConfig() {
             },
             proxies: {
                 "proxy-a": {
-                    source: "sourceA",
+                    source: "sourcea",
                     proxyConfig: {
                         listenPort: 9201,
                         tls: {
@@ -104,7 +105,7 @@ function multiResourceConfig() {
                     },
                 },
                 "proxy-b": {
-                    source: "sourceB",
+                    source: "sourceb",
                     kafka: "my-kafka",
                     proxyConfig: {
                         listenPort: 9202,
@@ -117,11 +118,11 @@ function multiResourceConfig() {
             replayers: {
                 "replay-a": {
                     fromCapturedTraffic: "proxy-a",
-                    toTarget: "targetX",
+                    toTarget: "targetx",
                 },
                 "replay-b": {
                     fromCapturedTraffic: "proxy-b",
-                    toTarget: "targetY",
+                    toTarget: "targety",
                 },
             },
         },
@@ -135,8 +136,8 @@ describe("console resources", () => {
 
         expect(resources.sources).toEqual([
             expect.objectContaining({
-                refName: "sourceA",
-                aliases: ["sourceA"],
+                refName: "sourcea",
+                aliases: ["sourcea"],
                 clientConfig: expect.objectContaining({
                     endpoint: "https://source-a.example.com",
                     allow_insecure: true,
@@ -147,7 +148,7 @@ describe("console resources", () => {
                     k8sName: "proxy-a",
                     aliases: expect.arrayContaining([
                         "proxy-a",
-                        "captureproxy.proxy-a",
+                        "captureproxy.proxy-a"
                     ]),
                     clientConfig: expect.objectContaining({
                         endpoint: "https://proxy-a:9201",
@@ -166,7 +167,7 @@ describe("console resources", () => {
                 ]),
             }),
             expect.objectContaining({
-                refName: "sourceB",
+                refName: "sourceb",
                 clientConfig: expect.objectContaining({
                     endpoint: "https://source-b.example.com",
                     sigv4: {
@@ -186,7 +187,7 @@ describe("console resources", () => {
 
         expect(resources.targets).toEqual([
             expect.objectContaining({
-                refName: "targetX",
+                refName: "targetx",
                 clientConfig: expect.objectContaining({
                     endpoint: "https://target-x.example.com",
                     basic_auth: {k8s_secret_name: "target-x-creds"},
@@ -205,7 +206,7 @@ describe("console resources", () => {
                 ]),
             }),
             expect.objectContaining({
-                refName: "targetY",
+                refName: "targety",
                 clientConfig: expect.objectContaining({
                     endpoint: "https://target-y.example.com",
                     no_auth: null,
@@ -219,7 +220,7 @@ describe("console resources", () => {
                 k8sName: "default",
                 aliases: expect.arrayContaining([
                     "default",
-                    "kafkacluster.default",
+                    "kafkacluster.default"
                 ]),
                 runtime: expect.objectContaining({
                     type: "strimzi",
@@ -255,7 +256,7 @@ describe("console resources", () => {
                 k8sName: "my-kafka",
                 aliases: expect.arrayContaining([
                     "my-kafka",
-                    "kafkacluster.my-kafka",
+                    "kafkacluster.my-kafka"
                 ]),
                 runtime: expect.objectContaining({
                     type: "strimzi",
@@ -268,14 +269,14 @@ describe("console resources", () => {
 
         expect(resources.consumerGroups).toEqual([
             {
-                name: "replayer-targetX",
-                targetRef: "targetX",
+                name: "replayer-targetx",
+                targetRef: "targetx",
                 kafkaRef: "default",
                 replayRef: "replay-a",
             },
             {
-                name: "replayer-targetY",
-                targetRef: "targetY",
+                name: "replayer-targety",
+                targetRef: "targety",
                 kafkaRef: "my-kafka",
                 replayRef: "replay-b",
             },
@@ -328,7 +329,7 @@ describe("console resources", () => {
         const resources = buildConsoleResourcesFromResolvedConfig(resolvedConfig);
 
         expect(resources.workflowName).toBe("workflow-a");
-        expect(resources.sources.map(source => source.refName)).toEqual(["sourceA", "sourceB"]);
+        expect(resources.sources.map((source) => source.refName)).toEqual(["sourcea", "sourceb"]);
     });
 
     it("projects historical resolved configs that fail current nested validation", async () => {
@@ -337,7 +338,7 @@ describe("console resources", () => {
         const sourceConfigs = [
             ...resolvedConfig.workflowConfig.proxies.map((proxy: any) => proxy.sourceConfig),
             ...resolvedConfig.workflowConfig.snapshots.map((snapshot: any) => snapshot.sourceConfig),
-        ].filter((source: any) => source.label === "sourceA" && source.snapshotInfo);
+        ].filter((source: any) => source.label === "sourcea" && source.snapshotInfo);
         for (const sourceConfig of sourceConfigs) {
             sourceConfig.snapshotInfo.repos["r a"] = sourceConfig.snapshotInfo.repos.repoA;
             delete sourceConfig.snapshotInfo.repos.repoA;
@@ -347,8 +348,8 @@ describe("console resources", () => {
         const resources = buildConsoleResourcesFromResolvedConfig(resolvedConfig);
 
         expect(resources.workflowName).toBe("workflow-a");
-        expect(resources.sources.map(source => source.refName)).toEqual(["sourceA", "sourceB"]);
-        expect(resources.targets.map(target => target.refName)).toEqual(["targetX", "targetY"]);
+        expect(resources.sources.map((source) => source.refName)).toEqual(["sourcea", "sourceb"]);
+        expect(resources.targets.map((target) => target.refName)).toEqual(["targetx", "targety"]);
     });
 
     it("projects externally managed SCRAM Kafka credential metadata", async () => {
@@ -368,7 +369,7 @@ describe("console resources", () => {
         };
         config.traffic.proxies = {
             "proxy-a": {
-                source: "sourceA",
+                source: "sourcea",
                 kafka: "external",
                 proxyConfig: {
                     listenPort: 9201,
@@ -378,7 +379,7 @@ describe("console resources", () => {
         config.traffic.replayers = {
             "replay-a": {
                 fromCapturedTraffic: "proxy-a",
-                toTarget: "targetX",
+                toTarget: "targetx",
             },
         };
 
@@ -418,7 +419,7 @@ describe("console resources", () => {
 
         const resources = JSON.parse(await fs.readFile(outputFile, "utf8"));
         expect(resources.workflowName).toBe("workflow-from-cli");
-        expect(resources.sources.map((source: any) => source.refName)).toEqual(["sourceA", "sourceB"]);
+        expect(resources.sources.map((source: any) => source.refName)).toEqual(["sourcea", "sourceb"]);
         expect(resources.kafkas.map((kafka: any) => kafka.refName)).toEqual(["default", "my-kafka"]);
     });
 });

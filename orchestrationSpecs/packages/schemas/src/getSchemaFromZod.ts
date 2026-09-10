@@ -158,15 +158,19 @@ function removeRawUiHintMetadata(jsonSchema: any): void {
  * @returns The JSON Schema representation
  */
 export function zodSchemaToJsonSchema(
-    schema: z.ZodObject<any> | z.ZodArray<any>,
+    schema: z.ZodType,
     schemaName: string = "Schema"
 ): any {
     const registry = new OpenAPIRegistry();
+    const unwrapped = unwrapZod(schema);
+    if (!(unwrapped instanceof z.ZodObject) && !(unwrapped instanceof z.ZodArray)) {
+        throw new Error("JSON schema generation requires an object or array schema");
+    }
 
     // Wrap arrays in an object for registration
-    const schemaToRegister = schema instanceof z.ZodArray
-        ? z.object({ items: schema })
-        : z.object({}).merge(schema);
+    const schemaToRegister = unwrapped instanceof z.ZodArray
+        ? z.object({ items: unwrapped })
+        : z.object({}).merge(unwrapped);
 
     registry.register(schemaName, schemaToRegister);
 

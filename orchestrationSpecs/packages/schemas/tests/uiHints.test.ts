@@ -223,9 +223,8 @@ describe("workflow schema UI hints", () => {
         const proxyConfig = schema.properties.traffic.properties.proxies.additionalProperties.properties.proxyConfig;
         const replayerConfig = schema.properties.traffic.properties.replayers.additionalProperties.properties.replayerConfig;
         const snapshotMigration = schema.properties.snapshotMigrationConfigs.items;
-        const perSnapshotPass = snapshotMigration.properties.perSnapshotConfig.additionalProperties.items;
-        const metadataConfig = perSnapshotPass.properties.metadataMigrationConfig;
-        const documentBackfillConfig = perSnapshotPass.properties.documentBackfillConfig;
+        const metadataConfig = snapshotMigration.properties.metadataMigrationConfig;
+        const documentBackfillConfig = snapshotMigration.properties.documentBackfillConfig;
 
         expect(proxyConfig.properties.serviceType["x-expert"]).toBe(true);
         expect(proxyConfig.properties.podReplicas["x-expert"]).toBeUndefined();

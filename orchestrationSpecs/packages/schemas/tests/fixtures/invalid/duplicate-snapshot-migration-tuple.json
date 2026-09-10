@@ -4,17 +4,11 @@
       "version": "ES 7.10.2",
       "endpoint": "http://source:9200",
       "snapshotInfo": {
-        "repos": {
-          "my-repo": {
-            "awsRegion": "us-east-1",
-            "repoPathUri": "s3://my-bucket/snapshots"
-          }
-        },
         "snapshots": {
-          "snap1": {
-            "repoName": "my-repo",
+          "snap": {
+            "repoName": "",
             "config": {
-              "externallyManagedSnapshotName": "snap1"
+              "externallyManagedSnapshotName": "snap"
             }
           }
         }
@@ -30,12 +24,24 @@
     {
       "fromSource": "source",
       "toTarget": "target",
-      "fromSnapshot": "snap1",
-      "slices": {
-        "docs": {
+      "fromSnapshot": "snap",
+      "slices": [
+        {
+          "label": "slice-0",
+          "metadataMigrationConfig": {}
+        }
+      ]
+    },
+    {
+      "fromSource": "source",
+      "toTarget": "target",
+      "fromSnapshot": "snap",
+      "slices": [
+        {
+          "label": "slice-1",
           "documentBackfillConfig": {}
         }
-      }
+      ]
     }
   ]
 }
