@@ -158,8 +158,9 @@ creates nothing and leaves a public-path deployment unchanged. The other modes:
 
 - `privatelink`: create a consumer interface VPC endpoint to the cluster
   provider's VPC endpoint service, optionally with a Route 53 private hosted zone
-  that resolves a hostname to the endpoint. Best fit for a managed OpenSearch
-  service that exposes a PrivateLink endpoint service (typical for a target).
+  that resolves a hostname to the endpoint. Requires the cluster provider to publish
+  a VPC endpoint service name (`com.amazonaws.vpce.<region>.vpce-svc-...`); obtain it
+  from the provider.
 - `vpc_peering`: peer the migration VPC with the cluster's VPC and route to its
   CIDR. Fits a cluster in a customer-owned VPC (often the source).
 

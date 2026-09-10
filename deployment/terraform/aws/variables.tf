@@ -130,8 +130,9 @@ variable "source_connectivity" {
     Private connectivity for the source-read leg. mode = none (default, reach the
     source over its public endpoint / out-of-band VPN/DX) | privatelink (consumer
     interface endpoint to the source's VPC endpoint service) | vpc_peering (peer the
-    migration VPC with the source VPC). Managed OpenSearch sources typically expose
-    privatelink; a customer-owned source VPC typically uses vpc_peering.
+    migration VPC with the source VPC). privatelink requires the provider to publish a
+    VPC endpoint service name; vpc_peering fits a source in an AWS VPC you can peer
+    with. A source already inside the migration VPC needs neither: leave mode = none.
   EOT
   type = object({
     mode = optional(string, "none")
@@ -167,8 +168,9 @@ variable "source_connectivity" {
 variable "target_connectivity" {
   description = <<-EOT
     Private connectivity for the target-write leg. Same modes as source_connectivity.
-    A managed OpenSearch target almost always exposes privatelink (a VPC endpoint
-    service); vpc_peering fits a target in a peered AWS VPC.
+    privatelink requires the provider to publish a VPC endpoint service name;
+    vpc_peering fits a target in an AWS VPC you can peer with. A target already
+    inside the migration VPC needs neither: leave mode = none.
   EOT
   type = object({
     mode = optional(string, "none")
