@@ -46,7 +46,12 @@ The design accepts:
   replayer's expiration horizon;
 - hard process death may prevent a final writer-completion record;
 - pass-through mode may create a known interval in which source traffic is not replayable; and
-- restoring strict capture after such an interval requires a new capture and replay run.
+- restoring strict capture after such an interval requires a new capture and replay run; and
+- this redesign supports only source request handling that cannot mutate state before the complete
+  HTTP request arrives. Streaming source handlers that can act on an incomplete body remain out of
+  scope; and
+- hardening mutating-request classification beyond the proxy's current HTTP-method predicate is
+  deferred. Endpoints that mutate outside that predicate are a known limitation for this round.
 
 The design does not require transactions, a controller, or a peer fencing protocol.
 
@@ -67,6 +72,11 @@ The proxy enforces this invariant by withholding the final execution-enabling by
 request until its complete Kafka representation has been acknowledged. After that acknowledgement
 and immediately before those source bytes are submitted, the proxy performs the capture-liveness
 check in §5.
+
+For this redesign, the invariant assumes that source execution is gated by receipt of the complete
+HTTP request. Transfer-Encoding chunking does not violate that assumption by itself; a source
+handler that applies effects while consuming an incomplete body does. Such streaming source
+semantics are not supported in this round.
 
 More generally, every captured source write requires the corresponding Kafka record to be
 acknowledged and the local capture gate to remain open. The complete-request rule is the stronger
@@ -163,8 +173,10 @@ While in `PROBING`, it:
 4. waits for all probe acknowledgements; and
 5. refreshes metadata again before joining the group as `PROBATIONARY`.
 
-The replayer recognizes and ignores `CaptureCapabilityProbe`. Probe records never create replay
-work, open a connection, or affect expiration.
+The replayer recognizes `CaptureCapabilityProbe` as a semantically inert record. It never creates
+replay work, opens a connection, or refreshes any connection's
+`lastPositiveLivenessBrokerTime`. Because it is a valid broker-appended partition record, it does
+advance `scannedThroughBrokerTime` when replay or scanning covers it.
 
 This probe qualifies current producer reachability. It does not guarantee future availability.
 Normal runtime failures are handled by §5 and §7.
@@ -285,6 +297,18 @@ The emitter field may remain in the wire format for compatibility.
 Traffic records, manifest chunks, and self `NoMoreWrites` for one writer and partition pass through
 the same ordered publisher lane.
 
+Broker append order must preserve that lane order across retries. The producer therefore requires:
+
+```text
+enable.idempotence = true
+acks = all
+max.in.flight.requests.per.connection <= 5
+```
+
+These are correctness settings, not tuning defaults. User configuration must not weaken them, and
+startup must validate the effective producer configuration before the process enters `ACTIVE`.
+Failure to establish ordering-preserving settings fails capture closed.
+
 The lane distinguishes:
 
 - **accepted** — submission entered the lane;
@@ -294,6 +318,17 @@ The lane distinguishes:
 
 Only acknowledgement advances the writer's durable state.
 
+For permanent writer-partition retirement, the lane has a one-way local state:
+
+```text
+OPEN -> RETIRING -> RETIRED
+```
+
+- `OPEN` accepts connection traffic and ordinary periodic manifests.
+- `RETIRING` rejects new connection traffic and ordinary manifests. Only the retirement barrier
+  may submit the final empty manifest and terminal self `NoMoreWrites`.
+- `RETIRED` rejects every submission.
+
 ### 4.3 Terminal self `NoMoreWrites` barrier
 
 Self `NoMoreWrites` permanently retires one `(writerNodeId, partition)`. It is a compact,
@@ -302,16 +337,24 @@ cleanly.
 
 Before emitting it for partition P, the proxy:
 
-1. permanently revokes new-connection admission and capture submission for P under this
-   `writerNodeId`;
-2. disconnects every Netty connection capable of producing traffic for P and waits for every
+1. atomically moves P's publisher lane from `OPEN` to `RETIRING`, permanently revoking
+   new-connection admission, connection-originated traffic submission, and ordinary manifest
+   submission for P under this `writerNodeId`;
+2. asynchronously quiesces the periodic manifest publisher: no future run may start, and any
+   callback already running must either have entered the lane before `RETIRING` or finish without
+   submitting. The quiescence completion gate must not block a Netty event loop;
+3. disconnects every Netty connection capable of producing traffic for P and waits for every
    connection-teardown future to settle;
-3. waits for every send previously accepted by P's publisher lane to succeed and treats any failed
+4. waits for every send previously accepted by P's publisher lane to succeed and treats any failed
    or ambiguous send as a capture failure under §7;
-4. verifies that P's exact open-connection registry is empty;
-5. emits and acknowledges a final empty manifest;
-6. submits `NoMoreWrites` through the same lane; and
-7. waits for its acknowledgement before reporting completion.
+5. verifies that P's exact open-connection registry is empty;
+6. emits and acknowledges a final empty manifest through the retirement barrier;
+7. submits `NoMoreWrites` through the same lane; and
+8. after its acknowledgement, moves the lane to `RETIRED` before reporting completion.
+
+The `RETIRING` transition and manifest-publisher quiescence ensure that no delayed periodic task can
+enqueue an ordinary manifest behind terminal `NoMoreWrites`. Multiple retirement requests share the
+same idempotent completion gate.
 
 The useful guarantee is:
 
@@ -345,10 +388,17 @@ connections, including idle connections.
 Registry and publisher ordering obey these rules:
 
 - a connection enters the registry before its first traffic submission;
-- each manifest copies the registry at one linearization point;
+- registry mutation, manifest construction, and traffic admission are ordered through one
+  publisher-owned linearization construct;
+- copying a manifest and admitting all of its chunks to the ordered lane are one publisher
+  operation. A copied manifest cannot be overtaken by a connection's first traffic submission;
 - a connection remains present while later traffic could still be submitted;
 - connection close or cancellation is ordered before removal; and
 - removal occurs only after the connection's complete accepted record set has been acknowledged.
+
+Therefore, if a manifest omits connection C, either the manifest entered the lane before C's first
+traffic or C's final accepted traffic had already been acknowledged before removal. A registry copy
+may not be taken on one thread and queued later after independently admitted traffic.
 
 This makes a complete manifest omission meaningful. It also keeps an inactive but open connection
 alive indefinitely, because periodic manifests continue to list it.
@@ -495,9 +545,10 @@ The replayer also tracks:
 scannedThroughBrokerTime[P]
 ```
 
-This is the greatest monotonically clamped Kafka `LogAppendTime` among partition records whose
-metadata the replay or scan cursor has actually covered. It is not the current broker wall clock,
-the consumer's poll time, or an estimate derived from offset position.
+This is the greatest monotonically clamped Kafka `LogAppendTime` among valid, recognized partition
+records whose metadata the replay or scan cursor has actually covered. It includes semantically
+inert records such as `CaptureCapabilityProbe`. It is not the current broker wall clock, the
+consumer's poll time, or an estimate derived from offset position.
 
 Once:
 
@@ -541,6 +592,12 @@ effectiveBrokerTime[P] =
 
 This clamp protects the expiration state machine from a broker-clock regression. It does not permit
 producer timestamps to enter the calculation.
+
+Only traffic for connection C and a complete manifest listing C may update
+`lastPositiveLivenessBrokerTime[C]`. Other valid recognized records advance only the partition
+horizon. A malformed record, invalid partition stamp, unknown unsafe record type, or other protocol
+violation cannot advance expiration; processing halts or remains inconclusive according to the
+record-validation policy.
 
 `lastPositiveLivenessBrokerTime`, `scannedThroughBrokerTime`, and every intermediate timestamp in
 the comparison are broker-time values. The configured timeout is a duration added to a broker-time
@@ -656,8 +713,11 @@ Recovery is:
 5. take a fresh source snapshot appropriate to the replay workflow; and
 6. start a new replay run from that boundary.
 
-The managed-fleet addendum may automate these steps later. It must preserve the same run boundary
-and must not recreate peer writer-completion authority.
+For the current Kubernetes round, the controller marks the failed capture resource terminal and
+starts a fresh capture, snapshot, and replay workflow. It does not restore capture or authorize a
+replacement snapshot within the failed resource. The managed-fleet addendum records a future
+automatic-recovery design using controller-issued `captureSessionId`, per-partition reset, a trusted
+replay plan, and old-workload traffic-retirement proof.
 
 ---
 
@@ -745,23 +805,33 @@ Before implementation is declared complete, the code and deployment contract mus
 - timeout validation includes manifest cadence, publication and acknowledgement delay, and scanner
   progress margin.
 
-### 10.2 Source execution boundary
+### 10.2 Known limitation: streaming source execution
 
-The capture-before-forward implementation must identify the real source execution boundary. Holding
-only the final request bytes is sufficient when the source application cannot act until the
-complete request arrives. It is insufficient for a streaming handler that may mutate state while
-reading an incomplete body.
+This redesign assumes that the source application cannot mutate state until it has received the
+complete HTTP request. Under that assumption, withholding the final request bytes until complete
+Kafka acknowledgement preserves §1.3.
 
-For every supported protocol and request form, implementation must either:
+The round does not add full-request buffering or support source handlers that apply effects while
+streaming an incomplete body. Deployments with those semantics cannot claim the strict-mode
+capture-before-forward guarantee for those endpoints.
 
-- prove that the withheld bytes gate application execution; or
-- buffer the complete mutating request and acknowledge its complete Kafka representation before
-  sending any source bytes that could cause an effect.
+HTTP chunked transfer encoding remains supported when it is only wire framing and the source still
+waits for the complete request. Supporting true streaming execution later requires buffering or
+spooling the complete mutating request, acknowledging its complete Kafka representation, checking
+the capture gate, and only then releasing effect-causing bytes to the source.
 
-This requirement should be tested with chunked and streaming request bodies, not only fixed-length
-requests.
+### 10.3 Deferred hardening: mutating-request classification
 
-### 10.3 Scope of current expiration code
+The central invariant applies to every request that can mutate source state, but the current proxy
+classifies requests through its existing HTTP-method predicate. Replacing that rule with a
+source-specific policy, default-mutating classification, or explicit read-only allowlist is
+deferred.
+
+This is a known coverage limitation rather than a new guarantee. A future hardening round should
+make unknown requests mutating by default and ensure that capture-suppression rules cannot exempt a
+potentially mutating request from strict capture-before-forward.
+
+### 10.4 Scope of current expiration code
 
 The existing `--packet-timeout-seconds` path must be audited to verify that it expires only
 incomplete reconstruction state. A completed replayable request must not be culled because its
@@ -771,21 +841,25 @@ If the current accumulator combines incomplete source capture with other work, t
 must split the terminal reasons or narrow the expiration target before enabling this policy for
 Kafka replay.
 
-### 10.4 Existing writer-completion schema and consumers
+### 10.5 Existing writer-completion schema and consumers
 
 Existing code may already accept `emitterNodeId != writerNodeId` and install a terminal cutoff.
 Those paths must be removed or made non-authoritative. Compatibility parsing can remain, but peer
 provenance must not settle state.
 
-### 10.5 Managed-fleet addendum
+### 10.6 Managed-fleet addendum
 
-The current managed-fleet addendum was drafted against peer completion and witness coverage. It is
-deferred and non-normative until rewritten around:
+The managed-fleet addendum is realigned with this protocol. Its current-round Kubernetes rule is
+terminal: after bounded retry reaches a capture failure, the resource remains incomplete and the
+workflow starts over. Future automatic recovery is documented around:
 
 - terminal self-only `NoMoreWrites`;
 - configured incomplete-state expiration;
-- the irreversible local capture gate; and
-- explicit new-run recovery after a capture gap.
+- the irreversible local capture gate;
+- explicit new-run recovery after a capture gap;
+- controller-issued capture sessions that fence delayed old records;
+- separate old-writer capture retirement and Kubernetes traffic retirement; and
+- reset-derived replay start offsets that remain conservative across the new source snapshot.
 
 ---
 
@@ -795,13 +869,28 @@ deferred and non-normative until rewritten around:
 
 - A mutating request cannot submit execution-enabling source bytes before complete Kafka
   acknowledgement.
+- The supported-source contract states that mutating handlers do not apply effects before the
+  complete HTTP request arrives; true streaming source execution remains out of scope.
+- Mutating-request classification retains the current HTTP-method predicate as a documented
+  limitation; conservative default-mutating classification is deferred.
 - A stale manifest after capture acknowledgement blocks strict-mode source forwarding.
 - Closing the capture gate races safely with many source-forwarding threads.
 - A thread admitted before gate closure has a complete Kafka representation.
 - Failed or partial manifest publication does not refresh proxy-local acknowledged-manifest
   freshness.
+- A manifest snapshot racing connection registration either enters the lane before the
+  connection's first traffic or includes the connection; a copied omission can never be queued
+  behind independently admitted traffic for that connection.
 - Terminal self `NoMoreWrites` waits for all related Netty connections to disconnect, an empty
-  manifest to be acknowledged, and every previously accepted send to succeed.
+  manifest to be acknowledged, every previously accepted send to succeed, and the periodic
+  manifest publisher to become quiescent.
+- A periodic manifest callback racing permanent retirement either enters the lane before
+  `RETIRING` and is drained or exits without submission; it never publishes after terminal
+  `NoMoreWrites`.
+- Producer configuration cannot disable idempotence, weaken `acks=all`, or set
+  `max.in.flight.requests.per.connection` above the ordering-preserving limit.
+- Startup fails closed when the effective producer settings cannot preserve same-partition lane
+  order across retries.
 - Pass-through never resumes capture.
 - Strict mode stops new source execution and exits.
 
@@ -818,6 +907,9 @@ deferred and non-normative until rewritten around:
 - Configured expiration settles only incomplete state and records `CONFIGURED_EXPIRED`.
 - `lastPositiveLivenessBrokerTime`, `scannedThroughBrokerTime`, and every intermediate expiration
   value are derived only from monotonically clamped Kafka `LogAppendTime`.
+- Valid recognized records, including capability probes, advance `scannedThroughBrokerTime`; only
+  connection traffic and complete listing manifests refresh `lastPositiveLivenessBrokerTime`.
+- Malformed or invalid records never advance an expiration verdict.
 - Tests fail if `TrafficObservation.ts`, manifest `emittedAtMillis`, proxy-local monotonic time, or
   replayer wall clock enters broker-time expiration arithmetic.
 - A complete request is replayed even when its connection later expires.
@@ -867,9 +959,14 @@ The design is complete when:
 - Manifests list all open connections and act as positive heartbeats.
 - Manifest age advances only after acknowledgement of a complete manifest.
 - Capture-before-forward is the primary completeness guarantee.
+- Capture-before-forward in this round assumes non-streaming source execution; chunked wire framing
+  is allowed only when the source waits for the complete request.
+- Hardening mutating-request classification beyond the existing HTTP-method predicate is deferred.
 - The proxy checks manifest freshness after Kafka acknowledgement and before source execution.
 - `NoMoreWrites` is self-emitted, partition-scoped, ordered, and terminal for that
   writer-partition identity.
+- Kafka producer idempotence and ordering-preserving retry settings are mandatory and cannot be
+  weakened by deployment configuration.
 - Temporary partition drain uses an acknowledged empty manifest and permits later reacquisition.
 - Hard crashes use configured incomplete-state expiration.
 - Long inactivity is safe because manifests continue to list the connection.
@@ -877,6 +974,8 @@ The design is complete when:
 - Pass-through mode may continue connections uncaptured, alarms loudly, and never rejoins capture.
 - Peer death observations remain operational signals only.
 - Recovery after a capture gap starts a new capture and replay run.
+- In the current managed Kubernetes round, a terminal capture failure terminally fails the whole
+  capture workflow; same-resource reset, regrant, and replacement-snapshot automation are deferred.
 - Replayer liveness and configured expiration use Kafka broker `LogAppendTime` exclusively.
 - Proxy manifest freshness uses a separate local monotonic clock; timestamp values never cross
   those domains.

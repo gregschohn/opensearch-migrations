@@ -40,6 +40,15 @@ assignment drain, terminal self `NoMoreWrites` closes permanent writer-partition
 configured expiration handles a hard crash that emits neither. The proxy's
 capture-before-forward and stale-manifest gate make that fallback safe in strict mode. Peer
 membership observations remain operational alarms and never authorize replay settlement.
+For this redesign, capture-before-forward assumes that mutating source handlers cannot apply effects
+before receiving the complete HTTP request; true streaming source execution remains out of scope.
+Hardening the proxy's existing HTTP-method-based mutating-request classification is also deferred
+and remains a documented coverage limitation.
+In the current Kubernetes round, a terminal capture failure terminally fails the complete capture
+workflow. The controller may preserve pass-through availability, but the failed resource never
+returns to capture or authorizes a replacement snapshot; a fresh capture, snapshot, and replay
+workflow starts over. The managed-fleet addendum retains session reset, source-side retirement
+proof, and trusted replay-plan machinery as future automatic-recovery work.
 
 ---
 
@@ -947,8 +956,8 @@ A scan cycle:
 1. Copy assignment, generation, and the exact replay position for every partition.
 2. Select commit-head blockers and the required follow-up kind for each.
 3. Seek ahead within a bounded operational scan budget.
-4. Poll and decode **only** connection identity, Kafka `LogAppendTime`, observation kinds, and proxy
-   open-connection manifest chunks.
+4. Poll and decode **only** connection identity, Kafka `LogAppendTime`, recognized record type,
+   observation kinds, and proxy open-connection manifest chunks.
 5. Discard payloads.
 6. Stop early per blocker when a required follow-up is found or one complete, exact proxy manifest
    after the connection's last record proves omission (§10.8).
@@ -1041,6 +1050,12 @@ across its chunks. Neither value may be constructed from:
 * proxy-local monotonic time;
 * producer create time; or
 * replayer wall clock.
+
+Every valid recognized record covered by replay or scanning, including a semantically inert
+capability probe, may advance `scannedThroughBrokerTime`. Only traffic for the connection or a
+complete manifest listing it may advance `lastPositiveLivenessBrokerTime`. Malformed records,
+invalid partition stamps, and unknown unsafe record types halt or leave the verdict inconclusive;
+they cannot advance expiration.
 
 Elapsed time alone, a scan budget boundary, or the current end of a temporarily quiet partition
 does not satisfy those conditions. `ConfiguredExpired` never constructs a
@@ -1161,10 +1176,13 @@ manifest gives structural absence proof.
 
 `NoMoreWrites{writerNodeId, partition, emitterNodeId}` is valid only when
 `emitterNodeId == writerNodeId`. It is emitted only for permanent writer-partition retirement,
-after admission and capture submission are permanently revoked, every related Netty connection and
-teardown future has settled, the exact registry is empty, a final empty manifest is acknowledged,
-and every previously accepted send succeeds. It promptly settles prior incomplete state and
-terminally retires that writer-partition identity.
+after the partition publisher lane moves one-way from `OPEN` to `RETIRING`, new traffic and
+ordinary manifests are rejected, the periodic manifest publisher is asynchronously quiescent,
+every related Netty connection and teardown future has settled, every previously accepted send
+succeeds, the exact registry is empty, and a final empty manifest is acknowledged. Only the
+retirement barrier may submit that final manifest and `NoMoreWrites` while `RETIRING`. Acknowledged
+completion moves the lane to `RETIRED`, which rejects every later submission. `NoMoreWrites`
+promptly settles prior incomplete state and terminally retires that writer-partition identity.
 
 Ordinary assignment drain uses the acknowledged empty manifest and does not emit
 `NoMoreWrites`, so the same live writer may later reacquire the partition after acknowledging a new
@@ -1187,6 +1205,16 @@ After complete Kafka acknowledgement and immediately before source execution, st
 also require a recent acknowledged manifest. If a suspended process resumes after the stale
 threshold, it may finish Kafka capture but cannot newly complete the request at the source. A
 request already admitted to a source syscall was completely captured first.
+
+This guarantee is scoped to source handlers that do not apply effects before receiving the complete
+HTTP request. HTTP chunked transfer encoding is compatible when it is only wire framing and the
+source waits for end-of-message. Handlers that mutate while consuming an incomplete body remain
+unsupported in this redesign; supporting them requires complete-request buffering or spooling
+before any effect-causing source bytes are released.
+
+The current round also retains the proxy's existing HTTP-method predicate for deciding which
+requests require the complete-request barrier. Source-specific classification, an explicit
+read-only allowlist, and default-mutating treatment of unknown requests are future hardening work.
 
 **What is emitted.** Every `manifestInterval` (default 30s), each proxy records **all** open
 connections whose traffic routes to each relevant partition. Active connections are not omitted as
@@ -1242,6 +1270,11 @@ acknowledges the final traffic record. Manifest construction takes an immutable 
 linearization point; it does not assign proof semantics to a
 `ConcurrentHashMap` traversal that may miss entries.
 
+Manifest copy and admission of all resulting chunks to the publisher lane are one publisher-owned
+operation. A copied omission cannot wait outside the lane while a newly registered connection's
+traffic overtakes it. Thus an omitting manifest is ordered either before the connection's first
+traffic or after acknowledgement and removal of its final accepted traffic.
+
 **Kafka submission order is part of the proof.** Same-partition routing creates a total order only
 over calls that actually enter `KafkaProducer.send` in a known order. The current common-pool
 dispatch does not provide that guarantee. A `CaptureKafkaPublisher` therefore owns every producer
@@ -1250,8 +1283,10 @@ submission for both traffic and proxy open-connection manifests:
 1. Channel event loops post immutable traffic records and registry transitions to the publisher.
 2. The publisher submits them serially; a manifest's chunks for one partition are submitted as one
    non-interleaved batch.
-3. The producer uses idempotence and ordering-preserving retry settings that configuration cannot
-   weaken.
+3. The producer enforces `enable.idempotence=true`, `acks=all`, and
+   `max.in.flight.requests.per.connection<=5`. Configuration cannot weaken those correctness
+   settings, and startup fails closed if the effective settings cannot preserve same-partition
+   append order across retries.
 4. A synchronous or asynchronous send failure moves the publisher to a failed state, stops
    authoritative manifests and writer-completion records, and fails closed. It does not continue
    emitting omissions after losing traffic.
@@ -1287,6 +1322,8 @@ Kafka metadata discovery and producer qualification happen in `PROBING` before t
 the group. The proxy writes semantically inert capability probes to one representative traffic
 partition per current leader broker, waits for acknowledgement, refreshes metadata, and then joins
 as `PROBATIONARY`. It accepts no captured connections until an assignment promotes it to `ACTIVE`.
+A probe creates no replay work and refreshes no connection liveness, but its valid Kafka
+`LogAppendTime` advances the covered partition's `scannedThroughBrokerTime`.
 
 For each newly accepted connection, the current group assignment chooses one traffic partition.
 The proxy stores that choice and uses it for every traffic record and manifest entry for the life of
@@ -1960,12 +1997,14 @@ Use fake clocks, fake event loops, and manually controlled futures to enumerate:
 * immutable routing: assignment changes move new admission while existing connections and
   manifests remain on their stored partitions;
 * writer completion: permanent admission revocation, complete Netty teardown, an empty manifest,
-  and every accepted send precede terminal self `NoMoreWrites`; peer completion is rejected,
-  duplicate self completion is idempotent, and later traffic or manifests halt as a protocol
-  violation;
+  manifest-publisher quiescence, and every accepted send precede terminal self `NoMoreWrites`; a
+  periodic callback racing `RETIRING` is either drained as earlier accepted work or exits without
+  submission; peer completion is rejected, duplicate self completion is idempotent, and later
+  traffic or manifests halt as a protocol violation;
 * pre-forward capture gating: complete Kafka acknowledgement precedes source execution, stale
   acknowledged-manifest age blocks strict execution, and a request admitted just before gate
-  closure is already completely captured;
+  closure is already completely captured, under the documented non-streaming source-execution
+  scope;
 * configured expiration: a listing manifest refreshes an idle connection, absent traffic and
   manifests expire only incomplete state after the configured horizon, and complete requests remain
   replayable;
