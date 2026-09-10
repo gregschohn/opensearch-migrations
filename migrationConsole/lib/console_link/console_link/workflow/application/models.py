@@ -184,6 +184,7 @@ class ManageNode:
     resource_type: Optional[str] = None
     config_presence: Mapping[str, bool] = field(default_factory=dict)
     config_state: Optional[ManageConfigState] = None
+    navigation_key: Tuple[str, ...] = ()
 
     def to_dict(self) -> Dict[str, Any]:
         result: Dict[str, Any] = {

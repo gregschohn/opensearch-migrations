@@ -2,6 +2,7 @@ from dataclasses import replace
 
 from console_link.workflow.application.config_drafts import ConfigDraft
 from console_link.workflow.application.config_navigation import (
+    group_snapshot_migration_navigation,
     project_config_navigation,
 )
 from console_link.workflow.application.models import (
@@ -719,7 +720,7 @@ def test_project_config_navigation_preserves_explicit_pending_removal():
     assert removed.value_summary == "Removal pending submission"
 
 
-def test_project_config_navigation_owns_indexed_and_suffixed_identities():
+def test_project_config_navigation_owns_flat_snapshot_migrations():
     snapshot = ManageSnapshot(
         format_version=1,
         revision="runtime-empty",
@@ -730,6 +731,16 @@ def test_project_config_navigation_owns_indexed_and_suffixed_identities():
         root_ids=(),
         nodes={},
     )
+    migration_tuple = _resource_edit(
+        ["snapshotMigrationConfigs", "0"],
+    )
+    migration_tuple["value"] = {
+        "fromSource": "source",
+        "toTarget": "target",
+        "fromSnapshot": "snap",
+        "slice": "slice-0",
+        "metadataMigrationConfig": {},
+    }
     migrations = _collection(
         ["snapshotMigrationConfigs"],
         section_id="section:Snapshot Migration",
@@ -742,10 +753,10 @@ def test_project_config_navigation_owns_indexed_and_suffixed_identities():
         resource_type="Snapshot migration",
         identity={
             "kind": "indexed-config",
-            "prefix": "migration-",
-            "firstIndex": 1,
+            "prefix": "slice-",
+            "firstIndex": 0,
         },
-        children=[_resource_edit(["snapshotMigrationConfigs", "0"])],
+        children=[migration_tuple],
     )
     archives = _collection(
         ["traffic", "s3Sources"],
@@ -767,13 +778,355 @@ def test_project_config_navigation_owns_indexed_and_suffixed_identities():
     )
 
     migration = projected.nodes["config:snapshotMigrationConfigs:0"]
-    assert migration.label == "migration-1"
+    assert migration.label == "source-target-snap-slice-0"
+    assert migration.parent_id == "section:Snapshot Migration"
     assert migration.capabilities[0].target_id == (
         "edit:snapshotMigrationConfigs.0"
+    )
+    assert "group:Snapshot Migration:Backfill" not in projected.nodes
+    assert projected.nodes["section:Snapshot Migration"].child_ids == (
+        migration.id,
     )
     archive = projected.nodes["resource:capturedtraffics:archive-topic"]
     assert archive.label == "archive-topic"
     assert archive.resource_type == "S3 source"
+
+
+def test_project_config_navigation_keeps_duplicate_snapshot_migrations_separate():
+    snapshot = ManageSnapshot(
+        format_version=1,
+        revision="runtime-empty",
+        observed_at="2026-09-10T12:00:00+00:00",
+        namespace="ma",
+        workflow_name="migration-workflow",
+        workflow=None,
+        root_ids=(),
+        nodes={},
+    )
+    migrations = []
+    for index in range(2):
+        migration = _resource_edit(
+            ["snapshotMigrationConfigs", str(index)],
+            status="error",
+            diagnostics=[{
+                "severity": "error",
+                "message": "Snapshot migration is already configured.",
+                "path": ["snapshotMigrationConfigs", str(index), "slice"],
+            }],
+        )
+        migration["value"] = {
+            "fromSource": "source",
+            "toTarget": "target",
+            "fromSnapshot": "snap",
+            "slice": "slice-0",
+        }
+        migrations.append(migration)
+    collection = _collection(
+        ["snapshotMigrationConfigs"],
+        section_id="section:Snapshot Migration",
+        section_label="Snapshot Migration",
+        section_order=2,
+        group_id="group:Snapshot Migration:Backfill",
+        group_label="Backfill",
+        group_order=1,
+        plural="snapshotmigrations",
+        resource_type="Snapshot migration",
+        children=migrations,
+    )
+
+    projected = project_config_navigation(snapshot, _draft([collection]))
+
+    section = projected.nodes["section:Snapshot Migration"]
+    assert section.child_ids == (
+        "config:snapshotMigrationConfigs:0",
+        "config:snapshotMigrationConfigs:1",
+    )
+    assert projected.nodes["config:snapshotMigrationConfigs:0"].status == "error"
+    assert projected.nodes["config:snapshotMigrationConfigs:1"].status == "error"
+    assert all(
+        projected.nodes[node_id].label == "source-target-snap-slice-0"
+        for node_id in section.child_ids
+    )
+
+
+def test_project_config_navigation_keeps_named_incomplete_snapshot_migration():
+    snapshot = ManageSnapshot(
+        format_version=1,
+        revision="runtime-empty",
+        observed_at="2026-09-10T12:00:00+00:00",
+        namespace="ma",
+        workflow_name="migration-workflow",
+        workflow=None,
+        root_ids=(),
+        nodes={},
+    )
+    migration = _resource_edit(
+        ["snapshotMigrationConfigs", "0"],
+        status="required",
+        diagnostics=[{
+            "severity": "required",
+            "message": "Choose a source, target, and snapshot.",
+            "path": ["snapshotMigrationConfigs", "0"],
+        }],
+    )
+    migration["value"] = {"slice": "slice-0"}
+    collection = _collection(
+        ["snapshotMigrationConfigs"],
+        section_id="section:Snapshot Migration",
+        section_label="Snapshot Migration",
+        section_order=2,
+        group_id="group:Snapshot Migration:Backfill",
+        group_label="Backfill",
+        group_order=1,
+        plural="snapshotmigrations",
+        resource_type="Snapshot migration",
+        children=[migration],
+    )
+
+    projected = project_config_navigation(snapshot, _draft([collection]))
+
+    item = projected.nodes["config:snapshotMigrationConfigs:0"]
+    assert item.parent_id == "section:Snapshot Migration"
+    assert item.label == "slice-0"
+    assert item.status == "required"
+    assert item.capabilities[0].target_id == "edit:snapshotMigrationConfigs.0"
+
+
+def test_snapshot_migration_navigation_groups_only_useful_prefixes():
+    group_id = "group:Snapshot Migration:Backfill"
+    resources = (
+        ("a", ("source", "target-a", "snap-a", "slice-10"), "warning"),
+        ("b", ("source", "target-a", "snap-a", "slice-2"), "ok"),
+        ("c", ("source", "target-a", "snap-b", "slice-3"), "error"),
+        ("d", ("source", "target-b", "snap-c", "slice-4"), "ok"),
+    )
+    nodes = {
+        group_id: ManageNode(
+            id=group_id,
+            revision="r",
+            parent_id="section:Snapshot Migration",
+            kind="group",
+            label="Backfill",
+            status="ok",
+        ),
+    }
+    for suffix, navigation_key, status in resources:
+        node_id = f"resource:snapshotmigrations:{suffix}"
+        nodes[node_id] = ManageNode(
+            id=node_id,
+            revision="r",
+            parent_id=group_id,
+            kind="resource",
+            label=suffix,
+            status=status,
+            resource_plural="snapshotmigrations",
+            resource_name=suffix,
+            resource_type="Snapshot migration",
+            navigation_key=navigation_key,
+        )
+    nodes[group_id] = replace(
+        nodes[group_id],
+        child_ids=tuple(
+            f"resource:snapshotmigrations:{suffix}"
+            for suffix, _, _ in resources
+        ),
+    )
+    snapshot = ManageSnapshot(
+        format_version=1,
+        revision="runtime",
+        observed_at="2026-09-09T12:00:00+00:00",
+        namespace="ma",
+        workflow_name="migration-workflow",
+        workflow=None,
+        root_ids=(group_id,),
+        nodes=nodes,
+    )
+
+    grouped = group_snapshot_migration_navigation(snapshot)
+
+    source_group = grouped.nodes["snapshot-navigation:1:source"]
+    target_group = grouped.nodes[
+        "snapshot-navigation:2:source:target-a"
+    ]
+    assert source_group.label == "Source: source"
+    assert source_group.status == "error"
+    assert target_group.label == "Target: target-a"
+    assert target_group.status == "error"
+    assert target_group.child_ids == (
+        "resource:snapshotmigrations:b",
+        "resource:snapshotmigrations:a",
+        "resource:snapshotmigrations:c",
+    )
+    assert "snapshot-navigation:3:source:target-a:snap-a" not in grouped.nodes
+    assert grouped.nodes["resource:snapshotmigrations:d"].parent_id == source_group.id
+    assert grouped.nodes["resource:snapshotmigrations:d"].label == (
+        "target-b-snap-c-slice-4"
+    )
+    assert grouped.nodes["resource:snapshotmigrations:b"].label == (
+        "snap-a-slice-2"
+    )
+
+
+def test_snapshot_migration_deletion_tracks_tuple_after_array_compaction():
+    section_id = "section:Snapshot Migration"
+    group_id = "group:Snapshot Migration:Backfill"
+    slice_zero_id = (
+        "resource:snapshotmigrations:source-target-snap-slice-0"
+    )
+    slice_one_id = (
+        "resource:snapshotmigrations:source-target-snap-slice-1"
+    )
+    nodes = {
+        section_id: ManageNode(
+            id=section_id,
+            revision="section",
+            parent_id=None,
+            kind="section",
+            label="Snapshot Migration",
+            status="ok",
+            child_ids=(group_id,),
+        ),
+        group_id: ManageNode(
+            id=group_id,
+            revision="group",
+            parent_id=section_id,
+            kind="group",
+            label="Backfill",
+            status="ok",
+            child_ids=(slice_zero_id, slice_one_id),
+        ),
+    }
+    for index, node_id in enumerate((slice_zero_id, slice_one_id)):
+        slice_name = f"slice-{index}"
+        nodes[node_id] = ManageNode(
+            id=node_id,
+            revision=f"slice-{index}",
+            parent_id=group_id,
+            kind="resource",
+            label=node_id.rsplit(":", 1)[-1],
+            status="ok",
+            capabilities=(
+                ManageCapability(
+                    kind="edit",
+                    target_id=f"edit:snapshotMigrationConfigs.{index}",
+                    label=f"Edit {slice_name}",
+                ),
+            ),
+            resource_plural="snapshotmigrations",
+            resource_name=node_id.rsplit(":", 1)[-1],
+            resource_type="Snapshot migration",
+            config_presence={"deployed": True, "pending": True},
+            navigation_key=(
+                "source",
+                "target",
+                "snap",
+                slice_name,
+            ),
+        )
+    snapshot = ManageSnapshot(
+        format_version=1,
+        revision="runtime",
+        observed_at="2026-09-10T12:00:00+00:00",
+        namespace="ma",
+        workflow_name="migration-workflow",
+        workflow=None,
+        root_ids=(section_id,),
+        nodes=nodes,
+    )
+    retained = _resource_edit(["snapshotMigrationConfigs", "0"])
+    retained["value"] = {
+        "fromSource": "source",
+        "toTarget": "target",
+        "fromSnapshot": "snap",
+        "slice": "slice-1",
+        "metadataMigrationConfig": {},
+    }
+    migrations = _collection(
+        ["snapshotMigrationConfigs"],
+        section_id=section_id,
+        section_label="Snapshot Migration",
+        section_order=2,
+        group_id=group_id,
+        group_label="Backfill",
+        group_order=1,
+        plural="snapshotmigrations",
+        resource_type="Snapshot migration",
+        children=[retained],
+        draft_change_count=1,
+    )
+
+    projected = project_config_navigation(snapshot, _draft([migrations]))
+
+    removed = projected.nodes[slice_zero_id]
+    retained_node = projected.nodes[slice_one_id]
+    removed_edit_capabilities = tuple(
+        capability
+        for capability in removed.capabilities
+        if capability.kind == "edit"
+    )
+    retained_edit_capabilities = tuple(
+        capability
+        for capability in retained_node.capabilities
+        if capability.kind == "edit"
+    )
+    assert removed.status == "removed"
+    assert removed_edit_capabilities == ()
+    assert retained_node.status == "ok"
+    assert retained_edit_capabilities[0].target_id == (
+        "edit:snapshotMigrationConfigs.0"
+    )
+    assert "config:snapshotMigrationConfigs:0" not in projected.nodes
+
+
+def test_snapshot_migration_navigation_deduplicates_flattened_resources():
+    section_id = "section:Snapshot Migration"
+    group_id = "group:Snapshot Migration:Backfill"
+    resource_id = "resource:snapshotmigrations:source-target-snap-slice-0"
+    snapshot = ManageSnapshot(
+        format_version=1,
+        revision="runtime",
+        observed_at="2026-09-10T12:00:00+00:00",
+        namespace="ma",
+        workflow_name="migration-workflow",
+        workflow=None,
+        root_ids=(section_id,),
+        nodes={
+            section_id: ManageNode(
+                id=section_id,
+                revision="r",
+                parent_id=None,
+                kind="section",
+                label="Snapshot Migration",
+                status="ok",
+                child_ids=(resource_id, group_id),
+            ),
+            group_id: ManageNode(
+                id=group_id,
+                revision="r",
+                parent_id=section_id,
+                kind="group",
+                label="Backfill",
+                status="ok",
+                child_ids=(resource_id,),
+            ),
+            resource_id: ManageNode(
+                id=resource_id,
+                revision="r",
+                parent_id=group_id,
+                kind="resource",
+                label="slice-0",
+                status="ok",
+                resource_plural="snapshotmigrations",
+                resource_name="source-target-snap-slice-0",
+                resource_type="Snapshot migration",
+                navigation_key=("source", "target", "snap", "slice-0"),
+            ),
+        },
+    )
+
+    grouped = group_snapshot_migration_navigation(snapshot)
+
+    assert grouped.nodes[section_id].child_ids == (resource_id,)
 
 
 def test_project_config_navigation_does_not_infer_structure_from_raw_repair():

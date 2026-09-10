@@ -31,6 +31,7 @@ class ConfigDraft:
     dirty: bool
     edit_state: Dict[str, Any]
     repair_yaml: Optional[str] = None
+    notices: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -140,6 +141,7 @@ class ConfigDraftService:
         self._base_revision: Optional[str] = None
         self._base_edit_state: Optional[Dict[str, Any]] = None
         self._edit_state: Optional[Dict[str, Any]] = None
+        self._notices: tuple[str, ...] = ()
 
     def open(self) -> ConfigDraft:
         with self._lock:
@@ -454,6 +456,7 @@ class ConfigDraftService:
             result = self._edit_service.apply_operation(raw_yaml, operation)
             raw_yaml = result.raw_yaml
             edit_state = result.edit_state
+            self._notices = result.notices
         self._raw_yaml = raw_yaml
         self._edit_state = edit_state
 
@@ -463,12 +466,14 @@ class ConfigDraftService:
         self._base_revision = _revision(session.raw_yaml)
         self._base_edit_state = deepcopy(session.edit_state)
         self._edit_state = session.edit_state
+        self._notices = ()
 
     def _clear(self) -> None:
         self._raw_yaml = None
         self._base_revision = None
         self._base_edit_state = None
         self._edit_state = None
+        self._notices = ()
 
     def _require_revision(self, expected_revision: str) -> None:
         if self._raw_yaml is None:
@@ -496,6 +501,7 @@ class ConfigDraftService:
                 if provenance.get("mode") == "raw"
                 else None
             ),
+            notices=self._notices,
         )
 
     def _external_node(self, node_id: str) -> Dict[str, Any]:
@@ -745,26 +751,20 @@ def _config_dependency_graph(config: Mapping[str, Any]) -> list[_ConfigReference
                     ("targetClusters", target),
                     f"toTarget={target}",
                 )
-            snapshots = _mapping(migration.get("perSnapshotConfig"))
-            for snapshot_name in snapshots:
-                snapshot_path = (
-                    *migration_path,
-                    "perSnapshotConfig",
-                    str(snapshot_name),
+            snapshot_name = str(migration.get("fromSnapshot") or "")
+            if source and snapshot_name:
+                add(
+                    migration_path,
+                    (*migration_path, "fromSnapshot"),
+                    (
+                        "sourceClusters",
+                        source,
+                        "snapshotInfo",
+                        "snapshots",
+                        snapshot_name,
+                    ),
+                    f"fromSnapshot={snapshot_name}",
                 )
-                if source:
-                    add(
-                        snapshot_path,
-                        snapshot_path,
-                        (
-                            "sourceClusters",
-                            source,
-                            "snapshotInfo",
-                            "snapshots",
-                            str(snapshot_name),
-                        ),
-                        f"snapshot={snapshot_name}",
-                    )
 
     for proxy_name, proxy_value in proxies.items():
         proxy = _mapping(proxy_value)

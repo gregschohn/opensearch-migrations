@@ -665,6 +665,26 @@ def test_apply_operation_reports_config_processor_stderr():
     assert "Usage: editConfig apply --pending-config" in str(error.value)
 
 
+def test_snapshot_migration_edits_do_not_consult_cluster_resource_names():
+    custom_api = MagicMock()
+    service = ConfigEditService(
+        namespace="test",
+        store=FakeStore(),
+        custom_api=custom_api,
+    )
+    requested = {
+        "op": "set",
+        "path": ["snapshotMigrationConfigs", "0", "slice"],
+        "value": "slice-9",
+    }
+
+    operation, notices = service._prepare_operation("", requested)
+
+    assert operation == requested
+    assert notices == ()
+    custom_api.list_namespaced_custom_object.assert_not_called()
+
+
 @patch("console_link.workflow.services.config_edit_service.load_k8s_config")
 @patch("console_link.workflow.services.config_edit_service.workflow_exists")
 def test_submit_saved_config_validates_before_touching_workflow(_workflow_exists, _load_k8s):

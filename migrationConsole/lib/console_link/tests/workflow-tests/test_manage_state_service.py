@@ -532,8 +532,7 @@ def test_edit_capability_ignores_inherited_provenance_outside_the_owner_branch()
                         "sourcePath": [
                             "snapshotMigrationConfigs",
                             "0",
-                            "perSnapshotConfig",
-                            "nightly",
+                            "fromSnapshot",
                         ],
                     },
                     "metadataMigrationEnabled": {
@@ -541,8 +540,7 @@ def test_edit_capability_ignores_inherited_provenance_outside_the_owner_branch()
                         "sourcePath": [
                             "snapshotMigrationConfigs",
                             "0",
-                            "perSnapshotConfig",
-                            "nightly",
+                            "slices",
                             "0",
                             "metadataMigrationConfig",
                             "enabled",
