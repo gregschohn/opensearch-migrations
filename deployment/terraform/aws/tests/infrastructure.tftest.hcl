@@ -405,3 +405,19 @@ run "cloudwatch_logs_covers_the_otel_emf_default_group" {
     error_message = "The CloudWatchLogs statement must still cover the Migration Assistant log group."
   }
 }
+
+# Only GetSecretValue has a caller (the console fetches a credential secret by the ARN
+# it is handed). DescribeSecret and ListSecrets were granted without one; this guards
+# against them reappearing.
+run "secrets_statement_grants_only_get_secret_value" {
+  command = plan
+
+  assert {
+    condition = anytrue([
+      for s in data.aws_iam_policy_document.migration_pods.statement :
+      toset(s.actions) == toset(["secretsmanager:GetSecretValue"])
+      if s.sid == "Secrets"
+    ])
+    error_message = "The Secrets statement must grant only secretsmanager:GetSecretValue."
+  }
+}

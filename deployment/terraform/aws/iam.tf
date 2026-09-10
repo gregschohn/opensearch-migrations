@@ -77,16 +77,15 @@ data "aws_iam_policy_document" "migration_pods" {
     resources = ["*"]
   }
 
-  # secretsmanager:ListSecrets is account-level and cannot be scoped. Get/Describe
-  # target user-supplied secrets whose names are not known here, so also on "*".
+  # Only GetSecretValue is used: the console fetches the cluster credential secret by
+  # the user_secret_arn it is given in runtime migration config (see cluster.py). It
+  # never enumerates or describes secrets, so DescribeSecret and ListSecrets are not
+  # granted. The ARN is not known to Terraform, so this stays on "*"; scoping it would
+  # mean accepting secret ARNs or a required name prefix as module configuration.
   statement {
-    sid    = "Secrets"
-    effect = "Allow"
-    actions = [
-      "secretsmanager:GetSecretValue",
-      "secretsmanager:DescribeSecret",
-      "secretsmanager:ListSecrets",
-    ]
+    sid       = "Secrets"
+    effect    = "Allow"
+    actions   = ["secretsmanager:GetSecretValue"]
     resources = ["*"]
   }
 
