@@ -18,6 +18,8 @@ A future rewrite must preserve these base rules:
 - `NoMoreWrites` is partition-scoped, self-emitted after full connection/publisher teardown, and
   terminal for that writer-partition identity;
 - configured expiration settles only incomplete reconstruction state;
+- `lastPositiveLivenessBrokerTime`, `scannedThroughBrokerTime`, and every replayer liveness or
+  expiration timestamp use Kafka `LogAppendTime` exclusively;
 - strict mode captures a complete request before source execution and checks acknowledged-manifest
   freshness before forwarding;
 - pass-through permanently abandons capture and raises a persistent gap alarm; and

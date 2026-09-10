@@ -303,18 +303,22 @@ completed work**: while replay work is outstanding, the settled time advances wi
 not with the wall clock. This coupling is the memory bound; removing it without an equivalent
 low-watermark controller is prohibited.
 
+`settledReplayTime` is captured source time used only for replay pacing. It never participates in
+connection liveness or configured-expiration arithmetic.
+
 ### 9.2 Scanner
 
 Because epsilon reads may not reach a follow-up, manifest, or timeout horizon promptly, the same
 consumer runs a metadata-only scan cursor:
 
 * after a poll, snapshot positions and generation, seek ahead within an operational budget, decode
-  only identity, timestamps, observation kinds, and manifest chunks, discard payloads, and seek
-  back;
+  only identity, Kafka `LogAppendTime`, observation kinds, and manifest chunks, discard payloads,
+  and seek back;
 * emit **follow-up present**, **confirmed absent** with one complete exact omission,
-  **configured expired** after the complete partition-time horizon, or **inconclusive**;
-* carry partition, generation, connection identity, required follow-up, liveness point, scanned
-  horizon, timeout, and structural proof when one exists; and
+  **configured expired** after the complete Kafka broker-time horizon, or **inconclusive**;
+* carry partition, generation, connection identity, required follow-up,
+  `lastPositiveLivenessBrokerTime`, `scannedThroughBrokerTime`, timeout, and structural proof when
+  one exists; and
 * discard the cycle if assignment or generation changed.
 
 Scanning is continuous so load is steady and dead state is released promptly.
@@ -335,7 +339,18 @@ For mutating requests, strict mode acknowledges the complete replay representati
 submitting execution-enabling source bytes. Immediately before source submission, it requires a
 recent acknowledged manifest. This makes it safe for the replayer to mark only incomplete state
 `ConfiguredExpired` after both traffic and listing manifests are absent through
-`--packet-timeout-seconds`.
+`--packet-timeout-seconds`, measured exclusively in Kafka broker time.
+
+The traffic topic must use `message.timestamp.type=LogAppendTime`. Every replayer liveness value is
+a monotonically clamped per-partition broker timestamp. Captured observation time, manifest
+`emittedAtMillis`, proxy-local monotonic time, and replayer wall time are excluded from expiration
+arithmetic.
+
+`lastPositiveLivenessBrokerTime` is the broker append time of the latest traffic record or complete
+listing manifest for the connection. `scannedThroughBrokerTime` is the greatest broker append time
+among partition records actually covered by replay or scanning. A quiet partition does not advance
+that horizon, so expiration waits for later durable partition activity rather than substituting a
+process clock.
 
 An optional maximum connection duration still creates a real close and bounds proxy resources. It
 is not part of the expiration proof.
@@ -344,7 +359,8 @@ is not part of the expiration proof.
 
 Replayer wall-clock age. Diagnostic heartbeats and monitors may report a suspicious blocker, but
 they may not mutate accumulator state or trigger commits. Configured expiration advances from
-partition observations, not from how long this replayer process has waited.
+Kafka broker append times on partition observations, not from how long this replayer process has
+waited.
 
 ## 10. Observability
 

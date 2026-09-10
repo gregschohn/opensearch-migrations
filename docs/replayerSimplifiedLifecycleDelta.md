@@ -195,16 +195,16 @@ enforces that coupling with `exit(4)`.
   only, seek back, and discard results if the assignment changed. Verdicts about the commit-head
   blocker are emitted as ordered control events. The accumulator handles either
   `ConfirmedDead(proof)` from one complete exact omission or
-  `ConfiguredExpired(livenessPoint, scannedThrough, timeout)` after the configured partition-time
-  horizon.
+  `ConfiguredExpired(lastPositiveLivenessBrokerTime, scannedThroughBrokerTime, timeout)` after the
+  configured Kafka broker-time horizon.
 * **Epsilon:** `--lookahead-time-window` default drops to ~30s; the `lookahead > timeout`
   validation is removed. The `isWorkOutstanding()` guard in
   `ReplayEngine.updateContentTimeControllerWhenIdling` **stays** (rejecting #3231 change 2):
   it is the memory bound that makes epsilon meaningful. D4's honest cancel/close barriers
   remove the orphaned-future scenario that motivated deleting it.
 * **Replayer wall-clock expiry:** rejected (#3231 change 5). Diagnostic heartbeats never call
-  `fireAccumulationsCallbacksAndClose`. Configured expiration advances from partition observations,
-  not from how long this replayer process has waited.
+  `fireAccumulationsCallbacksAndClose`. Configured expiration advances only from Kafka
+  `LogAppendTime` observations, not from how long this replayer process has waited.
 * **Proxy cap:** `CaptureProxy` gains `--maxConnectionDuration`; a Netty `ScheduledFuture`
   armed on `channelActive` writes a real `addCloseEvent(Instant.now())` to the offloader
   before closing. Capped connections then commit through the ordinary captured-close path with
@@ -220,7 +220,11 @@ enforces that coupling with `exit(4)`.
 * **Liveness on the replayer side:** one complete offset-ordered omission yields
   `ConfirmedDead`. A listing manifest refreshes connection liveness. If neither traffic nor a
   listing manifest appears through `--packet-timeout-seconds`, incomplete state becomes
-  `ConfiguredExpired`. Complete requests are never discarded by connection expiration.
+  `ConfiguredExpired`. The traffic topic must use `message.timestamp.type=LogAppendTime`, and all
+  liveness values and intermediate expiration timestamps are explicitly broker-time values
+  monotonically clamped per partition. `lastPositiveLivenessBrokerTime` and
+  `scannedThroughBrokerTime` are derived only from records actually covered; a quiet partition
+  cannot advance the horizon. Complete requests are never discarded by connection expiration.
 * **Writer completion:** temporary assignment drain ends with an acknowledged empty manifest.
   Only permanent writer-partition retirement emits terminal `NoMoreWrites`, after admission and
   capture submission are permanently revoked, every related Netty connection is disconnected, the
@@ -230,7 +234,7 @@ enforces that coupling with `exit(4)`.
 * **Metrics:** absorb #3231's worst-commit-head heartbeat (change 7); make `commitTail`
   consistent with it; add scanner distance/latency/verdict counters, acknowledged-manifest age,
   capture-gate state, configured-expiration reasons, and a proxy cap-close counter. Do not present
-  `peekHeadMetadata().addedAt` as the partition-time horizon.
+  `peekHeadMetadata().addedAt` as the Kafka broker-time horizon.
 
 ### D7 — Kafka record contexts on non-commit paths (closes C13)
 
@@ -293,7 +297,7 @@ All 10 `Missing` rows and every `Partial` row in the audit are owned by exactly 
 5. **D7** — non-commit record-context owner. Exit gate: context-closure counters exact across
    commit, retain, and revocation paths.
 6. **D6** — epsilon + scanner + exact manifests + capture gating, only now. Exit gate: one exact
-   omission promptly clears incomplete state; configured partition-time expiration clears a hard
+   omission promptly clears incomplete state; configured Kafka broker-time expiration clears a hard
    crash; listing manifests preserve an idle keep-alive connection across many intervals; complete
    requests remain replayable; strict stale-manifest recovery cannot execute an uncaptured request;
    temporary drain permits reacquisition through a new initial manifest; terminal completion
@@ -312,9 +316,10 @@ policy evidence).
    durable discard evidence from day one, or distinct metrics and logs suffice initially.
 3. Scan-cursor cadence and budget per poll cycle (fraction of `keepAliveInterval`), and whether
    scanning pauses while the commit head is not blocked.
-4. The exact partition-time basis and required safety margin between
-   `proxyManifestStaleTimeout` and `--packet-timeout-seconds`, including producer clock skew and
-   scanner delay.
+4. The required duration margin between `proxyManifestStaleTimeout` and
+   `--packet-timeout-seconds`, including publication, acknowledgement, scanner delay, and permitted
+   inter-broker forward clock skew. Timestamp values themselves never cross the proxy-local
+   monotonic and Kafka broker-time domains.
 5. Whether `SourcePairSettled` should also carry partial-response bytes for evidence on
    confirmed-dead connections, or only the settled cause.
 6. Migration of `sessionNumber` into `ConnectionTag` for keep-alive reuse: populate from

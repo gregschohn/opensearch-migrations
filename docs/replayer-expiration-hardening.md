@@ -12,8 +12,12 @@ design; they are not the implementation contract. In particular, the current des
 - uses acknowledged empty manifests for temporary drain and terminal self-emitted
   `NoMoreWrites` only for permanent writer-partition retirement; peers never complete another
   writer;
-- permits configured partition-time expiration of **incomplete** reconstruction state after both
-  traffic and positive manifest liveness are absent through `--packet-timeout-seconds`;
+- permits configured Kafka broker-time expiration of **incomplete** reconstruction state after
+  both traffic and positive manifest liveness are absent through `--packet-timeout-seconds`;
+- requires `message.timestamp.type=LogAppendTime` and excludes producer, payload, proxy-local, and
+  replayer-wall-clock timestamps from liveness arithmetic;
+- defines `lastPositiveLivenessBrokerTime` and `scannedThroughBrokerTime` only from records actually
+  observed in that Kafka broker-time domain, so a quiet partition does not advance expiration;
 - relies on strict capture-before-forward and the proxy's acknowledged-manifest freshness gate to
   make that fallback safe; and
 - continues to reject a watchdog based only on how long the replayer process has waited.
@@ -677,7 +681,7 @@ Three mechanisms: flip `CLOSED_PREMATURELY` to commit; a wall-clock expiry watch
 timer; a stale-head reaper with a 5-minute threshold in `OffsetLifecycleTracker`.
 
 **Why rejected:** This section rejects a watchdog based on elapsed replayer-process time. It does
-not reject the current partition-time `ConfiguredExpired` outcome described in the supersession
+not reject the current Kafka broker-time `ConfiguredExpired` outcome described in the supersession
 note.
 
 - Commits on **impatience** (elapsed time), not **evidence** (structural confirmation that no
