@@ -5,13 +5,16 @@
 **Date:** 2026-09-10
 
 **Revision note.** This revision resolves the decisions formerly collected as open questions in §19
-and hardens §10's capture-side open-connection manifest design. Exact manifests remain complete,
-chunked, and ordered through the same producer-submission path as traffic. Configured expiration is
-now restored for incomplete reconstruction state under the proxy's stronger end-to-end contract:
-strict mode acknowledges a complete request to Kafka before it can complete at the source and
-checks acknowledged-manifest freshness immediately before source execution. `NoMoreWrites` is
-self-emitted only, follows full connection teardown and publisher drain, and terminally retires one
-writer-partition identity. The cancellation
+and hardens §10's capture-side open-connection manifest design. Exact manifests remain complete and
+chunked, but omission correctness now comes from an explicit per-proxy, per-partition
+`manifestCycle`, not an assumption that all concurrent proxy activity reaches Kafka in proxy-side
+execution order. A complete manifest omission resets only an incomplete per-connection HTTP
+accumulation that began in that cycle or earlier. Later observations for the same captured client
+connection begin a new accumulation only when their `manifestCycle` is greater than the omitting
+manifest. Elapsed-time expiration is not commit authority until a
+separate design resolves delayed suffixes and broker-clock jumps. `NoMoreWrites` is self-emitted
+only, follows full connection teardown and publisher drain, and terminally retires one
+proxy-partition identity. The cancellation
 review additionally made two contracts explicit: aborting an active target
 exchange must actively settle and clean up every owned sub-operation rather than wait for the normal
 response path, and reassignment/shutdown revokes a transaction's generation-scoped runway
@@ -19,71 +22,63 @@ independently of source and target outcomes. A later editorial pass reworked the
 diagrams for legibility (per-component nodes, one message per arrow, ownership moved to companion
 tables) and tightened prose; it changed no contracts, invariants, or decisions.
 
-**Companion mapping:** [replayerCurrentToProposedArchitectureMap.md](replayerCurrentToProposedArchitectureMap.md)
-— which current class becomes what, and in which migration slice.
-
-**Policy input:** [replayer-expiration-hardening.md](replayer-expiration-hardening.md)
-— the expiration and commit policy exploration that led here. This document's §10 supersedes its
-idle-only manifest proposal and defines the current bounded-expiration contract.
-
-**Lifecycle audit:** [replayerWorkLifecycleResponsibilityAudit.md](replayerWorkLifecycleResponsibilityAudit.md)
-— the 31 concerns (R1–R18, C1–C13) this design assigns owners to.
-
-**Tactical alternative:** [replayerSimplifiedLifecycleDesign.md](replayerSimplifiedLifecycleDesign.md)
-— the same invariants achieved by flattening contracts instead of changing the execution model.
+This document, [proxyHorizontalScalingAndNodeDeath.md](proxyHorizontalScalingAndNodeDeath.md), and
+[proxyManagedFleetCaptureRecovery.md](proxyManagedFleetCaptureRecovery.md) are the normative design
+set for this work. Other branch design notes are historical inputs or implementation crosswalks;
+they must not override these three documents.
 
 **Scaling and capture-liveness contract (partially implemented):**
 [proxyHorizontalScalingAndNodeDeath.md](proxyHorizontalScalingAndNodeDeath.md)
 — horizontal proxy scaling uses consumer-group membership only for new-connection routing.
-Exact manifests are positive liveness heartbeats. An acknowledged empty manifest closes a temporary
-assignment drain, terminal self `NoMoreWrites` closes permanent writer-partition retirement, and
-configured expiration handles a hard crash that emits neither. The proxy's
-capture-before-forward and stale-manifest gate make that fallback safe in strict mode. Peer
-membership observations remain operational alarms and never authorize replay settlement.
+Exact manifests define cycle-scoped reset boundaries. An acknowledged empty manifest closes a
+temporary assignment drain, and terminal self `NoMoreWrites` closes permanent proxy-partition
+retirement. A hard crash that emits neither may leave incomplete state retained; group departure
+only triggers group rebalance and never authorizes replay settlement.
 For this redesign, capture-before-forward assumes that mutating source handlers cannot apply effects
 before receiving the complete HTTP request; true streaming source execution remains out of scope.
 Hardening the proxy's existing HTTP-method-based mutating-request classification is also deferred
 and remains a documented coverage limitation.
 In the current Kubernetes round, a terminal capture failure terminally fails the complete capture
 workflow. The controller may preserve pass-through availability, but the failed resource never
-returns to capture or authorizes a replacement snapshot; a fresh capture, snapshot, and replay
-workflow starts over. The managed-fleet addendum retains session reset, source-side retirement
-proof, and trusted replay-plan machinery as future automatic-recovery work.
+returns to capture or authorizes a replacement snapshot. A fresh workflow may proceed only after
+the managed addendum's Kafka-input-isolation, old-workload retirement, and source-side quiescence
+preconditions are satisfied. Every managed fresh run uses session fencing, a trusted replay plan,
+and session-aware checkpoints. A same-topic fresh run also requires reset records now; automatic
+same-resource coverage restoration remains future work.
 
 ---
 
 ## Implementation Status (2026-09-07, branch `integrating3231`)
 
-This design is now substantially **implemented** on this branch; "Draft for discussion" above
-describes its origin, not its state. The table below marks what is finished, what was deliberately
-scoped out of the first implementation, and what is future work. Component names in §3.3 were
-working names: some became classes verbatim, others landed inside retained current classes per the
-crosswalk — naming drift is listed under the table.
+Foundational classes exist on this branch, but implementation status is not evidence that the
+architecture has converged. The table below distinguishes mechanisms that can be retained from
+mechanisms that require correction before this design can be called implemented.
 
 | Mechanism | Status | Where |
 | --- | --- | --- |
 | §6.4 Completion gates | **Done** | `lifecycle/CompletionGate.java`; gate discipline through actor/session/shutdown paths |
 | §9 Typed identity | **Done** | `lifecycle/ReplayIdentity.java` — all five key records plus work/record ids |
 | §10.2 One consumer, two cursors | **Done** | `TrackingKafkaConsumer.scanAhead` |
-| §10.3 Settlement verdicts | **Revision required** | Preserve `AbsenceProof` for exact omission; add a distinct configured-expiration outcome for incomplete state |
+| §10.3 Settlement verdicts | **Revision required** | Replace offset-ordered `AbsenceProof` with complete-manifest-cycle reset; remove elapsed-time commit authority |
 | §10.4 Verdicts via control loop | **Done** | scan-blocker listener in `CapturedTrafficToHttpTransactionAccumulator`; `runLivenessScanIfDue` |
-| §10.5 Expiration policy matrix | **Revision required** | Re-enable `--packet-timeout-seconds` for incomplete Kafka reconstruction under the proxy contract and preserve distinct terminal reasons |
+| §10.5 Expiration policy matrix | **Revision required** | Keep `--packet-timeout-seconds` diagnostic-only; manifest-cycle reset and terminal self `NoMoreWrites` are the only capture-liveness terminal facts in this round |
 | §10.6 Epsilon lookahead | **Done as an optimization** | `ReplayReadGate`, `ReplayProgressController`, `ReplayEngine`; it is not commit authority and scanner-disabled parity remains a verification target |
 | §10.7 Capture-side duration cap | **Not implemented** — and explicitly optional here | No proxy flag exists. The scaling sketch removes its residual correctness role entirely, so implement it (if ever) as operational policy only |
-| §10.8 Proxy manifests and writer completion | **Foundations done; failure-policy revision required** | Exact registry, chunked manifests, ordered publisher, `NoMoreWrites`, and reassembly exist. Reserve terminal self completion for permanent retirement; use empty manifests for temporary drain; remove peer completion. |
+| §10.8 Proxy manifests and proxy completion | **Foundations done; protocol revision required** | Keep exact registry, chunked manifests, and self `NoMoreWrites`; add observation-level `manifestCycle`; narrow local linearization; remove peer completion and global publisher-order assumptions. |
 | §11 Connection actor | **Done** | `lifecycle/ConnectionActor.java`, `ActorMailbox`, `NettyEventLoopActorMailbox`; sorter and schedule map **deleted** (acceptance criterion 15) |
 | §12 Async permit pool | **Done** | `lifecycle/AsyncPermitPool.java`; `TrafficStreamLimiter` **deleted** |
 | §13 Replay transaction | **Done** | `lifecycle/ReplayTransaction.java`, `ReplayOutcomes`, `TargetExchangeState`, `ReplayTransactionRegistry` |
-| §14 Record disposition | **Done** | `lifecycle/RecordDisposition.java`, `RecordDispositionLedger.java`, `ReplayDispositionPolicy.java` |
+| §14 Record disposition | **Correction required** | Retained records must continue blocking the Kafka commit watermark; transaction proposal, ledger settlement, source acceptance, and broker acknowledgement need distinct authority |
 | §15 Resource ownership | **Done** | `lifecycle/ResourceOwnership.java` (tracker + metrics) |
-| §16.1–16.2 Rebalance / shutdown | **Done** | synthetic-close pipeline, generation fencing, drain-before-Netty-stop, shutdown-before-JVM-exit (see branch history) |
+| §16.1–16.2 Rebalance / shutdown | **Correction required** | Rebalance callback must revoke source runway, enqueue typed interruption, and return without waiting for replay work |
 | §16.3 Event-loop death | **Policy corrected; simplification pending** | Unexpected live-session loop death signals process-fatal shutdown. Cross-thread mailbox-loss recovery machinery is a migration residue to delete, not architecture to preserve. |
 | §17 Evidence API | **Done to first-impl scope** | whole-tuple sink retained; disposition depends on explicit evidence; part-level receipts remain internal per §19.5 |
 | §19.1 Poison classifier | **Done** | `TargetResponseClassifier` + shared `ExceptionTypeAllowlist`, default empty |
-| §19.7 Group-assigned routing + manifest interval | **Migration pending** | Current `PartitionRoutingPlan` and shard-width flag are replaced by admission-aware group assignments and per-connection stored partitions; manifests become positive liveness input to bounded expiration. |
+| §19.7 Group-assigned routing + manifest interval | **Migration pending** | Current `PartitionRoutingPlan` and shard-width flag are replaced by group assignments and per-connection stored partitions; manifests become cycle-scoped reset input. |
 
-Naming drift between this document and the code: `ProxyOmissionProof` → `AbsenceProof`;
-`ProxyOpenConnectionRegistry` → `ProxyLivenessRegistry`; current
+Naming drift between this document and the code: current `ProxyOmissionProof`/`AbsenceProof`
+terminology must become a manifest-cycle reset value; `ProxyOpenConnectionRegistry` became
+`ProxyLivenessRegistry`; current
 `ProxyLivenessSnapshotChunk`/snapshot-interval names should migrate to precise manifest
 terminology. Of the §3.3 working names, `KafkaSourceActor`,
 `SourceAssembler`, `ReplayCoordinator`, `ConnectionRuntime`, `TargetExchange`,
@@ -96,8 +91,8 @@ contracts here.
 **Future work** is concentrated in the final scaling and capture-liveness protocol
 ([proxyHorizontalScalingAndNodeDeath.md](proxyHorizontalScalingAndNodeDeath.md)), separation of the
 Kafka source-I/O and replay-intake owners, removal of mailbox-loss recovery, mandatory lifecycle
-interfaces, and layered real-Kafka verification. Until the proxy capture-before-forward and
-stale-manifest gate land, configured Kafka expiration must not be treated as fully integrated.
+interfaces, and layered real-Kafka verification. Elapsed-time expiration remains non-committing
+even after the proxy contract lands.
 
 ---
 
@@ -167,8 +162,9 @@ state that can leak (that is F4).
 **Terminal decisions are inferred rather than stated.** Whether to commit an offset is derived
 from a `ReconstructionStatus` plus a boolean, at a call site that may or may not be reached.
 `EXPIRED_PREMATURELY` commits; `CLOSED_PREMATURELY` does not. One status therefore cannot express
-"expired because we *proved* it dead" (safe to commit) versus "expired because we ran out of
-runway" (must not commit) — and the code has no third value to reach for.
+"reset because complete manifest M omitted the predecessor interval" (limited commit authority)
+versus "timed out or ran out of runway" (must not commit) — and the code has no precise value to
+reach for.
 
 **Cancellation can masquerade as success, or as nothing at all.** A cancelled send produces an
 exception that is rethrown during tuple packaging, *before* the commit decision. So the request's
@@ -200,7 +196,7 @@ time, in admission order.
 **A replay transaction** owns everything about one request: source request and response state, the
 Kafka records carrying it, the concurrency permit, the transformed request buffers, the target
 outcome, the evidence outcome, its generation-scoped runway state, the tracing contexts, and —
-crucially — the final decision about that request's Kafka offsets.
+crucially — the single typed disposition proposal for that request's Kafka offsets.
 
 Everything else becomes a *producer of typed messages* to one of those two. The assembler produces
 source outcomes. Preparation produces a `Prepared` message. Netty produces a target outcome. The
@@ -214,9 +210,11 @@ Three consequences make this worth doing:
   any order, because the actor only ever looks at the head of its queue. Ordering holds by
   construction, so the sorter and schedule map are deleted rather than hardened.
 
-- **Every terminal decision has one home.** One function decides a record's fate and receives
-  everything relevant: what the source did, what the target did, whether evidence is durable.
-  Cancellation becomes a first-class outcome that can never select a commit.
+- **Every policy decision has one home.** The transaction invokes one pure exhaustive policy over
+  what the source did, what the target did, whether evidence is durable, and its runway
+  observation. It produces one typed proposal. The ledger validates and applies that proposal to
+  its obligations; it does not independently rerun policy. Cancellation becomes a first-class
+  outcome that can never select a commit.
 
 - **"Done" becomes checkable.** Aborting an actor returns a gate that completes only after its
   queue is settled, its in-flight exchange has been actively cancelled and its owned cleanup joined,
@@ -225,12 +223,11 @@ Three consequences make this worth doing:
   callback that cancellation made impossible.
 
 The design also carries the expiration-hardening policy: optional read-ahead bounded by a small
-epsilon and coupled to replay progress; exact manifest omission as structural proof; configured
-Kafka broker-time expiration for incomplete state under the capture-before-forward contract; optional
-metadata scanning on the same Kafka consumer and assignment as replay; reassignment and shutdown
-retaining for redelivery; a capture-side maximum connection duration that produces ordinary close
-observations and bounds resource use; and an evidence API that can evolve toward independent tuple
-parts.
+epsilon and coupled to replay progress; exact manifest-cycle reset for incomplete per-connection
+HTTP accumulation; optional metadata scanning on the same Kafka consumer and assignment as replay;
+reassignment and shutdown retaining for redelivery; a capture-side maximum connection duration
+that produces ordinary close observations and bounds resource use; and an evidence API that can
+evolve toward independent tuple parts.
 
 ---
 
@@ -239,6 +236,11 @@ parts.
 Several of these words are overloaded in the existing code and docs. This section is the authority
 for what they mean here.
 
+Within the replayer only, **admit** means that the replay-intake owner has accepted an immutable
+work item, registered its obligations, and become responsible for driving it to a terminal
+disposition. It does not mean that a proxy may accept a new client connection, that the target has
+accepted a request, or that Kafka has accepted a commit.
+
 ### 3.1 The five different things called "close"
 
 This ambiguity is a real source of bugs, so the design keeps the five lexically distinct:
@@ -246,7 +248,7 @@ This ambiguity is a real source of bugs, so the design keeps the five lexically 
 | Term used here | Means |
 | --- | --- |
 | **Captured close** | A `close` observation *in the recorded data* — the original client's connection ended. This is input to be reconstructed. |
-| **Source-side settlement** | The assembler's conclusion that a captured connection or request is finished, for any reason (complete, captured close, proven dead, interrupted, shutdown). |
+| **Source-side settlement** | The assembler's conclusion that a captured request or one incomplete accumulation segment is finished, for example complete request, captured close, manifest-cycle reset, terminal self completion, interruption, or shutdown. |
 | **Ordered close command** | A target-side close placed in a connection actor's queue at its time-shifted position, so it happens *after* the requests preceding it. |
 | **Channel close** | The Netty target socket actually closing. |
 | **Source acknowledgement** | Telling the Kafka layer "that session is gone," which is what releases its drain gate. **Not** an offset commit. |
@@ -261,32 +263,31 @@ This ambiguity is a real source of bugs, so the design keeps the five lexically 
   again*. This is the irreversible act, which is why it requires commit authority.
 - **Retain** — deliberately do *not* advance the offset. The record stays eligible for redelivery
   to this or another consumer. Contexts still close; only the offset is held.
-- **Commit authority** — the justification required before advancing a Kafka offset. There are two
-  primary alternatives and one explicitly configured discard policy:
+- **Commit authority** — the justification required before advancing a Kafka offset. This design
+  recognizes these alternatives:
   - **Replay evidence** — durable output written to a store (today, the tuple) recording *what replay
     did*. Normal replay requires this evidence.
-  - **Proxy omission proof** — an offset-ordered assertion about *which connections the proxy's
-    manifest contains* (§10.3's `ProxyOmissionProof`). A confirmed-dead discard requires this proof instead
-    of replay evidence because it has no replay result to record.
-  - **Configured incomplete-state expiration** — a policy-authorized discard after both traffic and
-    positive manifest liveness have been absent for the configured Kafka broker-append-time
-    interval. It is safe only with the proxy contract in §10.8 and remains distinguishable from
-    structural proof.
-  The proxy omission proof requires one complete, exact manifest copied after the connection's last
-  record and omitting that connection; that is separate from the choice between the two
-  commit-authority alternatives. Confirmed-dead discard does not require a durable discard receipt
-  in the first implementation. Metrics and trace/debug logs record the diagnostic reason; they do
-  not replace the proof.
-- **Evidence** — reserved for the normal replay output managed by `EvidenceWriter`. A structural proof
-  is commit authority, but is not an `EvidenceWriter` artifact.
+  - **Manifest-cycle reset** — a complete exact manifest M omits captured client connection C, and
+    C's current incomplete per-connection HTTP accumulation began in cycle M or earlier. This
+    authorizes disposing only the Kafka obligations held by that accumulation. It is not a claim
+    that C can never appear again.
+  - **Terminal self completion** — valid self `NoMoreWrites` permanently retires one
+    `(writerNodeId, partition)` after the proxy's terminal barrier and authorizes settling its
+    already-known incomplete accumulations.
+  Elapsed time alone is not commit authority. `--packet-timeout-seconds` may support diagnostics,
+  but it cannot advance the Kafka commit watermark in this design.
+- **Evidence** — reserved for the normal replay output managed by `EvidenceWriter`. A manifest-cycle
+  reset or terminal self completion is commit authority, but is not an `EvidenceWriter` artifact.
 - **Completion gate** — see §6.4. A future for a whole lifecycle operation, with an owner and
   documented postconditions that are already true when it completes successfully.
-- **Obligation** — a per-item record that something must be acknowledged or disposed of, completed
-  exactly once. It replaces a counter because it is *attributable* — an unfulfilled obligation names
-  the connection, session, and record still owed, where a leaked counter only says the total is
-  wrong — and because double-fulfillment becomes structurally impossible (the other half of F2).
-  Completion is not automatic: an obligation can sit unfulfilled forever, exactly as a counter can
-  stay nonzero forever; it just tells you what is stuck.
+- **Record obligation and claim** — the ledger owns one obligation per Kafka record. Each
+  accumulation or transaction that depends on observations in that record owns one attributable
+  claim against it. Every claim settles exactly once as `Commit` or `Retain`; the record can commit
+  only when all claims are `Commit`, and any `Retain` keeps the record eligible for redelivery. This
+  replaces anonymous counters because an unfulfilled claim names the connection, session, record,
+  and work still owed, and double fulfillment becomes structurally impossible. Claim registration
+  has an explicit seal: an obligation cannot reduce or close until the replay-intake owner has
+  declared that every observation in the record has been assigned to a leaf claim.
 - **Out of runway** — we lost the right or the time to finish this work (partition reassigned,
   process shutting down). Never commit-eligible: someone else must be able to pick it up.
 - **Runway state** — generation-scoped authority to enter a commit disposition. `KafkaSourceActor`
@@ -304,16 +305,17 @@ This ambiguity is a real source of bugs, so the design keeps the five lexically 
   command to `KafkaSourceActor`; the source accepts it only after checking the current generation
   and registering the offset on its owner thread. Kafka acknowledges it only when the broker commit
   succeeds. Revocation ordered before source acceptance selects `Retain`; after source acceptance,
-  the pending obligation remains ledger-owned until acknowledgement or an explicit failure.
-- **Confirmed dead** — the owning proxy produced a complete, offset-ordered manifest proving that
-  it no longer owns the connection. Commit-eligible, because it is structural proof.
-- **Configured expired** — an incomplete reconstruction was silent in both traffic and positive
-  manifests through the configured Kafka broker-time horizon. Commit-eligible by deployment policy
-  and the capture-before-forward invariant, but not renamed or reported as confirmed dead.
-- **Broker time** — the Kafka record timestamp from a traffic topic configured with
-  `message.timestamp.type=LogAppendTime`, monotonically clamped per partition. Every liveness and
-  configured-expiration timestamp and intermediate calculation uses this time domain exclusively.
-  The configured timeout is a duration added to a broker-time value.
+  `KafkaSourceActor` owns the pending broker-commit operation until acknowledgement or explicit
+  failure. The ledger continues to own the record obligation and waits on that source-owned result.
+- **Per-connection HTTP accumulation** — the source-side state currently assembling HTTP
+  observations for one captured client connection. A manifest-cycle reset discards only the
+  incomplete accumulation that the manifest covers. An observation with a greater manifest cycle
+  may initialize a new accumulation for the same `connectionId`; delayed observations from the
+  omitted cycle or earlier remain covered predecessor data.
+- **Manifest cycle** — a monotonically increasing logical value scoped to one
+  `(writerNodeId, partition)`. The proxy stamps each reconstruction-relevant observation with the
+  current value and closes one cycle when it atomically copies its exact active-connection set and
+  increments the value. It is not a Kafka producer epoch, group generation, timestamp, or offset.
 - **Epsilon** — an optional small read-ahead margin (~30s) that smooths source admission. It is not
   an expiry trigger, proof source, or hard memory bound.
 - **Settled watermark** — the contiguous point in source time up to which all admitted work has
@@ -327,8 +329,8 @@ originates so a proxy manifest is not mistaken for a direct replayer observation
 | Name | Side | One-line role |
 | --- | --- | --- |
 | `KafkaSourceActor` | Replayer | Owns the Kafka consumer, both cursors, offset tracking, and rebalance |
-| `ProxyManifestIndex` | Replayer | Reconstructs open-connection manifests and their Kafka offset spans per `(nodeId, partition)` |
-| `CaptureKafkaPublisher` | Proxy | Serializes proxy traffic, manifests, and writer-completion records to Kafka |
+| `ProxyManifestIndex` | Replayer | Reconstructs complete open-connection manifests and tracks their `manifestCycle` per `(writerNodeId, partition)` |
+| `CaptureKafkaPublisher` | Proxy | Publishes proxy traffic, manifests, and terminal self-completion records to Kafka while preserving producer acknowledgement and terminal ordering |
 | `ProxyOpenConnectionRegistry` | Proxy | Exact capture-side registry from which open-connection manifests are copied |
 | `ProxyOpenConnectionManifest` | Proxy record | Complete, immutable set of the proxy's open connections for one partition |
 | `ConnectionPartitionAssignment` | Shared protocol | Group-assigned partition chosen once and stored for one connection |
@@ -343,7 +345,7 @@ originates so a proxy manifest is not mistaken for a direct replayer observation
 | `TargetExchange` | Replayer | Owner-controlled target attempt, retry, response/finalizer, abort, and cleanup lifecycle |
 | `ReplayTransaction` | Replayer | One request's resources, outcomes, and disposition |
 | `EvidenceWriter` | Replayer | Durable whole-tuple output; internal adapters may model future parts |
-| `RecordDispositionLedger` | Replayer | Owns generation runway and record obligations; closes contexts; commits or retains |
+| `RecordDispositionLedger` | Replayer | Owns record obligations, context closure, disposition tracking, and commit proposals; source-generation runway authority remains with `KafkaSourceActor` |
 
 ---
 
@@ -367,8 +369,8 @@ machinery — it is §2 traced concretely.
    still in source order, does three things at once:
    - finds or creates the session's `ConnectionRuntime`, pinning it to one existing Netty event
      loop;
-   - transfers the held record obligations to a new transaction owner and registers a work token with
-     `ReplayProgressController`;
+   - registers the new transaction's claims against the ledger-owned record obligations and
+     registers a work token with `ReplayProgressController`;
    - posts one immutable `AdmitRequest` envelope to the assigned event loop. That event loop creates
      the mutable `ReplayTransaction` and appends its `ReplayRequest` command to the actor's FIFO queue.
 
@@ -401,12 +403,14 @@ machinery — it is §2 traced concretely.
 8. **Join and write evidence.** With every required outcome terminal, the transaction asks
    `EvidenceWriter` to persist the tuple and waits for an `EvidenceOutcome`.
 
-9. **Dispose exactly once.** The transaction sends its record obligations, all three outcomes, and
-   its runway observation to `RecordDispositionLedger` on the replay-intake owner. The ledger
-   rechecks observed runway, closes each record's contexts and — this row being (Available,
-   Complete, Succeeded, Durable) — sends a `CommitProposed` command to `KafkaSourceActor`. The
-   source actor serializes it with rebalance and poll state, accepts or rejects it after validating
-   the generation, and reports the result; the ledger then joins the broker acknowledgement.
+9. **Dispose exactly once.** On its event-loop owner, the transaction invokes the exhaustive
+   `ReplayDispositionPolicy` over its three outcomes and runway observation and produces one typed
+   proposal for each claim. It sends those proposals—not the raw outcomes for a second policy
+   decision—to `RecordDispositionLedger` on replay intake. The ledger validates and reduces the
+   sealed record's claims and, when every claim is `Commit`, sends a `CommitProposed` command to
+   `KafkaSourceActor`. The source actor serializes it with rebalance and poll state, accepts or
+   rejects it after validating the generation, and reports the result; the ledger then joins the
+   broker acknowledgement.
 
 10. **Release.** The transaction closes its owned resources exactly once: prepared request, permit,
     tracing contexts. Its completion gate completes only after disposition has settled, and the
@@ -449,8 +453,9 @@ This is the failure path that motivated the design, and it shows where each mech
    had progressed further may retain earlier terminal source or target outcomes. In both cases lost
    runway selects `Retain` unless the source had already accepted the commit by validating the
    generation and registering the offset. The ledger closes every record context exactly once. Any
-   source-accepted commit remains ledger-owned and must reach a broker acknowledgement or an explicit
-   failure before the session can terminate; a transaction-level proposal alone has no such status.
+   source-accepted broker commit remains source-actor-owned and must reach a broker acknowledgement
+   or an explicit failure before the session can terminate; the ledger owns the waiting record
+   obligation, and a transaction-level proposal alone has no such status.
 
 6. Only now — after step 5 has settled for *every* transaction of the session — does the actor deliver
    its source acknowledgement and its session termination gate complete. Per §6.4 rule 5, transaction
@@ -484,7 +489,7 @@ complete a transaction a second time, or find mutable state belonging to a newer
    within a process — never zero, never two. This is not exactly-once delivery; Kafka may still
    redeliver a retained or unacknowledged record (§0).
 6. Guarantee that cancellation cannot be interpreted as successful replay.
-7. Bound read-ahead and make expiration evidence-based.
+7. Bound read-ahead and make every incomplete-state reset fact-based.
 8. Make rebalance and shutdown completion observable through real completion gates.
 9. Give every reference-counted resource one documented owner.
 10. Support deterministic tests over all terminal transitions and event interleavings.
@@ -502,7 +507,7 @@ from §1.1, that is named.
 | --- | --- |
 | Every mutable state object has one executor or thread owner | Concurrent mutation of accumulator or session state — the class of bug that a `volatile` on one flag does not fix |
 | Cross-thread completions post typed messages to the owner; they never mutate foreign state | A second thread calling into single-threaded machinery (the wall-clock heartbeat-expiry hazard) |
-| Generation runway authority is owned by `RecordDispositionLedger`; transactions hold only a local observation | A transaction and the commit adapter disagree about whether an old generation may still commit |
+| Generation runway authority is owned by `KafkaSourceActor`; the ledger and transactions hold only monotonic observations | A transaction, ledger, and Kafka consumer disagree about whether an old generation may still commit |
 | Every resource is released by whoever accepted ownership of it | The refcount leaks of §13 (R16–R18) |
 | No required lifecycle notification is an optional no-op callback | **F3** — a `default {}` method silently swallowing every close notification |
 
@@ -530,7 +535,7 @@ optional for test convenience.
 | Normal replay commits only after required evidence is durable | Committing data whose evidence was never written |
 | Work whose runway is lost before source acceptance, and any unclassified failure, does not commit | Teardown masquerading as successful replay — silent data loss |
 | A deterministic poison record commits only under an explicit classifier, with durable, loud skip evidence | Either an unskippable crash loop or a silent skip — and no way for an operator to choose which |
-| Proxy-confirmed absence delivered by the scanner may commit because it carries proxy omission proof; elapsed time may not | Impatience committing live data |
+| A complete manifest-cycle reset may commit only the incomplete accumulation covered by that cycle; elapsed time may not | An old omission or an impatient timeout committing newer or still-live data |
 
 ### 6.4 Completion gates
 
@@ -725,7 +730,7 @@ flowchart TD
 | 3 | Terminal target outcome | `ConnectionActor` (event loop) | `TargetExchange`: `TargetOutcome` or abort outcome |
 | 4 | Every policy-required source and target outcome | `ReplayTransaction` (event loop) | The last required outcome turning terminal |
 | 5 | Evidence outcome, when required | `ReplayTransaction` (event loop) | `EvidenceWriter`: `EvidenceOutcome`, or policy: not required |
-| 6 | Authoritative disposition, source acceptance and commit acknowledgement when accepted, owned-resource release | `ReplayTransaction` waits (event loop); `RecordDispositionLedger` decides disposition (replay intake); `KafkaSourceActor` accepts and acknowledges commit (source I/O) | Source result settles the ledger; transaction closes its resources |
+| 6 | Disposition proposal applied, source acceptance and commit acknowledgement when accepted, owned-resource release | `ReplayTransaction` computes one proposal (event loop); `RecordDispositionLedger` validates and applies it (replay intake); `KafkaSourceActor` accepts and acknowledges commit (source I/O) | Source result settles the ledger; transaction closes its resources |
 
 The two side entries are orthogonal to the main path on purpose. The source slot may settle at any
 time relative to target work — state 4 simply requires both. Cancellation from any phase actively
@@ -772,10 +777,11 @@ flowchart TD
 | Rebalance / shutdown | Every in-scope transaction, accepted-commit, session, and quiescence gate succeeded. Transactions and commits join through their session gates in the picture, but the lifecycle owner verifies all four kinds. |
 
 Two further waits gate record flow rather than lifecycle completion: `ReplayReadGate` admits another
-source record only when the settled watermark plus epsilon allows it and lifecycle admission is
-open, and `RecordDispositionLedger` advances a partition's contiguous offset only when every
-preceding obligation has been deliberately committed or retained, with accepted commits
-acknowledged.
+source record only when the settled watermark plus epsilon allows it and lifecycle intake is open,
+and the Kafka commit watermark advances only across a contiguous prefix of commit-eligible
+obligations whose broker commits have been acknowledged. A `Retain` decision closes local contexts
+and settles the process-local lifecycle, but it continues to block the Kafka commit watermark so
+the record remains eligible for redelivery.
 
 `ReplayProgressController` computes the contiguous settled watermark and owns the replay-quiescence
 gate. Completion gates and `ScanEvidence` are threadless values: each owner completes its private
@@ -840,6 +846,19 @@ return `CompletionStage` acknowledgements where ordering matters. They never exp
 queues, lifecycle registries, or callbacks that mutate foreign-owned state directly. A lock or
 `ConcurrentHashMap` is not a substitute for assigning an owner.
 
+The sole cross-owner mutable primitive is a process-wide, one-way `ReplayFatalFence`. It carries no
+per-request state, registry, cleanup operation, or recovery authority. Its
+`tryAcceptCommit(registration)` and `close()` operations share one bounded synchronization point:
+
+- `KafkaSourceActor` calls `tryAcceptCommit` on its owner thread. If open, the gate executes only the
+  bounded generation validation and pending-commit registration before releasing the gate.
+- A fatal observer calls `close`. Closure waits only for any acceptance already inside that bounded
+  critical section, then permanently rejects later acceptance.
+
+Kafka I/O and broker acknowledgement never run while holding the gate. This creates one exact order:
+a commit is accepted before fatal closure or rejected after it; a check-then-register race is
+impossible.
+
 The normal logical handoffs are bounded and explicit:
 
 1. Kafka source-I/O owner → replay-intake owner, with an immutable decoded batch or source-lifecycle
@@ -894,24 +913,36 @@ record ReplayRequestId(
 ) {}
 
 record KafkaRecordId(String topic, int partition, long offset, int generation) {}
+
+record ManagedCaptureRunKey(
+    String captureDomainId,
+    long captureDomainRecoverySequence,
+    String captureSessionId,
+    String trafficKafkaClusterId,
+    String trafficTopicId
+) {}
 ```
 
 All source acknowledgement, actor lookup, scan evidence, tracing, and record disposition use these.
 No callback reconstructs identity from whichever traffic-stream key happens to remain in a list.
+
+Managed replay batches and checkpoints also carry `ManagedCaptureRunKey`. A managed run receives it
+from the trusted replay plan; it never infers the key from the first traffic or reset record. This
+is mandatory for every managed run. A distinct topic changes how the trusted starting offsets are
+established; it does not make the session, plan, or checkpoint identity optional.
 
 **Why this shape.** Two sites cannot disagree about a key when the key is one shared type — the
 lockstep problem is *deleted* rather than documented. `sessionNumber` distinguishes logical sessions
 on one captured connection (keep-alive reuse, restarts). `sourceGeneration` is what makes a stale
 commit from a previous assignment structurally impossible rather than defensively filtered.
 
-**`nodeId` is a per-process identity, and that is load-bearing.** The capture proxy generates a fresh
-`UUID.randomUUID()` on every start rather than deriving a stable id from its host. It therefore
-identifies *a process*, not a machine — and that is what makes it safe for a proxy's own
-open-connection manifests (§10.8) to be treated as authoritative. A stable id would let a
-replacement process speak about a stalled predecessor's still-open connections; a per-process id
-fences **manifests**, so a manifest can only ever cover connections the emitting process
-actually owns. It does not fence the Kafka producer itself, which is why silence cannot prove death.
-See §10.8 for the distinction between structural omission and configured expiration.
+**`nodeId`/`writerNodeId` identifies one capture activation, and that is load-bearing.** The capture
+proxy generates a fresh UUID whenever it begins capture, including when the same operating-system
+process could otherwise attempt to resume after capture abandonment. It identifies neither a host
+nor a permanently reusable process. A stable identity would let a replacement activation speak
+about a stalled predecessor's still-open connections. The fresh identity scopes manifests to the
+activation that produced them. It does not fence that activation's Kafka producer, which is why
+silence and group departure cannot prove completion.
 
 ---
 
@@ -920,28 +951,20 @@ See §10.8 for the distinction between structural omission and configured expira
 ### 10.1 Why metadata lookahead is useful
 
 Lookahead answers two questions: *does a follow-up observation for this connection exist, or has its
-owning proxy produced an authoritative manifest that omits it?* It also determines whether the
-partition's Kafka broker-time horizon has advanced beyond the configured incomplete-state timeout.
-
-A legitimately idle connection is not inferred dead from traffic silence. Exact periodic manifests
-list every open connection, so each listing refreshes its positive liveness. Configured expiration
-requires silence in both traffic and positive manifests.
+proxy produced a complete manifest-cycle boundary that lists or omits it?*
 
 The replay cursor will eventually encounter the same traffic and manifests in normal offset order.
 The scan cursor is therefore not required for correctness. It is a metadata-only optimization that
 can reach a distant follow-up or manifest without buffering all intervening payloads. Its job is to
-decouple **proof distance** from **buffered bytes**.
+decouple **decision distance** from **buffered bytes**.
 
 Scanner enabled and scanner disabled must produce the same eventual disposition for the same
-durable log once normal replay reaches the same horizon. They may differ in memory use and latency.
-Scanner budget exhaustion is temporarily `Inconclusive`; it does not itself authorize expiration.
+durable log once normal replay reaches the same records. They may differ in memory use and latency.
+Scanner budget exhaustion is `Inconclusive`; it does not authorize expiration or commit.
 
-A dead proxy and a stalled proxy can both stop emitting manifests. The replayer does not claim that
-silence proves process death. It may nevertheless settle incomplete state as `ConfiguredExpired`
-because the proxy contract prevents a strict-mode request from completing at the source unless its
-complete Kafka representation was already acknowledged. A resumed strict proxy also checks
-acknowledged-manifest freshness before source execution. This is an end-to-end policy argument, not
-a producer fence.
+Traffic silence, group departure, process-health observations, and elapsed time do not prove that a
+proxy producer is fenced. If no complete applicable manifest or terminal self `NoMoreWrites`
+exists, incomplete Kafka obligations remain retained.
 
 ### 10.2 One consumer, two logical cursors
 
@@ -956,18 +979,18 @@ A scan cycle:
 1. Copy assignment, generation, and the exact replay position for every partition.
 2. Select commit-head blockers and the required follow-up kind for each.
 3. Seek ahead within a bounded operational scan budget.
-4. Poll and decode **only** connection identity, Kafka `LogAppendTime`, recognized record type,
-   observation kinds, and proxy open-connection manifest chunks.
+4. Poll and decode **only** connection identity, recognized record type, observation kind,
+   observation `manifestCycle`, and proxy open-connection manifest chunks.
 5. Discard payloads.
-6. Stop early per blocker when a required follow-up is found or one complete, exact proxy manifest
-   after the connection's last record proves omission (§10.8).
+6. Stop early per blocker when a required follow-up is found or one complete exact manifest
+   resolves an applicable cycle boundary (§10.8). A discovered self `NoMoreWrites` at cutoff K
+   settles that blocker early only if the scan covered every offset from the blocker's replay
+   frontier through K without finding its required follow-up.
 7. Restore every replay position before returning control.
 8. Discard all scan results if assignment or generation changed during the cycle.
 
 The scanner never advances replay positions, record lifecycles, replay time, or commit offsets.
-Exhausting the operational scan budget produces `Inconclusive`; only reaching the configured
-Kafka broker-time horizon without later traffic or a listing manifest can produce
-`ConfiguredExpired`.
+Exhausting the operational scan budget produces `Inconclusive`.
 
 **Why the same consumer rather than a second consumer?** A separately grouped consumer does not
 automatically share assignment or generation with replay; manual assignment could reproduce that
@@ -979,33 +1002,38 @@ with two logical cursors gives exact assignment and generation coupling by const
 ```java
 sealed interface ScanEvidence {
     record FollowUpPresent(...) implements ScanEvidence {}
-    record ConfirmedAbsent(ProxyOmissionProof proof, ...) implements ScanEvidence {}
-    record ConfiguredExpired(
-        BrokerTime lastPositiveLivenessBrokerTime,
-        BrokerTime scannedThroughBrokerTime,
-        Duration configuredTimeout,
-        ...
-    ) implements ScanEvidence {}
+    record ManifestCycleResolved(ManifestCycleDecision decision, ...) implements ScanEvidence {}
+    record TerminalSelfCompletion(ProxyPartitionCompletion completion, ...) implements ScanEvidence {}
     record Inconclusive(...) implements ScanEvidence {}
 }
 
-record BrokerTime(Instant value) {}
-
-/** The only proxy-omission proof available in the first implementation. */
-sealed interface ProxyOmissionProof {
-    /** One complete manifest from the owning proxy omitted this connection. */
-    record LivenessOmission(
-        String nodeId,
+sealed interface ManifestCycleDecision {
+    record Listed(
+        String writerNodeId,
         int partition,
-        CompleteManifestSpan omittingManifest,
-        long lastRecordOffsetForConnection
-    ) implements ProxyOmissionProof {}
+        String connectionId,
+        CompleteManifest manifest
+    ) implements ManifestCycleDecision {}
+
+    record Omitted(
+        String writerNodeId,
+        int partition,
+        String connectionId,
+        CompleteManifest manifest
+    ) implements ManifestCycleDecision {}
 }
 
-record CompleteManifestSpan(
-    long sequence,
+record CompleteManifest(
+    long manifestCycle,
     long firstOffset,
-    long lastOffset
+    long lastOffset,
+    Set<String> openConnectionIds
+) {}
+
+record ProxyPartitionCompletion(
+    String writerNodeId,
+    int partition,
+    long completionOffset
 ) {}
 
 enum FollowUpRequirement {
@@ -1015,76 +1043,95 @@ enum FollowUpRequirement {
 }
 ```
 
-`ConfirmedAbsent` triggers commit-eligible structural expiration and must include partition,
-generation, connection/session identity, required follow-up kind, and a `ProxyOmissionProof` whose
-invariants hold:
+`ManifestCycleResolved` is usable only when:
 
-* The manifest span is complete: every index in `0..chunkCount-1` was consumed exactly once and all
+- every index in `0..chunkCount-1` was consumed exactly once and all
   chunks carry a consistent header.
-* `lastRecordOffsetForConnection < omittingManifest.firstOffset()`.
-* Traffic and the manifest use the same `nodeId` and partition.
-* The partition stamped inside every traffic record and manifest chunk equals the Kafka partition
+- the observations and manifest use the same `writerNodeId` and partition;
+- the partition stamped inside every traffic record and manifest chunk equals the Kafka partition
   from which it was consumed.
-* The reconstructed open-connection set does not contain the connection.
-* If multiple complete manifests follow the last record, the latest one controls: later presence
-  prevents expiration, while later omission supersedes earlier presence.
+- the manifest's `manifestCycle` is valid for that proxy activation and partition; and
+- malformed records, contradictory chunks, duplicate indexes, partition mismatches, or cycle
+  regression have made neither the manifest nor its decision ambiguous.
 
-`ConfiguredExpired` is a separate commit-eligible policy result. It requires:
+A complete manifest M that lists C resolves continuity across boundary M. A complete manifest M
+that omits C resets only the predecessor accumulation segment containing observations whose cycle
+is at most M. The omission is not a permanent tombstone for C.
 
-* the connection or request state is incomplete;
-* `lastPositiveLivenessBrokerTime` is the effective Kafka `LogAppendTime` of the latest traffic
-  record or complete manifest listing;
-* `scannedThroughBrokerTime` is the greatest effective Kafka `LogAppendTime` among partition
-  records whose metadata the scanner or normal replay has actually covered;
-* `scannedThroughBrokerTime` has reached
-  `lastPositiveLivenessBrokerTime + packetTimeout`;
-* no later traffic or complete listing manifest exists through that horizon; and
-* the source is operating under the capture contract in §10.8.
+Because each `TrafficRecord` is cycle-homogeneous, the record-level rule is exact and idempotent:
 
-`lastPositiveLivenessBrokerTime` and `scannedThroughBrokerTime` are `BrokerTime` values exclusively.
-For a complete chunked manifest, its liveness time is the maximum effective broker append time
-across its chunks. Neither value may be constructed from:
+- a record for C with `manifestCycle <= M` belongs to the predecessor covered by an omitting M,
+  even if Kafka appended or delivered that record after the manifest chunks;
+- a record for C with `manifestCycle > M` belongs to the successor and is not committed by M; and
+- a record that mixes cycles is malformed and halts rather than creating sub-offset obligations.
 
-* `TrafficObservation.ts`;
-* manifest `emittedAtMillis`;
-* proxy-local monotonic time;
-* producer create time; or
-* replayer wall clock.
+The Kafka-order inversion requires one additional source-assembler rule. The concrete race is:
 
-Every valid recognized record covered by replay or scanning, including a semantically inert
-capability probe, may advance `scannedThroughBrokerTime`. Only traffic for the connection or a
-complete manifest listing it may advance `lastPositiveLivenessBrokerTime`. Malformed records,
-invalid partition stamps, and unknown unsafe record types halt or leave the verdict inconclusive;
-they cannot advance expiration.
+1. The replayer holds an incomplete per-connection HTTP request prefix for C whose observations
+   carry cycle M.
+2. The proxy closes C's source-forward gate, drains every previously source-authorized operation,
+   and removes C from the exact active-connection registry.
+3. The next manifest snapshots that registry as manifest M, omits C, and advances the partition
+   counter to M+1.
+4. A late, non-source-authoritative callback for C reads M+1. Kafka may append or deliver that
+   observation before the chunks of manifest M.
 
-Elapsed time alone, a scan budget boundary, or the current end of a temporarily quiet partition
-does not satisfy those conditions. `ConfiguredExpired` never constructs a
-`ProxyOmissionProof` and must not be reported as `ConfirmedAbsent`.
+The cycle-M prefix and the cycle-M+1 observation can therefore both be present at the replayer
+before the omitting manifest is resolved. They are not two simultaneously valid versions of one
+request. Until M is resolved, the newer observation is held separately as a **successor
+accumulation segment** and is not irreversibly merged with the predecessor prefix. When M resolves,
+the replayer performs this exact per-connection transition:
 
-If a partition contains no later record, `scannedThroughBrokerTime` cannot advance. The incomplete
-state remains retained until later durable partition activity supplies enough Kafka broker-time
-progress. The replayer never substitutes its wall clock to force progress through a quiet period.
+- if M lists C, merge the predecessor and successor according to the ordinary TrafficStream
+  observation-ordering rules;
+- if M omits C, terminally dispose only the incomplete cycle-M-or-earlier request-assembly state,
+  create an empty per-connection HTTP request accumulator, and feed the already-held
+  cycle-M+1-or-later observations into that new accumulator;
+- Kafka offsets belonging to the successor remain obligations of the successor and are not
+  committed by M's omission; and
+- a request already recognized as complete is detached from connection liveness and is never
+  discarded merely because a later manifest omits its connection.
 
-The proof is retained in the in-process disposition decision and emitted to metrics and trace/debug
-logs. A durable discard receipt is not required in the first implementation (§19.2); the structural
-proof itself is the safety precondition for the commit.
+This “reset” is only a reset of the replayer's per-connection HTTP request-assembly state. It does
+not reset, reopen, or otherwise act on the proxy's connection. A later observation for C is treated
+as the first observation of a new accumulation segment and still requires subsequent manifests or
+ordinary protocol completion to settle.
+
+A byte sequence would not be considered one complete request if recognizing it requires joining
+predecessor observations through M with successor observations after an omitting M. The omission
+intentionally breaks that continuity. Under the proxy contract, such a cross-boundary sequence
+cannot represent a mutating request that the proxy allowed to execute at the source while still
+owing replay to the target.
+
+This segmenting is internal replayer state. It is not a proxy epoch and must not appear as another
+wire protocol identity.
+
+Terminal self completion is offset-scoped. Scan-ahead may install cutoff K immediately, but it may
+settle only the particular blocker for which the scanner covered every intervening offset through K
+and found no required follow-up. Other known accumulations wait. Traffic and manifests from that
+proxy activation and partition at offsets below K remain valid when normal replay later reaches
+them. When the replay cursor reaches K, every lower offset has been processed, so remaining
+incomplete state for that proxy-partition may settle and the identity becomes fully retired. Any
+traffic or manifest record above K is the protocol violation; only a duplicate self
+`NoMoreWrites` is idempotent. Discovering K early does not turn earlier records into
+post-completion traffic.
 
 ### 10.4 Verdicts enter through the normal control loop
 
 The scanner does not call into mutable assembler state reentrantly. On the Kafka source actor it
-creates a typed `SourceControlEvent.ConfirmedDead` or
-`SourceControlEvent.ConfiguredExpired` and delivers it through the same ordered source-batch channel
-used for traffic records. The explicit message boundary preserves ordering and keeps source-I/O
-callbacks from mutating reconstruction state directly. `SourceAssembler`, on replay intake, applies
-the event to the matching generation and emits a source outcome to the owning transaction or
-connection coordinator.
+creates a typed `SourceControlEvent.ManifestCycleResolved` or
+`SourceControlEvent.TerminalSelfCompletion` and delivers it through the same ordered source-batch
+channel used for traffic records. The explicit message boundary preserves ordering and keeps
+source-I/O callbacks from mutating source-assembly state directly. `SourceAssembler`, on replay
+intake, applies the event to the matching generation and emits source outcomes or accumulator-reset
+results to the owning transaction or connection coordinator.
 
 This preserves the accumulator's single-threaded contract and — more valuably — provides **one
 ordering point** for five things that would otherwise race:
 
 * real source observations,
 * captured closes,
-* scanner-delivered proxy-confirmed or configured expiration,
+* scanner-delivered manifest-cycle decisions or terminal self completion,
 * partition-reassignment interruption,
 * shutdown.
 
@@ -1092,29 +1139,25 @@ ordering point** for five things that would otherwise race:
 
 | Cause | Commit authority or observation | Commit eligible? | Required action |
 | --- | --- | --- | --- |
-| Complete request/response | Captured observations | Yes | Finish transaction and evidence requirements |
-| Captured close with incomplete request | Captured close | Explicit discard policy | Record evidence; do not claim replay success |
-| Proxy-confirmed absent | One complete, exact proxy open-connection manifest omits the connection after its last record | Yes | Settle source side as confirmed dead |
-| Follow-up found | Scan metadata, or presence in a proxy open-connection manifest | No expiration | Leave state alive |
-| Scan inconclusive | Incomplete proof | No | Continue or halt according to resource policy |
-| Configured incomplete-state expiration | No traffic or complete listing manifest through `lastPositiveLivenessBrokerTime + --packet-timeout-seconds`, measured exclusively in Kafka broker time | Yes, under §10.8 | Settle as `ConfiguredExpired`; emit distinct metrics and audit reason |
+| Complete request/response | Captured observations | Yes | Finish transaction and evidence requirements; later liveness facts cannot discard it |
+| Captured close with incomplete request | Captured close plus explicit close policy | Policy must be explicit | Settle only the incomplete accumulator; do not claim replay success |
+| Manifest M lists C | Complete exact manifest-cycle decision | No reset | Resolve continuity across M and merge predecessor/successor segments |
+| Manifest M omits C | Complete exact manifest-cycle decision | Yes, for predecessor only | Dispose the incomplete predecessor segment through M; initialize empty state and preserve/re-feed observations after M |
+| Terminal self `NoMoreWrites` | Valid self completion after proxy barrier | Yes, for already-known incomplete state | Settle incomplete state for that proxy-partition and permanently retire the identity |
+| Follow-up found before a cycle decision | Scan metadata | No terminal decision | Preserve it in the applicable segment |
+| Scan inconclusive | Incomplete or ambiguous manifest information | No | Continue or halt according to resource policy |
+| Elapsed-time expiration | Silence or a configured duration | **No** | Diagnostic and alarm only; retain Kafka obligations |
 | Partition reassignment | Ownership lost | No | Abort old generation and redeliver |
 | Shutdown | Process runway ended | No | Abort and retain |
 | Replayer wall-clock age | Elapsed time since the replayer noticed a blocker | **Never** | Diagnostic only |
 
-The last row remains a hard rule: a watchdog based on how long the replayer process has been waiting
-is nondeterministic and can fire while the durable partition contains a later listing manifest or
-traffic record. Configured expiration instead advances from per-partition Kafka broker append times
-and requires the scanner or normal replay to cover the whole configured broker-time horizon.
-
-If a proxy dies with connections open and emits neither a final manifest nor self
-`NoMoreWrites`, the timeout fallback eventually releases only the incomplete reconstruction state.
-A complete request remains replayable and is never discarded by connection silence.
+The elapsed-time rows are hard rules. A watchdog can fire while a delayed suffix still exists, and
+Kafka broker time can jump forward. Neither wall-clock waiting nor `LogAppendTime` progression
+fences the old producer. If a proxy dies with connections open and emits neither an applicable
+manifest nor self `NoMoreWrites`, incomplete state remains retained.
 
 Finite legacy sources may continue to use their configured inactivity timeout. They retain their
-distinct `LegacyExpired` outcome. Kafka uses `ConfiguredExpired`, because its safety depends on the
-capture-side invariant and positive manifests rather than on the absence of durable commit
-obligations.
+distinct `LegacyExpired` outcome. That source-specific policy must not be reused for Kafka capture.
 
 ### 10.6 Epsilon lookahead
 
@@ -1155,45 +1198,46 @@ records later; neither fact is changed by configuration arithmetic.
 
 The cap is therefore recommended and operator-configurable, but it is not mandatory for safety. Its
 absence affects ordinary proxy resource bounds and how often a silent-proxy blocker appears, not
-whether `ConfirmedAbsent` is constructable.
+whether a manifest-cycle decision is valid.
 
-### 10.8 Proxy open-connection manifests and writer completion
+### 10.8 Proxy open-connection manifests and proxy completion
 
-**The problem.** Absence-based verdicts are the weakest link in this design: they are the one place a
-commit rests on an inference rather than an observation, and a wrong one silently discards live data.
-The proxy holds the channels, so it can replace the inference with a statement.
-
-The earlier mechanism exploration, sizing work, and rejected alternatives are in
-[`replayer-expiration-hardening.md`](replayer-expiration-hardening.md) §5.4. The contracts below
-supersede that document's idle-only manifest proposal and define the current bounded-expiration
-fallback.
+**The problem.** Kafka append order can differ from proxy-side lifecycle order because connection
+events, packet capture, and periodic manifest preparation run concurrently. The replayer therefore
+needs an explicit logical boundary that says which connection lifecycle interval a complete
+manifest covers. Kafka offsets alone cannot supply that boundary.
 
 The authoritative proxy contract is
 [`proxyHorizontalScalingAndNodeDeath.md`](proxyHorizontalScalingAndNodeDeath.md). Membership assigns
-partitions for new connections; it is not writer-death evidence. Exact manifests provide positive
-liveness. A listing manifest refreshes every open connection, including an idle one. An omitting
-manifest gives structural absence proof.
+partitions for new captured client connections. Group departure triggers rebalance and has no replay
+meaning. Exact manifests resolve `manifestCycle` boundaries. A listing preserves continuity across
+the boundary; an omission resets only the covered incomplete predecessor accumulation.
 
 `NoMoreWrites{writerNodeId, partition, emitterNodeId}` is valid only when
-`emitterNodeId == writerNodeId`. It is emitted only for permanent writer-partition retirement,
-after the partition publisher lane moves one-way from `OPEN` to `RETIRING`, new traffic and
+`emitterNodeId == writerNodeId`. It is emitted only for permanent proxy-partition retirement,
+after the partition publisher moves one-way from `OPEN` to `RETIRING`, new traffic and
 ordinary manifests are rejected, the periodic manifest publisher is asynchronously quiescent,
 every related Netty connection and teardown future has settled, every previously accepted send
 succeeds, the exact registry is empty, and a final empty manifest is acknowledged. Only the
 retirement barrier may submit that final manifest and `NoMoreWrites` while `RETIRING`. Acknowledged
-completion moves the lane to `RETIRED`, which rejects every later submission. `NoMoreWrites`
-promptly settles prior incomplete state and terminally retires that writer-partition identity.
+completion moves the publisher to `RETIRED`, which rejects every later submission.
+`NoMoreWrites` promptly settles prior incomplete state and terminally retires that
+proxy-partition identity.
 
 Ordinary assignment drain uses the acknowledged empty manifest and does not emit
-`NoMoreWrites`, so the same live writer may later reacquire the partition after acknowledging a new
-initial manifest. Traffic after terminal `NoMoreWrites` is a protocol violation that halts and
-alarms; the same applies to later manifests. Such records are neither silently discarded nor
-treated as a new interval. Duplicate self completion is idempotent. Peer-emitted completion is
-ignored for settlement and alarmed as invalid provenance.
+`NoMoreWrites`, so the same live proxy activation may later reacquire the partition after acknowledging a new
+initial manifest. The `NoMoreWrites` Kafka offset is its terminal cutoff. Traffic and manifests
+below that offset remain valid even when scan-ahead discovered completion first. Every traffic or
+manifest record above the cutoff halts and alarms as a protocol violation; it is neither silently
+discarded nor treated as a new interval. Only duplicate self completion is idempotent.
+Peer-emitted completion is ignored for settlement and alarmed as invalid provenance.
 
 A hard crash may emit neither a final manifest nor self `NoMoreWrites`. In that case §10.5's
-configured expiration releases incomplete state. This does not depend on proving that the writer
-can never resume. It depends on the stricter end-to-end ordering:
+retention rule applies: no other proxy fabricates completion, and elapsed time does not make the
+old producer fenced. The affected incomplete obligations remain retained unless an applicable
+complete manifest had already been published.
+
+The proxy's stronger end-to-end ordering is still essential:
 
 ```text
 SourceApplied(Q)
@@ -1204,7 +1248,8 @@ Kafka acknowledged the complete replay representation of Q
 After complete Kafka acknowledgement and immediately before source execution, strict-mode proxies
 also require a recent acknowledged manifest. If a suspended process resumes after the stale
 threshold, it may finish Kafka capture but cannot newly complete the request at the source. A
-request already admitted to a source syscall was completely captured first.
+request whose source-forwarding operation had already passed the gate was completely captured
+first.
 
 This guarantee is scoped to source handlers that do not apply effects before receiving the complete
 HTTP request. HTTP chunked transfer encoding is compatible when it is only wire framing and the
@@ -1216,26 +1261,51 @@ The current round also retains the proxy's existing HTTP-method predicate for de
 requests require the complete-request barrier. Source-specific classification, an explicit
 read-only allowlist, and default-mutating treatment of unknown requests are future hardening work.
 
-**What is emitted.** Every `manifestInterval` (default 30s), each proxy records **all** open
-connections whose traffic routes to each relevant partition. Active connections are not omitted as
-redundant: "it was active before the first manifest" does not imply that it will emit a record after
-that manifest, and combining such an intentional omission with one concurrent-map miss can falsely
-prove death.
+**What is emitted.** Every `manifestInterval` (default 30s), each proxy records **all** open captured
+client connections whose traffic routes to each relevant partition. Every
+reconstruction-relevant observation also carries the current `manifestCycle` for that proxy
+activation and partition.
 
 The manifest is chunked before serialization:
 
 ```proto
+message TrafficRecord {
+  string writerNodeId = 1;
+  bytes connectionId = 2;
+  int32 partition = 3;
+  int64 manifestCycle = 4;
+  repeated TrafficObservation observations = 5;
+}
+
+message TrafficObservation {
+  int64 connectionObservationSequence = 1;
+  // existing observation fields follow
+}
+
 message ProxyOpenConnectionManifestChunk {
-  string nodeId = 1;
+  string writerNodeId = 1;
   int32 partition = 2;
-  string routingPlanId = 3;          // compatibility/diagnostic only
-  int64 manifestSequence = 4;
-  int32 chunkIndex = 5;
-  int32 chunkCount = 6;
-  int64 emittedAtMillis = 7;      // diagnostic only
-  repeated bytes openConnections = 8;
+  int64 manifestCycle = 3;
+  int32 chunkIndex = 4;
+  int32 chunkCount = 5;
+  int64 emittedAtMillis = 6;       // diagnostic only
+  repeated bytes openConnections = 7;
 }
 ```
+
+Every `TrafficRecord` is homogeneous in
+`(writerNodeId, partition, connectionId, manifestCycle)`. A batching layer flushes before any of
+those values changes. This is load-bearing because Kafka offsets are indivisible: an omitting
+manifest may authorize committing predecessor records while successor records must remain retained.
+The protocol does not introduce sub-offset obligations.
+
+`connectionObservationSequence` is monotonically increasing for one captured client connection and
+validates the order of its reconstruction-relevant observations. The proxy submits those records
+through one connection-local chain, so the replayer consumes them in contiguous sequence order even
+though unrelated connection records and manifests interleave. `SourceAssembler` tracks
+`nextExpectedConnectionObservationSequence`; a gap, regression, or conflicting duplicate halts and
+retains rather than buffering indefinitely or guessing. Incidental diagnostics that cannot affect
+HTTP reconstruction are not part of this sequence.
 
 The replayer validates and reconstructs complete manifests into its `ProxyManifestIndex`. The
 index is derived replayer state; it is not the proxy registry and does not independently observe
@@ -1246,75 +1316,72 @@ exactly once and validating a consistent header. A missing, duplicate, oversized
 chunk makes that manifest unusable; it can never be interpreted as an empty manifest. Chunking is
 required because inbound frontside connections are not bounded by one host's ephemeral-port range,
 so no fixed connection-count estimate proves that one record fits under Kafka's pre-compression size
-limit. `manifestSequence` increases monotonically per `(nodeId, partition)`, and `chunkIndex` covers
-exactly `0..chunkCount-1`. The publisher allocates one `emittedAtMillis` value for the complete
-manifest, copies it to every chunk, and makes it strictly increase for each subsequent manifest on
-that `(nodeId, partition)`, even if the wall clock stalls or moves backward. Captured observations
-retain their own source timestamps. These strict timestamp rules make diagnostics traceable; they do
-not participate in omission authority, which rests on Kafka offsets.
+limit. `manifestCycle` increases monotonically per `(writerNodeId, partition)`, and `chunkIndex`
+covers exactly `0..chunkCount-1`. `emittedAtMillis` and captured observation timestamps remain
+diagnostic or pacing values; they do not participate in manifest-cycle decisions.
 
-The traffic topic must use `message.timestamp.type=LogAppendTime`. Replayer liveness uses only the
-Kafka record timestamp assigned by the broker and wraps it as `BrokerTime`. The replayer
-monotonically clamps that value per partition before using it. `emittedAtMillis` and captured
-observation timestamps remain outside all liveness and expiration calculations.
+**The registry is exact and the lifecycle boundary is narrow.** For each partition, the proxy
+linearizes only:
 
-The deployment must synchronize and monitor broker clocks. The permitted forward skew between a
-partition's current and replacement leader is part of the configured expiration safety margin; the
-monotonic clamp prevents backward movement but cannot make an arbitrary forward broker-clock jump
-safe.
+1. adding a newly created captured client connection to the exact active set;
+2. removing a captured client connection from that set; and
+3. copying the active set for manifest M and incrementing the partition's atomic counter from M to
+   M+1.
 
-**The registry is exact, not weakly consistent.** A `ProxyOpenConnectionRegistry` linearizes
-connection registration, removal, and manifest-copy operations. Registration occurs before the first
-traffic record can be submitted. Removal occurs only through the idempotent close path, after Kafka
-acknowledges the final traffic record. Manifest construction takes an immutable copy at one
-linearization point; it does not assign proof semantics to a
-`ConcurrentHashMap` traversal that may miss entries.
+Addition precedes acceptance of the connection's first reconstruction-relevant observation.
+Removal first atomically closes the connection's one-way source-forward gate, then waits until every
+previously authorized source operation has a complete acknowledged Kafka representation, and only
+then removes the connection under the partition lifecycle boundary. A manifest prepared while that
+wait is in progress still lists the connection.
 
-Manifest copy and admission of all resulting chunks to the publisher lane are one publisher-owned
-operation. A copied omission cannot wait outside the lane while a newly registered connection's
-traffic overtakes it. Thus an omitting manifest is ordered either before the connection's first
-traffic or after acknowledgement and removal of its final accepted traffic.
+Ordinary packet capture does not take this boundary. Each reconstruction-relevant observation reads
+the current counter and carries it to Kafka. The manifest is published after the copy-and-increment
+operation and may be appended before or after concurrent observations.
 
-**Kafka submission order is part of the proof.** Same-partition routing creates a total order only
-over calls that actually enter `KafkaProducer.send` in a known order. The current common-pool
-dispatch does not provide that guarantee. A `CaptureKafkaPublisher` therefore owns every producer
-submission for both traffic and proxy open-connection manifests:
+Before removing C, the proxy guarantees that every request on C that was allowed to execute at the
+source already has a complete acknowledged Kafka representation. This does not require every packet
+to have been published before removal. A late observation may still appear, but it cannot represent
+a source-executed request still owed to the target.
 
-1. Channel event loops post immutable traffic records and registry transitions to the publisher.
-2. The publisher submits them serially; a manifest's chunks for one partition are submitted as one
-   non-interleaved batch.
-3. The producer enforces `enable.idempotence=true`, `acks=all`, and
+Complete manifests are prepared and acknowledged through a non-overlapping per-partition chain. The
+proxy does not prepare or submit cycle M+1 until every chunk of M is acknowledged. Cycle regression
+or overlapping publication is a protocol failure.
+
+**Kafka submission order is not the manifest-cycle proof.** Producer ordering still protects
+records submitted in a known order and is mandatory for terminal self `NoMoreWrites`, but the
+replayer must tolerate a manifest and concurrent observations appearing in either Kafka order. The
+producer enforces `enable.idempotence=true`, `acks=all`, and
    `max.in.flight.requests.per.connection<=5`. Configuration cannot weaken those correctness
    settings, and startup fails closed if the effective settings cannot preserve same-partition
    append order across retries.
-4. A synchronous or asynchronous send failure moves the publisher to a failed state, stops
-   authoritative manifests and writer-completion records, and fails closed. It does not continue
-   emitting omissions after losing traffic.
 
-With those contracts in place, the rule is offset-ordered rather than time-ordered:
+A synchronous or asynchronous send failure closes the proxy capture gate and fails capture closed.
+It does not continue emitting authoritative manifests or terminal self completion after publication
+outcomes become ambiguous.
 
-> `C` is confirmed dead when the latest complete manifest from its `nodeId` for partition `P`
-> after `C`'s last record omits it.
+The resulting rule is logical rather than offset-based:
 
-When the latest complete manifest instead lists `C`, it refreshes C's positive liveness. If neither
-traffic nor a listing manifest appears through the configured Kafka broker-time horizon, §10.5 may
-settle only C's incomplete state as `ConfiguredExpired`.
+> Complete manifest M omitting C resets the incomplete predecessor accumulation through cycle M.
+> Observations with cycle greater than M belong to a successor accumulation and remain obligations.
 
-One complete manifest is sufficient because the exact registry gives a simple ordering proof:
-registration precedes first traffic; while registered, every linearized manifest copy includes the
-connection; removal follows acknowledgement of the final traffic record. Therefore an omitting
-manifest whose first chunk follows the last observed record was copied after final acknowledgement.
-Two omissions would add delay but would not repair an early-removal bug; both could be copied after
-an incorrect removal and before a delayed final record. `LivenessOmission` carries the manifest's
-offset span and no timestamp because elapsed time is irrelevant to the proof.
+The required inversion cases are:
+
+- an open observation accepted before M but appended after M is continued if M lists C;
+- if C was also removed before M, the same delayed observation is predecessor data because its
+  cycle is at most M; and
+- an open observation accepted after M's lifecycle boundary but appended before M is safe because
+  its cycle is greater than M.
 
 **Structural requirements this places on the rest of the design.**
 
 | Requirement | Why |
 | --- | --- |
 | One immutable routing decision is shared by traffic, registry, and manifest publishing for each connection | Computing routing independently can split one connection across partitions while every individual record still looks valid |
-| A proxy writes traffic and manifests for one connection to the same explicit partition | The proof needs same-partition offset ordering; Kafka key hashing or a configurable partitioner is not sufficient |
+| A proxy writes traffic and manifests for one connection to the same explicit partition | The replayer must compare an observation's cycle with the complete manifests for the same proxy activation and partition |
 | The explicit partition is stamped in every traffic record and manifest chunk and asserted on read | A mismatch invalidates the record and halts loudly; validation detects routing bugs instead of trusting that publishers used the same helper |
+| Every reconstruction-relevant observation is stamped with `manifestCycle` | Kafka order alone cannot distinguish an observation accepted before the manifest boundary from one accepted after it |
+| Add, remove, and manifest copy-and-increment share one partition-local lifecycle boundary | A manifest must be an exact statement about the active set at one logical point |
+| Observations after an unresolved boundary remain separable from the predecessor accumulator | An omission must not commit a newer suffix that Kafka delivered first |
 | Manifest batches are complete and size-bounded before submission | A truncated manifest must never look like an empty one |
 | Manifest chunks do not create replay accumulations or long-lived record obligations | When encountered by the replay cursor they are immediately marked settled, subject to the partition's ordinary contiguous commit low-watermark; scan-cursor decoding remains read-only |
 
@@ -1322,26 +1389,20 @@ Kafka metadata discovery and producer qualification happen in `PROBING` before t
 the group. The proxy writes semantically inert capability probes to one representative traffic
 partition per current leader broker, waits for acknowledgement, refreshes metadata, and then joins
 as `PROBATIONARY`. It accepts no captured connections until an assignment promotes it to `ACTIVE`.
-A probe creates no replay work and refreshes no connection liveness, but its valid Kafka
-`LogAppendTime` advances the covered partition's `scannedThroughBrokerTime`.
+A probe creates no replay work and does not affect manifest-cycle interpretation.
 
 For each newly accepted connection, the current group assignment chooses one traffic partition.
 The proxy stores that choice and uses it for every traffic record and manifest entry for the life of
-the connection. Later rebalances move only new-connection admission; existing connections drain on
-their stored partitions. Topic recreation or loss of a stored partition fails capture rather than
-silently selecting a different partition.
+the connection. Later rebalances move only eligibility to accept new captured client connections;
+existing connections drain on their stored partitions. Topic recreation or loss of a stored
+partition fails capture rather than silently selecting a different partition.
 
-**Why `nodeId` must stay per-process.** A stable per-host id looks strictly better — a restarted proxy
-could then prove its predecessor's connections dead. It is unsafe. A proxy that is merely *stalled*
-(GC pause, partitioned from Kafka, producer backed up behind a slow broker) while a replacement comes
-up with the same id would have its live connections omitted by the replacement's manifests; the
-replayer would prove them dead, commit past their records, and the original would then flush the
-remainder at higher offsets — silently lost, because committed means skipped on restart. A fresh UUID
-per process makes that particular false omission unrepresentable (§9). It does **not** fence the
-old Kafka producer: a stalled process with its original `nodeId` may still resume. Silence therefore
-does not become structural proof. The configured-expiration path remains safe because a resumed
-strict proxy checks acknowledged-manifest freshness before source execution and because every
-source-completable request was fully captured first.
+**Why `writerNodeId` is per capture activation.** A stable per-host identity would let a replacement
+proxy's manifest affect its predecessor's state. That is unsafe: the predecessor may only be
+stalled and may later flush records. Every capture activation, including one started by the same
+operating-system process after capture abandonment, therefore receives a fresh UUID. The identity
+does **not** fence its Kafka producer; that is why group departure and silence have no replay
+meaning, and why elapsed-time expiration remains non-committing.
 
 ---
 
@@ -1543,16 +1604,17 @@ all the same story — the last link breaks and nothing owns the decision.
 A `ReplayTransaction` owns:
 
 * source request and response state,
-* traffic-stream record obligations,
+* references to its ledger-owned traffic-stream record claims,
 * the permit lease,
 * transformed-request ownership,
 * the target outcome,
 * the tuple/evidence outcome,
 * the latest monotonic observation of generation-scoped runway,
 * tracing contexts,
-* the final disposition.
+* and its single terminal disposition proposal.
 
-No other component commits or closes transaction-owned traffic-stream contexts. All transaction
+The transaction does not close Kafka record contexts or advance offsets. `RecordDispositionLedger`
+owns those obligations and applies the accepted terminal proposal exactly once. All transaction
 transitions execute on the same assigned Netty event loop as the owning connection actor. Source,
 preparation, evidence, runway-loss, and abort inputs arriving from other threads are mailbox
 messages; target outcomes are delivered directly on that event loop.
@@ -1610,9 +1672,9 @@ sealed interface TargetOutcome {
 
 sealed interface SourceOutcome {
     record Complete(...) implements SourceOutcome {}
-    record ConfirmedDead(ScanEvidence evidence) implements SourceOutcome {}
-    record ConfiguredExpired(ScanEvidence evidence) implements SourceOutcome {}
     record CapturedClose(...) implements SourceOutcome {}
+    record ManifestCycleReset(ScanEvidence evidence) implements SourceOutcome {}
+    record TerminalProxyCompletion(ScanEvidence evidence) implements SourceOutcome {}
     record LegacyExpired(...) implements SourceOutcome {}
     record Interrupted(...) implements SourceOutcome {}
     record Shutdown(...) implements SourceOutcome {}
@@ -1635,20 +1697,20 @@ gap: it is a value the disposition matrix must have a row for, and the compiler 
 outcome to be considered everywhere. `RunwayObservation` is different: it is monotonic local state,
 not a replacement outcome or the authoritative Kafka generation fence. Its only transition is
 `Available -> Lost`, and the transaction mailbox serializes that transition with entry into
-disposition. The ledger still validates the generation's authoritative runway before accepting a
-commit.
+disposition. The ledger validates its monotonic observed runway before forwarding a commit proposal,
+and `KafkaSourceActor` makes the authoritative generation check when it accepts or rejects the
+commit command.
 
 `SourceOutcome` is also where the overloaded-status problem is fixed — but the problem is narrower than
 "today everything collapses into one status," so it is worth stating exactly.
 `ReconstructionStatus` already distinguishes `CLOSED_PREMATURELY` from
 `TRAFFIC_SOURCE_READER_INTERRUPTED`, and the commit path already suppresses both. The three real gaps:
 
-* **There are no distinct structural and configured expiration values.**
-  `EXPIRED_PREMATURELY` covers any expiry, so a timestamp sweep and an offset-ordered proxy manifest
-  are indistinguishable at the commit site. `ConfirmedDead(proof)` cannot be constructed without
-  structural evidence.
-  `ConfiguredExpired(lastPositiveLivenessBrokerTime, scannedThroughBrokerTime, timeout)` requires
-  the separate policy conditions in §10.3 and cannot be reported as proof.
+* **Manifest-cycle reset is not represented precisely.** `EXPIRED_PREMATURELY` does not say which
+  manifest cycle authorizes disposing which predecessor obligations, and it cannot preserve a
+  newer successor segment. `ManifestCycleReset` carries that exact decision.
+* **Elapsed-time expiration must not reach Kafka commit policy.** Existing `ConfiguredExpired`
+  production paths are migration residue to disable or remove for Kafka input.
 * **Legacy finite sources still need an honest timeout value.** They have no durable offset to retain,
   but calling a timed-out reconstruction `Complete` would make the model lie. `LegacyExpired` preserves
   their existing local release behavior while making the compatibility boundary exhaustive and
@@ -1672,8 +1734,36 @@ failures of that arrangement.
 
 ### 14.1 Record obligations
 
-Each accepted Kafka record creates a `RecordObligation`. Exactly one owner — a transaction, an
-accumulation, or an explicit discard policy — accepts it, and the transfer is explicit and testable.
+Each accepted Kafka record creates one ledger-owned `RecordObligation`. An observation consumer—a
+source accumulation, transaction, or explicit discard path—registers a `RecordClaim` before it can
+depend on that record. Claims are explicit and attributable. A record containing observations for
+more than one request may therefore have more than one claim without giving the Kafka offset more
+than one owner.
+
+The claim-registration lifecycle is:
+
+```text
+OPEN_FOR_CLAIMS
+  -> root assembler claim registered
+  -> root claim may transfer or split into leaf claims
+  -> CLAIMS_SEALED
+  -> every leaf claim has one proposal
+  -> record disposition reduced exactly once
+```
+
+- At record delivery, `SourceAssembler` receives one root claim covering every observation in that
+  record.
+- Transfer moves that same claim from an accumulation to one transaction; it neither settles the
+  claim nor creates a gap.
+- If observations in the record feed multiple work owners, replay intake atomically replaces the
+  root with a known set of child claims before any child can settle.
+- After every observation has been assigned, replay intake seals the obligation. No later claim may
+  be registered.
+- The ledger may reduce proposals, close record contexts, or send a Kafka commit only after sealing
+  and after every leaf claim is terminal.
+
+All split, transfer, and seal operations execute on replay intake. Event-loop transactions hold
+only immutable claim IDs and return proposals.
 
 ```java
 sealed interface RecordDisposition {
@@ -1685,20 +1775,41 @@ sealed interface RecordDisposition {
 There is no nullable or boolean disposition. Both variants carry a *reason*, which is what makes "why
 did this commit?" answerable from metrics.
 
+The ledger reduces claim proposals mechanically:
+
+- every claim `Commit` permits the record obligation to propose commit;
+- any claim `Retain` makes the record obligation retained; and
+- a missing claim decision leaves the record unresolved.
+
+This reduction is not a second replay policy engine. The transaction or accumulation computes each
+claim proposal from its own outcomes; the ledger only joins claims for the indivisible Kafka offset.
+
 ### 14.2 Decision matrix
 
-Runway is evaluated first. The column refers to the ledger's authoritative state at source
-acceptance; the transaction's local observation controls draining but cannot authorize a commit. A
-lost-runway row supersedes the source/target/evidence rows below it:
+Runway is evaluated first. The transaction and ledger observations control early rejection and
+draining, but `KafkaSourceActor` owns the authoritative generation state at commit acceptance. A
+lost-runway row supersedes the source/target/evidence rows below it.
+
+`ReplayDispositionPolicy` is a pure exhaustive function invoked exactly once by the transaction on
+its owner event loop. Its result is the transaction's typed `Commit` or `Retain` proposal. The
+ledger validates that the proposal references obligations it owns, has not already been applied,
+and is not already vetoed by observed runway loss. It never recomputes the matrix from outcomes.
+
+A complete captured request leaves the liveness accumulator as soon as it is recognized. It may be
+sent to the target without waiting for a complete captured source response or connection close.
+Evidence must represent a complete, incomplete, or absent source response explicitly; missing
+response data is not permission to discard the request. Later manifest-cycle decisions affect only
+the remaining incomplete connection accumulator.
 
 | Runway state | Source outcome | Target outcome | Evidence outcome | Disposition |
 | --- | --- | --- | --- | --- |
 | Lost by reassignment before source acceptance | Any | Any | Any | Retain |
 | Lost by shutdown before source acceptance | Any | Any | Any | Retain |
-| Available | Complete | Succeeded | Durable | Commit |
-| Available | Confirmed dead after complete request | Succeeded | Durable | Commit |
-| Available | Confirmed dead before complete request | Not sent | Not required; structural proof present | Commit as confirmed-dead discard |
-| Available | Configured expired before complete request | Not sent | Not required; §10.8 capture contract active | Commit as configured-expired discard |
+| Available | Complete request; source response complete, incomplete, or absent | Succeeded | Durable evidence encodes the source-response state | Commit |
+| Available | Captured close with incomplete request | Not sent | Not required; captured close is durable | Commit as incomplete-capture discard under the non-streaming source contract |
+| Available | Manifest-cycle reset of incomplete predecessor | Not sent | Not required; complete applicable manifest present | Commit only predecessor obligations through that cycle |
+| Available | Terminal self completion with incomplete state | Not sent | Not required; valid self `NoMoreWrites` present | Commit the already-known incomplete obligations for that proxy-partition |
+| Available | Elapsed-time expiration or silence | Not sent | None | Retain and alarm |
 | Available | Captured explicit drop/ignore | Not sent | Durable discard evidence | Commit as deliberate discard |
 | Available | Deterministic poison | Failed | Durable classified-skip evidence | Commit only when configured |
 | Available | Transient failure | Failed | Any | Retain and halt after retry exhaustion |
@@ -1720,8 +1831,9 @@ Properties to internalize:
   offset as pending. Runway revocation and this source acceptance are therefore serialized by that
   owner:
   - if revocation runs first, the proposal becomes `Retain` and no commit is registered;
-  - if source acceptance runs first, the pending commit remains ledger-owned until broker
-    acknowledgement or explicit failure and is not later relabeled as `Retain`.
+  - if source acceptance runs first, `KafkaSourceActor` owns the pending broker commit until
+    acknowledgement or explicit failure; the ledger waits on that result and does not later relabel
+    the obligation as `Retain`.
 - **Broker acknowledgement is a later stage.** It may fail, including after a rebalance. Such a failure
   completes the lifecycle exceptionally; it does not retroactively claim that an already accepted
   commit was deliberately retained.
@@ -1729,29 +1841,37 @@ Properties to internalize:
 Failure classification cannot be judged at catch time, so it comes from retries plus an
 operator-declared poison classifier — see §19.1.
 
-A confirmed-dead discard uses the other commit-authority alternative. There is no completed request or
-response to preserve, and the structural `ProxyOmissionProof` is already the fact authorizing the
-commit. Emit a reason-coded metric and a trace/debug diagnostic containing the proof identity, but do
-not expand `EvidenceWriter` merely to persist an empty result.
+A manifest-cycle reset has no replay result to preserve for the incomplete predecessor. The
+complete manifest and cycle are the fact authorizing that limited commit. Emit a reason-coded metric
+and a trace/debug diagnostic containing the proxy activation, partition, connection, manifest
+cycle, and affected obligation range. Do not expand `EvidenceWriter` merely to persist an empty
+result.
 
-A configured-expired discard follows the same record-obligation path but carries its liveness point,
-scanned horizon, timeout, and capture-contract version instead of a
-`ProxyOmissionProof`. It emits a distinct commit reason and metric.
+The captured-close row relies on the same supported-source boundary as capture-before-forward: a
+source handler cannot apply a mutating request before receiving the complete request. If a
+deployment has true streaming mutation semantics, this discard is not safe and that deployment is
+outside the protocol.
 
 ### 14.3 Disposition ledger
 
 `RecordDispositionLedger`:
 
 1. Accepts record obligations.
-2. Tracks their current owner.
-3. **Rejects duplicate disposition** — this is F2, structurally prevented.
+2. Registers, splits, transfers, and seals every dependent `RecordClaim` under the lifecycle above.
+3. **Rejects duplicate claim disposition and duplicate record disposition** — this is F2,
+   structurally prevented.
 4. Closes record and traffic-stream contexts exactly once.
-5. Sends commit proposals to `KafkaSourceActor` and joins its acceptance result.
-6. Tracks source-accepted records and joins the broker
+5. Validates and applies each owner's one typed claim proposal without recomputing policy, then
+   mechanically reduces all claims for the record.
+6. Sends accepted commit proposals to `KafkaSourceActor` and joins its acceptance result.
+7. Tracks source-accepted records and joins the broker
    acknowledgement.
-7. Rejects a commit from a lost or stale generation before submission.
-8. Releases retained records locally without advancing Kafka when ownership is lost.
-9. Exposes unresolved obligations for shutdown and diagnostics.
+8. Rejects a commit when its observed generation is already lost or stale before submission;
+   `KafkaSourceActor` repeats the authoritative check.
+9. Closes retained records' process-local contexts without advancing the Kafka commit watermark.
+   The retained offset continues to block every later offset in that partition from being committed
+   past it.
+10. Exposes unresolved obligations for shutdown and diagnostics.
 
 The existing `OffsetLifecycleTracker` may remain behind the commit adapter initially.
 
@@ -1794,7 +1914,8 @@ answer per handle.
 The same ownership rule applies to tracing contexts, permits, timers, sink handles, and record
 obligations. `TargetExchange` owns target request/response contexts, attempt payloads, response
 finalization, and any adapter future that fences a foreign callback. `ReplayTransaction` owns the
-prepared request, permit, record obligations, evidence handle, and transaction tracing scopes. A
+prepared request, permit, references to ledger-owned record claims, evidence handle, and
+transaction tracing scopes. A
 resource must not be owned by both merely because both have a completion callback that can see it.
 
 ---
@@ -1812,14 +1933,17 @@ For each revoked partition:
 1. Stop admitting new records from the old generation.
 2. On the Kafka source-I/O owner, mark the old generation's authoritative runway lost. This is the
    linearization point after which any newly processed old-generation commit command is rejected.
-   Deliver an ordered revocation event to replay intake so its ledger mirrors the loss and rejects
-   later proposals early.
-3. Deliver `RunwayLost` to every active old-generation transaction through its assigned mailbox.
-   Await the mailbox acknowledgement so each transaction begins draining promptly; correctness does
-   not depend on this notification winning a race with commit submission because step 2 is
-   authoritative.
-4. Deliver interruption events through the ordered source-batch channel to replay intake. These
-   settle unfinished source sides without rewriting source outcomes that were already terminal.
+   Enqueue one ordered `GenerationRevoked` event to replay intake.
+3. Return from the Kafka rebalance callback after that bounded owner-thread work. The callback must
+   not await replay intake, actor mailboxes, target cancellation, evidence, disposition, or channel
+   closure. Waiting there can violate Kafka's poll contract and deadlock the very completions needed
+   to drain.
+4. Replay intake applies that one event idempotently and in order with source batches. It first
+   marks the ledger's observed runway lost, then settles unfinished assembler state as
+   `SourceOutcome.Interrupted`, then delivers `RunwayLost` to active transactions, and finally
+   requests actor abort. It does not receive a second independently ordered interruption event.
+   Correctness does not depend on mailbox delivery winning a race with commit submission because
+   step 2 is authoritative.
 5. Abort matching connection actors **by typed `ConnectionSessionKey`**.
 6. Settle queued and active target work as reassignment cancellation, join exchange cleanup, and let
    every transaction drain to its disposition. Lost runway selects `Retain` unless the source had
@@ -1829,9 +1953,11 @@ For each revoked partition:
    for sessions that never existed, so absence is an *answer* rather than a missing callback. A
    session's acknowledgement comes after its transactions have dispositioned, per §6.4 rule 5; steps
    6 and 7 are children of the termination gate, not substitutes for it.
-9. Resume real records only after all termination completion gates complete successfully — which
+9. Continue short Kafka polls while the asynchronous drain runs. Records from a newly assigned
+   generation may be polled or buffered under a hard bound, but replay intake does not deliver them
+   until all old-generation termination gates complete successfully — which
    therefore means after every affected record has been dispositioned.
-10. Before admitting the next generation, assert that old-generation actor, transaction, exchange,
+10. Before delivering the next generation, assert that old-generation actor, transaction, exchange,
    timer, permit, target-context, and in-memory source-obligation registries are empty. Deliberately
    retained Kafka records are not live in-memory obligations.
 11. Do not commit unfinished old-generation obligations.
@@ -1868,13 +1994,22 @@ that can advance the channel, actor, transaction, timer, or target exchange.
 The required response is therefore:
 
 1. detect termination through `EventLoop.terminationFuture()`;
-2. atomically invalidate the cached session so no caller can reuse it;
-3. emit an ERROR log and `replayFatalFailures{reason=event_loop_terminated}`;
-4. invoke the required process-level fatal handler immediately;
-5. stop source intake and leave all not-yet-acknowledged Kafka records uncommitted;
-6. begin bounded best-effort resource closure without making process termination depend on a dead
+2. atomically close the process-wide `ReplayFatalFence`. Its shared commit-acceptance critical
+   section establishes whether a concurrent source commit was accepted before closure or rejected
+   after it; a command merely queued before closure receives no authority;
+3. post an immutable `InvalidateSession` command to replay intake, which remains the sole owner of
+   the affinity registry. The termination callback does not mutate that registry directly;
+4. emit an ERROR log and `replayFatalFailures{reason=event_loop_terminated}`;
+5. invoke the required process-level fatal handler immediately without waiting for owner-thread
+   cleanup;
+6. stop source intake and issue no new commit commands;
+7. begin bounded best-effort resource closure without making process termination depend on a dead
    mailbox; and
-7. force non-successful process termination if bounded shutdown cannot finish.
+8. force non-successful process termination if bounded shutdown cannot finish.
+
+A commit accepted by `KafkaSourceActor` before the fatal fence closed remains source-actor-owned and
+may have an indeterminate broker outcome at process death. A commit processed after the fence closes
+is rejected even if its command was queued earlier. This is the fatal-path linearization point.
 
 This path does **not** transfer actor or transaction ownership to a cleanup thread and does not
 synthesize successful lifecycle completion. Cross-thread structures such as
@@ -1886,7 +2021,10 @@ The fatal handler is a mandatory constructor dependency for production compositi
 log-only default. Tests inject a recording fatal handler and prove the observable contract:
 
 - one fatal signal even if several sessions notice loop termination;
-- cached-session invalidation precedes the signal;
+- the process fatal fence closes before the signal;
+- a queued-but-unaccepted commit is rejected after the fence closes;
+- registry invalidation occurs only on replay intake and is best-effort cleanup, not a precondition
+  for signaling fatal;
 - no new target or source work is admitted;
 - no source offset becomes commit-eligible because of loop death;
 - the top-level run terminates exceptionally; and
@@ -1894,8 +2032,12 @@ log-only default. Tests inject a recording fatal handler and prove the observabl
 
 Expected event-loop termination after the owning session and normal shutdown gates have completed
 is not fatal. The distinction is whether live owner state still exists when the loop terminates.
-The durable outcome matches an OOM or hard process kill: in-flight, unacknowledged Kafka work is
-re-read after restart under the existing at-least-once contract.
+The durable outcome matches an OOM or hard process kill. Work whose commit was never accepted by the
+source actor remains eligible for redelivery. For a commit already submitted to Kafka, process
+death may leave the broker result indeterminate: the broker may have committed it even if the
+process never observed the acknowledgement. The fatal path must not claim otherwise or attempt
+cross-thread recovery; restart relies on Kafka's actual committed offset and the existing
+at-least-once/idempotency behavior.
 
 ---
 
@@ -1937,13 +2079,13 @@ callbacks: the commit policy must stay with the disposition owner.
 | Area | Metrics |
 | --- | --- |
 | Source | replay position, settled watermark, epsilon utilization, records buffered |
-| Scanner | scan distance, latency, bytes discarded, follow-up found, confirmed absent, configured expired, inconclusive |
+| Scanner | scan distance, latency, bytes discarded, follow-up found, manifest listed, manifest omitted, terminal self completion, inconclusive |
 | Actor | queued commands, head wait reason, active duration, abort duration, active-exchange phase, pending abort child, channel state |
 | Transaction | count by phase, runway state/loss reason, terminal outcome, retry class, disposition reason |
 | Permits | available, queued, held duration, cancellation count |
 | Evidence | tuple-write latency, failures, retries, durable receipts |
 | Kafka | unresolved obligations, commit head identity/age, staged commits, pending commit acknowledgements by generation, commit latency |
-| Capture proxy | admission phase, active member count, capture-gate state, open connections, acknowledged-manifest age by partition, manifest chunks/bytes, incomplete manifests, publisher failures, capture-abandoned transitions, pass-through gap alarms |
+| Capture proxy | membership phase, active member count, capture-gate state, open connections, acknowledged-manifest age by partition, manifest cycle, manifest chunks/bytes, incomplete manifests, publisher failures, capture-abandoned transitions, pass-through gap alarms |
 | Resources | owned buffer counts/bytes, duplicate-close attempts, leaked-owner assertions |
 
 Here, **monitoring** means code that reports health without owning lifecycle decisions: OTel metric
@@ -1954,13 +2096,19 @@ queues and cannot call mutation methods. This diagnostic view is unrelated to a 
 open-connection manifest; the overloaded word "snapshot" is intentionally avoided.
 
 Two cautions. Diagnostic heartbeat output must not mutate or expire state. Exact proxy manifests are
-different: they are ordered source records and intentionally refresh connection liveness.
-Commit-head *age* measured from insertion wall-clock remains a stall signal, not the Kafka
-broker-time horizon used by configured expiration.
+different: they are source records that resolve manifest-cycle boundaries. Commit-head *age*
+measured from insertion wall-clock remains a stall signal only; it never authorizes a commit.
 
 ### 18.2 Deterministic model tests
 
 Use fake clocks, fake event loops, and manually controlled futures to enumerate:
+
+Test collaborators should be small plain Java implementations of the design interfaces. Prefer
+state-recording fakes and the OTel in-memory exporter for count/metric assertions. Mocking
+frameworks are reserved for a narrow third-party interface that cannot reasonably be wrapped; they
+must not stand in for lifecycle owners, completion gates, Kafka authority, actor mailboxes, or
+resource ownership. If a required behavior is difficult to test without a deep mock graph, improve
+the production interface rather than adding callback configuration to the test.
 
 * every permutation of preparation, source completion, target completion, close, and abort;
 * request/close admission order with out-of-order preparation;
@@ -1975,49 +2123,64 @@ Use fake clocks, fake event loops, and manually controlled futures to enumerate:
 * at least two consecutive generation terminations in one process, with the second beginning only
   after every first-generation registry and ownership counter has returned to baseline;
 * duplicate and missing lifecycle events;
-* scanner follow-up, confirmed-absent, configured-expired, inconclusive, and generation-change
-  results;
-* proxy omission cases: an incomplete manifest never provides omission proof; one complete
-  omission after the last record expires promptly; earlier presence followed by omission expires;
-  earlier omission followed by later presence stays live;
-* all-open registry races: connection registration during manifest construction, close during
-  construction, final-record acknowledgement versus removal, and a manifest copied on each side of
-  that acknowledgement;
+* scanner follow-up, manifest-listed, manifest-omitted, terminal-self-completion, inconclusive, and
+  generation-change results;
+* manifest-cycle cases: an incomplete manifest has no effect; M listing C joins continuity across
+  M; M omitting C resets only the predecessor through M; observations after M remain successor
+  obligations;
+* the Kafka-order inversions: an open accepted before M and appended after M, and an open accepted
+  after M but appended before it;
+* delayed predecessor observations with cycle M or earlier consumed after omitting M are settled by
+  M, while only greater-cycle observations enter the successor;
+* a malformed Kafka record mixing manifest cycles halts; a cycle-homogeneous record can be committed
+  or retained without sub-offset accounting;
+* a race where the replayer holds an incomplete cycle-M prefix and receives a cycle-M+1 late
+  observation before manifest M: listing M continues the existing state, while omitting M disposes
+  only the old prefix and feeds the held M+1 observation into empty per-connection HTTP state;
+* exact-registry races: connection add during manifest preparation, remove during preparation, and
+  manifest copy-and-increment on each side of those lifecycle operations while ordinary packets
+  continue concurrently;
+* same-connection callbacks become ready out of order, but the connection-local submission chain
+  preserves sequence order; an injected Kafka sequence gap, regression, or conflicting duplicate
+  halts rather than being reordered;
+* overlapping manifest timer callbacks coalesce, and M+1 is never prepared or submitted before M
+  is completely acknowledged;
 * chunk handling: missing, duplicate, reordered, oversized, and contradictory chunks all make the
   manifest unusable rather than empty;
-* manifest timestamps: diagnostic `emittedAtMillis` is never accepted as `BrokerTime`; every
-  complete manifest derives liveness only from its Kafka `LogAppendTime`, monotonically clamped per
-  partition;
-* publisher ordering and failure: traffic submission before a manifest, final close before removal,
-  asynchronous send failure, and a publisher that must stop authoritative manifests and
-  writer-completion records;
-* proxy admission: startup capability probing, `PROBATIONARY` receiving no new traffic, active
+* timestamp separation: `manifestCycle`, captured observation time, proxy-local monotonic time,
+  Kafka timestamp, and Kafka offset never substitute for one another;
+* publisher failure: asynchronous or ambiguous send failure closes the capture gate and prevents
+  later authoritative manifests or terminal self completion;
+* proxy membership: startup capability probing, `PROBATIONARY` receiving no new traffic, active
   capacity boundaries, cooperative scale-up, leader replacement, and cold-start configurations
-  that cannot satisfy their admission predicate;
-* immutable routing: assignment changes move new admission while existing connections and
+  that cannot satisfy their new-connection eligibility predicate;
+* immutable routing: assignment changes move eligibility for new captured client connections while existing connections and
   manifests remain on their stored partitions;
-* writer completion: permanent admission revocation, complete Netty teardown, an empty manifest,
+* proxy completion: permanent new-connection and publication revocation, complete Netty teardown, an empty manifest,
   manifest-publisher quiescence, and every accepted send precede terminal self `NoMoreWrites`; a
   periodic callback racing `RETIRING` is either drained as earlier accepted work or exits without
   submission; peer completion is rejected, duplicate self completion is idempotent, and later
   traffic or manifests halt as a protocol violation;
+* scan-ahead self completion: offset K may settle known blockers below K, replay later accepts
+  previously unseen records below K, every traffic or manifest record above K violates the
+  protocol, and only duplicate self completion is idempotent;
 * pre-forward capture gating: complete Kafka acknowledgement precedes source execution, stale
   acknowledged-manifest age blocks strict execution, and a request admitted just before gate
   closure is already completely captured, under the documented non-streaming source-execution
   scope;
-* configured expiration: a listing manifest refreshes an idle connection, absent traffic and
-  manifests expire only incomplete state after the configured horizon, and complete requests remain
-  replayable;
+* elapsed-time expiration: neither replayer wall time nor Kafka `LogAppendTime` progression creates
+  a commit-eligible disposition;
 * source-owner ordering: commit proposal before versus after revocation, broker acknowledgement
   before versus after lifecycle notification, scan-blocker and connection-completion commands
   ordered with reads, and shutdown while source commands remain queued;
+* fatal-fence ordering: commit registration paused inside the bounded acceptance section versus
+  event-loop fatal closure, proving exactly one order and no check-then-register gap;
 * owner-affinity enforcement: every source-I/O and replay-intake mutator succeeds on its owner,
   fails fatally off-owner, and exposes only immutable diagnostic views across the boundary;
 * routing mismatches: partition stamp mismatch and attempted connection-partition mutation both
   halt rather than expire;
-* a `nodeId` that stops emitting remains inconclusive before the configured Kafka broker-time
-  horizon and becomes `ConfiguredExpired`, never `ConfirmedDead`, only after that horizon is fully
-  scanned.
+* a `writerNodeId` that stops emitting remains commit-blocking unless an applicable complete
+  manifest or terminal self completion already exists.
 
 Assertions:
 
@@ -2055,28 +2218,29 @@ fired).
 * Same-consumer partition round trip.
 * Dead and slow targets under epsilon lookahead.
 * Long legitimate connection with scanner follow-up present.
-* Confirmed-dead connection at the commit head.
+* Manifest-cycle omission at the commit head, including a newer successor segment already observed.
 * Proxy duration cap producing exactly one real close through ordinary channel teardown.
-* Open keep-alive connection retained across many manifest intervals, then closed — expires on the
-  omission, not before.
+* Open keep-alive connection retained across many manifest intervals, then closed — its incomplete
+  remainder resets on the applicable omission, not before.
 * Temporary partition drain ends with an acknowledged empty manifest; later reacquisition under the
-  same writer identity begins with a new initial manifest.
-* Permanent writer retirement emits terminal self `NoMoreWrites` only after all related Netty
+  same capture-activation identity begins with a new initial manifest.
+* Permanent proxy-partition retirement emits terminal self `NoMoreWrites` only after all related Netty
   connections and publisher work settle; injected later traffic halts and alarms.
 * Proxy killed with connections open (`SIGKILL`, no close observations): complete requests replay;
-  incomplete blockers reach `ConfiguredExpired` after the configured Kafka broker-time horizon.
+  incomplete blockers without an applicable manifest remain retained and alarmed.
 * Stalled strict-mode proxy that resumes after the stale threshold: delayed records are consumed
   normally, but no newly completed source request lacks a complete earlier Kafka representation.
 * Manifest spanning the 1 MiB boundary: the proxy emits complete chunks, and dropping one chunk
   makes the manifest unusable.
 * Group-assigned routing keeps every connection's traffic and manifests on its stored immutable
-  partition while new admission follows the current cooperative assignment.
+  partition while eligibility for new captured client connections follows the current cooperative
+  assignment.
 * Scanner enabled and scanner disabled produce identical eventual dispositions for the same durable
   log; they differ only in latency and resource use.
 * A complete manifest whose chunks have unrelated traffic or another proxy's records between them is
   reconstructed and used normally.
-* Total proxy-fleet loss releases incomplete state only through configured expiration; a
-  replacement process never emits completion for an old writer identity.
+* Total proxy-fleet loss does not fabricate completion; a replacement process never emits
+  completion or manifests for an old capture-activation identity.
 
 ### 18.5 Leak tests
 
@@ -2098,16 +2262,15 @@ The redesigned path is ready to replace the current path when:
 6. No teardown test commits work whose runway was lost before source acceptance.
 7. Hard byte, record, and owned-resource budgets remain bounded during a stalled target; scanner and
    epsilon settings affect latency and resource use, not disposition.
-8. Scanner settlement distinguishes structural omission from configured expiration. The former
-   carries a well-formed `ProxyOmissionProof`; the latter carries its liveness point, scanned
-   horizon, timeout, and explicit `ConfiguredExpired` reason.
-9. Long live connections found by the scanner are not expired.
-10. A silent writer expires only incomplete state after the configured Kafka broker-time horizon;
-    long idle connections remain live while manifests list them.
-11. Incomplete manifests, publisher failure, and partition mismatch halt instead of creating
-    structural omission proof.
-12. Capture traffic, registry transitions, and manifest chunks enter Kafka through one
-    ordering-preserving publisher.
+8. Scanner settlement validates a complete manifest and applies its cycle only to the covered
+   predecessor segment; no elapsed-time path is commit eligible.
+9. Long live connections listed by manifests preserve continuity.
+10. A silent proxy activation without an applicable manifest or terminal self completion remains
+    retained and visible in alarms.
+11. Incomplete manifests, publisher failure, and partition mismatch halt instead of creating a
+    manifest-cycle reset.
+12. Add, remove, and manifest copy-and-increment share the narrow proxy lifecycle boundary;
+    ordinary packet capture remains concurrent and carries `manifestCycle`.
 13. Netty leak detection and ownership counters remain clean.
 14. Existing replay timing and ordering integration tests pass, or have an explicitly approved policy
     change.
@@ -2118,6 +2281,10 @@ The redesigned path is ready to replace the current path when:
     existing Netty event loop.
 17. Owner checks prove that `TrackingKafkaConsumer`, source scan state, reconstruction state,
     disposition state, permits, and progress are each mutated only by their documented owner.
+18. Reflection/architecture tests reject Java default methods and built-in `NO_OP` instances on
+    every required lifecycle interface. Lifecycle tests use hand-written state-recording
+    implementations and in-memory OTel exporters; no mocking framework stands in for an owner,
+    completion gate, mailbox, Kafka authority, or resource lifecycle.
 
 Criterion 15 is the real gate. A migration that leaves the old orchestration reachable has added a
 second way to be wrong rather than removing the first.
@@ -2145,58 +2312,33 @@ the replayer's non-empty default non-retryable set as an implicit commit allowli
 retains and halts; an allowlisted failure produces loud, durable classified-skip evidence before
 commit.
 
-### 19.2 Non-replay expiration discards do not require durable evidence initially
+### 19.2 Manifest-cycle resets do not require durable replay evidence initially
 
-A confirmed-dead discard has no replay result to preserve. Its `ProxyOmissionProof` is the commit
-authority. The first implementation emits:
+A manifest-cycle reset has no replay result to preserve for the incomplete predecessor. The
+complete manifest and cycle-scoped decision are the commit authority. The first implementation
+emits:
 
 * a reason-coded metric without high-cardinality connection labels;
-* a trace/debug diagnostic containing the connection, partition, manifest spans, and disposition
-  reason.
+* a high-severity diagnostic containing the proxy activation, connection, partition, manifest
+  cycle, affected obligation range, and disposition reason.
 
 It does not write a durable discard receipt and does not expand `EvidenceWriter` for this case.
-Accordingly, the matrix row is `(ConfirmedDead, NotSent, NotRequired) -> Commit`.
+Accordingly, the matrix row is
+`(ManifestCycleReset, NotSent, NotRequired) -> CommitPredecessorOnly`.
 
-`ConfiguredExpired` likewise has no replay result. Its commit authority is the explicit deployment
-policy plus its recorded liveness point, scanned horizon, timeout, and active capture-contract
-version. It uses a distinct metric and audit reason but does not require an empty evidence tuple.
+### 19.3 Duration configuration is diagnostic, not commit authority
 
-### 19.3 Duration configuration creates policy expiration, not absence proof
-
-There is no claim that a timeout fences a stalled producer. `LivenessOmission` remains the only
-constructable `ProxyOmissionProof`.
-
-The Kafka source may also produce `ConfiguredExpired` after:
-
-```text
-lastPositiveLivenessBrokerTime
-    + --packet-timeout-seconds
-```
-
-has been fully covered by `scannedThroughBrokerTime` without later traffic or a listing manifest.
-Both values are Kafka `LogAppendTime` values wrapped as `BrokerTime`; no other clock may enter the
-calculation. This is commit-eligible only for incomplete reconstruction state and only under
-§10.8's capture-before-forward and stale-manifest gate. Metrics and audit records preserve the
-distinction between policy expiration and confirmed absence.
-
-A partition with no later records cannot advance `scannedThroughBrokerTime`, so the state remains
-retained until new partition activity provides the required broker-time horizon.
+There is no claim that a timeout, Kafka broker-time horizon, group departure, or health check fences
+a stalled producer. None may construct a commit-eligible Kafka source outcome.
 
 `maxConnectionDuration` remains an optional proxy resource cap. The scanner's operational budget
-limits work per cycle; exhaustion yields `Inconclusive`. Neither value substitutes for
-`--packet-timeout-seconds`, and replayer wall time does not authorize a verdict.
+limits work per scan; exhaustion yields `Inconclusive`. `--packet-timeout-seconds`, if retained for
+Kafka input, may emit a stall diagnostic but does not settle obligations. Replayer wall time and
+Kafka `LogAppendTime` are equally non-authoritative for this purpose.
 
-The deployment must ensure:
-
-```text
-manifestInterval
-    < proxyManifestStaleTimeout
-    < packetTimeout
-```
-
-with margin for acknowledgement latency, scanner progress, and permitted inter-broker forward
-clock skew. The inequality compares durations only. Proxy-local monotonic timestamps are never
-compared with Kafka broker timestamps.
+Enabling time-based settlement requires a separately reviewed design that resolves delayed suffix
+records, arbitrary forward broker-clock jumps, and the explicit run-abandonment policy. It is not a
+hidden implementation option.
 
 ### 19.4 Source-time progress uses the minimum partition watermark
 
@@ -2205,7 +2347,7 @@ generation. This gives the simplest global memory-bound statement, accepting tha
 can throttle the others.
 
 This source-time watermark controls replay pacing only. It is derived from captured observation
-time and is never used as `BrokerTime` for liveness or configured expiration.
+time and is never used for manifest-cycle decisions or expiration.
 
 An assigned partition with no outstanding admitted work advances toward the replay clock rather than
 contributing negative infinity. Revocation removes its watermark; assignment creates a new
@@ -2225,24 +2367,22 @@ transaction supplies the immutable retry and classification policy, receives one
 `TargetOutcome`, and does not re-admit retries as new commands. This preserves per-connection ordering
 without another actor transition.
 
-### 19.7 Proxy traffic assignments and manifests follow group admission
+### 19.7 Proxy traffic assignments and manifests follow group membership
 
 The accepted routing design is
 [`proxyHorizontalScalingAndNodeDeath.md`](proxyHorizontalScalingAndNodeDeath.md). A custom
-cooperative assignor admits members through `PROBATIONARY` and `ACTIVE`; PROBATIONARY members
+cooperative assignor moves members through `PROBATIONARY` and `ACTIVE`; PROBATIONARY members
 receive no traffic assignments. New connections choose once from the ACTIVE member's traffic
 assignments and store that partition immutably. Existing connections drain in place through later
 assignment changes.
 
 No witness, peer-visibility, or writer-footprint contract is required. Therefore the old `nodeId`
 hash range and startup-only shard-width setting are migration residue, not the target architecture.
-Remove them after the admission-aware assignor is active.
+Remove them after the group-aware assignor is active.
 
 The manifest interval defaults to 30 seconds and must be positive. A complete listing manifest
-refreshes connection liveness; a complete omission is structural settlement evidence. The
-configured incomplete-state timeout applies only after both traffic and listing manifests are
-absent through the required horizon. Manifest chunking remains mandatory regardless of assignment
-width.
+resolves continuity across its cycle; a complete omission resets only the covered incomplete
+predecessor. Manifest chunking remains mandatory regardless of assignment width.
 
 ---
 
@@ -2255,11 +2395,16 @@ not by making reviewers reason about one undifferentiated diff:
 contract is not documented, stop that implementation slice. Update the design and review the new
 contract before changing production code or complexifying it to satisfy the test.
 
-1. **Freeze the protocol.** Land the admission, exact-manifest, capture-before-forward,
-   writer-completion, timeout, ownership, and fatal-event-loop contracts in the two design documents
-   before implementing them.
-2. **Remove superseded alternatives.** Reject live topic replacement; remove peer completion,
-   witness coverage, and post-peer cutoffs; require process-fatal event-loop handling; remove
+1. **Freeze the protocol.** Land the group-routing, manifest-cycle, capture-before-forward,
+   proxy-completion, retention, ownership, and fatal-event-loop contracts in the three normative
+   design documents before implementing them. Once this review is accepted, delete the superseded
+   branch-only notes `replayer-3231-review-notes.md`, `replayer-expiration-hardening.md`,
+   `replayerCurrentToProposedArchitectureMap.md`, `replayerSimplifiedLifecycleDelta.md`,
+   `replayerSimplifiedLifecycleDesign.md`, and `replayerWorkLifecycleResponsibilityAudit.md`.
+   Their retained conclusions are incorporated here; leaving parallel design narratives in the
+   final PR would recreate ambiguity about which contract governs.
+2. **Remove superseded alternatives.** Never change the Kafka input namespace of a running replay;
+   remove peer completion, witness coverage, and post-peer cutoffs; require process-fatal event-loop handling; remove
    cross-thread mailbox-loss mutation; remove lifecycle default methods and built-in no-op
    collaborators.
 3. **Restore explicit owner authority.** Use exactly one Kafka source-I/O owner and one
@@ -2268,13 +2413,15 @@ contract before changing production code or complexifying it to satisfy the test
    `commitDataLock`, and shared source-state maps. Add always-on owner checks and structural tests
    that reject required default methods, `NO_OP` instances, and production constructors missing
    required fatal/lifecycle collaborators.
-4. **Implement proxy admission and capture gating behind deterministic models.** Each state
-   transition lands with its boundary tests: capability probing, probationary admission,
+4. **Implement proxy membership and capture gating behind deterministic models.** Each state
+   transition lands with its boundary tests: capability probing, probationary new-connection
+   eligibility,
    cooperative transfer, immutable routing, acknowledged manifests, capture-gate closure,
    self-completion ordering, and irreversible pass-through.
 5. **Prove real Kafka behavior.** Testcontainers exercises cooperative assignment `userData`,
    `enforceRebalance()`, leader replacement, metadata limits, complete manifest reconstruction,
-   self `NoMoreWrites`, configured expiration, and unacknowledged-record redelivery. Live
+   observation/manifest Kafka-order inversion, self `NoMoreWrites`, retained blockers, and
+   unacknowledged-record redelivery. Live
    Kubernetes tests cover pod death, suspension and resume, network isolation, insufficient
    capacity, pass-through abandonment, and total-fleet loss.
 6. **Run the complete acceptance matrix.** Existing replay, capture, leak, race, and integration
