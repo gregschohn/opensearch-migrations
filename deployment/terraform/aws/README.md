@@ -10,7 +10,9 @@ The default deployment creates:
 - A dual-stack VPC spanning two availability zones, with public and private
   subnets and one NAT gateway per zone
 - S3, ECR API, ECR Docker, CloudWatch Logs, and EFS VPC endpoints
-- An EKS Auto Mode cluster with the `system` and `general-purpose` node pools
+- An EKS Auto Mode cluster with the built-in `system` and `general-purpose` node
+  pools. When the chart is installed, `use_custom_karpenter_node_pool` (default
+  `true`) also configures the chart's own EKS Auto Mode NodePool
 - A private ECR repository
 - Cluster, node, snapshot, and Migration Assistant workload IAM roles
 - EKS Pod Identity associations for the chart's AWS-facing service accounts
@@ -31,7 +33,8 @@ sections below.
 - Network access to public Helm and container registries if `deploy_helm = true`
 
 EKS Auto Mode must be available in the selected AWS region and for the selected
-Kubernetes version.
+Kubernetes version. `kubernetes_version` defaults to `1.35`; override it if that
+version is not offered in your region.
 
 ## Create a new VPC and EKS cluster
 
@@ -85,7 +88,11 @@ table IDs explicitly if the subnets use an implicit main-route-table association
 or if only selected route tables should receive the S3 route.
 
 Valid `vpc_endpoints` values are `s3`, `ecr.api`, `ecr.dkr`, `logs`,
-`monitoring`, `elasticfilesystem`, `sts`, and `eks-auth`. Isolated subnets need
+`monitoring`, `elasticfilesystem`, `sts`, and `eks-auth`. For a new VPC, `s3`,
+`ecr.api`, `ecr.dkr`, `logs`, and `elasticfilesystem` are always created and
+`vpc_endpoints` adds to that set; `sts`, `eks-auth`, and `monitoring` are added
+only by `isolated = true` or by naming them here. A non-isolated new VPC reaches
+those services over its NAT gateway instead. Isolated subnets need
 additional private access to every registry and Helm repository used during
 installation; these AWS service endpoints alone do not provide that access.
 
@@ -214,7 +221,7 @@ terraform apply \
 
 Use an actual published Migration Assistant release tag. Terraform applies
 `valuesEks.yaml`, passes the AWS account, region, stage, and snapshot role to the
-chart, and waits up to 25 minutes by default.
+chart, and waits `helm_timeout_seconds` (1500, or 25 minutes) for the release.
 
 The module creates a private ECR repository for parity with the CloudFormation
 deployment and exposes it as `ecr_repository_url`. The optional Terraform Helm
@@ -231,6 +238,36 @@ false` when the migration source is not Amazon OpenSearch Service (for example a
 self-managed Elasticsearch or OpenSearch cluster), which registers its snapshot
 repository without assuming an AWS role, so the role is unused.
 
+## Variables
+
+| Name | Default | Description |
+|---|---|---|
+| `region` | `us-east-1` | AWS region for the Migration Assistant infrastructure |
+| `stage` | `dev` | Short identifier used in resource names; unique per deployment in a region |
+| `kubernetes_version` | `1.35` | EKS Kubernetes control-plane version |
+| `tags` | `{}` | Additional tags applied to resources this module manages |
+| `create_vpc` | `true` | Create a dual-stack VPC and two private/public subnet pairs, or use an existing VPC (`false`) |
+| `vpc_cidr` | `10.212.0.0/16` | IPv4 CIDR for a VPC created by this module |
+| `availability_zones` | `[]` | Exactly two AZs for a new VPC; the first two available zones are used when empty |
+| `existing_vpc_id` | `null` | Existing VPC ID; required when `create_vpc = false` |
+| `existing_subnet_ids` | `[]` | At least two existing subnets in distinct AZs; required when `create_vpc = false` |
+| `existing_route_table_ids` | `[]` | Route tables for the S3 gateway endpoint in an existing VPC; discovered per subnet when empty |
+| `vpc_endpoints` | `[]` | Endpoints to add. Valid: `s3`, `ecr.api`, `ecr.dkr`, `logs`, `monitoring`, `elasticfilesystem`, `sts`, `eks-auth` |
+| `isolated` | `false` | Air-gapped new VPC: no NAT gateway, no default route, full private endpoint set, private Kubernetes API |
+| `source_connectivity` | `{mode = "none"}` | Private path to the source. `mode = "none"` \| `"privatelink"` \| `"vpc_peering"` |
+| `target_connectivity` | `{mode = "none"}` | Private path to the target; same modes as `source_connectivity` |
+| `cluster_endpoint_public_access` | `null` | Public EKS API endpoint. Unset follows `isolated`; an explicit value always wins |
+| `cluster_endpoint_private_access` | `true` | Private EKS API endpoint inside the VPC |
+| `cluster_public_access_cidrs` | `["0.0.0.0/0"]` | CIDRs permitted to reach the public EKS API endpoint; narrow for production |
+| `namespace` | `ma` | Kubernetes namespace for Migration Assistant and its Pod Identity associations |
+| `pod_identity_service_accounts` | see `variables.tf` | Service accounts that assume the shared workload role through EKS Pod Identity |
+| `permissions_boundary_arn` | `null` | IAM permissions boundary applied to every role this module creates |
+| `create_opensearch_service_snapshot_role` | `true` | Create the role Amazon OpenSearch Service assumes for S3 snapshots; `false` for a self-managed source |
+| `deploy_helm` | `false` | Install the repository's Migration Assistant Helm chart after the cluster is ready |
+| `migration_assistant_version` | `null` | Public ECR image tag used when `deploy_helm = true`, for example `3.3.4` |
+| `use_custom_karpenter_node_pool` | `true` | Configure the chart's custom EKS Auto Mode NodePool in addition to the built-in pools |
+| `helm_timeout_seconds` | `1500` | Maximum wait for the Helm release |
+
 ## Outputs
 
 Important outputs include:
@@ -245,6 +282,8 @@ Important outputs include:
 | `source_private_endpoint` | Private source endpoint when `source_connectivity` is set, else null |
 | `target_private_endpoint` | Private target endpoint when `target_connectivity` is set, else null |
 | `migration_environment` | Shell exports equivalent to the CloudFormation bootstrap export string |
+| `cluster_security_group_id` | EKS-managed cluster security group, for rules that must allow the cluster |
+| `helm_release_status` | Helm release status, or null when `deploy_helm` is false |
 
 To load the compatibility environment into the current shell:
 
