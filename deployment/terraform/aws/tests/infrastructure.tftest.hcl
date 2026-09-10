@@ -162,6 +162,11 @@ run "default_new_vpc_is_not_isolated" {
     ])
     error_message = "Non-isolated new VPC must create only the base endpoint set."
   }
+
+  assert {
+    condition     = aws_eks_cluster.migration.vpc_config[0].endpoint_public_access
+    error_message = "Non-isolated cluster must keep its public Kubernetes API endpoint."
+  }
 }
 
 run "isolated_new_vpc_has_no_nat_and_full_endpoints" {
@@ -190,6 +195,78 @@ run "isolated_new_vpc_has_no_nat_and_full_endpoints" {
     ])
     error_message = "Isolated VPC must create the full service-endpoint set (s3 + 7 interface endpoints)."
   }
+
+  # Isolated: the Kubernetes API is private too, reachable only from inside the VPC.
+  assert {
+    condition     = aws_eks_cluster.migration.vpc_config[0].endpoint_public_access == false
+    error_message = "Isolated cluster must not expose a public Kubernetes API endpoint."
+  }
+
+  assert {
+    condition     = aws_eks_cluster.migration.vpc_config[0].endpoint_private_access
+    error_message = "Isolated cluster must keep its private Kubernetes API endpoint."
+  }
+}
+
+run "isolated_public_endpoint_override_is_honored" {
+  command = plan
+
+  # An explicit true beats the isolated-derived default, so an operator can reach the
+  # API from outside the VPC while the data path stays private.
+  variables {
+    isolated                       = true
+    cluster_endpoint_public_access = true
+    cluster_public_access_cidrs    = ["203.0.113.0/24"]
+  }
+
+  assert {
+    condition     = aws_eks_cluster.migration.vpc_config[0].endpoint_public_access
+    error_message = "An explicit cluster_endpoint_public_access = true must override the isolated default."
+  }
+
+  assert {
+    condition     = aws_eks_cluster.migration.vpc_config[0].public_access_cidrs == toset(["203.0.113.0/24"])
+    error_message = "public_access_cidrs must be applied to the overridden public endpoint."
+  }
+
+  # The override touches only the control plane: the data path stays air-gapped.
+  assert {
+    condition     = length(aws_nat_gateway.migration) == 0
+    error_message = "Overriding the public endpoint must not reintroduce NAT gateways."
+  }
+}
+
+run "public_endpoint_can_be_disabled_without_isolated" {
+  command = plan
+
+  # The override works in the other direction too: a private-only API endpoint in a
+  # standard (NAT-bearing) VPC.
+  variables {
+    cluster_endpoint_public_access = false
+  }
+
+  assert {
+    condition     = aws_eks_cluster.migration.vpc_config[0].endpoint_public_access == false
+    error_message = "An explicit cluster_endpoint_public_access = false must disable the public endpoint."
+  }
+
+  assert {
+    condition     = length(aws_nat_gateway.migration) == 2
+    error_message = "Disabling the public endpoint must not change NAT gateway behavior."
+  }
+}
+
+run "both_endpoints_disabled_is_rejected" {
+  command = plan
+
+  variables {
+    cluster_endpoint_public_access  = false
+    cluster_endpoint_private_access = false
+  }
+
+  expect_failures = [
+    aws_eks_cluster.migration,
+  ]
 }
 
 run "connectivity_defaults_to_none_no_resources" {

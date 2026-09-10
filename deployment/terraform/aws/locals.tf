@@ -41,6 +41,13 @@ locals {
   enabled_vpc_endpoints      = var.create_vpc ? setunion(local.required_new_vpc_endpoints, var.vpc_endpoints) : var.vpc_endpoints
   interface_vpc_endpoints    = setsubtract(local.enabled_vpc_endpoints, toset(["s3"]))
 
+  # An isolated deployment closes the Kubernetes API along with the data path, so the
+  # public EKS endpoint defaults off when isolated is true. cluster_endpoint_public_access
+  # defaults to null precisely so an explicit true or false always wins here; only an
+  # unset value follows isolated. Unlike the NAT/endpoint behavior above this is not gated
+  # on create_vpc: the control plane is exposed the same way in a supplied VPC.
+  endpoint_public_access = var.cluster_endpoint_public_access != null ? var.cluster_endpoint_public_access : !var.isolated
+
   common_tags = {
     "opensearch.org/migration-assistant" = var.stage
   }

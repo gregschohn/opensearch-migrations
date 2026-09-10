@@ -202,9 +202,16 @@ variable "target_connectivity" {
 }
 
 variable "cluster_endpoint_public_access" {
-  description = "Expose the EKS Kubernetes API through a public endpoint."
+  description = <<-EOT
+    Expose the EKS Kubernetes API through a public endpoint. Default null follows
+    isolated: the public endpoint is disabled when isolated is true (so an air-gapped
+    deployment closes the control plane along with the data path) and enabled
+    otherwise. Set true or false to override. Setting true with isolated = true keeps
+    kubectl and Terraform usable from outside the VPC while the data path stays
+    private; narrow cluster_public_access_cidrs if you do.
+  EOT
   type        = bool
-  default     = true
+  default     = null
 }
 
 variable "cluster_endpoint_private_access" {

@@ -18,8 +18,9 @@ The default deployment creates:
 
 You can instead deploy into an existing VPC and select only the endpoints that
 Terraform should add, deploy into an isolated (air-gapped) network with no public
-data path, and optionally establish private connectivity to the source and target
-clusters. Those options are covered in the sections below.
+data path and a private Kubernetes API endpoint, and optionally establish private
+connectivity to the source and target clusters. Those options are covered in the
+sections below.
 
 ## Prerequisites
 
@@ -108,6 +109,41 @@ for `ecr.api`, `ecr.dkr`, `logs`, `monitoring`, `elasticfilesystem`, `sts`, and
 `eks-auth`. This matches the endpoint set used by the isolated-network deployment
 path. `isolated` defaults to `false`, which preserves the standard behavior (NAT
 gateway plus the base endpoint set).
+
+Isolated mode also makes the EKS Kubernetes API endpoint private, so the control
+plane is not reachable from the internet along with the data path. This follows
+from `isolated`: `cluster_endpoint_public_access` defaults to unset, which means
+"public endpoint off when `isolated = true`, on otherwise". The private endpoint
+(`cluster_endpoint_private_access`) stays enabled, so the API is reachable from
+inside the VPC.
+
+Plan for that before you apply, because it changes how you reach the cluster:
+
+- `kubectl` (including the `kubeconfig_command` output) must run from somewhere
+  inside the VPC or a network routed to it: a bastion or workload in a private
+  subnet, a peered VPC, or a VPN/Direct Connect attachment.
+- `deploy_helm = true` requires the same access. Terraform's Helm provider talks
+  to the cluster API directly, so `terraform apply` itself has to run from a host
+  that can reach the private endpoint.
+
+To keep an isolated data path but reach the API from outside the VPC, set
+`cluster_endpoint_public_access` explicitly. An explicit value always wins over
+the `isolated`-derived default, and it affects only the control plane: NAT
+gateways, routes, and the endpoint set are unchanged. Narrow
+`cluster_public_access_cidrs` when you do; it defaults to `0.0.0.0/0`.
+
+```bash
+terraform apply \
+  -var="region=us-east-1" \
+  -var="stage=dev" \
+  -var="isolated=true" \
+  -var="cluster_endpoint_public_access=true" \
+  -var='cluster_public_access_cidrs=["203.0.113.10/32"]'
+```
+
+The override works in the other direction too: set
+`cluster_endpoint_public_access = false` without `isolated` for a private-only API
+endpoint in a standard VPC that keeps its NAT egress.
 
 Container images must be reachable without internet egress. Mirror the Migration
 Assistant images and any third-party images the chart pulls into the module's

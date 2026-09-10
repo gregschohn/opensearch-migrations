@@ -122,7 +122,7 @@ resource "aws_eks_cluster" "migration" {
 
   vpc_config {
     endpoint_private_access = var.cluster_endpoint_private_access
-    endpoint_public_access  = var.cluster_endpoint_public_access
+    endpoint_public_access  = local.endpoint_public_access
     public_access_cidrs     = var.cluster_public_access_cidrs
     security_group_ids      = [aws_security_group.eks_control_plane.id]
     subnet_ids              = local.cluster_subnets
@@ -137,7 +137,7 @@ resource "aws_eks_cluster" "migration" {
     }
 
     precondition {
-      condition     = var.cluster_endpoint_public_access || var.cluster_endpoint_private_access
+      condition     = local.endpoint_public_access || var.cluster_endpoint_private_access
       error_message = "At least one EKS cluster endpoint must be enabled."
     }
   }
