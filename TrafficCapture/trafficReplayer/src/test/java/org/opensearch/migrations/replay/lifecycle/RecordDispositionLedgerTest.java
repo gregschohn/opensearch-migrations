@@ -303,7 +303,7 @@ class RecordDispositionLedgerTest {
     }
 
     @Test
-    void acceptedCommitAcknowledgementLossRemainsATerminalFailure() {
+    void acceptedCommitWithUnknownBrokerResultAfterRevocationSettlesLocalBookkeeping() {
         var ledger = new RecordDispositionLedger(Runnable::run);
         var commitAcknowledgement = new CompletableFuture<Void>();
         var handle = new TestRecordHandle(record(17), commitAcknowledgement);
@@ -316,17 +316,19 @@ class RecordDispositionLedgerTest {
             "transaction",
             new RecordDisposition.Commit("replay-succeeded")
         ).toCompletableFuture();
-        var runwayLoss = new SourceRunwayLostException(handle.sourcePartition());
+        var runwayLoss = new SourceCommitUnknownAfterRevocationException(handle.sourcePartition());
         ledger.onRevoked(java.util.List.of(handle.sourcePartition()));
         commitAcknowledgement.completeExceptionally(runwayLoss);
 
-        var dispositionFailure = Assertions.assertThrows(CompletionException.class, disposition::join);
-        Assertions.assertSame(runwayLoss, dispositionFailure.getCause());
-        var quiescenceFailure = Assertions.assertThrows(CompletionException.class, activeInterval::join);
-        Assertions.assertSame(runwayLoss, quiescenceFailure.getCause());
+        var result = disposition.join();
+        Assertions.assertInstanceOf(RecordDisposition.Commit.class, result.disposition());
         Assertions.assertEquals(
-            "transaction",
-            ledger.unresolvedObligations().toCompletableFuture().join().get(handle.id())
+            new BrokerCommitResult.UnknownAfterRevocation(handle.sourcePartition()),
+            result.brokerCommitResult()
+        );
+        activeInterval.join();
+        Assertions.assertFalse(
+            ledger.unresolvedObligations().toCompletableFuture().join().containsKey(handle.id())
         );
         Assertions.assertEquals(0, handle.releasesWithoutCommit.get());
     }

@@ -840,18 +840,11 @@ return `CompletionStage` acknowledgements where ordering matters. They never exp
 queues, lifecycle registries, or callbacks that mutate foreign-owned state directly. A lock or
 `ConcurrentHashMap` is not a substitute for assigning an owner.
 
-The sole cross-owner mutable primitive is a process-wide, one-way `ReplayFatalFence`. It carries no
-per-request state, registry, cleanup operation, or recovery authority. Its
-`tryAcceptCommit(registration)` and `close()` operations share one bounded synchronization point:
-
-- `KafkaSourceActor` calls `tryAcceptCommit` on its owner thread. If open, the gate executes only the
-  bounded generation validation and pending-commit registration before releasing the gate.
-- A fatal observer calls `close`. Closure waits only for any acceptance already inside that bounded
-  critical section, then permanently rejects later acceptance.
-
-Kafka I/O and broker acknowledgement never run while holding the gate. This creates one exact order:
-a commit is accepted before fatal closure or rejected after it; a check-then-register race is
-impossible.
+Unexpected event-loop death does not introduce a cross-owner coordination primitive. In particular,
+there is no fatal-path commit barrier: a process-local barrier cannot fence Kafka or another
+external system. Once event-loop death is detected, Kafka commits and other operations already in
+progress race naturally with immediate process termination. Kafka's committed offset determines
+the durable result after restart.
 
 The normal logical handoffs are bounded and explicit:
 
@@ -2372,48 +2365,45 @@ that can advance the channel, actor, transaction, timer, or target exchange.
 The required response is therefore:
 
 1. detect termination through `EventLoop.terminationFuture()`;
-2. atomically close the process-wide `ReplayFatalFence`. Its shared commit-acceptance critical
-   section establishes whether a concurrent source commit was accepted before closure or rejected
-   after it; a command merely queued before closure receives no authority;
-3. post an immutable `InvalidateSession` command to replay intake, which remains the sole owner of
-   the affinity registry. The termination callback does not mutate that registry directly;
-4. emit an ERROR log and `replayFatalFailures{reason=event_loop_terminated}`;
-5. invoke the required process-level fatal handler immediately without waiting for owner-thread
-   cleanup;
-6. stop source intake and issue no new commit commands;
-7. begin bounded best-effort resource closure without making process termination depend on a dead
-   mailbox; and
-8. force non-successful process termination if bounded shutdown cannot finish.
+2. attempt to increment `replayFatalFailures{reason=event_loop_terminated}`;
+3. emit an ERROR log with the full cause;
+4. write the fatal diagnostic and stack trace to standard error;
+5. synchronously flush Log4j and standard error; and
+6. invoke `Runtime.halt(80)`.
 
-A commit accepted by `KafkaSourceActor` before the fatal fence closed remains source-actor-owned and
-may have an indeterminate broker outcome at process death. A commit processed after the fence closes
-is rejected even if its command was queued earlier. This is the fatal-path linearization point.
+The metric update is best-effort. Immediate process termination cannot guarantee that an
+OpenTelemetry exporter or external scraper observes the new point. The flushed ERROR diagnostic
+and reason-specific process exit code provide additional operational signals.
+
+There is deliberately no fatal-path ordering between process termination and an external operation
+such as a Kafka commit. Any such operation may or may not finish before the process halts. Kafka's
+committed offset determines the durable outcome after restart.
 
 This path does **not** transfer actor or transaction ownership to a cleanup thread and does not
-synthesize successful lifecycle completion. Cross-thread structures such as
-`terminateAfterMailboxLoss`, handoff/claim records, or alternate mutation paths are migration
-residue from an attempted local-recovery policy and should be deleted. They expand the production
-state machine precisely when its owner is already gone.
+synthesize successful lifecycle completion. It does not run normal shutdown hooks, wait for
+owner-thread cleanup, or attempt bounded resource closure. Those actions would require authority
+that disappeared with the event loop.
 
 The fatal handler is a mandatory constructor dependency for production composition; there is no
 log-only default. Tests inject a recording fatal handler and prove the observable contract:
 
 - one fatal signal even if several sessions notice loop termination;
-- the process fatal fence closes before the signal;
-- a queued-but-unaccepted commit is rejected after the fence closes;
-- registry invalidation occurs only on replay intake and is best-effort cleanup, not a precondition
-  for signaling fatal;
-- no new target or source work is admitted;
-- no source offset becomes commit-eligible because of loop death;
-- the top-level run terminates exceptionally; and
-- a shutdown watchdog prevents the JVM from hanging indefinitely.
+- one attempted metric increment with the event-loop-death reason;
+- Log4j and standard error are flushed after the ERROR diagnostic is written; and
+- a subprocess exits with status 80 after invoking the production fatal handler.
+
+Fatal halt codes are reserved separately from the replayer's normal `System.exit` codes:
+
+| Halt code | Reason |
+| --- | --- |
+| `80` | A live replay session lost its Netty event-loop owner. |
+| `89` | Catchall for a future unexpected fatal error without a more specific halt code. |
 
 Expected event-loop termination after the owning session and normal shutdown gates have completed
 is not fatal. The distinction is whether live owner state still exists when the loop terminates.
-The durable outcome matches an OOM or hard process kill. Work whose commit was never accepted by the
-source actor remains eligible for redelivery. For a commit already submitted to Kafka, process
-death may leave the broker result indeterminate: the broker may have committed it even if the
-process never observed the acknowledgement. The fatal path must not claim otherwise or attempt
+The durable outcome matches an OOM or hard process kill. For a commit already submitted to Kafka,
+process death may leave the broker result indeterminate: the broker may have committed it even if
+the process never observed the acknowledgement. The fatal path must not claim otherwise or attempt
 cross-thread recovery; restart relies on Kafka's actual committed offset and the existing
 at-least-once/idempotency behavior.
 

@@ -41,6 +41,7 @@ public final class RecordDispositionLedger implements SourcePartitionLifecycleLi
         @NonNull RecordId recordId;
         @NonNull String owner;
         @NonNull RecordDisposition disposition;
+        @NonNull BrokerCommitResult brokerCommitResult;
     }
 
     @Value
@@ -257,7 +258,12 @@ public final class RecordDispositionLedger implements SourcePartitionLifecycleLi
 
         unresolved.remove(id);
         var acceptedDisposition = acceptDisposition(obligation, disposition);
-        var result = new DispositionResult(id, owner, acceptedDisposition);
+        var result = new DispositionResult(
+            id,
+            owner,
+            acceptedDisposition,
+            new BrokerCommitResult.NotAttempted()
+        );
         pending.put(id, new PendingDisposition(obligation));
         try {
             obligation.handle().closeContext();
@@ -326,20 +332,46 @@ public final class RecordDispositionLedger implements SourcePartitionLifecycleLi
         CompletableFuture<DispositionResult> completion
     ) {
         if (failure == null) {
-            resolve(id, result);
-            completion.complete(result);
+            var acknowledgedResult = new DispositionResult(
+                id,
+                result.owner(),
+                result.disposition(),
+                new BrokerCommitResult.Acknowledged()
+            );
+            resolve(id, acknowledgedResult);
+            completion.complete(acknowledgedResult);
             return;
         }
-        if (unwrap(failure) instanceof SourceCommitNotAcceptedException notAccepted
+        var unwrappedFailure = unwrap(failure);
+        if (unwrappedFailure instanceof SourceCommitNotAcceptedException notAccepted
             && notAccepted.getPartition().equals(obligation.sourcePartition())) {
             var retainedResult = new DispositionResult(
                 id,
                 result.owner(),
                 new RecordDisposition.Retain(
                     "source-runway-lost-before-" + result.disposition().reasonCode()
-                )
+                ),
+                new BrokerCommitResult.NotAttempted()
             );
             releaseWithoutCommit(id, obligation, retainedResult, completion);
+            return;
+        }
+        if (unwrappedFailure instanceof SourceCommitUnknownAfterRevocationException unknown
+            && unknown.getPartition().equals(obligation.sourcePartition())) {
+            var unknownResult = new DispositionResult(
+                id,
+                result.owner(),
+                result.disposition(),
+                new BrokerCommitResult.UnknownAfterRevocation(unknown.getPartition())
+            );
+            log.atWarn()
+                .setCause(unknown)
+                .setMessage("Commit result became unknown after partition revocation; "
+                    + "settling process-local bookkeeping for {}")
+                .addArgument(id)
+                .log();
+            resolve(id, unknownResult);
+            completion.complete(unknownResult);
             return;
         }
         resolveExceptionally(id, obligation, failure, completion);
