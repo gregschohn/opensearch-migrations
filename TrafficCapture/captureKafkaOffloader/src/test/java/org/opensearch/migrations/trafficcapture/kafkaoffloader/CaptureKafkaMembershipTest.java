@@ -152,6 +152,32 @@ class CaptureKafkaMembershipTest {
     }
 
     @Test
+    void assignmentInstallationUsesAnImmutableCallbackTimeSnapshot() {
+        var consumer = new MockConsumer<String, byte[]>(OffsetResetStrategy.EARLIEST);
+        var routingState = new CaptureRoutingState(ACTIVATION_ID, 2);
+        var publisher = new DelayedAssignmentPublisher();
+        var membership = new CaptureKafkaMembership(
+            consumer,
+            TOPIC,
+            routingState,
+            publisher,
+            assignmentTracker("node-a"),
+            1,
+            () -> {},
+            ignored -> {},
+            ignored -> {}
+        );
+        var partition0 = new TopicPartition(TOPIC, 0);
+        var partition1 = new TopicPartition(TOPIC, 1);
+        consumer.assign(List.of(partition0, partition1));
+
+        membership.onPartitionsAssigned(List.of(partition0, partition1));
+        membership.onPartitionsRevoked(List.of(partition1));
+
+        assertEquals(Set.of(0, 1), Set.copyOf(publisher.assignment()));
+    }
+
+    @Test
     void surfacedPollFailureAfterInitialAssignmentKeepsAdmissionAndDoesNotAffectThePublisher()
         throws Exception {
         var consumer = new MockConsumer<String, byte[]>(OffsetResetStrategy.EARLIEST);
@@ -189,6 +215,50 @@ class CaptureKafkaMembershipTest {
         assertEquals(0, routingState.admitConnection("after-membership-failure").partition());
         assertEquals(null, membershipFailure.get());
         assertEquals(null, publisher.failure());
+    }
+
+    @Test
+    void retriablePollFailureKeepsTheLastAssignmentAndAcceptsAReplacement() throws Exception {
+        var consumer = new MockConsumer<String, byte[]>(OffsetResetStrategy.EARLIEST);
+        var routingState = new CaptureRoutingState(ACTIVATION_ID, 2);
+        var publisher = publisher(routingState);
+        var membershipFailure = new AtomicReference<Throwable>();
+        var initialAssignment = new CountDownLatch(1);
+        var partition0 = new TopicPartition(TOPIC, 0);
+        var partition1 = new TopicPartition(TOPIC, 1);
+        consumer.updateBeginningOffsets(Map.of(partition0, 0L, partition1, 0L));
+        consumer.schedulePollTask(() -> consumer.rebalance(List.of(partition0)));
+        consumer.schedulePollTask(() -> {
+            throw new org.apache.kafka.common.errors.TimeoutException(
+                "coordinator temporarily unavailable"
+            );
+        });
+        consumer.schedulePollTask(() -> consumer.rebalance(List.of(partition1)));
+        var membership = new CaptureKafkaMembership(
+            consumer,
+            TOPIC,
+            routingState,
+            publisher,
+            assignmentTracker("node-a"),
+            1,
+            initialAssignment::countDown,
+            membershipFailure::set,
+            ignored -> {}
+        );
+
+        membership.start();
+
+        assertTrue(initialAssignment.await(1, TimeUnit.SECONDS));
+        long replacementDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1);
+        while (!"activation:2".equals(routingState.currentWriterNodeId())
+            && System.nanoTime() < replacementDeadline) {
+            Thread.sleep(1);
+        }
+        assertEquals("activation:2", routingState.currentWriterNodeId());
+        assertEquals(List.of(1), routingState.assignedPartitions());
+        assertEquals(null, membershipFailure.get());
+        assertEquals(null, publisher.failure());
+        membership.close();
     }
 
     @Test
@@ -313,6 +383,23 @@ class CaptureKafkaMembershipTest {
 
         private Throwable failure() {
             return failure.get();
+        }
+    }
+
+    private static class DelayedAssignmentPublisher implements CaptureAssignmentPublisher {
+        private Collection<Integer> assignment;
+
+        @Override
+        public CompletableFuture<String> installAssignment(Collection<Integer> partitions) {
+            assignment = partitions;
+            return new CompletableFuture<>();
+        }
+
+        @Override
+        public void failClosed(Throwable failure) {}
+
+        private Collection<Integer> assignment() {
+            return assignment;
         }
     }
 

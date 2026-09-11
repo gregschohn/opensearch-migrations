@@ -478,6 +478,46 @@ public class ConditionallyReliableLoggingHttpHandlerTest {
         }
     }
 
+    private static class CloseObservationFailureOffloader
+        extends NoopChannelConnectionCaptureSerializer<Void> {
+        private final Throwable failure;
+
+        private CloseObservationFailureOffloader(Throwable failure) {
+            this.failure = failure;
+        }
+
+        @Override
+        public void addCloseEvent(Instant timestamp) throws IOException {
+            if (failure instanceof Error error) {
+                throw error;
+            }
+            if (failure instanceof RuntimeException runtimeException) {
+                throw runtimeException;
+            }
+            throw (IOException) failure;
+        }
+    }
+
+    private static class FinalFlushFailureOffloader
+        extends NoopChannelConnectionCaptureSerializer<Void> {
+        private final AtomicInteger closeObservations = new AtomicInteger();
+        private final Throwable failure;
+
+        private FinalFlushFailureOffloader(Throwable failure) {
+            this.failure = failure;
+        }
+
+        @Override
+        public void addCloseEvent(Instant timestamp) {
+            closeObservations.incrementAndGet();
+        }
+
+        @Override
+        public CompletableFuture<Void> flushCommitAndResetStream(boolean isFinal) {
+            return CompletableFuture.failedFuture(failure);
+        }
+    }
+
     private static Consumer<EmbeddedChannel> getSingleByteAtATimeWriter(boolean usePool, byte[] fullTrafficBytes) {
         return w -> {
             for (int i = 0; i < fullTrafficBytes.length; ++i) {
@@ -766,6 +806,108 @@ public class ConditionallyReliableLoggingHttpHandlerTest {
             Assertions.assertEquals(1, offloader.closeObservations.get());
             offloader.finalAcknowledgement.complete(null);
             channel.finishAndReleaseAll();
+        }
+    }
+
+    @Test
+    void closeObservationFailureInvokesTheCaptureFailurePolicyExactlyOnce() throws Exception {
+        try (var rootContext = new TestRootContext()) {
+            var transitions = new AtomicInteger();
+            var captureProcessState = new CaptureProcessState(
+                CaptureFailurePolicy.FAIL_OPEN,
+                ignored -> transitions.incrementAndGet()
+            );
+            var offloader = new CloseObservationFailureOffloader(
+                new IOException("terminal observation failed")
+            );
+            var channel = new EmbeddedChannel(
+                new ConditionallyReliableLoggingHttpHandler(
+                    rootContext,
+                    "node",
+                    "connection",
+                    ctx -> offloader,
+                    new RequestCapturePredicate(),
+                    request -> false,
+                    IncompleteRequestLimits.DEFAULT,
+                    Duration.ofHours(1),
+                    captureProcessState
+                )
+            );
+
+            channel.close();
+            channel.runPendingTasks();
+            channel.finishAndReleaseAll();
+
+            Assertions.assertEquals(CaptureProcessState.State.PASS_THROUGH, captureProcessState.state());
+            Assertions.assertEquals(1, transitions.get());
+        }
+    }
+
+    @Test
+    void failedTerminalFlushInvokesTheCaptureFailurePolicyExactlyOnce() throws Exception {
+        try (var rootContext = new TestRootContext()) {
+            var transitions = new AtomicInteger();
+            var captureProcessState = new CaptureProcessState(
+                CaptureFailurePolicy.FAIL_CLOSED,
+                ignored -> transitions.incrementAndGet()
+            );
+            var offloader = new FinalFlushFailureOffloader(
+                new IOException("terminal Kafka publication failed")
+            );
+            var channel = new EmbeddedChannel(
+                new ConditionallyReliableLoggingHttpHandler(
+                    rootContext,
+                    "node",
+                    "connection",
+                    ctx -> offloader,
+                    new RequestCapturePredicate(),
+                    request -> false,
+                    IncompleteRequestLimits.DEFAULT,
+                    Duration.ofHours(1),
+                    captureProcessState
+                )
+            );
+
+            channel.close();
+            channel.runPendingTasks();
+            channel.finishAndReleaseAll();
+
+            Assertions.assertEquals(1, offloader.closeObservations.get());
+            Assertions.assertEquals(CaptureProcessState.State.TERMINATING, captureProcessState.state());
+            Assertions.assertEquals(1, transitions.get());
+        }
+    }
+
+    @Test
+    void errorWhileWritingCloseObservationAlwaysTerminatesTheProcess() throws Exception {
+        try (var rootContext = new TestRootContext()) {
+            var transitions = new AtomicInteger();
+            var captureProcessState = new CaptureProcessState(
+                CaptureFailurePolicy.FAIL_OPEN,
+                ignored -> transitions.incrementAndGet()
+            );
+            var failure = new AssertionError("terminal capture owner failed");
+            var offloader = new CloseObservationFailureOffloader(failure);
+            var channel = new EmbeddedChannel(
+                new ConditionallyReliableLoggingHttpHandler(
+                    rootContext,
+                    "node",
+                    "connection",
+                    ctx -> offloader,
+                    new RequestCapturePredicate(),
+                    request -> false,
+                    IncompleteRequestLimits.DEFAULT,
+                    Duration.ofHours(1),
+                    captureProcessState
+                )
+            );
+
+            channel.close();
+            channel.runPendingTasks();
+            channel.finishAndReleaseAll();
+
+            Assertions.assertEquals(CaptureProcessState.State.TERMINATING, captureProcessState.state());
+            Assertions.assertEquals(1, transitions.get());
         }
     }
 

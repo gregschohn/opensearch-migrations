@@ -15,6 +15,7 @@ import org.opensearch.migrations.tracing.commoncontexts.IConnectionContext;
 import org.opensearch.migrations.trafficcapture.CodedOutputStreamHolder;
 import org.opensearch.migrations.trafficcapture.IChannelConnectionCaptureSerializer;
 import org.opensearch.migrations.trafficcapture.IConnectionCaptureFactory;
+import org.opensearch.migrations.trafficcapture.IOrderlyRetirableCaptureFactory;
 import org.opensearch.migrations.trafficcapture.OrderedStreamLifecyleManager;
 import org.opensearch.migrations.trafficcapture.StreamChannelConnectionCaptureSerializer;
 import org.opensearch.migrations.trafficcapture.kafkaoffloader.tracing.IRootKafkaOffloaderContext;
@@ -30,7 +31,10 @@ import org.apache.kafka.clients.producer.Producer;
 import org.apache.kafka.clients.producer.RecordMetadata;
 
 @Slf4j
-public class KafkaCaptureFactory implements IConnectionCaptureFactory<RecordMetadata>, AutoCloseable {
+public class KafkaCaptureFactory implements
+    IConnectionCaptureFactory<RecordMetadata>,
+    IOrderlyRetirableCaptureFactory,
+    AutoCloseable {
 
     public static final String DEFAULT_TOPIC_NAME_FOR_TRAFFIC = "logging-traffic-topic";
     public static final Duration DEFAULT_LIVENESS_SNAPSHOT_INTERVAL = Duration.ofSeconds(30);
@@ -374,6 +378,7 @@ public class KafkaCaptureFactory implements IConnectionCaptureFactory<RecordMeta
      * writers have completed the orderly retirement protocol. The caller remains responsible for
      * process-level warning and termination deadlines and for subsequently calling {@link #close()}.
      */
+    @Override
     public CompletableFuture<Void> retireForOrderlyShutdown() {
         final CompletableFuture<Void> result;
         final CaptureKafkaMembership membershipToClose;
@@ -398,21 +403,30 @@ public class KafkaCaptureFactory implements IConnectionCaptureFactory<RecordMeta
         }
 
         initializer.shutdownNow();
-        try {
-            if (membershipToClose != null) {
-                membershipToClose.close();
+        var membershipStopped = membershipToClose == null
+            ? CompletableFuture.<Void>completedFuture(null)
+            : membershipToClose.closeAsync();
+        var membershipCallbacksStopped = membershipStopped.handle((ignored, failure) -> {
+            if (failure != null) {
+                log.atWarn()
+                    .setCause(unwrapCompletionFailure(failure))
+                    .setMessage(
+                        "Kafka membership did not close cleanly during orderly shutdown; "
+                            + "continuing capture retirement after membership callbacks stopped"
+                    )
+                    .log();
             }
-        } catch (RuntimeException failure) {
-            result.completeExceptionally(failure);
-            return result;
-        }
+            return null;
+        });
 
         if (publisherToRetire == null) {
-            result.complete(null);
+            membershipCallbacksStopped.whenComplete((ignored, failure) -> result.complete(null));
             return result;
         }
-        publisherToRetire.getRoutingState()
-            .whenNoConnections()
+        CompletableFuture.allOf(
+            membershipCallbacksStopped,
+            publisherToRetire.getRoutingState().whenNoConnections()
+        )
             .thenCompose(ignored -> publisherToRetire.retireAllWriters())
             .whenComplete((ignored, failure) -> {
                 if (failure == null) {

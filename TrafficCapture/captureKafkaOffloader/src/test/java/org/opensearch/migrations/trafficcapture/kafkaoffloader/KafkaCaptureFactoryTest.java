@@ -13,6 +13,7 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -116,6 +117,66 @@ public class KafkaCaptureFactoryTest {
                 .count()
         );
         factory.close();
+    }
+
+    @Test
+    void orderlyRetirementLetsTheProxyDisconnectConnectionsWhileMembershipCloses() throws Exception {
+        var producer = createMockProducer(true);
+        var topicName = KafkaCaptureFactory.DEFAULT_TOPIC_NAME_FOR_TRAFFIC;
+        var partitionInfo = partitionInfo(topicName, 4);
+        var topicPartitions = partitionInfo.stream()
+            .map(info -> new TopicPartition(info.topic(), info.partition()))
+            .toList();
+        var membershipCloseStarted = new CountDownLatch(1);
+        var allowMembershipClose = new CountDownLatch(1);
+        var membershipConsumer = new MockConsumer<String, byte[]>(OffsetResetStrategy.EARLIEST) {
+            @Override
+            public void close(Duration timeout) {
+                membershipCloseStarted.countDown();
+                try {
+                    if (!allowMembershipClose.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("Test did not release membership close");
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException("Interrupted while waiting to close membership", e);
+                }
+                super.close(timeout);
+            }
+        };
+        membershipConsumer.updateBeginningOffsets(
+            topicPartitions.stream().collect(Collectors.toMap(partition -> partition, ignored -> 0L))
+        );
+        membershipConsumer.schedulePollTask(() -> membershipConsumer.rebalance(topicPartitions));
+        var factory = new KafkaCaptureFactory(
+            TestRootKafkaOffloaderContext.noTracking(),
+            TEST_NODE_ID_STRING,
+            producer,
+            membershipConsumer,
+            assignmentTracker(),
+            1,
+            topicName,
+            1024 * 1024,
+            Duration.ofDays(1),
+            ignored -> {},
+            ignored -> {}
+        );
+        factory.publisherReady().get(5, TimeUnit.SECONDS);
+        var invocationExecutor = Executors.newSingleThreadExecutor();
+        try {
+            var retirement = invocationExecutor.submit(factory::retireForOrderlyShutdown)
+                .get(1, TimeUnit.SECONDS);
+
+            Assertions.assertTrue(membershipCloseStarted.await(1, TimeUnit.SECONDS));
+            Assertions.assertFalse(retirement.isDone());
+
+            allowMembershipClose.countDown();
+            retirement.get(5, TimeUnit.SECONDS);
+        } finally {
+            allowMembershipClose.countDown();
+            invocationExecutor.shutdownNow();
+            factory.close();
+        }
     }
 
     @Test
