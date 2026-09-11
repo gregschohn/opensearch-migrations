@@ -187,6 +187,7 @@ public final class ReplayTransaction<R> {
     private final ReplayRequestId requestId;
     private final String ledgerOwner;
     private final ActorMailbox mailbox;
+    private final OwnerThreadGuard ownerThreadGuard;
     private final EvidenceWriter<R> evidenceWriter;
     private final ReplayDispositionPolicy dispositionPolicy;
     private final RecordDispositionLedger dispositionLedger;
@@ -247,6 +248,10 @@ public final class ReplayTransaction<R> {
         this.requestId = requestId;
         this.ledgerOwner = requestId.toString();
         this.mailbox = mailbox;
+        this.ownerThreadGuard = new OwnerThreadGuard(
+            "replay transaction " + requestId,
+            mailbox::inMailbox
+        );
         this.evidenceWriter = evidenceWriter;
         this.dispositionPolicy = dispositionPolicy;
         this.dispositionLedger = dispositionLedger;
@@ -793,9 +798,7 @@ public final class ReplayTransaction<R> {
     }
 
     private void assertInMailbox() {
-        if (!mailbox.inMailbox()) {
-            throw new IllegalStateException("replay transaction transition ran outside its mailbox");
-        }
+        ownerThreadGuard.requireOwnerThread();
     }
 
     private static Throwable unwrap(Throwable throwable) {

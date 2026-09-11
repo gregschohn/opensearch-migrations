@@ -177,6 +177,7 @@ public final class ConnectionActor<P extends AutoCloseable, R> {
 
     private final ConnectionSessionKey sessionKey;
     private final ActorMailbox mailbox;
+    private final OwnerThreadGuard ownerThreadGuard;
     private final TargetExchange<P, R> targetExchange;
     private final Metrics metrics;
     private final LongSupplier nanoTime;
@@ -220,6 +221,10 @@ public final class ConnectionActor<P extends AutoCloseable, R> {
     ) {
         this.sessionKey = sessionKey;
         this.mailbox = mailbox;
+        this.ownerThreadGuard = new OwnerThreadGuard(
+            "connection actor for " + sessionKey,
+            mailbox::inMailbox
+        );
         this.targetExchange = targetExchange;
         this.metrics = metrics;
         this.nanoTime = nanoTime;
@@ -240,6 +245,7 @@ public final class ConnectionActor<P extends AutoCloseable, R> {
 
     private void runMailboxTransition(Runnable command) {
         synchronized (lifecycleLock) {
+            ownerThreadGuard.requireOwnerThread();
             command.run();
         }
     }
@@ -718,9 +724,7 @@ public final class ConnectionActor<P extends AutoCloseable, R> {
     }
 
     private void assertInMailbox() {
-        if (!mailbox.inMailbox()) {
-            throw new IllegalStateException("connection actor transition ran outside its mailbox");
-        }
+        ownerThreadGuard.requireOwnerThread();
     }
 
     private static Throwable unwrap(Throwable throwable) {

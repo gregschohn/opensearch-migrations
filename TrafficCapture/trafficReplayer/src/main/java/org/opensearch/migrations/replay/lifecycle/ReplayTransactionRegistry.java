@@ -66,6 +66,7 @@ public final class ReplayTransactionRegistry {
     private final Object stateLock = new Object();
     private final ConnectionSessionKey sessionKey;
     private final ActorMailbox mailbox;
+    private final OwnerThreadGuard ownerThreadGuard;
     private final Map<ReplayRequestId, Entry> active = new LinkedHashMap<>();
     private final Set<PendingRegistration> pendingRegistrations =
         Collections.newSetFromMap(new IdentityHashMap<>());
@@ -83,6 +84,10 @@ public final class ReplayTransactionRegistry {
     ) {
         this.sessionKey = sessionKey;
         this.mailbox = mailbox;
+        this.ownerThreadGuard = new OwnerThreadGuard(
+            "replay transaction registry for " + sessionKey,
+            mailbox::inMailbox
+        );
     }
 
     public CompletionStage<Void> register(
@@ -371,9 +376,7 @@ public final class ReplayTransactionRegistry {
     }
 
     private void assertInMailbox() {
-        if (!mailbox.inMailbox()) {
-            throw new IllegalStateException("transaction registry transition ran outside its mailbox");
-        }
+        ownerThreadGuard.requireOwnerThread();
     }
 
     private static Throwable unwrap(Throwable throwable) {
