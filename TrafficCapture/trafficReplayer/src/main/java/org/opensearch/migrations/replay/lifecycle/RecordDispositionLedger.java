@@ -41,7 +41,6 @@ public final class RecordDispositionLedger implements SourcePartitionLifecycleLi
         @NonNull RecordId recordId;
         @NonNull String owner;
         @NonNull RecordDisposition disposition;
-        @NonNull BrokerCommitResult brokerCommitResult;
     }
 
     @Value
@@ -100,6 +99,8 @@ public final class RecordDispositionLedger implements SourcePartitionLifecycleLi
     }
 
     private final Executor ownerExecutor;
+    private final OwnerThreadGuard ownerThreadGuard =
+        new OwnerThreadGuard("record disposition ledger");
     private final Map<RecordId, Obligation> unresolved = new LinkedHashMap<>();
     private final Map<RecordId, PendingDisposition> pending = new LinkedHashMap<>();
     private final ResolvedRecordIndex resolved = new ResolvedRecordIndex();
@@ -128,7 +129,7 @@ public final class RecordDispositionLedger implements SourcePartitionLifecycleLi
 
     @Override
     public void onAssigned(@NonNull Collection<SourcePartitionKey> partitions) {
-        ownerExecutor.execute(() -> partitions.forEach(partition -> {
+        executeOnOwner(() -> partitions.forEach(partition -> {
             if (isRetired(partition)) {
                 throw new IllegalStateException("source assigned an already-retired generation: " + partition);
             }
@@ -138,12 +139,12 @@ public final class RecordDispositionLedger implements SourcePartitionLifecycleLi
 
     @Override
     public void onRevoked(@NonNull Collection<SourcePartitionKey> partitions) {
-        ownerExecutor.execute(() -> partitions.forEach(partition -> generationRunway.put(partition, false)));
+        executeOnOwner(() -> partitions.forEach(partition -> generationRunway.put(partition, false)));
     }
 
     @Override
     public void onRetired(@NonNull Collection<SourcePartitionKey> partitions) {
-        ownerExecutor.execute(() -> partitions.forEach(this::retireGeneration));
+        executeOnOwner(() -> partitions.forEach(this::retireGeneration));
     }
 
     public CompletionStage<Void> register(@NonNull RecordHandle handle, @NonNull String owner) {
@@ -151,7 +152,7 @@ public final class RecordDispositionLedger implements SourcePartitionLifecycleLi
             return rejectedRegistration(handle.id());
         }
         var completion = new CompletableFuture<Void>();
-        ownerExecutor.execute(() -> {
+        executeOnOwner(() -> {
             if (registrationsSealed.get()) {
                 completeRejectedRegistration(completion, handle.id());
                 return;
@@ -197,7 +198,7 @@ public final class RecordDispositionLedger implements SourcePartitionLifecycleLi
             return CompletableFuture.completedFuture(null);
         }
         var completion = new CompletableFuture<Void>();
-        ownerExecutor.execute(() -> {
+        executeOnOwner(() -> {
             registrationsSealed.set(true);
             completion.complete(null);
         });
@@ -222,7 +223,7 @@ public final class RecordDispositionLedger implements SourcePartitionLifecycleLi
         @NonNull String newOwner
     ) {
         var completion = new CompletableFuture<Void>();
-        ownerExecutor.execute(() -> {
+        executeOnOwner(() -> {
             var obligation = requireOwnedObligation(id, expectedOwner, completion);
             if (obligation != null) {
                 unresolved.put(
@@ -241,7 +242,7 @@ public final class RecordDispositionLedger implements SourcePartitionLifecycleLi
         @NonNull RecordDisposition disposition
     ) {
         var completion = new CompletableFuture<DispositionResult>();
-        ownerExecutor.execute(() -> disposeOnOwner(id, owner, disposition, completion));
+        executeOnOwner(() -> disposeOnOwner(id, owner, disposition, completion));
         return completion.minimalCompletionStage();
     }
 
@@ -251,6 +252,7 @@ public final class RecordDispositionLedger implements SourcePartitionLifecycleLi
         RecordDisposition disposition,
         CompletableFuture<DispositionResult> completion
     ) {
+        ownerThreadGuard.requireOwnerThread();
         var obligation = requireOwnedObligation(id, owner, completion);
         if (obligation == null) {
             return;
@@ -261,8 +263,7 @@ public final class RecordDispositionLedger implements SourcePartitionLifecycleLi
         var result = new DispositionResult(
             id,
             owner,
-            acceptedDisposition,
-            new BrokerCommitResult.NotAttempted()
+            acceptedDisposition
         );
         pending.put(id, new PendingDisposition(obligation));
         try {
@@ -287,7 +288,7 @@ public final class RecordDispositionLedger implements SourcePartitionLifecycleLi
     ) {
         try {
             obligation.handle().releaseWithoutCommit();
-            resolve(id, result);
+            resolve(id);
             completion.complete(result);
         } catch (Exception e) {
             resolveExceptionally(id, obligation, e, completion);
@@ -319,62 +320,21 @@ public final class RecordDispositionLedger implements SourcePartitionLifecycleLi
             resolveExceptionally(id, obligation, e, completion);
             return;
         }
-        commitStage.whenComplete((ignored, failure) ->
-            ownerExecutor.execute(() -> completeCommit(id, obligation, result, failure, completion))
-        );
-    }
-
-    private void completeCommit(
-        RecordId id,
-        Obligation obligation,
-        DispositionResult result,
-        Throwable failure,
-        CompletableFuture<DispositionResult> completion
-    ) {
-        if (failure == null) {
-            var acknowledgedResult = new DispositionResult(
-                id,
-                result.owner(),
-                result.disposition(),
-                new BrokerCommitResult.Acknowledged()
-            );
-            resolve(id, acknowledgedResult);
-            completion.complete(acknowledgedResult);
-            return;
-        }
-        var unwrappedFailure = unwrap(failure);
-        if (unwrappedFailure instanceof SourceCommitNotAcceptedException notAccepted
-            && notAccepted.getPartition().equals(obligation.sourcePartition())) {
-            var retainedResult = new DispositionResult(
-                id,
-                result.owner(),
-                new RecordDisposition.Retain(
-                    "source-runway-lost-before-" + result.disposition().reasonCode()
-                ),
-                new BrokerCommitResult.NotAttempted()
-            );
-            releaseWithoutCommit(id, obligation, retainedResult, completion);
-            return;
-        }
-        if (unwrappedFailure instanceof SourceCommitUnknownAfterRevocationException unknown
-            && unknown.getPartition().equals(obligation.sourcePartition())) {
-            var unknownResult = new DispositionResult(
-                id,
-                result.owner(),
-                result.disposition(),
-                new BrokerCommitResult.UnknownAfterRevocation(unknown.getPartition())
-            );
-            log.atWarn()
-                .setCause(unknown)
-                .setMessage("Commit result became unknown after partition revocation; "
-                    + "settling process-local bookkeeping for {}")
-                .addArgument(id)
-                .log();
-            resolve(id, unknownResult);
-            completion.complete(unknownResult);
-            return;
-        }
-        resolveExceptionally(id, obligation, failure, completion);
+        resolve(id);
+        completion.complete(result);
+        commitStage.whenComplete((ignored, failure) -> {
+            if (failure != null) {
+                log.atWarn()
+                    .setCause(unwrap(failure))
+                    .setMessage(
+                        "Kafka commit operation completed exceptionally after local record cleanup; "
+                            + "record={}, partition={}"
+                    )
+                    .addArgument(id)
+                    .addArgument(obligation::sourcePartition)
+                    .log();
+            }
+        });
     }
 
     private static Throwable unwrap(Throwable failure) {
@@ -389,7 +349,7 @@ public final class RecordDispositionLedger implements SourcePartitionLifecycleLi
 
     public CompletionStage<Map<RecordId, String>> unresolvedObligations() {
         var completion = new CompletableFuture<Map<RecordId, String>>();
-        ownerExecutor.execute(() -> {
+        executeOnOwner(() -> {
             var snapshot = new LinkedHashMap<RecordId, String>();
             unresolved.forEach((id, obligation) -> snapshot.put(id, obligation.owner()));
             pending.forEach((id, disposition) -> snapshot.put(id, disposition.obligation().owner()));
@@ -405,8 +365,12 @@ public final class RecordDispositionLedger implements SourcePartitionLifecycleLi
 
     public CompletionStage<StateSnapshot> stateSnapshot() {
         var completion = new CompletableFuture<StateSnapshot>();
-        ownerExecutor.execute(() -> completion.complete(snapshotOnOwner()));
+        executeOnOwner(() -> completion.complete(snapshotOnOwner()));
         return completion.minimalCompletionStage();
+    }
+
+    private void executeOnOwner(Runnable command) {
+        ownerExecutor.execute(ownerThreadGuard.guard(command));
     }
 
     private <T> Obligation requireOwnedObligation(
@@ -426,7 +390,7 @@ public final class RecordDispositionLedger implements SourcePartitionLifecycleLi
         }
         if (pending.containsKey(id)) {
             completion.completeExceptionally(
-                new IllegalStateException("record disposition is awaiting acknowledgement: " + id)
+                new IllegalStateException("record disposition is already in progress: " + id)
             );
             return null;
         }
@@ -450,7 +414,8 @@ public final class RecordDispositionLedger implements SourcePartitionLifecycleLi
         return obligation;
     }
 
-    private void resolve(RecordId id, DispositionResult result) {
+    private void resolve(RecordId id) {
+        ownerThreadGuard.requireOwnerThread();
         var obligation = pending.get(id).obligation();
         pending.remove(id);
         resolved.add(id, obligation.sourcePartition());
@@ -459,11 +424,10 @@ public final class RecordDispositionLedger implements SourcePartitionLifecycleLi
     }
 
     /**
-     * A failed acknowledgement still settles its obligation for quiescence purposes. Leaving it
-     * pending would hold the quiescence gate open forever, deadlocking shutdown behind an
-     * acknowledgement that can no longer arrive; instead the failure propagates through both the
-     * disposer's completion and, once no work remains, the quiescence gate itself. The record
-     * stays visible in {@link #unresolvedObligations()} so shutdown diagnostics can still name it.
+     * A synchronous disposition failure still settles its obligation for quiescence purposes.
+     * Leaving it pending would hold the quiescence gate open forever. A Kafka commit result that
+     * arrives after {@link RecordHandle#commit()} returns is diagnostic only and never reaches
+     * this path.
      */
     private void resolveExceptionally(
         RecordId id,
@@ -471,6 +435,7 @@ public final class RecordDispositionLedger implements SourcePartitionLifecycleLi
         Throwable failure,
         CompletableFuture<?> completion
     ) {
+        ownerThreadGuard.requireOwnerThread();
         pending.remove(id);
         failed.put(id, new FailedDisposition(obligation, failure));
         if (quiescenceIntervalFailure == null) {
@@ -483,6 +448,7 @@ public final class RecordDispositionLedger implements SourcePartitionLifecycleLi
     }
 
     private void retireGeneration(SourcePartitionKey partition) {
+        ownerThreadGuard.requireOwnerThread();
         retiredGenerationWatermarks.merge(
             SourcePartitionIdentity.from(partition),
             partition.sourceGeneration(),
@@ -539,6 +505,7 @@ public final class RecordDispositionLedger implements SourcePartitionLifecycleLi
     }
 
     private StateSnapshot snapshotOnOwner() {
+        ownerThreadGuard.requireOwnerThread();
         return new StateSnapshot(
             unresolved.size(),
             pending.size(),
@@ -600,6 +567,7 @@ public final class RecordDispositionLedger implements SourcePartitionLifecycleLi
     }
 
     private void maybeCompleteQuiescence() {
+        ownerThreadGuard.requireOwnerThread();
         if (unresolved.isEmpty() && pending.isEmpty()) {
             if (quiescenceIntervalFailure == null) {
                 quiescenceGate.get().complete(null);

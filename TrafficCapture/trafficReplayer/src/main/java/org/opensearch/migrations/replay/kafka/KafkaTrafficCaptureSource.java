@@ -1146,14 +1146,14 @@ public class KafkaTrafficCaptureSource implements ISimpleTrafficCaptureSource {
     public CompletableFuture<Void> commitTrafficStreamAsync(ITrafficStreamKey trafficStreamKey) {
         var acknowledgement = new CompletableFuture<Void>();
         try {
-            kafkaExecutor.execute(() -> acceptCommitOnSourceOwner(trafficStreamKey, acknowledgement));
+            kafkaExecutor.execute(() -> acceptCommitOnSourceOwnerThread(trafficStreamKey, acknowledgement));
         } catch (Throwable t) {
             acknowledgement.completeExceptionally(t);
         }
         return acknowledgement;
     }
 
-    private void acceptCommitOnSourceOwner(
+    private void acceptCommitOnSourceOwnerThread(
         ITrafficStreamKey trafficStreamKey,
         CompletableFuture<Void> acknowledgement
     ) {

@@ -9,7 +9,6 @@ import java.util.List;
 import java.util.Queue;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionException;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.opensearch.migrations.replay.lifecycle.ReplayIdentity.ConnectionSessionKey;
@@ -104,7 +103,7 @@ class ReplayTransactionTest {
     }
 
     @Test
-    void ownedResourcesSettleOnlyAfterTheWholeTransaction() {
+    void ownedResourcesSettleAfterEvidenceAndCommitInvocation() {
         var mailbox = new QueuedMailbox();
         var ledger = new RecordDispositionLedger(Runnable::run);
         var record = new TestRecordHandle(record(0));
@@ -132,13 +131,13 @@ class ReplayTransactionTest {
 
         evidence.complete(new EvidenceOutcome.Durable("receipt"));
         mailbox.runUntilIdle();
-        Assertions.assertEquals(0, resource.closes);
-        Assertions.assertFalse(transaction.completion().toCompletableFuture().isDone());
+        transaction.completion().toCompletableFuture().join();
+        Assertions.assertEquals(1, resource.closes);
+        Assertions.assertFalse(record.commitCompletion.isDone());
 
         record.commitCompletion.complete(null);
         mailbox.runUntilIdle();
 
-        transaction.completion().toCompletableFuture().join();
         Assertions.assertEquals(1, resource.closes);
     }
 
@@ -230,7 +229,7 @@ class ReplayTransactionTest {
     }
 
     @Test
-    void rejectedDispositionCallbackDoesNotCompleteLifecycleOutsideTheMailbox() {
+    void laterCommitCompletionDoesNotReenterTheTransactionMailbox() {
         var mailbox = new QueuedMailbox();
         var ledger = new RecordDispositionLedger(Runnable::run);
         var record = new TestRecordHandle(record(21));
@@ -247,18 +246,20 @@ class ReplayTransactionTest {
         transaction.settleSource(new SourceOutcome.Complete());
         transaction.settleTarget(new TargetOutcome.Succeeded<>("response"));
         mailbox.runUntilIdle();
+        var outcome = transaction.completion().toCompletableFuture().join();
+        Assertions.assertInstanceOf(RecordDisposition.Commit.class, outcome.disposition());
+        Assertions.assertEquals(1, resource.closes);
         mailbox.rejectNewTasks();
 
         record.commitCompletion.complete(null);
 
-        Assertions.assertFalse(transaction.completion().toCompletableFuture().isDone());
-        Assertions.assertEquals(0, resource.closes);
+        Assertions.assertTrue(transaction.completion().toCompletableFuture().isDone());
         Assertions.assertEquals(1, record.commits.get());
         Assertions.assertEquals(0, record.releasesWithoutCommit.get());
     }
 
     @Test
-    void successfulTransactionWaitsForEvidenceAndCommitBeforeCompleting() {
+    void successfulTransactionWaitsForEvidenceThenFiresCommitAndCompletes() {
         var mailbox = new QueuedMailbox();
         var ledger = new RecordDispositionLedger(Runnable::run);
         var record = new TestRecordHandle(record(1));
@@ -284,7 +285,7 @@ class ReplayTransactionTest {
     }
 
     @Test
-    void completionWaitsForKafkaCommitAcknowledgement() {
+    void completionDoesNotWaitForKafkaCommitAcknowledgement() {
         var mailbox = new QueuedMailbox();
         var ledger = new RecordDispositionLedger(Runnable::run);
         var record = new TestRecordHandle(record(5));
@@ -298,21 +299,21 @@ class ReplayTransactionTest {
             new TestResource()
         );
 
+        var resource = new TestResource();
+        transaction.ownResource(resource);
         transaction.settleSource(new SourceOutcome.Complete());
         transaction.settleTarget(new TargetOutcome.Succeeded<>("response"));
-        mailbox.runUntilIdle();
-        Assertions.assertFalse(transaction.completion().toCompletableFuture().isDone());
-
-        record.commitCompletion.complete(null);
         mailbox.runUntilIdle();
         Assertions.assertInstanceOf(
             RecordDisposition.Commit.class,
             transaction.completion().toCompletableFuture().join().disposition()
         );
+        Assertions.assertEquals(1, resource.closes);
+        Assertions.assertFalse(record.commitCompletion.isDone());
     }
 
     @Test
-    void sourceRunwayLossAfterCommitAcceptanceFailsAndReleasesTheTransaction() {
+    void laterSourceRunwayLossDoesNotAffectTheCompletedTransaction() {
         var mailbox = new QueuedMailbox();
         var ledger = new RecordDispositionLedger(Runnable::run);
         var record = new TestRecordHandle(record(11));
@@ -332,7 +333,9 @@ class ReplayTransactionTest {
         transaction.settleTarget(new TargetOutcome.Succeeded<>("response"));
         mailbox.runUntilIdle();
         Assertions.assertEquals(1, record.commits.get());
-        Assertions.assertFalse(transaction.completion().toCompletableFuture().isDone());
+        var outcome = transaction.completion().toCompletableFuture().join();
+        Assertions.assertInstanceOf(RecordDisposition.Commit.class, outcome.disposition());
+        Assertions.assertEquals(1, resource.closes);
 
         ledger.onRevoked(List.of(record.sourcePartition()));
         record.commitCompletion.completeExceptionally(
@@ -340,21 +343,13 @@ class ReplayTransactionTest {
         );
         mailbox.runUntilIdle();
 
-        var failure = Assertions.assertThrows(
-            CompletionException.class,
-            () -> transaction.completion().toCompletableFuture().join()
-        );
-        Assertions.assertInstanceOf(SourceRunwayLostException.class, failure.getCause());
-        Assertions.assertEquals(1, resource.closes);
+        Assertions.assertSame(outcome, transaction.completion().toCompletableFuture().join());
         Assertions.assertEquals(0, record.releasesWithoutCommit.get());
-        Assertions.assertThrows(
-            CompletionException.class,
-            () -> ledger.whenQuiescent().toCompletableFuture().join()
-        );
+        ledger.whenQuiescent().toCompletableFuture().join();
     }
 
     @Test
-    void failureDuringDispositionWaitsForKafkaAcknowledgementBeforeReleasingResources() {
+    void failureAfterCommitWasFiredDoesNotReopenTheCompletedTransaction() {
         var mailbox = new QueuedMailbox();
         var ledger = new RecordDispositionLedger(Runnable::run);
         var record = new TestRecordHandle(record(10));
@@ -373,25 +368,19 @@ class ReplayTransactionTest {
         transaction.settleTarget(new TargetOutcome.Succeeded<>("response"));
         mailbox.runUntilIdle();
         Assertions.assertEquals(1, record.commits.get());
+        var outcome = transaction.completion().toCompletableFuture().join();
+        Assertions.assertEquals(1, resource.closes);
 
         var actorFailure = new IllegalStateException("actor failed during commit");
-        transaction.fail(actorFailure);
-        mailbox.runUntilIdle();
-
-        Assertions.assertFalse(transaction.completion().toCompletableFuture().isDone());
-        Assertions.assertEquals(0, resource.closes);
-
-        record.commitCompletion.complete(null);
-        mailbox.runUntilIdle();
-
-        var completionFailure = Assertions.assertThrows(
+        Assertions.assertThrows(
             java.util.concurrent.CompletionException.class,
-            () -> transaction.completion().toCompletableFuture().join()
+            () -> transaction.fail(actorFailure).toCompletableFuture().join()
         );
-        Assertions.assertSame(actorFailure, completionFailure.getCause());
+        Assertions.assertSame(outcome, transaction.completion().toCompletableFuture().join());
         Assertions.assertEquals(1, resource.closes);
         Assertions.assertEquals(1, record.contextCloses.get());
         Assertions.assertEquals(1, record.commits.get());
+        Assertions.assertFalse(record.commitCompletion.isDone());
     }
 
     @Test
