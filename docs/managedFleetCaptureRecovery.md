@@ -340,8 +340,9 @@ commands.
 The maximum whole-connection lifetime defaults to 60 minutes. Planned retirement performed while
 capture and Kafka publication remain trustworthy has a five-minute default completion target.
 Missing that target alarms but does not stop retirement or skip `NoMoreWrites`. The proxy continues
-until the configured manifest expiration interval `E`; the standalone protocol records the
-unresolved choice of when that interval begins.
+trying to publish the final empty manifest and `NoMoreWrites` until the most recently acknowledged
+complete manifest reaches the configured manifest expiration interval `E`. An acknowledged final
+empty manifest becomes that most recent manifest before the proxy attempts `NoMoreWrites`.
 
 The proxy may retry Kafka while in `CAPTURE_RETRYING` only for a definite transient failure known
 not to have compromised capture. All affected source forwarding remains capture-before-forward
