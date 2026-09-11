@@ -4606,6 +4606,69 @@ test("saves a focused text edit as one resource-level action", async () => {
 });
 
 
+test("applies ordinary field edits in the browser without locking the UI", async () => {
+  globalThis.__WORKFLOW_BROWSER_LOCAL_EDITING__ = true;
+  let operationRequests = 0;
+  let savedDocument: unknown;
+  server.use(
+    http.get("*/api/v1/config/document", () => HttpResponse.json({
+      modelVersion: "1",
+      persistedRevision: "saved-browser-draft",
+      rawYaml: `
+sourceClusters:
+  source:
+    endpoint: https://source.example.com:9200
+    version: ES 7.10
+    allowInsecure: false
+targetClusters:
+  target:
+    endpoint: https://target.example.com:9200
+snapshotMigrationConfigs: []
+`,
+    })),
+    http.post("*/api/v1/config/operations", () => {
+      operationRequests += 1;
+      return HttpResponse.json(configDraft);
+    }),
+    http.put("*/api/v1/config/document", async ({ request }) => {
+      savedDocument = await request.json();
+      const body = savedDocument as {
+        rawYaml: string;
+      };
+      return HttpResponse.json({
+        modelVersion: "1",
+        persistedRevision: "saved-browser-draft-2",
+        rawYaml: body.rawYaml,
+      });
+    }),
+  );
+  renderApp();
+  await enterEditMode();
+
+  const [allowInsecure] = await screen.findAllByRole("checkbox", {
+    name: /allow insecure/i,
+  });
+  await userEvent.click(allowInsecure);
+
+  expect(allowInsecure).toBeChecked();
+  expect(operationRequests).toBe(0);
+  expect(screen.getByRole("button", {
+    name: "Save configuration",
+  })).toBeEnabled();
+  expect(screen.queryByText("Updating configuration")).toBeNull();
+
+  await userEvent.click(screen.getByRole("button", {
+    name: "Save configuration",
+  }));
+  await waitFor(() => expect(savedDocument).toMatchObject({
+    expectedPersistedRevision: "saved-browser-draft",
+  }));
+  expect((savedDocument as { rawYaml: string }).rawYaml)
+    .toContain("allowInsecure: true");
+  expect(operationRequests).toBe(0);
+});
+
+
 test("shows ConfigMap keys and selects the map plus key together", async () => {
   let selection: unknown;
   server.use(

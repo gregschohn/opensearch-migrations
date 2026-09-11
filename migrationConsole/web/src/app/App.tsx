@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Suspense,
+  lazy,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
@@ -37,7 +45,6 @@ import {
   approvalCandidates,
   type ApprovalCandidate,
 } from "../features/actions/approvals";
-import { ConfigEditor } from "../features/configuration/ConfigEditor";
 import {
   editTarget,
   navigationResourceId,
@@ -67,6 +74,12 @@ import {
   activeResetTargetIds,
   presentActiveResets,
 } from "../features/status/operationPresentation";
+
+
+const ConfigEditor = lazy(async () => {
+  const module = await import("../features/configuration/ConfigEditor");
+  return { default: module.ConfigEditor };
+});
 
 
 const HISTORY_GUARD_KEY = "__workflowManageGuard";
@@ -720,6 +733,45 @@ function ManageApp() {
   useEffect(() => {
     if (!configDraft.data) return;
     const nodes = draftNavigationNodes(configDraft.data);
+    const settledAdditions = pendingResourceAdditions.flatMap((addition) => {
+      const resourceId = navigationResourceId(nodes, addition.editTargetId);
+      return resourceId ? [{ addition, resourceId }] : [];
+    });
+    const settledRenames = pendingResourceRenames.flatMap((rename) => {
+      const resourceId = settledRenameResourceId(nodes, rename);
+      return resourceId ? [{ rename, resourceId }] : [];
+    });
+    if (settledAdditions.length > 0 || settledRenames.length > 0) {
+      setSelectedId((current) => {
+        const addition = settledAdditions.find(
+          (candidate) => candidate.addition.id === current,
+        );
+        if (addition) return addition.resourceId;
+        const rename = settledRenames.find(
+          (candidate) => candidate.rename.id === current,
+        );
+        return rename?.resourceId ?? current;
+      });
+      setEditContext((current) => {
+        if (!current) return current;
+        const addition = settledAdditions.find(
+          (candidate) => candidate.addition.id === current.resourceId,
+        );
+        if (addition) {
+          return {
+            resourceId: addition.resourceId,
+            targetId: addition.addition.editTargetId,
+          };
+        }
+        const rename = settledRenames.find(
+          (candidate) => candidate.rename.id === current.resourceId,
+        );
+        return rename ? {
+          resourceId: rename.resourceId,
+          targetId: rename.rename.editTargetId,
+        } : current;
+      });
+    }
     setPendingResourceAdditions((current) => {
       const next = current.filter((addition) => (
         addition.status === "syncing"
@@ -734,7 +786,11 @@ function ManageApp() {
       ));
       return next.length === current.length ? current : next;
     });
-  }, [configDraft.data]);
+  }, [
+    configDraft.data,
+    pendingResourceAdditions,
+    pendingResourceRenames,
+  ]);
 
   useEffect(() => {
     if (editContext) return;
@@ -1368,52 +1424,61 @@ function ManageApp() {
                 ) : null}
               </section>
               {editContext ? (
-                <ConfigEditor
-                  initialTargetId={editContext.targetId}
-                  navigationBackLabel={linkedBackLabel}
-                  onClose={() => {
-                    setLinkedNavigation([]);
-                    setEditContext(null);
-                  }}
-                  onExitReady={registerEditExit}
-                  onSubmitReady={registerEditSubmit}
-                  onNavigateBack={navigateLinkedBack}
-                  onDraftReverted={resourceDraftReverted}
-                  onResourceAddSettled={resourceAddSettled}
-                  onResourceAddStarted={resourceAddStarted}
-                  onResourceRenameSettled={resourceRenameSettled}
-                  onResourceRenameStarted={resourceRenameStarted}
-                  onResourceAddsReady={registerResourceAdds}
-                  onNavigateEditTarget={navigateEditTarget}
-                  onSubmitted={() => {
-                    setLinkedNavigation([]);
-                    setEditContext(null);
-                    void queryClient.invalidateQueries({
-                      queryKey: ["operations"],
-                    });
-                    void queryClient.invalidateQueries({
-                      queryKey: ["manage-state"],
-                    });
-                  }}
-                  removalState={
-                    selectedNode?.status === "removed"
-                      ? selectedNode.valueSummary ?? "Marked for removal"
-                      : null
-                  }
-                  resourceId={editContext.resourceId}
-                  resourceLabel={
-                    (resourceNavigationState ?? displayedState)
-                      .nodes[editContext.resourceId]?.label
-                    ?? "resource"
-                  }
-                  resourceType={
-                    (resourceNavigationState ?? displayedState)
-                      .nodes[editContext.resourceId]?.resourceType
-                    ?? "Workflow configuration"
-                  }
-                  resourceSyncing={selectedNode?.status === "syncing"}
-                  stateSummary={editStateSummary}
-                />
+                <Suspense
+                  fallback={(
+                    <section className="workspace shell-loading">
+                      <LoaderCircle className="spin" />
+                      <strong>Opening configuration</strong>
+                    </section>
+                  )}
+                >
+                  <ConfigEditor
+                    initialTargetId={editContext.targetId}
+                    navigationBackLabel={linkedBackLabel}
+                    onClose={() => {
+                      setLinkedNavigation([]);
+                      setEditContext(null);
+                    }}
+                    onExitReady={registerEditExit}
+                    onSubmitReady={registerEditSubmit}
+                    onNavigateBack={navigateLinkedBack}
+                    onDraftReverted={resourceDraftReverted}
+                    onResourceAddSettled={resourceAddSettled}
+                    onResourceAddStarted={resourceAddStarted}
+                    onResourceRenameSettled={resourceRenameSettled}
+                    onResourceRenameStarted={resourceRenameStarted}
+                    onResourceAddsReady={registerResourceAdds}
+                    onNavigateEditTarget={navigateEditTarget}
+                    onSubmitted={() => {
+                      setLinkedNavigation([]);
+                      setEditContext(null);
+                      void queryClient.invalidateQueries({
+                        queryKey: ["operations"],
+                      });
+                      void queryClient.invalidateQueries({
+                        queryKey: ["manage-state"],
+                      });
+                    }}
+                    removalState={
+                      selectedNode?.status === "removed"
+                        ? selectedNode.valueSummary ?? "Marked for removal"
+                        : null
+                    }
+                    resourceId={editContext.resourceId}
+                    resourceLabel={
+                      (resourceNavigationState ?? displayedState)
+                        .nodes[editContext.resourceId]?.label
+                      ?? "resource"
+                    }
+                    resourceType={
+                      (resourceNavigationState ?? displayedState)
+                        .nodes[editContext.resourceId]?.resourceType
+                      ?? "Workflow configuration"
+                    }
+                    resourceSyncing={selectedNode?.status === "syncing"}
+                    stateSummary={editStateSummary}
+                  />
+                </Suspense>
               ) : selectedNode ? (
                 <ResourceWorkspace
                   approvalGates={approvalGates.data?.gates ?? []}

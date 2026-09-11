@@ -6,6 +6,12 @@ import {
   type FormEvent,
 } from "react";
 import {
+  createdExternalResourceOperations,
+  externalResourceSelectionOperations,
+  type EditNode as CoreEditNode,
+  type EditOperation as CoreEditOperation,
+} from "@opensearch-migrations/config-edit-core";
+import {
   Database,
   Eye,
   Keyboard,
@@ -57,6 +63,12 @@ type Pane =
       details: ExternalResourceDetails;
       row: ExternalResourceInventory["rows"][number];
     };
+
+
+type ReplaceCompatibilityDraft = (
+  promise: Promise<ConfigDraft>,
+  localOperations?: CoreEditOperation[],
+) => Promise<boolean>;
 
 
 interface KubernetesResourceType {
@@ -146,7 +158,7 @@ function ManualExternalResourceForm({
   node: EditNode;
   onApplied: () => void;
   onBack: () => void;
-  replaceDraft: (promise: Promise<ConfigDraft>) => Promise<boolean>;
+  replaceDraft: ReplaceCompatibilityDraft;
 }>) {
   const resourceTypes = kubernetesResourceTypes(node);
   const selection = record(record(node.externalRef).selection);
@@ -162,18 +174,22 @@ function ManualExternalResourceForm({
     event.preventDefault();
     if (!resourceType) return;
     setSubmitting(true);
-    const applied = await replaceDraft(selectExternalResource(
-      draft.draftRevision,
-      {
-        nodeId: node.id,
-        name: name.trim(),
-        kind: resourceType.kind,
-        group: resourceType.group,
-        key: selectsKey ? key.trim() : undefined,
-        acceptWarning: true,
-        manual: true,
-      },
-    ));
+    const selection = {
+      nodeId: node.id,
+      name: name.trim(),
+      kind: resourceType.kind,
+      group: resourceType.group,
+      key: selectsKey ? key.trim() : undefined,
+      acceptWarning: true,
+      manual: true,
+    };
+    const applied = await replaceDraft(
+      selectExternalResource(draft.draftRevision, selection),
+      externalResourceSelectionOperations(
+        node as CoreEditNode,
+        selection,
+      ),
+    );
     setSubmitting(false);
     if (applied) onApplied();
   };
@@ -301,7 +317,7 @@ function ExternalResourceForm({
   node: EditNode;
   onApplied: () => void;
   onBack: () => void;
-  replaceDraft: (promise: Promise<ConfigDraft>) => Promise<boolean>;
+  replaceDraft: ReplaceCompatibilityDraft;
   reportError: (message: string) => void;
 }>) {
   const updating = Boolean(details && !details.missing);
@@ -345,7 +361,14 @@ function ExternalResourceForm({
         confirmations,
         updating ? details?.name : undefined,
       );
-      const applied = await replaceDraft(Promise.resolve(result.draft));
+      const applied = await replaceDraft(
+        Promise.resolve(result.draft),
+        createdExternalResourceOperations(
+          node as CoreEditNode,
+          values,
+          result.name,
+        ),
+      );
       if (applied) onApplied();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -665,7 +688,7 @@ function ExternalResourceDialogContent({
   registerPane: (
     info: { title: string; back: () => void } | null,
   ) => void;
-  replaceDraft: (promise: Promise<ConfigDraft>) => Promise<boolean>;
+  replaceDraft: ReplaceCompatibilityDraft;
   reportError: (message: string) => void;
 }>) {
   const [inventory, setInventory] = useState<ExternalResourceInventory | null>(
@@ -763,18 +786,28 @@ function ExternalResourceDialogContent({
       setWarning({ selection, message });
       return;
     }
-    const applied = await replaceDraft(selectExternalResource(
-      draft.draftRevision,
-      selection,
-    ));
+    const applied = await replaceDraft(
+      selectExternalResource(draft.draftRevision, selection),
+      externalResourceSelectionOperations(
+        node as CoreEditNode,
+        selection,
+      ),
+    );
     if (applied) onClose();
   };
   const acceptWarning = async () => {
     if (!warning) return;
-    const applied = await replaceDraft(selectExternalResource(
-      draft.draftRevision,
-      { ...warning.selection, acceptWarning: true },
-    ));
+    const acceptedSelection = {
+      ...warning.selection,
+      acceptWarning: true,
+    };
+    const applied = await replaceDraft(
+      selectExternalResource(draft.draftRevision, acceptedSelection),
+      externalResourceSelectionOperations(
+        node as CoreEditNode,
+        acceptedSelection,
+      ),
+    );
     if (applied) onClose();
   };
   const selectionForRow = (
@@ -1108,7 +1141,7 @@ export function ExternalResourceEditor({
   node: EditNode;
   busy: boolean;
   onClose: () => void;
-  replaceDraft: (promise: Promise<ConfigDraft>) => Promise<boolean>;
+  replaceDraft: ReplaceCompatibilityDraft;
   reportError: (message: string) => void;
 }>) {
   const displayName = externalResourceDisplayName(node);
