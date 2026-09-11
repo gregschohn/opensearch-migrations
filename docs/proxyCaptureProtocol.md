@@ -1119,11 +1119,11 @@ record, apply the `E + S` inequality, and verify that the fleet's skew-bound att
 healthy. It expires only already-known incomplete accumulators. It does not retire the writer or
 partition, and a future first observation initializes fresh state.
 
-### 10.5 Existing proxy-completion schema and consumers
+### 10.5 Proxy-completion schema
 
-Existing code may use a writer identity claimed inside the `NoMoreWrites` protobuf body. That value
-must not be authoritative. The Kafka record header supplies the writer identity; a missing or
-malformed header makes the record inert and cannot settle state.
+The `NoMoreWrites` protobuf body contains the partition only. The Kafka record header supplies the
+authoritative `writerNodeId`. A missing or malformed writer header makes the record inert and cannot
+settle state.
 
 ### 10.6 Managed-fleet addendum
 

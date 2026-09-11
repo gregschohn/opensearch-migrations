@@ -534,8 +534,7 @@ CaptureCapabilityProbe {
 ```
 
 The Kafka record header for `NoMoreWrites` carries its authoritative assignment-scoped
-`writerNodeId`. A missing or malformed header makes the record inert; a compatibility field in the
-protobuf body cannot override it.
+`writerNodeId`. A missing or malformed header makes the record inert.
 
 The session field is optional only for unmanaged legacy mode. A controller-managed process fails
 startup if the configured wire version cannot carry it. `manifestCycle` keeps the exact meaning
@@ -1060,10 +1059,9 @@ capture-activation-scoped record:
 
 The replayer does not parse writer node ids or compare numeric epochs.
 
-Session mismatch is a consumer decision about an ordinary traffic or manifest record, not a new
-wire record type. Do not introduce vague wrapper names such as
-`KafkaPostDeclarationTrafficRecord` or `KafkaSupersededTrafficRecord`. Use an explicit
-`SessionMismatch` disposition/metric with the expected and observed session identities.
+Session mismatch is a consumer disposition for an ordinary traffic or manifest record, not a
+separate wire record type. The disposition and metric record the expected and observed session
+identities.
 
 ### 10.2 Reset encountered by an existing replay run
 
