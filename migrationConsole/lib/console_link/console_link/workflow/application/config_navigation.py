@@ -1090,6 +1090,15 @@ def _new_draft_snapshot_resources(
     dirty: bool,
     existing_targets: set[str],
 ) -> Tuple[Tuple[ManageNode, str], ...]:
+    path = tuple_node.get("path")
+    if (
+        tuple_node.get("valueKind") == "command"
+        or not isinstance(path, list)
+        or len(path) != 2
+        or path[0] != "snapshotMigrationConfigs"
+        or not str(path[1]).isdigit()
+    ):
+        return ()
     value = _mapping(tuple_node.get("value"))
     source = str(value.get("fromSource") or "")
     target = str(value.get("toTarget") or "")

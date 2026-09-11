@@ -3590,6 +3590,11 @@ test("names a snapshot migration before adding it and cancels title rename on na
     childIds: [snapshotGroupId, backfillGroupId],
     label: "Snapshot Migration",
     status: "warning",
+    capabilities: [{
+      kind: "edit",
+      editTargetId: "edit:snapshotMigration",
+      label: "Edit Snapshot Migration",
+    }],
   };
   snapshot.nodes[snapshotGroupId] = {
     ...snapshot.nodes["group:Live Traffic Migration:Capture"],
@@ -3952,6 +3957,16 @@ test("names a snapshot migration before adding it and cancels title rename on na
   const section = within(tree).getByRole("treeitem", {
     name: /^Snapshot Migration$/,
   });
+  await userEvent.click(section);
+  const editor = document.querySelector(".config-editor");
+  if (!editor) throw new Error("Missing configuration editor");
+  expect(await within(editor).findByRole("heading", {
+    name: "Edit Snapshot Migration",
+  })).toBeInTheDocument();
+  expect(within(editor).queryByText("Snapshot migrations")).toBeNull();
+  expect(within(editor).getByRole("button", {
+    name: "Add snapshot migration",
+  })).toBeInTheDocument();
   expect(within(section).getByRole("button", {
     name: "Add snapshot migration",
   })).toBeInTheDocument();

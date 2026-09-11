@@ -758,7 +758,18 @@ def test_project_config_navigation_owns_flat_snapshot_migrations():
             "prefix": "slice-",
             "firstIndex": 0,
         },
-        children=[migration_tuple],
+        children=[
+            migration_tuple,
+            {
+                "id": "edit:snapshotMigrationConfigs:add",
+                "path": ["snapshotMigrationConfigs"],
+                "label": "+ Add snapshot migration",
+                "valueKind": "command",
+                "status": "ok",
+                "diagnostics": [],
+                "children": [],
+            },
+        ],
     )
     archives = _collection(
         ["traffic", "s3Sources"],
@@ -789,6 +800,7 @@ def test_project_config_navigation_owns_flat_snapshot_migrations():
     assert projected.nodes["section:Snapshot Migration"].child_ids == (
         migration.id,
     )
+    assert "config:snapshotMigrationConfigs:add" not in projected.nodes
     archive = projected.nodes["resource:capturedtraffics:archive-topic"]
     assert archive.label == "archive-topic"
     assert archive.resource_type == "S3 source"
