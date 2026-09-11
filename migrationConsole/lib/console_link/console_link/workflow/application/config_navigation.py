@@ -459,11 +459,10 @@ def _project_existing_node(
         return node
     semantic_removal = False
     if (
-        draft.dirty
-        and node.resource_plural == "snapshotmigrations"
+        node.resource_plural == "snapshotmigrations"
         and len(node.navigation_key) == 4
         and all(node.navigation_key)
-        and _snapshot_migration_collection_changed(edit_nodes)
+        and "edit:snapshotMigrationConfigs" in edit_nodes
     ):
         matching_targets = snapshot_migration_targets.get(
             node.navigation_key,
@@ -581,16 +580,6 @@ def _snapshot_migration_edit_targets(
         key: tuple(target_ids)
         for key, target_ids in targets.items()
     }
-
-
-def _snapshot_migration_collection_changed(
-    edit_nodes: Mapping[str, Mapping[str, Any]],
-) -> bool:
-    collection = edit_nodes.get("edit:snapshotMigrationConfigs")
-    return (
-        collection is not None
-        and _draft_change_count(collection) > 0
-    )
 
 
 def _is_resource_target(

@@ -1257,6 +1257,61 @@ def test_a_removed_slice_does_not_mark_its_whole_group_removed():
     assert all_removed.status == "removed"
 
 
+def test_saved_snapshot_migrations_rebind_stale_array_provenance_by_tuple():
+    snapshot = _observe_pending_only_migrations(("slice-0", "slice-1"))
+    nodes = dict(snapshot.nodes)
+    stale_targets = {
+        "resource:snapshotmigrations:source-target-snap-slice-0":
+            "edit:snapshotMigrationConfigs.2",
+        "resource:snapshotmigrations:source-target-snap-slice-1":
+            "edit:snapshotMigrationConfigs.3",
+    }
+    for node_id, target_id in stale_targets.items():
+        node = nodes[node_id]
+        nodes[node_id] = replace(
+            node,
+            capabilities=(
+                ManageCapability(
+                    kind="edit",
+                    target_id=target_id,
+                    label=f"Edit {node.label}",
+                ),
+            ),
+        )
+    snapshot = replace(snapshot, nodes=nodes)
+    saved = replace(
+        _snapshot_migration_draft(
+            ("slice-0", "slice-1", "slice-2"),
+            change_count=0,
+        ),
+        dirty=False,
+    )
+
+    projected = project_config_navigation(snapshot, saved)
+
+    migrations = {
+        node.label: node
+        for node in projected.nodes.values()
+        if (
+            node.kind == "resource"
+            and node.resource_plural == "snapshotmigrations"
+        )
+    }
+    assert set(migrations) == {"slice-0", "slice-1", "slice-2"}
+    assert {
+        label: [
+            capability.target_id
+            for capability in node.capabilities
+            if capability.kind == "edit"
+        ]
+        for label, node in migrations.items()
+    } == {
+        "slice-0": ["edit:snapshotMigrationConfigs.0"],
+        "slice-1": ["edit:snapshotMigrationConfigs.1"],
+        "slice-2": ["edit:snapshotMigrationConfigs.2"],
+    }
+
+
 def test_sibling_snapshot_groups_are_labeled_by_where_they_landed():
     # Groups are built against the parent they were offered, not the one they get
     # when an intermediate level is dropped, so labels have to be recomputed or
