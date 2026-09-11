@@ -23,6 +23,7 @@
   },
   "dependencies": {
     "@kubernetes/client-node": "^1.4.0",
+    "@opensearch-migrations/config-edit-core": "*",
     "@opensearch-migrations/schemas": "*",
     "ajv": "^8.20.0",
     "ci": "^2.3.0",
