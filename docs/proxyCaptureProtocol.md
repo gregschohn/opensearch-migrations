@@ -21,6 +21,13 @@ departed continues using its last usable assignment until it receives a replacem
 not capture-health or replay evidence and does not authorize another proxy to declare the departed
 proxy instance finished.
 
+One process-level timing detail remains unresolved. Five minutes is the default operational target
+for orderly retirement, not permission to terminate without attempting terminal self
+`NoMoreWrites`. Retirement continues after that target. The configured manifest expiration
+interval `E` is the terminal waiting limit, but the design has not yet fixed whether `E` begins when
+orderly shutdown starts or when periodic manifests are quiesced after the last accepted manifest.
+The shutdown timer must not be implemented until that origin is settled.
+
 ---
 
 ## 1. Goals and accepted boundaries
@@ -293,8 +300,11 @@ A planned process retirement first becomes `DRAINING`:
 6. it leaves the group and exits after those records are acknowledged.
 
 This orderly retirement is performed only while capture and Kafka publication remain trustworthy.
-Its default completion bound is five minutes. The bound is not used for capture-compromise or
-unstable-process failures described in §7.
+Its default completion target is five minutes. Missing the target emits a high-severity diagnostic
+and retirement continues through final empty manifests and `NoMoreWrites`. The proxy gives up only
+after the configured manifest expiration interval `E`; the unresolved origin of that interval is
+called out above. This timing policy is not used for capture-compromise or unstable-process
+failures described in §7.
 
 ### 3.6 Later use of a partition
 
