@@ -2989,7 +2989,7 @@ export function ConfigEditor({
     try {
       if (!await waitForPendingCommit()) return;
       if (useBrowserDraft) {
-        let current = rawYamlDirty
+        const current = rawYamlDirty
           ? await checkRawYaml() as BrowserConfigDraft | null
           : queryClient.getQueryData<BrowserConfigDraft>(
             BROWSER_CONFIG_DRAFT_QUERY_KEY,
@@ -2997,7 +2997,7 @@ export function ConfigEditor({
         if (!current) return;
         try {
           if (saveChanges) {
-            current = await persistBrowserDraft(current);
+            await persistBrowserDraft(current);
           }
           const compatibilityDraft = queryClient.getQueryData<ConfigDraft>([
             "config-draft",
