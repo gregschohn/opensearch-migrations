@@ -1,6 +1,7 @@
 package org.opensearch.migrations.trafficcapture.kafkaoffloader;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
@@ -150,6 +151,7 @@ public final class CaptureRoutingState {
         private final AtomicLong manifestCycle = new AtomicLong();
         private final Set<String> connectionIds = new HashSet<>();
         private WriterStatus status = WriterStatus.INITIALIZING;
+        private Long lastAcceptedManifestLogAppendTime;
 
         private WriterPartitionState(String writerNodeId, int partition) {
             this.writerNodeId = writerNodeId;
@@ -419,6 +421,52 @@ public final class CaptureRoutingState {
 
     synchronized WriterStatus writerStatus(String writerNodeId, int partition) {
         return requireWriterPartition(writerNodeId, partition).status;
+    }
+
+    synchronized void acceptManifestLogAppendTime(
+        PreparedManifest manifest,
+        long manifestLogAppendTime,
+        Duration expirationInterval
+    ) {
+        Objects.requireNonNull(manifest);
+        Objects.requireNonNull(expirationInterval);
+        if (expirationInterval.isZero() || expirationInterval.isNegative()) {
+            throw new IllegalArgumentException("expirationInterval must be positive");
+        }
+        if (manifestLogAppendTime <= 0) {
+            throw new IllegalStateException(
+                "Kafka did not assign a positive LogAppendTime to manifest "
+                    + manifest.writerNodeId()
+                    + "/"
+                    + manifest.partition()
+                    + "/"
+                    + manifest.manifestCycle()
+            );
+        }
+        var state = requireWriterPartition(manifest.writerNodeId(), manifest.partition());
+        var previous = state.lastAcceptedManifestLogAppendTime;
+        if (previous != null) {
+            var elapsed = Math.subtractExact(manifestLogAppendTime, previous);
+            if (elapsed >= expirationInterval.toMillis()) {
+                throw new IllegalStateException(
+                    "Manifest broker time exceeded the configured expiration interval for "
+                        + manifest.writerNodeId()
+                        + "/"
+                        + manifest.partition()
+                        + ": previous="
+                        + previous
+                        + ", candidate="
+                        + manifestLogAppendTime
+                        + ", expirationMillis="
+                        + expirationInterval.toMillis()
+                );
+            }
+        }
+        state.lastAcceptedManifestLogAppendTime = manifestLogAppendTime;
+    }
+
+    synchronized Long lastAcceptedManifestLogAppendTime(String writerNodeId, int partition) {
+        return requireWriterPartition(writerNodeId, partition).lastAcceptedManifestLogAppendTime;
     }
 
     synchronized CompletableFuture<Void> whenNoConnections() {

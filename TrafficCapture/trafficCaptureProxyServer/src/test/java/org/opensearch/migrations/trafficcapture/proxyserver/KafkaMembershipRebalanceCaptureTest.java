@@ -1,5 +1,9 @@
 package org.opensearch.migrations.trafficcapture.proxyserver;
 
+import java.net.InetSocketAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.net.URI;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -8,7 +12,10 @@ import java.util.Map;
 import java.util.Properties;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.IntStream;
 
@@ -18,9 +25,15 @@ import org.opensearch.migrations.trafficcapture.kafkaoffloader.CaptureKafkaPubli
 import org.opensearch.migrations.trafficcapture.kafkaoffloader.CaptureMembershipAssignmentTracker;
 import org.opensearch.migrations.trafficcapture.kafkaoffloader.KafkaCaptureFactory;
 import org.opensearch.migrations.trafficcapture.kafkaoffloader.KafkaConfig;
+import org.opensearch.migrations.trafficcapture.netty.CaptureFailurePolicy;
+import org.opensearch.migrations.trafficcapture.netty.CaptureProcessState;
+import org.opensearch.migrations.trafficcapture.netty.RequestCapturePredicate;
 import org.opensearch.migrations.trafficcapture.protos.LivenessSnapshotChunk;
 import org.opensearch.migrations.trafficcapture.protos.NoMoreWrites;
 import org.opensearch.migrations.trafficcapture.protos.TrafficRecord;
+import org.opensearch.migrations.trafficcapture.proxyserver.netty.BacksideConnectionPool;
+import org.opensearch.migrations.trafficcapture.proxyserver.netty.NettyScanningHttpProxy;
+import org.opensearch.migrations.trafficcapture.proxyserver.netty.ProxyChannelInitializer;
 import org.opensearch.migrations.trafficcapture.proxyserver.testcontainers.KafkaContainerTestBase;
 import org.opensearch.migrations.trafficcapture.proxyserver.testcontainers.annotations.KafkaContainerTest;
 
@@ -31,9 +44,11 @@ import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.clients.producer.Callback;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.MockProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
+import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.Cluster;
 import org.apache.kafka.common.Node;
@@ -277,6 +292,144 @@ class KafkaMembershipRebalanceCaptureTest {
             Assertions.assertNull(harness.captureFailure().get());
             Assertions.assertNull(harness.unstableFailure().get());
         } finally {
+            deleteTopic(bootstrapServers, topic);
+        }
+    }
+
+    @Test
+    void productionProxyStopDrivesTerminalCaptureAndWriterRetirement() throws Exception {
+        var topic = "proxy-composed-retirement-" + UUID.randomUUID();
+        var bootstrapServers = KAFKA.getContainer().getBootstrapServers();
+        createTopic(bootstrapServers, topic);
+        var rootContext = new RootCaptureContext(
+            OpenTelemetry.noop(),
+            IContextTracker.DO_NOTHING_TRACKER
+        );
+        var harness = startFactory(
+            rootContext,
+            bootstrapServers,
+            topic,
+            "activation-composed-retirement"
+        );
+        var backendAccepted = new CountDownLatch(1);
+        var backendSocket = new AtomicReference<Socket>();
+        var backendExecutor = Executors.newSingleThreadExecutor();
+        try (
+            harness;
+            var reader = new KafkaConsumer<String, byte[]>(readerProperties(bootstrapServers));
+            var backendServer = new ServerSocket(0);
+            var proxy = new BoundPortProxy(harness.unstableFailure()::set);
+            var client = new Socket()
+        ) {
+            assignAllPartitions(reader, topic);
+            var acceptedBackend = backendExecutor.submit(() -> {
+                var accepted = backendServer.accept();
+                backendSocket.set(accepted);
+                backendAccepted.countDown();
+                return accepted;
+            });
+            var processState = new CaptureProcessState(CaptureFailurePolicy.FAIL_CLOSED);
+            var connectionPool = new BacksideConnectionPool(
+                URI.create("http://127.0.0.1:" + backendServer.getLocalPort()),
+                null,
+                0,
+                Duration.ZERO
+            );
+            proxy.start(
+                new ProxyChannelInitializer<>(
+                    rootContext,
+                    connectionPool,
+                    null,
+                    harness.factory(),
+                    new RequestCapturePredicate(),
+                    processState
+                ),
+                1
+            );
+
+            client.connect(new InetSocketAddress("127.0.0.1", proxy.boundPort()));
+            Assertions.assertTrue(backendAccepted.await(5, TimeUnit.SECONDS));
+            client.getOutputStream().write('G');
+            client.getOutputStream().flush();
+
+            var retirementExceededWarningTarget = new AtomicBoolean();
+            CaptureProxy.performOrderlyShutdown(
+                proxy,
+                harness.factory(),
+                Duration.ofSeconds(5),
+                () -> retirementExceededWarningTarget.set(true)
+            );
+
+            acceptedBackend.get(5, TimeUnit.SECONDS).close();
+            Assertions.assertFalse(
+                retirementExceededWarningTarget.get(),
+                "Composed proxy retirement exceeded its warning target"
+            );
+            var records = readThroughCurrentEnd(reader);
+            var activationTraffic = records.stream()
+                .filter(record -> CaptureKafkaPublisher.isRecordType(
+                    record.headers(),
+                    CaptureKafkaPublisher.TRAFFIC_RECORD_TYPE
+                ))
+                .map(record -> {
+                    try {
+                        return Map.entry(record, TrafficRecord.parseFrom(record.value()));
+                    } catch (Exception e) {
+                        throw new IllegalStateException(e);
+                    }
+                })
+                .filter(entry -> entry.getValue().getWriterNodeId().startsWith(
+                    "activation-composed-retirement:"
+                ))
+                .toList();
+            Assertions.assertEquals(
+                1,
+                activationTraffic.stream()
+                    .flatMap(entry -> entry.getValue().getObservationsList().stream())
+                    .filter(observation -> observation.hasClose())
+                    .count()
+            );
+            var terminalTraffic = activationTraffic.stream()
+                .filter(entry -> entry.getValue().getObservationsList()
+                    .stream()
+                    .anyMatch(observation -> observation.hasClose()))
+                .findFirst()
+                .orElseThrow();
+            var trafficRecord = terminalTraffic.getKey();
+            var traffic = terminalTraffic.getValue();
+            Assertions.assertTrue(
+                traffic.getObservations(traffic.getObservationsCount() - 1).hasClose()
+            );
+
+            for (int partition = 0; partition < 4; ++partition) {
+                assertTerminalWriterOrdering(records, traffic.getWriterNodeId(), partition);
+            }
+            var finalManifest = records.stream()
+                .filter(record -> record.partition() == traffic.getPartition())
+                .filter(record -> CaptureKafkaPublisher.isRecordType(
+                    record.headers(),
+                    CaptureKafkaPublisher.LIVENESS_RECORD_TYPE
+                ))
+                .filter(record -> {
+                    try {
+                        return traffic.getWriterNodeId().equals(
+                            LivenessSnapshotChunk.parseFrom(record.value()).getWriterNodeId()
+                        );
+                    } catch (Exception e) {
+                        throw new IllegalStateException(e);
+                    }
+                })
+                .max(java.util.Comparator.comparingLong(ConsumerRecord::offset))
+                .orElseThrow();
+            Assertions.assertTrue(trafficRecord.offset() < finalManifest.offset());
+            Assertions.assertNull(harness.captureFailure().get());
+            Assertions.assertNull(harness.unstableFailure().get());
+        } finally {
+            var accepted = backendSocket.get();
+            if (accepted != null) {
+                accepted.close();
+            }
+            backendExecutor.shutdownNow();
             deleteTopic(bootstrapServers, topic);
         }
     }
@@ -638,7 +791,34 @@ class KafkaMembershipRebalanceCaptureTest {
             null,
             new StringSerializer(),
             new ByteArraySerializer()
-        );
+        ) {
+            @Override
+            public synchronized java.util.concurrent.Future<RecordMetadata> send(
+                ProducerRecord<String, byte[]> record,
+                Callback callback
+            ) {
+                return super.send(record, (metadata, failure) -> {
+                    if (failure != null || metadata == null) {
+                        callback.onCompletion(metadata, failure);
+                        return;
+                    }
+                    var brokerTimestamp = record.timestamp() != null && record.timestamp() > 0
+                        ? record.timestamp()
+                        : 1L;
+                    callback.onCompletion(
+                        new RecordMetadata(
+                            new TopicPartition(metadata.topic(), metadata.partition()),
+                            metadata.offset(),
+                            0,
+                            brokerTimestamp,
+                            metadata.serializedKeySize(),
+                            metadata.serializedValueSize()
+                        ),
+                        null
+                    );
+                });
+            }
+        };
     }
 
     private record FactoryHarness(
@@ -661,6 +841,33 @@ class KafkaMembershipRebalanceCaptureTest {
         @Override
         public void close() {
             factory.close();
+        }
+    }
+
+    private static final class BoundPortProxy
+        extends NettyScanningHttpProxy
+        implements AutoCloseable {
+        private boolean stopped;
+
+        private BoundPortProxy(java.util.function.Consumer<Throwable> unstableFailureHandler) {
+            super(0, unstableFailureHandler);
+        }
+
+        private int boundPort() {
+            return ((InetSocketAddress) mainChannel.localAddress()).getPort();
+        }
+
+        @Override
+        public void stop() throws InterruptedException {
+            if (!stopped && mainChannel != null) {
+                stopped = true;
+                super.stop();
+            }
+        }
+
+        @Override
+        public void close() throws InterruptedException {
+            stop();
         }
     }
 }
