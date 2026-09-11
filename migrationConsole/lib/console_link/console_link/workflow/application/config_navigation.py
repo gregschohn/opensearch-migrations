@@ -179,21 +179,10 @@ def _snapshot_group_status(
     )
 
 
-def group_snapshot_migration_navigation(
-    snapshot: ManageSnapshot,
-) -> ManageSnapshot:
-    """Sort SnapshotMigration leaves and add only useful semantic groups.
-
-    Edit and runtime projections call this same function with different leaf
-    sets. A source/target/snapshot prefix becomes collapsible only when it
-    contains at least three leaves and would have at least two direct children.
-    """
-    nodes = {
-        node_id: node
-        for node_id, node in snapshot.nodes.items()
-        if not node_id.startswith(_SNAPSHOT_DYNAMIC_GROUP_PREFIX)
-    }
-    resources = sorted(
+def _snapshot_navigation_resources(
+    nodes: Mapping[str, ManageNode],
+) -> list[ManageNode]:
+    return sorted(
         (
             node for node in nodes.values()
             if (
@@ -205,10 +194,14 @@ def group_snapshot_migration_navigation(
         ),
         key=_snapshot_sort_key,
     )
-    base_group = nodes.get(_SNAPSHOT_BASE_GROUP_ID)
-    if base_group is None:
-        return snapshot
 
+
+def _prepare_snapshot_navigation_resources(
+    nodes: Dict[str, ManageNode],
+    resources: Iterable[ManageNode],
+    base_group: ManageNode,
+) -> None:
+    resources = tuple(resources)
     resource_ids = {node.id for node in resources}
     nodes[_SNAPSHOT_BASE_GROUP_ID] = replace(
         base_group,
@@ -226,61 +219,63 @@ def group_snapshot_migration_navigation(
             label=_snapshot_migration_name(*resource.navigation_key),
         )
 
-    def representations(
-        items: Tuple[ManageNode, ...],
-        level: int,
-        parent_id: str,
-    ) -> list[str]:
-        if level >= 3:
-            result = []
-            for item in items:
-                nodes[item.id] = replace(item, parent_id=parent_id)
-                result.append(item.id)
-            return result
 
-        buckets: Dict[str, list[ManageNode]] = {}
+def _snapshot_navigation_representations(
+    nodes: Dict[str, ManageNode],
+    revision: str,
+    items: Tuple[ManageNode, ...],
+    level: int,
+    parent_id: str,
+) -> list[str]:
+    if level >= 3:
         for item in items:
-            buckets.setdefault(item.navigation_key[level], []).append(item)
-        result: list[str] = []
-        for value in sorted(buckets, key=_natural_component):
-            bucket = tuple(sorted(buckets[value], key=_snapshot_sort_key))
-            prefix = bucket[0].navigation_key[:level + 1]
-            prospective_parent = _snapshot_group_id(prefix)
-            children = representations(bucket, level + 1, prospective_parent)
-            if len(bucket) >= 3 and len(children) >= 2:
-                group_id = prospective_parent
-                nodes[group_id] = ManageNode(
-                    id=group_id,
-                    revision=f"{snapshot.revision}:{group_id}",
-                    parent_id=parent_id,
-                    kind="group",
-                    label=_snapshot_group_label(prefix, parent_id),
-                    status=_snapshot_group_status(nodes, children),
-                    child_ids=tuple(children),
-                )
-                result.append(group_id)
-                continue
+            nodes[item.id] = replace(item, parent_id=parent_id)
+        return [item.id for item in items]
+
+    buckets: Dict[str, list[ManageNode]] = {}
+    for item in items:
+        buckets.setdefault(item.navigation_key[level], []).append(item)
+    result: list[str] = []
+    for value in sorted(buckets, key=_natural_component):
+        bucket = tuple(sorted(buckets[value], key=_snapshot_sort_key))
+        prefix = bucket[0].navigation_key[:level + 1]
+        prospective_parent = _snapshot_group_id(prefix)
+        children = _snapshot_navigation_representations(
+            nodes,
+            revision,
+            bucket,
+            level + 1,
+            prospective_parent,
+        )
+        if len(bucket) >= 3 and len(children) >= 2:
+            nodes[prospective_parent] = ManageNode(
+                id=prospective_parent,
+                revision=f"{revision}:{prospective_parent}",
+                parent_id=parent_id,
+                kind="group",
+                label=_snapshot_group_label(prefix, parent_id),
+                status=_snapshot_group_status(nodes, children),
+                child_ids=tuple(children),
+            )
+            result.append(prospective_parent)
+        else:
             for child_id in children:
                 nodes[child_id] = replace(nodes[child_id], parent_id=parent_id)
             result.extend(children)
-        return result
+    return result
 
-    grouped_ids = representations(
-        tuple(resources),
-        0,
-        _SNAPSHOT_BASE_GROUP_ID,
-    )
-    base = nodes[_SNAPSHOT_BASE_GROUP_ID]
-    nodes[_SNAPSHOT_BASE_GROUP_ID] = replace(
-        base,
-        child_ids=(*base.child_ids, *grouped_ids),
-        status=_snapshot_group_status(nodes, grouped_ids) if grouped_ids else base.status,
-    )
+
+def _relabel_snapshot_navigation(
+    nodes: Dict[str, ManageNode],
+    resources: Iterable[ManageNode],
+) -> None:
     # Groups are created against the parent they were offered, which is not the
     # parent they end up with when an intermediate level is not worth keeping.
     # Label them from where they actually landed so siblings stay distinguishable.
-    for node_id, node in list(nodes.items()):
-        if node.kind != "group" or not node_id.startswith(_SNAPSHOT_DYNAMIC_GROUP_PREFIX):
+    for node_id, node in nodes.items():
+        if node.kind != "group" or not node_id.startswith(
+            _SNAPSHOT_DYNAMIC_GROUP_PREFIX
+        ):
             continue
         nodes[node_id] = replace(
             node,
@@ -291,14 +286,10 @@ def group_snapshot_migration_navigation(
         )
     for resource in resources:
         grouped_resource = nodes[resource.id]
+        parent_id = grouped_resource.parent_id
         parent_depth = (
-            int(grouped_resource.parent_id.split(":", 2)[1])
-            if (
-                grouped_resource.parent_id
-                and grouped_resource.parent_id.startswith(
-                    _SNAPSHOT_DYNAMIC_GROUP_PREFIX
-                )
-            )
+            int(parent_id.split(":", 2)[1])
+            if parent_id and parent_id.startswith(_SNAPSHOT_DYNAMIC_GROUP_PREFIX)
             else 0
         )
         nodes[resource.id] = replace(
@@ -307,36 +298,78 @@ def group_snapshot_migration_navigation(
                 *resource.navigation_key[parent_depth:]
             ),
         )
+
+
+def _flatten_snapshot_navigation_base(
+    nodes: Dict[str, ManageNode],
+) -> None:
     section = nodes.get(_SNAPSHOT_SECTION_ID)
     base_group = nodes.get(_SNAPSHOT_BASE_GROUP_ID)
     if (
-        section is not None
-        and base_group is not None
-        and base_group.parent_id == section.id
+        section is None
+        or base_group is None
+        or base_group.parent_id != section.id
     ):
-        flattened_ids = []
-        for child_id in section.child_ids:
-            if child_id == base_group.id:
-                flattened_ids.extend(base_group.child_ids)
-            else:
-                flattened_ids.append(child_id)
-        for child_id in base_group.child_ids:
-            child = nodes.get(child_id)
-            if child is not None:
-                nodes[child_id] = replace(child, parent_id=section.id)
-        # This function runs over the runtime snapshot and again over the merged
-        # draft projection. The earlier pass leaves flattened leaves attached to
-        # the section, so drop any the current pass has re-homed into a group -
-        # otherwise the tree walk emits them twice, once per parent.
-        nodes[section.id] = replace(
-            section,
-            child_ids=tuple(
-                child_id for child_id in dict.fromkeys(flattened_ids)
-                if child_id not in nodes
-                or nodes[child_id].parent_id == section.id
-            ),
-        )
-        del nodes[base_group.id]
+        return
+    flattened_ids = []
+    for child_id in section.child_ids:
+        if child_id == base_group.id:
+            flattened_ids.extend(base_group.child_ids)
+        else:
+            flattened_ids.append(child_id)
+    for child_id in base_group.child_ids:
+        child = nodes.get(child_id)
+        if child is not None:
+            nodes[child_id] = replace(child, parent_id=section.id)
+    # This function runs over the runtime snapshot and again over the merged
+    # draft projection. The earlier pass leaves flattened leaves attached to
+    # the section, so drop any the current pass has re-homed into a group.
+    nodes[section.id] = replace(
+        section,
+        child_ids=tuple(
+            child_id for child_id in dict.fromkeys(flattened_ids)
+            if child_id not in nodes
+            or nodes[child_id].parent_id == section.id
+        ),
+    )
+    del nodes[base_group.id]
+
+
+def group_snapshot_migration_navigation(
+    snapshot: ManageSnapshot,
+) -> ManageSnapshot:
+    """Sort SnapshotMigration leaves and add only useful semantic groups.
+
+    Edit and runtime projections call this same function with different leaf
+    sets. A source/target/snapshot prefix becomes collapsible only when it
+    contains at least three leaves and would have at least two direct children.
+    """
+    nodes = {
+        node_id: node
+        for node_id, node in snapshot.nodes.items()
+        if not node_id.startswith(_SNAPSHOT_DYNAMIC_GROUP_PREFIX)
+    }
+    resources = _snapshot_navigation_resources(nodes)
+    base_group = nodes.get(_SNAPSHOT_BASE_GROUP_ID)
+    if base_group is None:
+        return snapshot
+
+    _prepare_snapshot_navigation_resources(nodes, resources, base_group)
+    grouped_ids = _snapshot_navigation_representations(
+        nodes,
+        snapshot.revision,
+        tuple(resources),
+        0,
+        _SNAPSHOT_BASE_GROUP_ID,
+    )
+    base = nodes[_SNAPSHOT_BASE_GROUP_ID]
+    nodes[_SNAPSHOT_BASE_GROUP_ID] = replace(
+        base,
+        child_ids=(*base.child_ids, *grouped_ids),
+        status=_snapshot_group_status(nodes, grouped_ids) if grouped_ids else base.status,
+    )
+    _relabel_snapshot_navigation(nodes, resources)
+    _flatten_snapshot_navigation_base(nodes)
     return cast(ManageSnapshot, replace(snapshot, nodes=nodes))
 
 
@@ -345,6 +378,62 @@ def _node_edit_target(node: ManageNode) -> Optional[str]:
         if capability.kind == "edit" and capability.target_id:
             return capability.target_id
     return None
+
+
+def _resource_surface_owner(
+    nodes: Mapping[str, ManageNode],
+    target: str,
+) -> Optional[str]:
+    return next(
+        (
+            node_id for node_id, node in nodes.items()
+            if node.kind == "resource"
+            and (edit_target := _node_edit_target(node)) is not None
+            and (
+                edit_target == target
+                or edit_target.startswith(f"{target}.")
+            )
+        ),
+        None,
+    )
+
+
+def _replace_definition_with_resource(
+    nodes: Dict[str, ManageNode],
+    definition: ManageNode,
+    owner_id: str,
+) -> None:
+    parent_id = definition.parent_id
+    if not parent_id or parent_id not in nodes:
+        return
+    parent = nodes[parent_id]
+    nodes[parent_id] = replace(parent, child_ids=tuple(
+        owner_id if child_id == definition.id else child_id
+        for child_id in parent.child_ids
+        if child_id != owner_id
+    ))
+
+
+def _remove_resource_from_previous_parent(
+    nodes: Dict[str, ManageNode],
+    owner_id: str,
+    previous_parent_id: Optional[str],
+    next_parent_id: Optional[str],
+) -> None:
+    if (
+        not previous_parent_id
+        or previous_parent_id == next_parent_id
+        or previous_parent_id not in nodes
+    ):
+        return
+    previous_parent = nodes[previous_parent_id]
+    nodes[previous_parent_id] = replace(
+        previous_parent,
+        child_ids=tuple(
+            child_id for child_id in previous_parent.child_ids
+            if child_id != owner_id
+        ),
+    )
 
 
 def _prefer_resource_surfaces(nodes: Dict[str, ManageNode]) -> None:
@@ -366,18 +455,7 @@ def _prefer_resource_surfaces(nodes: Dict[str, ManageNode]) -> None:
         target = _node_edit_target(definition)
         if not target:
             continue
-        owner_id = next(
-            (
-                node_id for node_id, node in nodes.items()
-                if node.kind == "resource"
-                and (edit_target := _node_edit_target(node)) is not None
-                and (
-                    edit_target == target
-                    or edit_target.startswith(f"{target}.")
-                )
-            ),
-            None,
-        )
+        owner_id = _resource_surface_owner(nodes, target)
         if owner_id is None:
             continue
         resource = nodes[owner_id]
@@ -388,26 +466,13 @@ def _prefer_resource_surfaces(nodes: Dict[str, ManageNode]) -> None:
         ))
         previous_parent_id = nodes[owner_id].parent_id
         definition_parent_id = definition.parent_id
-        if definition_parent_id and definition_parent_id in nodes:
-            parent = nodes[definition_parent_id]
-            nodes[definition_parent_id] = replace(parent, child_ids=tuple(
-                owner_id if child_id == definition_id else child_id
-                for child_id in parent.child_ids
-                if child_id != owner_id
-            ))
-        if (
-            previous_parent_id
-            and previous_parent_id != definition_parent_id
-            and previous_parent_id in nodes
-        ):
-            previous_parent = nodes[previous_parent_id]
-            nodes[previous_parent_id] = replace(
-                previous_parent,
-                child_ids=tuple(
-                    child_id for child_id in previous_parent.child_ids
-                    if child_id != owner_id
-                ),
-            )
+        _replace_definition_with_resource(nodes, definition, owner_id)
+        _remove_resource_from_previous_parent(
+            nodes,
+            owner_id,
+            previous_parent_id,
+            definition_parent_id,
+        )
         nodes[owner_id] = replace(
             nodes[owner_id],
             parent_id=definition_parent_id,
@@ -445,6 +510,66 @@ def _without_workflow_steps(snapshot: ManageSnapshot) -> ManageSnapshot:
     ))
 
 
+def _reconcile_snapshot_migration_edit(
+    node: ManageNode,
+    edit_nodes: Mapping[str, Mapping[str, Any]],
+    snapshot_migration_targets: Mapping[
+        Tuple[str, ...],
+        Tuple[str, ...],
+    ],
+) -> tuple[ManageNode, bool]:
+    is_snapshot_migration = (
+        node.resource_plural == "snapshotmigrations"
+        and len(node.navigation_key) == 4
+        and all(node.navigation_key)
+        and "edit:snapshotMigrationConfigs" in edit_nodes
+    )
+    if not is_snapshot_migration:
+        return node, False
+    matching_targets = snapshot_migration_targets.get(node.navigation_key, ())
+    if not matching_targets:
+        return _without_edit_capability(node), True
+    current_target = _edit_target(node)
+    target = (
+        current_target
+        if current_target in matching_targets
+        else matching_targets[0]
+    )
+    return _with_edit_capability(node, target), False
+
+
+def _explicit_resource_removal(node: ManageNode) -> bool:
+    return (
+        node.config_presence.get("pending") is False
+        and (
+            node.config_presence.get("deployed") is True
+            or node.config_presence.get("submitted") is True
+        )
+    )
+
+
+def _resource_removed_from_draft(
+    semantic_removal: bool,
+    draft: ConfigDraft,
+    target_id: Optional[str],
+    edit_nodes: Mapping[str, Mapping[str, Any]],
+    placements: Tuple[_Placement, ...],
+) -> bool:
+    if semantic_removal:
+        return True
+    return (
+        draft.dirty
+        and target_id is not None
+        and _is_resource_target(target_id, placements)
+        and target_id not in edit_nodes
+        and _resource_collection_changed(
+            target_id,
+            edit_nodes,
+            placements,
+        )
+    )
+
+
 def _project_existing_node(
     node: ManageNode,
     draft: ConfigDraft,
@@ -457,30 +582,11 @@ def _project_existing_node(
 ) -> ManageNode:
     if node.kind != "resource":
         return node
-    semantic_removal = False
-    if (
-        node.resource_plural == "snapshotmigrations"
-        and len(node.navigation_key) == 4
-        and all(node.navigation_key)
-        and "edit:snapshotMigrationConfigs" in edit_nodes
-    ):
-        matching_targets = snapshot_migration_targets.get(
-            node.navigation_key,
-            (),
-        )
-        if matching_targets:
-            current_target = _edit_target(node)
-            node = _with_edit_capability(
-                node,
-                (
-                    current_target
-                    if current_target in matching_targets
-                    else matching_targets[0]
-                ),
-            )
-        else:
-            semantic_removal = True
-            node = _without_edit_capability(node)
+    node, semantic_removal = _reconcile_snapshot_migration_edit(
+        node,
+        edit_nodes,
+        snapshot_migration_targets,
+    )
     target_id = _edit_target(node)
     edit_node = edit_nodes.get(target_id) if target_id is not None else None
     config_state = (
@@ -488,26 +594,13 @@ def _project_existing_node(
         if edit_node is not None
         else None
     )
-    explicit_removal = (
-        node.config_presence.get("pending") is False
-        and (
-            node.config_presence.get("deployed") is True
-            or node.config_presence.get("submitted") is True
-        )
-    )
-    removed_from_draft = (
-        semantic_removal
-        or (
-            draft.dirty
-            and target_id is not None
-            and _is_resource_target(target_id, placements)
-            and target_id not in edit_nodes
-            and _resource_collection_changed(
-                target_id,
-                edit_nodes,
-                placements,
-            )
-        )
+    explicit_removal = _explicit_resource_removal(node)
+    removed_from_draft = _resource_removed_from_draft(
+        semantic_removal,
+        draft,
+        target_id,
+        edit_nodes,
+        placements,
     )
     if not explicit_removal and not removed_from_draft:
         return cast(ManageNode, replace(node, config_state=config_state))
@@ -1169,6 +1262,77 @@ def _append_child(
     ))
 
 
+def _merge_draft_snapshot_resource(
+    nodes: Dict[str, ManageNode],
+    node: ManageNode,
+) -> None:
+    existing = nodes.get(node.id)
+    if existing is None:
+        nodes[node.id] = node
+        return
+    retained_capabilities = tuple(
+        capability
+        for capability in existing.capabilities
+        if capability.kind != "edit"
+    )
+    nodes[node.id] = cast(ManageNode, replace(
+        existing,
+        capabilities=(
+            *retained_capabilities,
+            *node.capabilities,
+        ),
+        config_state=node.config_state,
+        navigation_key=node.navigation_key,
+    ))
+
+
+def _add_draft_snapshot_resources(
+    nodes: Dict[str, ManageNode],
+    collection: Mapping[str, Any],
+    placement: _Placement,
+    revision: str,
+    dirty: bool,
+    existing_targets: set[str],
+) -> None:
+    for tuple_node in _mapping_children(collection):
+        for node, target_id in _new_draft_snapshot_resources(
+            placement,
+            tuple_node,
+            revision,
+            dirty,
+            existing_targets,
+        ):
+            _merge_draft_snapshot_resource(nodes, node)
+            existing_targets.add(target_id)
+            _append_child(nodes, placement.group_id, node.id, revision)
+
+
+def _add_draft_collection_resources(
+    nodes: Dict[str, ManageNode],
+    collection: Mapping[str, Any],
+    placement: _Placement,
+    revision: str,
+    dirty: bool,
+    existing_targets: set[str],
+) -> None:
+    for index, child in enumerate(_mapping_children(collection)):
+        candidate = _new_draft_resource(
+            placement,
+            child,
+            index,
+            revision,
+            dirty,
+            existing_targets,
+            set(nodes),
+        )
+        if candidate is None:
+            continue
+        node, target_id = candidate
+        nodes[node.id] = node
+        existing_targets.add(target_id)
+        _append_child(nodes, placement.group_id, node.id, revision)
+
+
 def _add_draft_resources(
     nodes: Dict[str, ManageNode],
     edit_nodes: Mapping[str, Mapping[str, Any]],
@@ -1189,51 +1353,23 @@ def _add_draft_resources(
         if collection is None:
             continue
         if placement.collection_path == ("snapshotMigrationConfigs",):
-            for tuple_node in _mapping_children(collection):
-                for node, target_id in _new_draft_snapshot_resources(
-                    placement,
-                    tuple_node,
-                    revision,
-                    dirty,
-                    existing_targets,
-                ):
-                    existing = nodes.get(node.id)
-                    if existing is None:
-                        nodes[node.id] = node
-                    else:
-                        retained_capabilities = tuple(
-                            capability
-                            for capability in existing.capabilities
-                            if capability.kind != "edit"
-                        )
-                        nodes[node.id] = cast(ManageNode, replace(
-                            existing,
-                            capabilities=(
-                                *retained_capabilities,
-                                *node.capabilities,
-                            ),
-                            config_state=node.config_state,
-                            navigation_key=node.navigation_key,
-                        ))
-                    existing_targets.add(target_id)
-                    _append_child(nodes, placement.group_id, node.id, revision)
-            continue
-        for index, child in enumerate(_mapping_children(collection)):
-            candidate = _new_draft_resource(
+            _add_draft_snapshot_resources(
+                nodes,
+                collection,
                 placement,
-                child,
-                index,
                 revision,
                 dirty,
                 existing_targets,
-                set(nodes),
             )
-            if candidate is None:
-                continue
-            node, target_id = candidate
-            nodes[node.id] = node
-            existing_targets.add(target_id)
-            _append_child(nodes, placement.group_id, node.id, revision)
+        else:
+            _add_draft_collection_resources(
+                nodes,
+                collection,
+                placement,
+                revision,
+                dirty,
+                existing_targets,
+            )
 
 
 def _new_draft_definition(

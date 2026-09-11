@@ -168,11 +168,12 @@ export function pendingResourceRename(
     ].join(".")}`;
   const label = `${option.labelPrefix ?? ""}${newName}`;
   const resourceName = `${option.resourceNamePrefix ?? ""}${newName}`;
-  const id = option.editTargetStable
-    ? resourceId
-    : option.placement.resourcePlural && option.resourceNamePrefix
-      ? `resource:${option.placement.resourcePlural}:${resourceName}`
-      : `optimistic-rename:${editTargetId}`;
+  let id = `optimistic-rename:${editTargetId}`;
+  if (option.editTargetStable) {
+    id = resourceId;
+  } else if (option.placement.resourcePlural && option.resourceNamePrefix) {
+    id = `resource:${option.placement.resourcePlural}:${resourceName}`;
+  }
   return {
     id,
     editTargetId,

@@ -4009,7 +4009,7 @@ test("names a snapshot migration before adding it and cancels title rename on na
   expect(titleName).toHaveValue("slice-0");
   expect(titleName).toHaveAttribute(
     "pattern",
-    "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$",
+    String.raw`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`,
   );
   expect(within(title).getByText("source-target-snap1-")).toBeInTheDocument();
   await userEvent.click(within(tree).getByRole("treeitem", {

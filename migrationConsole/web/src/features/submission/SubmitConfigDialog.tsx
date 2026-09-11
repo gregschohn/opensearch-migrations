@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
@@ -38,7 +38,7 @@ export function SubmitConfigDialog({
   reason,
 }: Readonly<SubmitConfigDialogProps>) {
   const queryClient = useQueryClient();
-  const [sessionKey] = useState(() => Math.random().toString(36).slice(2));
+  const sessionKey = useId();
   const [submitting, setSubmitting] = useState(false);
   const [problem, setProblem] = useState("");
   const currentDraft = useQuery({

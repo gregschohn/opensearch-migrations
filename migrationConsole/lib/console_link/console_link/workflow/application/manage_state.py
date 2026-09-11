@@ -1070,7 +1070,7 @@ def _rehome_snapshot_resources(
     if not sources:
         return
     emptied_parent_ids = set()
-    for draft in list(drafts.values()):
+    for draft in drafts.values():
         if not draft.id.startswith("resource:datasnapshots:"):
             continue
         owner = _snapshot_owner_source(draft, sources)

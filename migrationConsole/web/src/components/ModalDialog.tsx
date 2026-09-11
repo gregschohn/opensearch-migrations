@@ -2,7 +2,6 @@ import {
   useEffect,
   useId,
   useRef,
-  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
@@ -75,8 +74,8 @@ export function ModalDialog({
   portal = false,
 }: Readonly<ModalDialogProps>) {
   const titleId = useId();
-  const sectionRef = useRef<HTMLElement | null>(null);
-  const escapeRef = useEscapeCancel<HTMLElement>(
+  const sectionRef = useRef<HTMLDialogElement | null>(null);
+  const escapeRef = useEscapeCancel<HTMLDialogElement>(
     onClose ?? (() => undefined),
     escapeDisabled || !onClose,
   );
@@ -99,41 +98,43 @@ export function ModalDialog({
     };
   }, []);
 
-  const containFocus = (event: ReactKeyboardEvent<HTMLElement>) => {
-    if (event.key !== "Tab") return;
+  useEffect(() => {
     const dialog = sectionRef.current;
     if (!dialog) return;
-    const focusable = focusableElements(dialog);
-    if (focusable.length === 0) {
-      event.preventDefault();
-      return;
-    }
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    const active = document.activeElement;
-    if (event.shiftKey && (active === first || active === dialog)) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && active === last) {
-      event.preventDefault();
-      first.focus();
-    }
-  };
+    const containFocus = (event: KeyboardEvent) => {
+      if (event.key !== "Tab") return;
+      const focusable = focusableElements(dialog);
+      if (focusable.length === 0) {
+        event.preventDefault();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable.at(-1)!;
+      const active = document.activeElement;
+      if (event.shiftKey && (active === first || active === dialog)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && active === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    dialog.addEventListener("keydown", containFocus);
+    return () => dialog.removeEventListener("keydown", containFocus);
+  }, []);
 
   const dialog = (
     <div className={`modal-backdrop ${backdropClassName}`.trim()}>
-      <section
+      <dialog
         aria-label={bare || title === undefined ? label : undefined}
         aria-labelledby={bare || title === undefined ? undefined : titleId}
-        aria-modal="true"
         className={`confirmation-dialog ${className}`.trim()}
         data-escape-cancel-layer
-        onKeyDown={containFocus}
+        open
         ref={(element) => {
           sectionRef.current = element;
           escapeRef.current = element;
         }}
-        role="dialog"
         tabIndex={-1}
       >
         {bare ? null : (
@@ -160,7 +161,7 @@ export function ModalDialog({
         )}
         {children}
         {footer !== undefined ? <footer>{footer}</footer> : null}
-      </section>
+      </dialog>
     </div>
   );
 

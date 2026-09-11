@@ -859,9 +859,9 @@ export function ResourceTree({
         // Preserve the user's collapse state across polls; auto-expand
         // only containers that just appeared or just gained children so
         // adds, renames, and view switches still reveal their results.
-        const newlySeen = !previousIds || !previousIds.has(node.id);
-        const gainedChild = !previousIds || node.childIds.some(
-          (childId) => !previousIds.has(childId),
+        const newlySeen = !previousIds?.has(node.id);
+        const gainedChild = node.childIds.some(
+          (childId) => !previousIds?.has(childId),
         );
         if (newlySeen || gainedChild) next.add(node.id);
       });
