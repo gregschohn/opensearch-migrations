@@ -191,6 +191,11 @@ class ConfigDraftService:
             self._require_revision(expected_revision)
             self._clear()
 
+    def invalidate_saved_config(self) -> None:
+        """Release compatibility state after another API saves configuration."""
+        with self._lock:
+            self._clear()
+
     def submit(
         self,
         expected_revision: str,

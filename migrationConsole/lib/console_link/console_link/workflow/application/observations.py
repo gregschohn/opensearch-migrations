@@ -129,6 +129,19 @@ class ObservationCoordinator:
             return None
         return self._observation.snapshot.revision
 
+    def invalidate_saved_configuration(
+        self,
+        persisted_revision: str,
+    ) -> ObservationEvent:
+        """Tell clients that saved configuration and derived state are stale."""
+        return self.events.publish(
+            "state-invalidated",
+            {
+                "reason": "configuration-saved",
+                "persistedRevision": persisted_revision,
+            },
+        )
+
     async def start(self) -> None:
         if self.running:
             return

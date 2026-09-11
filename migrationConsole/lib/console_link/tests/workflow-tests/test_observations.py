@@ -141,6 +141,20 @@ def test_event_history_is_monotonic_bounded_and_detects_a_gap():
     assert gap.history_gap is True
 
 
+def test_saved_configuration_invalidation_uses_the_existing_state_stream():
+    coordinator = ObservationCoordinator(
+        _StateService(_snapshot("revision-1")),
+    )
+
+    event = coordinator.invalidate_saved_configuration("42")
+
+    assert event.event == "state-invalidated"
+    assert event.data == {
+        "reason": "configuration-saved",
+        "persistedRevision": "42",
+    }
+
+
 @pytest.mark.asyncio
 async def test_event_stream_converts_history_gap_to_state_invalidation():
     coordinator = ObservationCoordinator(

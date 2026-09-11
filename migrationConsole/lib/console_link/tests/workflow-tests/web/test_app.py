@@ -12,6 +12,10 @@ from console_link.workflow.application.config_drafts import (
     ExternalResourceInventory,
     ExternalResourceMutation,
 )
+from console_link.workflow.application.config_documents import (
+    ConfigurationDocument,
+    ConfigurationDocumentConflict,
+)
 from console_link.workflow.application.logs import (
     LogEvent,
     LogPage,
@@ -233,6 +237,7 @@ class _Coordinator:
         self.started = False
         self.stopped = False
         self.event_cursor = None
+        self.config_invalidations = []
 
     async def start(self):
         self.started = True
@@ -257,6 +262,9 @@ class _Coordinator:
         self.event_cursor = last_event_id
         for event in self.events:
             yield event
+
+    def invalidate_saved_configuration(self, persisted_revision):
+        self.config_invalidations.append(persisted_revision)
 
 
 def test_manage_state_uses_the_shared_coordinator_and_app_lifecycle(tmp_path):
@@ -1308,6 +1316,122 @@ class _Drafts:
             kind="Secret",
             message="Secret updated: next-creds",
         )
+
+
+class _Documents:
+    def __init__(self):
+        self.current = ConfigurationDocument(
+            raw_yaml="sourceClusters: {}\n",
+            persisted_revision="11",
+        )
+        self.saved = None
+
+    def load(self):
+        return self.current
+
+    def save(self, expected_persisted_revision, raw_yaml):
+        self.saved = (expected_persisted_revision, raw_yaml)
+        self.current = ConfigurationDocument(
+            raw_yaml=raw_yaml,
+            persisted_revision="12",
+        )
+        return self.current
+
+
+def test_config_document_load_and_save_are_revisioned_and_invalidate_state(
+    tmp_path,
+):
+    documents = _Documents()
+    coordinator = _Coordinator(Observation(snapshot=_snapshot()))
+    app = create_app(
+        static_dir=_static_bundle(tmp_path),
+        config_documents=documents,
+        coordinator=coordinator,
+    )
+
+    with TestClient(app) as client:
+        loaded = client.get("/api/v1/config/document")
+        saved = client.put(
+            "/api/v1/config/document",
+            json={
+                "expectedPersistedRevision": "11",
+                "rawYaml": "targetClusters: {}\n",
+            },
+        )
+
+    assert loaded.status_code == 200
+    assert loaded.json() == {
+        "rawYaml": "sourceClusters: {}\n",
+        "persistedRevision": "11",
+        "modelVersion": "1",
+    }
+    assert saved.status_code == 200
+    assert saved.json()["persistedRevision"] == "12"
+    assert documents.saved == ("11", "targetClusters: {}\n")
+    assert coordinator.config_invalidations == ["12"]
+
+
+def test_config_document_conflict_returns_the_current_saved_document(tmp_path):
+    documents = _Documents()
+
+    def conflict(_expected_revision, _raw_yaml):
+        raise ConfigurationDocumentConflict(documents.current)
+
+    documents.save = conflict
+    app = create_app(
+        static_dir=_static_bundle(tmp_path),
+        config_documents=documents,
+    )
+
+    with TestClient(app) as client:
+        response = client.put(
+            "/api/v1/config/document",
+            json={
+                "expectedPersistedRevision": "10",
+                "rawYaml": "targetClusters: {}\n",
+            },
+        )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "code": "persisted_revision_conflict",
+        "message": (
+            "The saved workflow configuration changed; reload it before saving."
+        ),
+        "current": {
+            "rawYaml": "sourceClusters: {}\n",
+            "persistedRevision": "11",
+            "modelVersion": "1",
+        },
+    }
+
+
+def test_config_document_validation_failure_is_actionable(tmp_path):
+    documents = _Documents()
+
+    def reject(_expected_revision, _raw_yaml):
+        raise ValueError("Configuration validation failed: invalid source")
+
+    documents.save = reject
+    app = create_app(
+        static_dir=_static_bundle(tmp_path),
+        config_documents=documents,
+    )
+
+    with TestClient(app) as client:
+        response = client.put(
+            "/api/v1/config/document",
+            json={
+                "expectedPersistedRevision": "11",
+                "rawYaml": "sourceClusters: [\n",
+            },
+        )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == {
+        "code": "configuration_document_invalid",
+        "message": "Configuration validation failed: invalid source",
+    }
 
 
 def test_config_routes_expose_recursive_edit_state_without_raw_yaml(tmp_path):

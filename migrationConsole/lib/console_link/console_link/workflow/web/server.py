@@ -12,6 +12,7 @@ import uvicorn
 from ..application.manage_state import ManageStateService
 from ..application.observations import ObservationCoordinator
 from ..application.config_drafts import ConfigDraftService
+from ..application.config_documents import ConfigurationDocumentService
 from ..application.outputs import OutputService
 from ..application.logs import KubernetesLogSource, LogStreamService
 from ..application.operations import OperationManager
@@ -86,12 +87,13 @@ def run_server(
             insecure,
             token,
         )
+        config_store = WorkflowConfigStore(
+            namespace=namespace,
+            k8s_client=k8s.core_api,
+        )
         config_service = ConfigEditService(
             namespace=namespace,
-            store=WorkflowConfigStore(
-                namespace=namespace,
-                k8s_client=k8s.core_api,
-            ),
+            store=config_store,
             runner=script_runner,
             core_api=k8s.core_api,
             custom_api=k8s.custom_api,
@@ -132,11 +134,17 @@ def run_server(
                 namespace,
             )
 
+        config_drafts = ConfigDraftService(config_service)
         app = create_app(
             static_dir=static_dir,
             coordinator=coordinator,
             workflow_name=workflow_name,
-            config_drafts=ConfigDraftService(config_service),
+            config_drafts=config_drafts,
+            config_documents=ConfigurationDocumentService(
+                store=config_store,
+                validate=config_service.validate_raw_config_for_save,
+                on_saved=config_drafts.invalidate_saved_config,
+            ),
             outputs=OutputService(
                 namespace=namespace,
                 custom_api=k8s.custom_api,
