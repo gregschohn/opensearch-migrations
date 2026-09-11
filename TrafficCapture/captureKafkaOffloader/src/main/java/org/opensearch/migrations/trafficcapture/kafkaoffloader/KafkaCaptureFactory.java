@@ -175,7 +175,12 @@ public class KafkaCaptureFactory implements
                     "Kafka capture is not accepting new connections before its first group assignment"
                 );
             } else {
-                route = readyPublisher.getRoutingState().admitConnection(connectionId);
+                try {
+                    route = readyPublisher.getRoutingState().admitConnection(connectionId);
+                } catch (CorruptedCaptureStateException e) {
+                    failUnstable(e);
+                    throw e;
+                }
             }
         }
         if (unavailableBeforeAssignment != null) {
@@ -239,7 +244,7 @@ public class KafkaCaptureFactory implements
                 return;
             }
             try {
-                initializer.execute(this::refreshTopicMetadataAfterProbe);
+                initializer.execute(() -> refreshTopicMetadataAfterProbe(topicMetadata));
             } catch (RejectedExecutionException e) {
                 if (!closed.get() && orderlyRetirement == null && initializationFailure.get() == null) {
                     failUnstable(e);
@@ -248,18 +253,27 @@ public class KafkaCaptureFactory implements
         });
     }
 
-    private void refreshTopicMetadataAfterProbe() {
+    private void refreshTopicMetadataAfterProbe(TrafficTopicMetadata probedMetadata) {
         if (closed.get() || orderlyRetirement != null) {
             return;
         }
         try {
-            startMembershipInitialization(
-                TrafficTopicMetadata.discover(producer, topicNameForTraffic)
-            );
+            var refreshedMetadata = TrafficTopicMetadata.discover(producer, topicNameForTraffic);
+            if (probedMetadata.getLeaderIds().containsAll(refreshedMetadata.getLeaderIds())) {
+                startMembershipInitialization(refreshedMetadata);
+            } else {
+                log.atInfo()
+                    .setMessage(
+                        "Kafka traffic-topic leadership changed during startup probing; "
+                            + "probing the newly current leaders before joining the capture group"
+                    )
+                    .log();
+                publishStartupCapabilityProbes(refreshedMetadata);
+            }
         } catch (IllegalArgumentException e) {
             failCapture(e);
         } catch (RuntimeException e) {
-            retryTopicMetadataDiscovery(e, this::refreshTopicMetadataAfterProbe);
+            retryTopicMetadataDiscovery(e, () -> refreshTopicMetadataAfterProbe(probedMetadata));
         } catch (Error e) {
             failUnstable(e);
         }

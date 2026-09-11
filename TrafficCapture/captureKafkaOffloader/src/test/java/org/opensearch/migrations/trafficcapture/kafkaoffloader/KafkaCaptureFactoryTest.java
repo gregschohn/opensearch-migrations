@@ -633,6 +633,76 @@ public class KafkaCaptureFactoryTest {
     }
 
     @Test
+    public void newlyCurrentBrokerLeaderIsProbedBeforeGroupMembershipStarts() throws Exception {
+        var topicName = KafkaCaptureFactory.DEFAULT_TOPIC_NAME_FOR_TRAFFIC;
+        var leader0 = new Node(0, "broker-0", 9092);
+        var leader1 = new Node(1, "broker-1", 9092);
+        var leader2 = new Node(2, "broker-2", 9092);
+        var initialMetadata = List.of(
+            partitionInfo(topicName, 0, leader0),
+            partitionInfo(topicName, 1, leader1)
+        );
+        var changedMetadata = List.of(
+            partitionInfo(topicName, 0, leader0),
+            partitionInfo(topicName, 1, leader2)
+        );
+        var metadataRefreshes = new AtomicInteger();
+        var producer = new MockProducer<String, byte[]>(
+            new Cluster("test", List.of(leader0, leader1, leader2), initialMetadata, Set.of(), Set.of()),
+            false,
+            null,
+            new StringSerializer(),
+            new ByteArraySerializer()
+        ) {
+            @Override
+            public List<PartitionInfo> partitionsFor(String requestedTopic) {
+                return metadataRefreshes.getAndIncrement() == 0
+                    ? initialMetadata
+                    : changedMetadata;
+            }
+        };
+        var membershipConsumer = new MockConsumer<String, byte[]>(OffsetResetStrategy.EARLIEST);
+        var topicPartitions = changedMetadata.stream()
+            .map(info -> new TopicPartition(info.topic(), info.partition()))
+            .toList();
+        membershipConsumer.updateBeginningOffsets(
+            topicPartitions.stream().collect(Collectors.toMap(partition -> partition, ignored -> 0L))
+        );
+        membershipConsumer.schedulePollTask(() -> membershipConsumer.rebalance(topicPartitions));
+        var factory = new KafkaCaptureFactory(
+            TestRootKafkaOffloaderContext.noTracking(),
+            TEST_NODE_ID_STRING,
+            producer,
+            membershipConsumer,
+            assignmentTracker(),
+            1,
+            topicName,
+            1024 * 1024,
+            Duration.ofDays(1),
+            ignored -> {},
+            ignored -> {}
+        );
+
+        awaitHistorySize(producer, 2);
+        Assertions.assertEquals(Set.of(), membershipConsumer.subscription());
+        Assertions.assertTrue(producer.completeNext());
+        Assertions.assertTrue(producer.completeNext());
+
+        awaitHistorySize(producer, 4);
+        Assertions.assertEquals(Set.of(), membershipConsumer.subscription());
+        Assertions.assertEquals(
+            List.of(0, 1, 0, 1),
+            producer.history().stream().map(ProducerRecord::partition).toList()
+        );
+        Assertions.assertTrue(producer.completeNext());
+        Assertions.assertEquals(Set.of(), membershipConsumer.subscription());
+        Assertions.assertTrue(producer.completeNext());
+
+        awaitCondition(() -> membershipConsumer.subscription().equals(Set.of(topicName)));
+        factory.close();
+    }
+
+    @Test
     public void connectionAttemptBeforeTheFirstAssignmentPermanentlyFailsCapture() throws Exception {
         var topicMetadata = partitionInfo(topic, 3);
         var producer = new MockProducer<String, byte[]>(
@@ -1008,6 +1078,16 @@ public class KafkaCaptureFactoryTest {
                 );
             })
             .toList();
+    }
+
+    private static PartitionInfo partitionInfo(String topicName, int partition, Node leader) {
+        return new PartitionInfo(
+            topicName,
+            partition,
+            leader,
+            new Node[] { leader },
+            new Node[] { leader }
+        );
     }
 
     private static List<Node> leaders(List<PartitionInfo> partitionInfo) {

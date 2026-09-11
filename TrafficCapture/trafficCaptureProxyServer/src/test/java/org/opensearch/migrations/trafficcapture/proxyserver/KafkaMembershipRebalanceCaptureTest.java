@@ -2,6 +2,7 @@ package org.opensearch.migrations.trafficcapture.proxyserver;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
@@ -17,6 +18,8 @@ import org.opensearch.migrations.trafficcapture.kafkaoffloader.CaptureKafkaPubli
 import org.opensearch.migrations.trafficcapture.kafkaoffloader.CaptureMembershipAssignmentTracker;
 import org.opensearch.migrations.trafficcapture.kafkaoffloader.KafkaCaptureFactory;
 import org.opensearch.migrations.trafficcapture.kafkaoffloader.KafkaConfig;
+import org.opensearch.migrations.trafficcapture.protos.LivenessSnapshotChunk;
+import org.opensearch.migrations.trafficcapture.protos.NoMoreWrites;
 import org.opensearch.migrations.trafficcapture.protos.TrafficRecord;
 import org.opensearch.migrations.trafficcapture.proxyserver.testcontainers.KafkaContainerTestBase;
 import org.opensearch.migrations.trafficcapture.proxyserver.testcontainers.annotations.KafkaContainerTest;
@@ -26,6 +29,7 @@ import io.opentelemetry.api.OpenTelemetry;
 import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.MockProducer;
@@ -192,6 +196,86 @@ class KafkaMembershipRebalanceCaptureTest {
                     "A connection must retain its writer identity across membership loss and recovery"
                 );
             }
+        } finally {
+            deleteTopic(bootstrapServers, topic);
+        }
+    }
+
+    @Test
+    void orderlyRetirementAcknowledgesTerminalTrafficBeforeFinalManifestAndNoMoreWrites()
+        throws Exception {
+        var topic = "proxy-retirement-" + UUID.randomUUID();
+        var bootstrapServers = KAFKA.getContainer().getBootstrapServers();
+        createTopic(bootstrapServers, topic);
+        var rootContext = new RootCaptureContext(
+            OpenTelemetry.noop(),
+            IContextTracker.DO_NOTHING_TRACKER
+        );
+        var harness = startFactory(rootContext, bootstrapServers, topic, "activation-retirement");
+        try (
+            harness;
+            var reader = new KafkaConsumer<String, byte[]>(readerProperties(bootstrapServers))
+        ) {
+            assignAllPartitions(reader, topic);
+            var connectionId = "retiring-" + UUID.randomUUID();
+            var offloader = harness.factory().createOffloader(
+                rootContext.createConnectionContext(connectionId, "proxy")
+            );
+            var payload = Unpooled.wrappedBuffer(new byte[] { 1 });
+            try {
+                offloader.addReadEvent(Instant.now(), payload);
+            } finally {
+                payload.release();
+            }
+
+            var retirement = CompletableFuture.runAsync(
+                () -> harness.factory().retireForOrderlyShutdown().join()
+            );
+            Thread.sleep(100);
+            Assertions.assertFalse(
+                retirement.isDone(),
+                "Orderly retirement must wait for the open connection's terminal acknowledgement"
+            );
+
+            closeOffloader(offloader);
+            retirement.get(WAIT_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+
+            var records = readThroughCurrentEnd(reader);
+            var trafficRecord = records.stream()
+                .filter(record -> connectionId.equals(record.key()))
+                .filter(record -> CaptureKafkaPublisher.isRecordType(
+                    record.headers(),
+                    CaptureKafkaPublisher.TRAFFIC_RECORD_TYPE
+                ))
+                .findFirst()
+                .orElseThrow();
+            var traffic = TrafficRecord.parseFrom(trafficRecord.value());
+            var writerNodeId = traffic.getWriterNodeId();
+            Assertions.assertEquals("activation-retirement:1", writerNodeId);
+
+            for (int partition = 0; partition < 4; ++partition) {
+                assertTerminalWriterOrdering(records, writerNodeId, partition);
+            }
+            var finalManifest = records.stream()
+                .filter(record -> record.partition() == traffic.getPartition())
+                .filter(record -> CaptureKafkaPublisher.isRecordType(
+                    record.headers(),
+                    CaptureKafkaPublisher.LIVENESS_RECORD_TYPE
+                ))
+                .filter(record -> {
+                    try {
+                        return writerNodeId.equals(
+                            LivenessSnapshotChunk.parseFrom(record.value()).getWriterNodeId()
+                        );
+                    } catch (Exception e) {
+                        throw new IllegalStateException(e);
+                    }
+                })
+                .max(java.util.Comparator.comparingLong(ConsumerRecord::offset))
+                .orElseThrow();
+            Assertions.assertTrue(trafficRecord.offset() < finalManifest.offset());
+            Assertions.assertNull(harness.captureFailure().get());
+            Assertions.assertNull(harness.unstableFailure().get());
         } finally {
             deleteTopic(bootstrapServers, topic);
         }
@@ -374,6 +458,118 @@ class KafkaMembershipRebalanceCaptureTest {
             .toList();
         reader.assign(partitions);
         reader.seekToBeginning(partitions);
+    }
+
+    private static List<ConsumerRecord<String, byte[]>> readThroughCurrentEnd(
+        KafkaConsumer<String, byte[]> reader
+    ) {
+        var partitions = reader.assignment();
+        var endOffsets = reader.endOffsets(partitions);
+        var records = new ArrayList<ConsumerRecord<String, byte[]>>();
+        var deadline = System.nanoTime() + WAIT_TIMEOUT.toNanos();
+        while (System.nanoTime() < deadline) {
+            reader.poll(Duration.ofMillis(250)).forEach(records::add);
+            if (partitions.stream().allMatch(partition ->
+                reader.position(partition) >= endOffsets.get(partition))) {
+                return records;
+            }
+        }
+        throw new AssertionError("Timed out reading the terminal proxy records");
+    }
+
+    private static void assertTerminalWriterOrdering(
+        List<ConsumerRecord<String, byte[]>> records,
+        String writerNodeId,
+        int partition
+    ) throws Exception {
+        var partitionRecords = records.stream()
+            .filter(record -> record.partition() == partition)
+            .sorted(java.util.Comparator.comparingLong(ConsumerRecord::offset))
+            .toList();
+        var noMoreWritesRecords = partitionRecords.stream()
+            .filter(record -> CaptureKafkaPublisher.isRecordType(
+                record.headers(),
+                CaptureKafkaPublisher.NO_MORE_WRITES_RECORD_TYPE
+            ))
+            .filter(record -> writerNodeId.equals(
+                new String(
+                    record.headers().lastHeader(CaptureKafkaPublisher.WRITER_NODE_ID_HEADER).value(),
+                    java.nio.charset.StandardCharsets.UTF_8
+                )
+            ))
+            .toList();
+        Assertions.assertEquals(1, noMoreWritesRecords.size());
+        var noMoreWritesRecord = noMoreWritesRecords.getFirst();
+        Assertions.assertEquals(
+            partition,
+            NoMoreWrites.parseFrom(noMoreWritesRecord.value()).getPartition()
+        );
+
+        var finalManifestRecord = partitionRecords.stream()
+            .filter(record -> record.offset() < noMoreWritesRecord.offset())
+            .filter(record -> CaptureKafkaPublisher.isRecordType(
+                record.headers(),
+                CaptureKafkaPublisher.LIVENESS_RECORD_TYPE
+            ))
+            .filter(record -> {
+                try {
+                    return writerNodeId.equals(
+                        LivenessSnapshotChunk.parseFrom(record.value()).getWriterNodeId()
+                    );
+                } catch (Exception e) {
+                    throw new IllegalStateException(e);
+                }
+            })
+            .max(java.util.Comparator.comparingLong(ConsumerRecord::offset))
+            .orElseThrow();
+        var finalManifest = LivenessSnapshotChunk.parseFrom(finalManifestRecord.value());
+        Assertions.assertEquals(0, finalManifest.getChunkIndex());
+        Assertions.assertEquals(1, finalManifest.getChunkCount());
+        Assertions.assertEquals(0, finalManifest.getConnectionIdsCount());
+        Assertions.assertTrue(finalManifestRecord.offset() < noMoreWritesRecord.offset());
+        Assertions.assertTrue(
+            partitionRecords.stream().noneMatch(record ->
+                record.offset() > noMoreWritesRecord.offset()
+                    && recordBelongsToWriter(record, writerNodeId)
+            ),
+            "A writer must publish no traffic or manifests after its terminal NoMoreWrites"
+        );
+    }
+
+    private static boolean recordBelongsToWriter(
+        ConsumerRecord<String, byte[]> record,
+        String writerNodeId
+    ) {
+        try {
+            if (CaptureKafkaPublisher.isRecordType(
+                record.headers(),
+                CaptureKafkaPublisher.TRAFFIC_RECORD_TYPE
+            )) {
+                return writerNodeId.equals(TrafficRecord.parseFrom(record.value()).getWriterNodeId());
+            }
+            if (CaptureKafkaPublisher.isRecordType(
+                record.headers(),
+                CaptureKafkaPublisher.LIVENESS_RECORD_TYPE
+            )) {
+                return writerNodeId.equals(
+                    LivenessSnapshotChunk.parseFrom(record.value()).getWriterNodeId()
+                );
+            }
+            if (CaptureKafkaPublisher.isRecordType(
+                record.headers(),
+                CaptureKafkaPublisher.NO_MORE_WRITES_RECORD_TYPE
+            )) {
+                var writerHeader = record.headers().lastHeader(
+                    CaptureKafkaPublisher.WRITER_NODE_ID_HEADER
+                );
+                return writerHeader != null && writerNodeId.equals(
+                    new String(writerHeader.value(), java.nio.charset.StandardCharsets.UTF_8)
+                );
+            }
+            return false;
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     private static Properties readerProperties(String bootstrapServers) {

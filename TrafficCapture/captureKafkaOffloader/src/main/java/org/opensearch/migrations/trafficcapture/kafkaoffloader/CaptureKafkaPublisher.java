@@ -414,7 +414,7 @@ public class CaptureKafkaPublisher implements CaptureAssignmentPublisher, AutoCl
             var result = new CompletableFuture<Void>();
             var key = new WriterPartitionKey(manifest.writerNodeId(), manifest.partition());
             if (writerRetirementResults.putIfAbsent(key, result) != null) {
-                throw new IllegalStateException(
+                throw new CorruptedCaptureStateException(
                     "Writer retirement was already queued for "
                         + manifest.writerNodeId()
                         + "/"
@@ -711,7 +711,7 @@ public class CaptureKafkaPublisher implements CaptureAssignmentPublisher, AutoCl
     }
 
     private void failForThrowable(Throwable throwable) {
-        if (throwable instanceof Error) {
+        if (throwable instanceof Error || throwable instanceof CorruptedCaptureStateException) {
             failUnstableProcess(throwable);
         } else {
             failPublisher(throwable);
