@@ -747,6 +747,31 @@ describe("resolved migration resources", () => {
         }),);
     });
 
+    it("names a partially authored snapshot migration with the same labels it carries", async () => {
+        const config = sampleConfig();
+        (config.snapshotMigrationConfigs as any) = [{
+            fromSnapshot: "",
+            fromSource: "",
+            metadataMigrationConfig: {},
+            slice: "s1",
+            toTarget: "",
+        }];
+
+        const resolved = await buildLooseResolvedMigrationResources(config, "workflow-a");
+
+        // Manage identifies snapshot migrations by the full four-part tuple, so
+        // substituted labels have to reach the parameters, not just the name.
+        const migration = resolved.resources.find(resource => resource.kind === "SnapshotMigration");
+        expect(migration?.name).toBe("source-0-target-0-snapshot-0-s1");
+        expect(migration?.parameters).toEqual(expect.objectContaining({
+            migrationLabel: "s1",
+            snapshotLabel: "snapshot-0",
+            sourceLabel: "source-0",
+            targetLabel: "target-0",
+        }));
+        expect(migration?.parameters.dependsOn).toEqual([]);
+    });
+
     it("returns best-effort resources from the loose CLI without exiting on validation errors", async () => {
         const config = sampleConfig();
         delete (config.traffic!.proxies!["source-proxy"] as any).proxyConfig;

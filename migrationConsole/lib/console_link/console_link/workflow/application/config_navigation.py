@@ -155,21 +155,27 @@ def _snapshot_group_label(
         else 0
     )
     visible = prefix[parent_depth:]
-    labels = ("Source", "Target", "Snapshot")
-    return " / ".join(
-        f"{labels[parent_depth + index]}: {value}"
-        for index, value in enumerate(visible)
-    )
+    return _snapshot_migration_name(*visible)
 
 
 def _snapshot_group_status(
     nodes: Mapping[str, ManageNode],
     child_ids: Iterable[str],
 ) -> str:
+    statuses = [
+        nodes[child_id].status
+        for child_id in child_ids
+        if child_id in nodes
+    ]
+    if not statuses:
+        return "ok"
+    if all(status == "removed" for status in statuses):
+        return "removed"
+    # A group is not going away just because one of its members is, but it has
+    # still changed, so removals rank as changes while any member survives.
     return max(
-        (nodes[child_id].status for child_id in child_ids),
+        ("changed" if status == "removed" else status for status in statuses),
         key=lambda status: _NAVIGATION_STATUS_RANK.get(status, 0),
-        default="ok",
     )
 
 
@@ -270,6 +276,19 @@ def group_snapshot_migration_navigation(
         child_ids=(*base.child_ids, *grouped_ids),
         status=_snapshot_group_status(nodes, grouped_ids) if grouped_ids else base.status,
     )
+    # Groups are created against the parent they were offered, which is not the
+    # parent they end up with when an intermediate level is not worth keeping.
+    # Label them from where they actually landed so siblings stay distinguishable.
+    for node_id, node in list(nodes.items()):
+        if node.kind != "group" or not node_id.startswith(_SNAPSHOT_DYNAMIC_GROUP_PREFIX):
+            continue
+        nodes[node_id] = replace(
+            node,
+            label=_snapshot_group_label(
+                tuple(node_id.split(":")[2:]),
+                node.parent_id or "",
+            ),
+        )
     for resource in resources:
         grouped_resource = nodes[resource.id]
         parent_depth = (
@@ -305,9 +324,17 @@ def group_snapshot_migration_navigation(
             child = nodes.get(child_id)
             if child is not None:
                 nodes[child_id] = replace(child, parent_id=section.id)
+        # This function runs over the runtime snapshot and again over the merged
+        # draft projection. The earlier pass leaves flattened leaves attached to
+        # the section, so drop any the current pass has re-homed into a group -
+        # otherwise the tree walk emits them twice, once per parent.
         nodes[section.id] = replace(
             section,
-            child_ids=tuple(dict.fromkeys(flattened_ids)),
+            child_ids=tuple(
+                child_id for child_id in dict.fromkeys(flattened_ids)
+                if child_id not in nodes
+                or nodes[child_id].parent_id == section.id
+            ),
         )
         del nodes[base_group.id]
     return cast(ManageSnapshot, replace(snapshot, nodes=nodes))
@@ -432,11 +459,10 @@ def _project_existing_node(
         return node
     semantic_removal = False
     if (
-        draft.dirty
-        and node.resource_plural == "snapshotmigrations"
+        node.resource_plural == "snapshotmigrations"
         and len(node.navigation_key) == 4
         and all(node.navigation_key)
-        and _snapshot_migration_collection_changed(edit_nodes)
+        and "edit:snapshotMigrationConfigs" in edit_nodes
     ):
         matching_targets = snapshot_migration_targets.get(
             node.navigation_key,
@@ -554,16 +580,6 @@ def _snapshot_migration_edit_targets(
         key: tuple(target_ids)
         for key, target_ids in targets.items()
     }
-
-
-def _snapshot_migration_collection_changed(
-    edit_nodes: Mapping[str, Mapping[str, Any]],
-) -> bool:
-    collection = edit_nodes.get("edit:snapshotMigrationConfigs")
-    return (
-        collection is not None
-        and _draft_change_count(collection) > 0
-    )
 
 
 def _is_resource_target(
@@ -1042,6 +1058,20 @@ def _snapshot_migration_name(*parts: str) -> str:
     return re.sub(r"[^a-z0-9.]+", "-", "-".join(parts).lower()).strip("-.")
 
 
+def _snapshot_migration_display_name(
+    source: str,
+    target: str,
+    snapshot: str,
+    label: str,
+) -> str:
+    return "-".join((
+        source or "<SOURCE>",
+        target or "<TARGET>",
+        snapshot or "<SNAPSHOT>",
+        label or "<NAME>",
+    ))
+
+
 def _new_draft_snapshot_resources(
     placement: _Placement,
     tuple_node: Mapping[str, Any],
@@ -1049,23 +1079,30 @@ def _new_draft_snapshot_resources(
     dirty: bool,
     existing_targets: set[str],
 ) -> Tuple[Tuple[ManageNode, str], ...]:
+    path = tuple_node.get("path")
+    if (
+        tuple_node.get("valueKind") == "command"
+        or not isinstance(path, list)
+        or len(path) != 2
+        or path[0] != "snapshotMigrationConfigs"
+        or not str(path[1]).isdigit()
+    ):
+        return ()
     value = _mapping(tuple_node.get("value"))
     source = str(value.get("fromSource") or "")
     target = str(value.get("toTarget") or "")
     snapshot = str(value.get("fromSnapshot") or "")
     label = str(value.get("slice") or "")
     target_id = tuple_node.get("id")
-    if (
-        not label
-        or not isinstance(target_id, str)
-        or target_id in existing_targets
-    ):
+    if not isinstance(target_id, str) or target_id in existing_targets:
         return ()
-    identity_complete = all((source, target, snapshot))
-    resource_name = (
-        _snapshot_migration_name(source, target, snapshot, label)
-        if identity_complete
-        else label
+    # An entry with a blank slice is mid-edit, not absent. It still needs a row,
+    # or clearing the name leaves the user nothing to click to put it back.
+    resource_name = _snapshot_migration_display_name(
+        source,
+        target,
+        snapshot,
+        label,
     )
     stable_path = target_id.removeprefix(f"{EDIT_TARGET_PREFIX}")
     node_id = f"config:{stable_path.replace('.', ':')}"

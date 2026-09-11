@@ -1,8 +1,114 @@
 import { expect, test } from "vitest";
 
-import type { ManageSnapshot } from "../../api/client";
-import { projectEditSnapshot } from "./editProjection";
-import type { PendingResourceAddition } from "./resourceAdds";
+import type { ManageNode, ManageSnapshot } from "../../api/client";
+import {
+  projectEditSnapshot,
+  settledRenameResourceId,
+} from "./editProjection";
+import type {
+  PendingResourceAddition,
+  PendingResourceRename,
+} from "./resourceAdds";
+
+
+function migrationNode(
+  id: string,
+  resourceName: string,
+  editTargetId: string | null,
+  status: string,
+): ManageNode {
+  return {
+    id,
+    revision: `${id}-1`,
+    parentId: "section:Snapshot Migration",
+    childIds: [],
+    kind: "resource",
+    label: resourceName,
+    description: null,
+    status,
+    phase: null,
+    valueSummary: null,
+    diagnostics: [],
+    capabilities: editTargetId
+      ? [{ kind: "edit", editTargetId, label: `Edit ${resourceName}` }]
+      : [],
+    details: [],
+    relationships: [],
+    comparisons: [],
+    resourcePlural: "snapshotmigrations",
+    resourceName,
+    resourceType: "Snapshot migration",
+    configPresence: {},
+  };
+}
+
+
+const sliceRename: PendingResourceRename = {
+  editTargetId: "edit:snapshotMigrationConfigs.1",
+  groupId: "section:Snapshot Migration",
+  id: "resource:snapshotmigrations:src-tgt-nightly-slice-1",
+  label: "slice-9",
+  nodeKind: "resource",
+  oldEditTargetId: "edit:snapshotMigrationConfigs.1",
+  oldId: "resource:snapshotmigrations:src-tgt-nightly-slice-1",
+  resourceName: "src-tgt-nightly-slice-9",
+  resourcePlural: "snapshotmigrations",
+  resourceType: "Snapshot migration",
+  status: "applied",
+};
+
+
+test("settles a stable-target rename the server republished under a new id", () => {
+  // The server retires the old snapshot migration identity and materializes
+  // the renamed entry as a draft-only row, so the settled node id differs
+  // from the one the rename started on.
+  const nodes = {
+    [sliceRename.oldId]: migrationNode(
+      sliceRename.oldId,
+      "src-tgt-nightly-slice-1",
+      null,
+      "removed",
+    ),
+    "config:snapshotMigrationConfigs:1": migrationNode(
+      "config:snapshotMigrationConfigs:1",
+      "src-tgt-nightly-slice-9",
+      "edit:snapshotMigrationConfigs.1",
+      "changed",
+    ),
+  };
+
+  expect(settledRenameResourceId(nodes, sliceRename))
+    .toBe("config:snapshotMigrationConfigs:1");
+});
+
+
+test("keeps a stable-target rename pending until the new name appears", () => {
+  const nodes = {
+    [sliceRename.oldId]: migrationNode(
+      sliceRename.oldId,
+      "src-tgt-nightly-slice-1",
+      "edit:snapshotMigrationConfigs.1",
+      "pending",
+    ),
+  };
+
+  expect(settledRenameResourceId(nodes, sliceRename)).toBeNull();
+});
+
+
+test("settles a stable-target rename applied in place", () => {
+  const nodes = {
+    [sliceRename.oldId]: migrationNode(
+      sliceRename.oldId,
+      "src-tgt-nightly-slice-9",
+      "edit:snapshotMigrationConfigs.1",
+      "changed",
+    ),
+  };
+
+  expect(settledRenameResourceId(nodes, sliceRename))
+    .toBe(sliceRename.oldId);
+});
 
 
 test("projects a named pending resource into an otherwise empty group", () => {

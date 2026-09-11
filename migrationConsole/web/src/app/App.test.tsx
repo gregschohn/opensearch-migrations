@@ -3590,6 +3590,11 @@ test("names a snapshot migration before adding it and cancels title rename on na
     childIds: [snapshotGroupId, backfillGroupId],
     label: "Snapshot Migration",
     status: "warning",
+    capabilities: [{
+      kind: "edit",
+      editTargetId: "edit:snapshotMigration",
+      label: "Edit Snapshot Migration",
+    }],
   };
   snapshot.nodes[snapshotGroupId] = {
     ...snapshot.nodes["group:Live Traffic Migration:Capture"],
@@ -3952,6 +3957,16 @@ test("names a snapshot migration before adding it and cancels title rename on na
   const section = within(tree).getByRole("treeitem", {
     name: /^Snapshot Migration$/,
   });
+  await userEvent.click(section);
+  const editor = document.querySelector(".config-editor");
+  if (!editor) throw new Error("Missing configuration editor");
+  expect(await within(editor).findByRole("heading", {
+    name: "Edit Snapshot Migration",
+  })).toBeInTheDocument();
+  expect(within(editor).queryByText("Snapshot migrations")).toBeNull();
+  expect(within(editor).getByRole("button", {
+    name: "Add snapshot migration",
+  })).toBeInTheDocument();
   expect(within(section).getByRole("button", {
     name: "Add snapshot migration",
   })).toBeInTheDocument();
@@ -5218,6 +5233,53 @@ test("shows a newly added resource while the server operation is pending", async
     name: "Edit immediate",
   })).toBeInTheDocument();
   expect(screen.getByRole("textbox", { name: "Endpoint" }))
+    .toBeInTheDocument();
+});
+
+
+test("restores the previous selection after a resource add is rejected", async () => {
+  const draft = addLegacySourceNavigation(structuredClone(configDraft));
+  server.use(
+    http.get("*/api/v1/config", () => HttpResponse.json(draft)),
+    http.post("*/api/v1/config/operations", () =>
+      HttpResponse.json(
+        { detail: "Config entry already exists at sourceClusters.immediate" },
+        { status: 409 },
+      ),
+    ),
+  );
+  renderApp();
+  await enterEditMode();
+
+  const tree = await screen.findByRole("tree", { name: "Workflow resources" });
+  await userEvent.click(within(tree).getByRole("treeitem", {
+    name: /^legacy, Addition pending submission$/,
+  }));
+  expect(await screen.findByRole("heading", { name: "Edit legacy" }))
+    .toBeInTheDocument();
+
+  const sourceGroup = screen.getAllByRole("treeitem", {
+    name: /^Sources$/,
+  }).find((item) => item.getAttribute("aria-level") === "1");
+  if (!sourceGroup) throw new Error("Source group was not rendered");
+  await userEvent.click(within(sourceGroup).getByRole("button", {
+    name: "Add source cluster",
+  }));
+  await userEvent.type(
+    within(tree).getByRole("textbox", { name: "source cluster name" }),
+    "immediate{Enter}",
+  );
+
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Config entry already exists at sourceClusters.immediate",
+  );
+  expect(within(tree).queryByRole("treeitem", {
+    name: /^immediate,/,
+  })).toBeNull();
+  expect(await within(tree).findByRole("treeitem", {
+    name: /^legacy, Addition pending submission$/,
+  })).toHaveAttribute("aria-selected", "true");
+  expect(screen.getByRole("heading", { name: "Edit legacy" }))
     .toBeInTheDocument();
 });
 

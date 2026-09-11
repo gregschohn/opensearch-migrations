@@ -40,9 +40,11 @@ import {
 import { ConfigEditor } from "../features/configuration/ConfigEditor";
 import {
   editTarget,
+  navigationResourceId,
   projectEditSnapshot,
   resourceDraftChangeStates,
   resourceValidationStates,
+  settledRenameResourceId,
 } from "../features/configuration/editProjection";
 import type {
   PendingResourceAddition,
@@ -121,40 +123,10 @@ function workflowStepDescendants(
 }
 
 
-function navigationResourceId(
+function draftNavigationNodes(
   draft: ConfigDraft | undefined,
-  targetId: string,
-): string | null {
-  const resource = Object.values(draft?.navigation?.nodes ?? {}).find(
-    (node) => (
-      ["resource", "config-definition"].includes(node.kind)
-      && node.capabilities.some((capability) => (
-        capability.kind === "edit"
-        && capability.editTargetId === targetId
-      ))
-    ),
-  );
-  return resource?.id ?? null;
-}
-
-function settledRenameResourceId(
-  draft: ConfigDraft | undefined,
-  rename: PendingResourceRename,
-): string | null {
-  const nodes = draft?.navigation?.nodes ?? {};
-  if (rename.id === rename.oldId) {
-    const stableNode = nodes[rename.id];
-    return (
-      stableNode?.resourceName === rename.resourceName
-      && editTarget(stableNode) === rename.editTargetId
-    )
-      ? rename.id
-      : null;
-  }
-  if (nodes[rename.oldId]) return null;
-  if (nodes[rename.id]) return rename.id;
-  const resourceId = navigationResourceId(draft, rename.editTargetId);
-  return resourceId === rename.oldId ? null : resourceId;
+): Record<string, ManageNode> {
+  return draft?.navigation?.nodes ?? {};
 }
 
 
@@ -317,6 +289,16 @@ function ManageApp() {
     useState<PendingResourceRename[]>([]);
   const editExitRef = useRef<(() => void) | null>(null);
   const editSubmitRef = useRef<(() => void) | null>(null);
+  // An optimistic add moves the selection onto a resource that may never
+  // exist, so remember where the user was in case the server rejects it.
+  const selectionRef = useRef<{
+    selectedId: string | null;
+    editContext: EditContext | null;
+  }>({ selectedId: null, editContext: null });
+  const addReturnSelections = useRef(new Map<string, {
+    selectedId: string | null;
+    editContext: EditContext | null;
+  }>());
   const submitSignals = useMemo(
     () => submissionSignals(state.data),
     [state.data],
@@ -602,6 +584,7 @@ function ManageApp() {
   const resourceAddStarted = useCallback((
     addition: PendingResourceAddition,
   ) => {
+    addReturnSelections.current.set(addition.id, selectionRef.current);
     setLinkedNavigation([]);
     setPendingResourceAdditions((current) => [
       ...current.filter((candidate) => candidate.id !== addition.id),
@@ -617,17 +600,25 @@ function ManageApp() {
     addition: PendingResourceAddition,
     applied: boolean,
   ) => {
+    const restore = addReturnSelections.current.get(addition.id);
+    addReturnSelections.current.delete(addition.id);
     if (!applied) {
       setPendingResourceAdditions((current) => current.filter(
         (candidate) => candidate.id !== addition.id,
       ));
+      // The provisional resource is gone; leaving the selection on it strands
+      // the editor on a node that no longer exists.
+      if (restore) {
+        setSelectedId(restore.selectedId);
+        setEditContext(restore.editContext);
+      }
       return;
     }
     const currentDraft = queryClient.getQueryData<ConfigDraft>([
       "config-draft",
     ]);
     const resourceId = navigationResourceId(
-      currentDraft,
+      draftNavigationNodes(currentDraft),
       addition.editTargetId,
     );
     setPendingResourceAdditions((current) => (
@@ -677,7 +668,10 @@ function ManageApp() {
     const currentDraft = queryClient.getQueryData<ConfigDraft>([
       "config-draft",
     ]);
-    const resourceId = settledRenameResourceId(currentDraft, rename);
+    const resourceId = settledRenameResourceId(
+      draftNavigationNodes(currentDraft),
+      rename,
+    );
     setPendingResourceRenames((current) => (
       resourceId
         ? current.filter((candidate) => candidate.oldId !== rename.oldId)
@@ -725,17 +719,18 @@ function ManageApp() {
 
   useEffect(() => {
     if (!configDraft.data) return;
+    const nodes = draftNavigationNodes(configDraft.data);
     setPendingResourceAdditions((current) => {
       const next = current.filter((addition) => (
         addition.status === "syncing"
-        || !navigationResourceId(configDraft.data, addition.editTargetId)
+        || !navigationResourceId(nodes, addition.editTargetId)
       ));
       return next.length === current.length ? current : next;
     });
     setPendingResourceRenames((current) => {
       const next = current.filter((rename) => (
         rename.status === "syncing"
-        || !settledRenameResourceId(configDraft.data, rename)
+        || !settledRenameResourceId(nodes, rename)
       ));
       return next.length === current.length ? current : next;
     });
@@ -746,6 +741,10 @@ function ManageApp() {
     setPendingResourceAdditions([]);
     setPendingResourceRenames([]);
   }, [editContext]);
+
+  useEffect(() => {
+    selectionRef.current = { selectedId, editContext };
+  }, [selectedId, editContext]);
 
   const startEditing = () => {
     if (!state.data) return;

@@ -458,16 +458,7 @@ class ManageStateService:
             resource_name=resource.name,
             resource_type=resource_type_label_for_plural(resource.plural),
             config_presence=dict(resource.config_presence or {}),
-            navigation_key=(
-                (
-                    str(resource.spec.get("sourceLabel") or ""),
-                    str(resource.spec.get("targetLabel") or ""),
-                    str(resource.spec.get("snapshotLabel") or ""),
-                    str(resource.spec.get("migrationLabel") or ""),
-                )
-                if resource.plural == "snapshotmigrations"
-                else ()
-            ),
+            navigation_key=_snapshot_migration_navigation_key(resource),
         )
         drafts[resource_id] = draft
 
@@ -587,6 +578,26 @@ def _workflow_output_refs(
             if output not in refs:
                 refs.append(output)
     return result
+
+
+_SNAPSHOT_MIGRATION_IDENTITY_FIELDS = ("sourceLabel", "targetLabel", "snapshotLabel", "migrationLabel")
+
+
+def _snapshot_migration_navigation_key(resource: ResourceNode) -> Tuple[str, ...]:
+    """Return a snapshot migration's four-part semantic identity.
+
+    Config-only resources have no deployed spec, so fall back to the resolved
+    config parameters. Without a complete tuple the navigation projection can
+    only match nodes by draft array index, and those indices shift whenever an
+    entry is deleted.
+    """
+    if resource.plural != "snapshotmigrations":
+        return ()
+    for source in (resource.spec or {}, resource.config_parameters or {}):
+        key = tuple(str(source.get(name) or "") for name in _SNAPSHOT_MIGRATION_IDENTITY_FIELDS)
+        if all(key):
+            return key
+    return ("", "", "", "")
 
 
 def _resource_capabilities(

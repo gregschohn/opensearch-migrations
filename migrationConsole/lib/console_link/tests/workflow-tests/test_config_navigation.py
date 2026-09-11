@@ -5,11 +5,13 @@ from console_link.workflow.application.config_navigation import (
     group_snapshot_migration_navigation,
     project_config_navigation,
 )
+from console_link.workflow.application.manage_state import ManageStateService
 from console_link.workflow.application.models import (
     ManageCapability,
     ManageNode,
     ManageSnapshot,
 )
+from console_link.workflow.resource_tree import _build_tree_from_raw
 
 
 def _collection(
@@ -756,7 +758,18 @@ def test_project_config_navigation_owns_flat_snapshot_migrations():
             "prefix": "slice-",
             "firstIndex": 0,
         },
-        children=[migration_tuple],
+        children=[
+            migration_tuple,
+            {
+                "id": "edit:snapshotMigrationConfigs:add",
+                "path": ["snapshotMigrationConfigs"],
+                "label": "+ Add snapshot migration",
+                "valueKind": "command",
+                "status": "ok",
+                "diagnostics": [],
+                "children": [],
+            },
+        ],
     )
     archives = _collection(
         ["traffic", "s3Sources"],
@@ -787,6 +800,7 @@ def test_project_config_navigation_owns_flat_snapshot_migrations():
     assert projected.nodes["section:Snapshot Migration"].child_ids == (
         migration.id,
     )
+    assert "config:snapshotMigrationConfigs:add" not in projected.nodes
     archive = projected.nodes["resource:capturedtraffics:archive-topic"]
     assert archive.label == "archive-topic"
     assert archive.resource_type == "S3 source"
@@ -887,7 +901,7 @@ def test_project_config_navigation_keeps_named_incomplete_snapshot_migration():
 
     item = projected.nodes["config:snapshotMigrationConfigs:0"]
     assert item.parent_id == "section:Snapshot Migration"
-    assert item.label == "slice-0"
+    assert item.label == "<SOURCE>-<TARGET>-<SNAPSHOT>-slice-0"
     assert item.status == "required"
     assert item.capabilities[0].target_id == "edit:snapshotMigrationConfigs.0"
 
@@ -948,9 +962,9 @@ def test_snapshot_migration_navigation_groups_only_useful_prefixes():
     target_group = grouped.nodes[
         "snapshot-navigation:2:source:target-a"
     ]
-    assert source_group.label == "Source: source"
+    assert source_group.label == "source"
     assert source_group.status == "error"
-    assert target_group.label == "Target: target-a"
+    assert target_group.label == "target-a"
     assert target_group.status == "error"
     assert target_group.child_ids == (
         "resource:snapshotmigrations:b",
@@ -1076,6 +1090,278 @@ def test_snapshot_migration_deletion_tracks_tuple_after_array_compaction():
         "edit:snapshotMigrationConfigs.0"
     )
     assert "config:snapshotMigrationConfigs:0" not in projected.nodes
+
+
+def _observe_pending_only_migrations(tuples):
+    """Observe a snapshot whose snapshot migrations exist only in pending config.
+
+    Each entry is a (source, target, snapshot, slice) identity; a bare string is
+    shorthand for that slice of the default source/target/snapshot.
+    """
+    identities = [
+        ("source", "target", "snap", entry) if isinstance(entry, str) else entry
+        for entry in tuples
+    ]
+    resources = [
+        {
+            "kind": "SnapshotMigration",
+            "name": f"{source}-{target}-{snapshot}-{slice_name}",
+            "parameters": {
+                "sourceLabel": source,
+                "targetLabel": target,
+                "snapshotLabel": snapshot,
+                "migrationLabel": slice_name,
+            },
+            "parameterProvenance": {
+                "migrationLabel": {
+                    "path": ["migrationLabel"],
+                    "presence": "authored",
+                    "sourcePath": ["snapshotMigrationConfigs", str(index)],
+                },
+            },
+        }
+        for index, (source, target, snapshot, slice_name) in enumerate(identities)
+    ]
+
+    class _Argo:
+        def get_workflow(self, name, namespace):
+            return {"success": False, "error": "workflow not found"}, {}
+
+    class _Config:
+        def load_resource_config_snapshots(self, workflow_name):
+            return {"pending": {"resources": resources}, "pending_console": {}}
+
+    return ManageStateService(
+        namespace="ma",
+        workflow_name="migration-workflow",
+        argo_service=_Argo(),
+        resource_loader=lambda namespace: _build_tree_from_raw({}),
+        config_service_provider=_Config,
+    ).observe()
+
+
+def test_deleting_a_config_only_snapshot_migration_strikes_that_entry():
+    # Nothing is deployed yet, so identity has to survive the array compaction
+    # that deleting an earlier entry causes. Matching on the draft index alone
+    # struck whichever row happened to land on the vanished index.
+    snapshot = _observe_pending_only_migrations(("slice-0", "slice-1"))
+    retained = _resource_edit(["snapshotMigrationConfigs", "0"])
+    retained["value"] = {
+        "fromSource": "source",
+        "toTarget": "target",
+        "fromSnapshot": "snap",
+        "slice": "slice-1",
+        "metadataMigrationConfig": {},
+    }
+    migrations = _collection(
+        ["snapshotMigrationConfigs"],
+        section_id="section:Snapshot Migration",
+        section_label="Snapshot Migration",
+        section_order=2,
+        group_id="group:Snapshot Migration:Backfill",
+        group_label="Backfill",
+        group_order=1,
+        plural="snapshotmigrations",
+        resource_type="Snapshot migration",
+        children=[retained],
+        draft_change_count=1,
+    )
+
+    projected = project_config_navigation(snapshot, _draft([migrations]))
+
+    deleted = projected.nodes["resource:snapshotmigrations:source-target-snap-slice-0"]
+    retained_node = projected.nodes["resource:snapshotmigrations:source-target-snap-slice-1"]
+    assert deleted.status == "removed"
+    assert retained_node.status != "removed"
+    assert [
+        capability.target_id
+        for capability in retained_node.capabilities
+        if capability.kind == "edit"
+    ] == ["edit:snapshotMigrationConfigs.0"]
+
+
+def _snapshot_migration_draft(entries, *, change_count=1):
+    children = []
+    for index, entry in enumerate(entries):
+        source, target, snapshot, slice_name = (
+            ("source", "target", "snap", entry) if isinstance(entry, str) else entry
+        )
+        child = _resource_edit(["snapshotMigrationConfigs", str(index)])
+        child["value"] = {
+            "fromSource": source,
+            "toTarget": target,
+            "fromSnapshot": snapshot,
+            "slice": slice_name,
+            "metadataMigrationConfig": {},
+        }
+        children.append(child)
+    return _draft([_collection(
+        ["snapshotMigrationConfigs"],
+        section_id="section:Snapshot Migration",
+        section_label="Snapshot Migration",
+        section_order=2,
+        group_id="group:Snapshot Migration:Backfill",
+        group_label="Backfill",
+        group_order=1,
+        plural="snapshotmigrations",
+        resource_type="Snapshot migration",
+        children=children,
+        draft_change_count=change_count,
+    )])
+
+
+def _parent_counts(projected):
+    """Count how many parents claim each node, the way the tree walk sees it."""
+    counts = {}
+    for node in projected.nodes.values():
+        for child_id in node.child_ids:
+            counts[child_id] = counts.get(child_id, 0) + 1
+    return counts
+
+
+def test_grouping_a_second_time_does_not_leave_leaves_under_two_parents():
+    # Runtime observation groups once and the draft projection groups again. The
+    # first pass flattens leaves onto the section, so the second pass has to
+    # release the ones it re-homes into a group or the tree renders them twice.
+    snapshot = _observe_pending_only_migrations((
+        ("source", "target-a", "snap", "slice-1"),
+        ("source", "target-b", "snap", "slice-2"),
+    ))
+    drafted = _snapshot_migration_draft((
+        ("source", "target-a", "snap", "slice-1"),
+        ("source", "target-b", "snap", "slice-2"),
+        ("source", "target-c", "snap", "slice-3"),
+    ))
+
+    projected = project_config_navigation(snapshot, drafted)
+
+    assert projected.nodes["snapshot-navigation:1:source"].kind == "group"
+    assert [
+        node_id for node_id, count in _parent_counts(projected).items() if count > 1
+    ] == []
+
+
+def test_a_removed_slice_does_not_mark_its_whole_group_removed():
+    snapshot = _observe_pending_only_migrations(("slice-0", "slice-1", "slice-2"))
+    renamed = _snapshot_migration_draft(("slice-0", "slice-9", "slice-2"))
+    emptied = _snapshot_migration_draft(())
+
+    renamed_group = project_config_navigation(snapshot, renamed).nodes[
+        "snapshot-navigation:3:source:target:snap"
+    ]
+    assert renamed_group.status == "changed"
+
+    all_removed = project_config_navigation(snapshot, emptied).nodes[
+        "snapshot-navigation:3:source:target:snap"
+    ]
+    assert all_removed.status == "removed"
+
+
+def test_saved_snapshot_migrations_rebind_stale_array_provenance_by_tuple():
+    snapshot = _observe_pending_only_migrations(("slice-0", "slice-1"))
+    nodes = dict(snapshot.nodes)
+    stale_targets = {
+        "resource:snapshotmigrations:source-target-snap-slice-0":
+            "edit:snapshotMigrationConfigs.2",
+        "resource:snapshotmigrations:source-target-snap-slice-1":
+            "edit:snapshotMigrationConfigs.3",
+    }
+    for node_id, target_id in stale_targets.items():
+        node = nodes[node_id]
+        nodes[node_id] = replace(
+            node,
+            capabilities=(
+                ManageCapability(
+                    kind="edit",
+                    target_id=target_id,
+                    label=f"Edit {node.label}",
+                ),
+            ),
+        )
+    snapshot = replace(snapshot, nodes=nodes)
+    saved = replace(
+        _snapshot_migration_draft(
+            ("slice-0", "slice-1", "slice-2"),
+            change_count=0,
+        ),
+        dirty=False,
+    )
+
+    projected = project_config_navigation(snapshot, saved)
+
+    migrations = {
+        node.label: node
+        for node in projected.nodes.values()
+        if (
+            node.kind == "resource"
+            and node.resource_plural == "snapshotmigrations"
+        )
+    }
+    assert set(migrations) == {"slice-0", "slice-1", "slice-2"}
+    assert {
+        label: [
+            capability.target_id
+            for capability in node.capabilities
+            if capability.kind == "edit"
+        ]
+        for label, node in migrations.items()
+    } == {
+        "slice-0": ["edit:snapshotMigrationConfigs.0"],
+        "slice-1": ["edit:snapshotMigrationConfigs.1"],
+        "slice-2": ["edit:snapshotMigrationConfigs.2"],
+    }
+
+
+def test_sibling_snapshot_groups_are_labeled_by_where_they_landed():
+    # Groups are built against the parent they were offered, not the one they get
+    # when an intermediate level is dropped, so labels have to be recomputed or
+    # two sources collapse to the same visible name.
+    snapshot = _observe_pending_only_migrations(tuple(
+        (source, "tgt", "nightly", f"slice-{index}")
+        for source in ("src1", "src2")
+        for index in range(3)
+    ))
+
+    projected = project_config_navigation(
+        snapshot, _snapshot_migration_draft((), change_count=0),
+    )
+
+    labels = [
+        projected.nodes[f"snapshot-navigation:3:{source}:tgt:nightly"].label
+        for source in ("src1", "src2")
+    ]
+    assert labels == [
+        "src1-tgt-nightly",
+        "src2-tgt-nightly",
+    ]
+
+
+def test_clearing_a_slice_name_keeps_the_entry_reachable():
+    snapshot = _observe_pending_only_migrations(("slice-0",))
+    drafted = _snapshot_migration_draft((("source", "target", "snap", ""),))
+
+    projected = project_config_navigation(snapshot, drafted)
+
+    mid_edit = projected.nodes["config:snapshotMigrationConfigs:0"]
+    assert [
+        capability.target_id
+        for capability in mid_edit.capabilities
+        if capability.kind == "edit"
+    ] == ["edit:snapshotMigrationConfigs.0"]
+    assert mid_edit.label == "source-target-snap-<NAME>"
+
+
+def test_incomplete_snapshot_migration_name_updates_as_references_are_selected():
+    snapshot = _observe_pending_only_migrations(())
+    drafted = _snapshot_migration_draft((
+        ("source", "", "", "slice-2"),
+    ))
+
+    projected = project_config_navigation(snapshot, drafted)
+
+    migration = projected.nodes["config:snapshotMigrationConfigs:0"]
+    assert migration.label == "source-<TARGET>-<SNAPSHOT>-slice-2"
+    assert migration.navigation_key == ("source", "", "", "slice-2")
 
 
 def test_snapshot_migration_navigation_deduplicates_flattened_resources():

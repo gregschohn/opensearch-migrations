@@ -387,6 +387,53 @@ def test_pending_only_resource_has_edit_but_no_cluster_actions():
     assert set(_capabilities(resource)) == {"edit"}
 
 
+def test_config_only_snapshot_migration_keeps_its_four_part_identity():
+    # Config-only resources have no deployed spec. Their identity has to come
+    # from the resolved parameters, otherwise navigation can only match them by
+    # draft array index and deleting one entry restrikes a different row.
+    snapshots = {
+        "pending": {
+            "resources": [{
+                "kind": "SnapshotMigration",
+                "name": "source-target-snap-slice-1",
+                "parameters": {
+                    "sourceLabel": "source",
+                    "targetLabel": "target",
+                    "snapshotLabel": "snap",
+                    "migrationLabel": "slice-1",
+                },
+            }],
+        },
+        "pending_console": {},
+    }
+
+    snapshot = _service({}, snapshots=snapshots).observe()
+
+    migration = _node(snapshot, "snapshotmigrations:source-target-snap-slice-1")
+    assert migration.phase == "Pending Config"
+    assert migration.navigation_key == ("source", "target", "snap", "slice-1")
+
+
+def test_deployed_snapshot_migration_identity_comes_from_its_spec():
+    raw = {
+        "snapshotmigrations": [_cr(
+            "snapshotmigrations",
+            "source-target-snap-slice-0",
+            spec={
+                "sourceLabel": "source",
+                "targetLabel": "target",
+                "snapshotLabel": "snap",
+                "migrationLabel": "slice-0",
+            },
+        )],
+    }
+
+    snapshot = _service(raw).observe()
+
+    migration = _node(snapshot, "snapshotmigrations:source-target-snap-slice-0")
+    assert migration.navigation_key == ("source", "target", "snap", "slice-0")
+
+
 def test_edit_capability_targets_the_config_processor_branch_from_provenance():
     snapshots = {
         "pending": {

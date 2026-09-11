@@ -35,6 +35,7 @@ import type {
   ResourceValidationState,
 } from "../configuration/editProjection";
 import { fieldValidationProblem } from "../configuration/fieldValidation";
+import { resourceIdForRenameOption } from "./resourceRenameMatching";
 import {
   resolveTreeLayoutOffset,
   type TreeLayoutOffset,
@@ -134,9 +135,14 @@ function visibleRows(
 ): VisibleRow[] {
   const included = filterIds(snapshot, query, presentation);
   const rows: VisibleRow[] = [];
+  // Rows are keyed by node id, so a node listed under two parents would render
+  // twice under duplicate keys. Emit it once, beneath the first parent found.
+  const emitted = new Set<string>();
   const visit = (nodeId: string, depth: number) => {
     const node = snapshot.nodes[nodeId];
     if (!node || (included && !included.has(nodeId))) return;
+    if (emitted.has(nodeId)) return;
+    emitted.add(nodeId);
     rows.push({ node, depth });
     if (included || expanded.has(nodeId)) {
       node.childIds.forEach((childId) => visit(childId, depth + 1));
@@ -1342,26 +1348,8 @@ export function ResourceTree({
   const renameOptionsByResource = useMemo(() => {
     const result = new Map<string, ResourceRenameOption>();
     (resourceAdds?.renames ?? []).forEach((option) => {
-      const matchingResource = Object.values(snapshot.nodes).find((node) => (
-        ["resource", "config-definition"].includes(node.kind)
-        && (
-          node.capabilities.some((capability) => (
-            capability.kind === "edit"
-            && capability.editTargetId === option.editTargetId
-          ))
-          || (
-            option.placement.resourcePlural
-            && node.resourcePlural === option.placement.resourcePlural
-            && (
-              node.resourceName === option.currentName
-              || node.resourceName
-                === `${option.resourceNamePrefix ?? ""}${option.currentName}`
-              || node.label === option.label
-            )
-          )
-        )
-      ));
-      if (matchingResource) result.set(matchingResource.id, option);
+      const matchingResourceId = resourceIdForRenameOption(snapshot, option);
+      if (matchingResourceId) result.set(matchingResourceId, option);
     });
     return result;
   }, [resourceAdds?.renames, snapshot]);

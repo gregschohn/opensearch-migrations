@@ -1647,12 +1647,12 @@ button.secondary-button:hover:not(:disabled) {
 
 .tree-validation-indicator.validation-warning {
   color: #9a5b0a;
-  background: var(--approval-surface);
+  background: transparent;
 }
 
 .tree-validation-indicator.validation-error {
   color: var(--danger-strong);
-  background: #fff0ef;
+  background: transparent;
 }
 
 .tree-row-tools {

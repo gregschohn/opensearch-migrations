@@ -1220,14 +1220,17 @@ function looseTrafficReplayParameters(
 function looseSnapshotMigrationParameters(
     migration: Record<string, unknown>,
     migrationLabel: string,
+    sourceLabel: string,
+    targetLabel: string,
+    snapshotLabel: string,
 ): Record<string, unknown> {
-    const sourceLabel = asString(migration.fromSource);
-    const targetLabel = asString(migration.toTarget);
-    const snapshotLabel = asString(migration.fromSnapshot);
+    // Depend only on an authored snapshot; a substituted label names nothing.
+    const authoredSource = asString(migration.fromSource);
+    const authoredSnapshot = asString(migration.fromSnapshot);
     return {
         ...prefixFields("metadataMigration", asRecord(migration.metadataMigrationConfig)),
         ...prefixFields("documentBackfill", asRecord(migration.documentBackfillConfig)),
-        dependsOn: sourceLabel && snapshotLabel ? [`${sourceLabel}-${snapshotLabel}`] : [],
+        dependsOn: authoredSource && authoredSnapshot ? [`${authoredSource}-${authoredSnapshot}`] : [],
         migrationLabel,
         sourceLabel,
         targetLabel,
@@ -1662,9 +1665,14 @@ function buildLooseResourceList(
         const targetLabel = asString(migration.toTarget) ?? `target-${migrationIndex}`;
         const snapshotLabel = asString(migration.fromSnapshot) ?? `snapshot-${migrationIndex}`;
         const migrationLabel = asString(migration.slice) ?? `slice-${migrationIndex}`;
+        // The same labels the resource is named after, so a partially authored
+        // entry still carries a complete four-part identity downstream.
         const parameters = looseSnapshotMigrationParameters(
             migration,
             migrationLabel,
+            sourceLabel,
+            targetLabel,
+            snapshotLabel,
         );
         const migrationPath = ["snapshotMigrationConfigs", String(migrationIndex)];
         const parameterProvenance = provenanceFromMatchingSource(

@@ -150,6 +150,20 @@ function addCommand(node: EditNode): EditNode | null {
 }
 
 
+function contentScope(scope: EditNode | null): EditNode | null {
+  if (scope?.id !== "edit:snapshotMigration") return scope;
+  const children = propertyChildren(scope);
+  const collection = children.length === 1 ? children[0] : null;
+  return (
+    collection?.valueKind === "array"
+    && collection.path.length === 1
+    && collection.path[0] === "snapshotMigrationConfigs"
+  )
+    ? collection
+    : scope;
+}
+
+
 function topLevelAddContexts(nodes: EditNode[]): AddContext[] {
   const result: AddContext[] = [];
   const visit = (node: EditNode) => {
@@ -263,20 +277,23 @@ function resourceRenameOptions(nodes: EditNode[]): ResourceRenameOption[] {
         const collisionScope = source && target && snapshot
           ? `${source}-${target}-${snapshot}`
           : undefined;
+        const displayPrefix = `${
+          source || "<SOURCE>"
+        }-${target || "<TARGET>"}-${snapshot || "<SNAPSHOT>"}-`;
         result.push({
           collisionScope,
           currentName,
           editTargetStable: true,
           editTargetId: migration.id,
-          label: `${source}-${target}-${snapshot}-${currentName}`,
-          labelPrefix: `${source}-${target}-${snapshot}-`,
+          label: `${displayPrefix}${currentName || "<NAME>"}`,
+          labelPrefix: displayPrefix,
           operation: "set",
           path: [...migration.path, "slice"],
           pattern: typeof validation.pattern === "string"
             ? validation.pattern
             : KUBERNETES_NAME_PATTERN,
           placement,
-          resourceNamePrefix: `${source}-${target}-${snapshot}-`,
+          resourceNamePrefix: displayPrefix,
           validationMessage: typeof validation.message === "string"
             ? validation.message
             : KUBERNETES_NAME_MESSAGE,
@@ -1810,26 +1827,31 @@ export function ConfigEditor({
     () => target ? editScope(nodes, target.id) : null,
     [nodes, target],
   );
+  const renderedScope = useMemo(
+    () => contentScope(scope),
+    [scope],
+  );
   const expansionScopeId = scope?.id
     ?? (globalTarget ? "edit:workflowConfiguration" : "edit:root");
   const scopedNodes = useMemo(
     () => {
       if (activeTargetId && !target && !globalTarget) return [];
       if (!scope) return nodes;
-      const children = propertyChildren(scope);
+      const children = propertyChildren(renderedScope ?? scope);
+      if (renderedScope !== scope) return children;
       // Keep an empty selected collection visible so its add command remains
       // available instead of rendering an unexplained blank editor.
       return children.length > 0 ? children : [scope];
     },
-    [activeTargetId, globalTarget, nodes, scope, target],
+    [activeTargetId, globalTarget, nodes, renderedScope, scope, target],
   );
   const scopeCommands = useMemo(
     () => (
-      scope && !scopedNodes.includes(scope)
-        ? addCommands(scope)
+      renderedScope && !scopedNodes.includes(renderedScope)
+        ? addCommands(renderedScope)
         : []
     ),
-    [scope, scopedNodes],
+    [renderedScope, scopedNodes],
   );
   const scopeActionMessages = useMemo(
     () => [...new Set([
@@ -1845,8 +1867,19 @@ export function ConfigEditor({
           ? [scopeActionMessage(diagnostic.message)]
           : []
       )),
+      ...(
+        renderedScope && renderedScope !== scope
+          ? renderedScope.diagnostics
+          : []
+      ).flatMap((diagnostic) => (
+        ["required", "error", "gated", "blocked"].includes(
+          diagnostic.severity,
+        )
+          ? [scopeActionMessage(diagnostic.message)]
+          : []
+      )),
     ])],
-    [scope, scopeCommands],
+    [renderedScope, scope, scopeCommands],
   );
   const scopeHasValidationError = Boolean(
     scope && nodeTreeHasValidationError(scope),
