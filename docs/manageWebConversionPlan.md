@@ -11,6 +11,9 @@ Read these related documents before changing code:
 
 - [Workflow Manage Native Web Application](manageWebApplicationDesign.md) defines the
   product and architecture direction.
+- [Workflow Manage Browser-Local Editing Plan](manageWebLocalEditingPlan.md) defines the
+  follow-up that moves routine draft mutation and validation into a shared browser-safe
+  TypeScript package while retaining server authority for persistence and cluster work.
 - [Manage External Configuration References](manageExternalConfigurationReferencesDesign.md)
   defines Secret, ConfigMap, image, and issuer selection behavior.
 - [Workflow Manage Parity Inventory](manageWebParityInventory.md) records capability
