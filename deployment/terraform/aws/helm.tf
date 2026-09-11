@@ -83,8 +83,19 @@ resource "helm_release" "migration_assistant" {
     }
   }
 
+  # The release's workloads and its Helm lifecycle hooks call AWS APIs, so they need the
+  # cluster's network path to those APIs. Terraform destroys dependencies only after their
+  # dependents, so declaring the path here also keeps it in place for the duration of
+  # `helm uninstall`. Without these edges the graph leaves the release unordered against
+  # networking, and a destroy can tear down endpoints, NAT, and routes while the uninstall
+  # hooks are still running, which fails the uninstall and aborts the destroy partway.
   depends_on = [
     aws_eks_access_policy_association.account_readonly,
     aws_eks_pod_identity_association.migration,
+    aws_vpc_endpoint.s3,
+    aws_vpc_endpoint.interface,
+    aws_nat_gateway.migration,
+    aws_route.private_ipv4,
+    aws_route_table_association.private,
   ]
 }
