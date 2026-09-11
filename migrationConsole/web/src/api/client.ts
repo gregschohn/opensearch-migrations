@@ -8,6 +8,8 @@ export type ManageNode = components["schemas"]["ManageNodeV1"];
 export type ManageRelationship = components["schemas"]["RelationshipV1"];
 export type RuntimeStatus = components["schemas"]["RuntimeStatusV1"];
 export type ConfigDraft = components["schemas"]["ConfigDraftV1"];
+export type ConfigurationDocument =
+  components["schemas"]["ConfigurationDocumentV1"];
 export type ConfigRemovalImpact =
   components["schemas"]["ConfigRemovalImpactV1"];
 export type ConfigSubmission = components["schemas"]["ConfigSubmissionV1"];
@@ -54,7 +56,7 @@ const client = createClient<paths>({
 interface ApiErrorDetail {
   code?: string;
   message?: string;
-  current?: ConfigDraft;
+  current?: ConfigDraft | ConfigurationDocument;
   persistedRevision?: string;
 }
 
@@ -63,6 +65,7 @@ export class ConfigApiError extends Error {
   readonly status: number;
   readonly code?: string;
   readonly current?: ConfigDraft;
+  readonly currentDocument?: ConfigurationDocument;
 
   constructor(status: number, fallback: string, error: unknown) {
     const body = error as { detail?: ApiErrorDetail | string } | undefined;
@@ -77,8 +80,14 @@ export class ConfigApiError extends Error {
     this.name = "ConfigApiError";
     this.status = status;
     this.code = detail && typeof detail === "object" ? detail.code : undefined;
-    this.current = detail && typeof detail === "object"
+    const current = detail && typeof detail === "object"
       ? detail.current
+      : undefined;
+    this.current = current && "draftRevision" in current
+      ? current
+      : undefined;
+    this.currentDocument = current && "persistedRevision" in current
+      ? current
       : undefined;
   }
 }
@@ -146,6 +155,45 @@ export async function getConfigDraft(): Promise<ConfigDraft> {
       response.status === 404
         ? "This Workflow Manage server does not provide configuration editing. Restart it with the current web application."
         : "Configuration is unavailable",
+      error,
+    );
+  }
+  return data;
+}
+
+
+export async function getConfigurationDocument(): Promise<ConfigurationDocument> {
+  const { data, error, response } = await client.GET(
+    "/api/v1/config/document",
+  );
+  if (!response.ok || error || !data) {
+    throw new ConfigApiError(
+      response.status,
+      "The saved configuration document is unavailable",
+      error,
+    );
+  }
+  return data;
+}
+
+
+export async function saveConfigurationDocument(
+  expectedPersistedRevision: string,
+  rawYaml: string,
+): Promise<ConfigurationDocument> {
+  const { data, error, response } = await client.PUT(
+    "/api/v1/config/document",
+    {
+      body: {
+        expectedPersistedRevision,
+        rawYaml,
+      },
+    },
+  );
+  if (!response.ok || error || !data) {
+    throw new ConfigApiError(
+      response.status,
+      "The configuration document could not be saved",
       error,
     );
   }

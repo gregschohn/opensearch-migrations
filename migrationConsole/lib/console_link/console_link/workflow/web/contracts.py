@@ -23,6 +23,7 @@ from ..application.config_drafts import (
     ExternalResourceInventory,
     ExternalResourceMutation,
 )
+from ..application.config_documents import ConfigurationDocument
 from ..application.operations import Operation
 from ..application.actions import (
     ApprovalGateInventory,
@@ -435,6 +436,25 @@ class ConfigDraftV1(WebModel):
             "rawYaml": draft.repair_yaml,
             "notices": list(draft.notices),
         })
+
+
+class ConfigurationDocumentV1(WebModel):
+    raw_yaml: str
+    persisted_revision: str
+    model_version: Literal["1"]
+    deployment_defaults: Optional[Dict[str, Any]] = None
+
+    @classmethod
+    def from_domain(
+        cls,
+        document: ConfigurationDocument,
+    ) -> "ConfigurationDocumentV1":
+        return cls.model_validate(document.__dict__)
+
+
+class SaveConfigurationDocumentRequestV1(WebModel):
+    expected_persisted_revision: str
+    raw_yaml: str
 
 
 class SetEditOperationV1(WebModel):

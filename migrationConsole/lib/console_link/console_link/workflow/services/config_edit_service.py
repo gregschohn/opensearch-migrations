@@ -405,10 +405,23 @@ class ConfigEditService:
 
     def validate_raw_config_for_submit(self, raw_yaml: str) -> None:
         edit_state = self._run_edit_state(raw_yaml, validate_external_refs=True)
+        self._require_valid_edit_state(edit_state, action="submit")
+
+    def validate_raw_config_for_save(self, raw_yaml: str) -> None:
+        """Validate document syntax and schema without remote environment checks."""
+        edit_state = self._run_edit_state(raw_yaml, validate_external_refs=False)
+        self._require_valid_edit_state(edit_state, action="save")
+
+    @staticmethod
+    def _require_valid_edit_state(
+        edit_state: Dict[str, Any],
+        *,
+        action: str,
+    ) -> None:
         validation = edit_state.get("validation") or {}
         if validation.get("valid", True):
             return
-        raise ValueError(_format_submit_validation_error(validation))
+        raise ValueError(_format_validation_error(validation, action))
 
     def _run_edit_state(self, raw_yaml: str, validate_external_refs: bool = False) -> Dict[str, Any]:
         with tempfile.NamedTemporaryFile(mode="w", suffix=YAML_SUFFIX, delete=True) as temp_file:
@@ -1185,7 +1198,10 @@ def _format_api_exception(error: ApiException) -> str:
     return f"{status} {reason}".strip()
 
 
-def _format_submit_validation_error(validation: Dict[str, Any]) -> str:
+def _format_validation_error(
+    validation: Dict[str, Any],
+    action: str,
+) -> str:
     messages: list[str] = []
     for diagnostic in validation.get("diagnostics") or []:
         message = str(diagnostic.get("message") or "").strip()
@@ -1199,5 +1215,12 @@ def _format_submit_validation_error(validation: Dict[str, Any]) -> str:
             messages.append(message)
     deduped = list(dict.fromkeys(messages))
     if not deduped:
-        return "Workflow configuration is not valid; fix the highlighted config errors before submit."
-    return "Workflow configuration is not valid; fix these config errors before submit: " + "; ".join(deduped[:5])
+        return (
+            "Workflow configuration is not valid; fix the highlighted "
+            f"config errors before {action}."
+        )
+    return (
+        "Workflow configuration is not valid; fix these config errors "
+        f"before {action}: "
+        + "; ".join(deduped[:5])
+    )

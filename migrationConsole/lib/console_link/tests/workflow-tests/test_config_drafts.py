@@ -379,6 +379,25 @@ def test_close_discards_session_and_next_open_reloads_saved_config():
     )
 
 
+def test_saved_configuration_invalidation_discards_the_compatibility_draft():
+    edit_service = _FakeEditService()
+    drafts = ConfigDraftService(edit_service)
+    opened = drafts.open()
+    drafts.apply(
+        opened.draft_revision,
+        {"op": "set", "path": ["value"], "value": "draft"},
+    )
+    edit_service.saved_yaml = "value: changed-elsewhere\n"
+
+    drafts.invalidate_saved_config()
+    reopened = drafts.open()
+
+    assert reopened.dirty is False
+    assert reopened.edit_state["nodes"][0]["children"][0]["value"] == (
+        "changed-elsewhere"
+    )
+
+
 def test_submit_validates_saves_dirty_draft_and_submits_the_saved_config():
     edit_service = _FakeEditService()
     drafts = ConfigDraftService(edit_service)

@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 
 from ..application.config_navigation import project_config_navigation
 from ..application.observations import ObservationCoordinator, ObservationEvent
+from ..application.config_documents import ConfigurationDocumentConflict
 from ..application.config_drafts import (
     ConfigDraftConflict,
     ExternalResourceSelectionWarning,
@@ -47,6 +48,7 @@ from .contracts import (
     ApprovalGateInventoryV1,
     ApprovalReviewV1,
     ConfigDraftV1,
+    ConfigurationDocumentV1,
     ConfigRemovalImpactRequestV1,
     ConfigRemovalImpactV1,
     ConfigReviewV1,
@@ -71,6 +73,7 @@ from .contracts import (
     ResetPlanV1,
     RuntimeStatusV1,
     SaveExternalResourceRequestV1,
+    SaveConfigurationDocumentRequestV1,
     SelectExternalResourceRequestV1,
     SetPreapprovalRequestV1,
     SetPreapprovalResponseV1,
@@ -88,6 +91,7 @@ def create_app(
     static_dir: Optional[Path] = None,
     coordinator: Optional[ObservationCoordinator] = None,
     config_drafts: Optional[Any] = None,
+    config_documents: Optional[Any] = None,
     outputs: Optional[Any] = None,
     operations: Optional[Any] = None,
     approvals: Optional[Any] = None,
@@ -205,6 +209,14 @@ def create_app(
                 detail="Configuration editing is not configured",
             )
         return config_drafts
+
+    def document_service():
+        if config_documents is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Configuration documents are not configured",
+            )
+        return config_documents
 
     def draft_navigation(draft: Any) -> Optional[Any]:
         observation = (
@@ -623,6 +635,84 @@ def create_app(
             return LogStreamStatusV1.from_domain(status)
         except LogUnavailable as error:
             raise _log_error(404, "logs_unavailable", error) from error
+
+    @app.get(
+        "/api/v1/config/document",
+        response_model=ConfigurationDocumentV1,
+        response_model_exclude_none=True,
+        tags=["configuration"],
+    )
+    def load_config_document() -> ConfigurationDocumentV1:
+        try:
+            return ConfigurationDocumentV1.from_domain(
+                document_service().load()
+            )
+        except HTTPException:
+            raise
+        except Exception as error:
+            logger.exception("Failed to load the workflow configuration document")
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "configuration_document_unavailable",
+                    "message": str(error) or type(error).__name__,
+                },
+            ) from error
+
+    @app.put(
+        "/api/v1/config/document",
+        response_model=ConfigurationDocumentV1,
+        response_model_exclude_none=True,
+        tags=["configuration"],
+    )
+    async def save_config_document(
+        request_body: SaveConfigurationDocumentRequestV1,
+    ) -> ConfigurationDocumentV1:
+        try:
+            document = await asyncio.to_thread(
+                document_service().save,
+                request_body.expected_persisted_revision,
+                request_body.raw_yaml,
+            )
+        except ConfigurationDocumentConflict as error:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "persisted_revision_conflict",
+                    "message": str(error),
+                    "current": ConfigurationDocumentV1.from_domain(
+                        error.current
+                    ).model_dump(
+                        by_alias=True,
+                        exclude_none=True,
+                        mode="json",
+                    ),
+                },
+            ) from error
+        except ValueError as error:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "configuration_document_invalid",
+                    "message": str(error),
+                },
+            ) from error
+        except HTTPException:
+            raise
+        except Exception as error:
+            logger.exception("Failed to save the workflow configuration document")
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "configuration_document_unavailable",
+                    "message": str(error) or type(error).__name__,
+                },
+            ) from error
+        if coordinator is not None:
+            coordinator.invalidate_saved_configuration(
+                document.persisted_revision
+            )
+        return ConfigurationDocumentV1.from_domain(document)
 
     @app.get(
         "/api/v1/config",
