@@ -387,7 +387,8 @@ public class CaptureProxy {
                     params.kafakTopicName,
                     params.maximumTrafficStreamSize,
                     Duration.ofSeconds(params.livenessSnapshotIntervalSeconds),
-                    captureProcessState::requiredCaptureFailed
+                    captureProcessState::requiredCaptureFailed,
+                    captureProcessState::unstableProcessFailed
                 );
             } catch (RuntimeException | IOException e) {
                 if (producer != null) {

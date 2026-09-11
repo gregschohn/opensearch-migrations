@@ -19,7 +19,6 @@ import java.util.stream.Stream;
 
 import org.opensearch.migrations.testutils.TestUtilities;
 import org.opensearch.migrations.testutils.WrapWithNettyLeakDetection;
-import org.opensearch.migrations.trafficcapture.IChannelConnectionCaptureSerializer;
 import org.opensearch.migrations.trafficcapture.StreamChannelConnectionCaptureSerializer;
 import org.opensearch.migrations.trafficcapture.protos.TrafficObservation;
 import org.opensearch.migrations.trafficcapture.protos.TrafficStream;
@@ -438,7 +437,7 @@ public class ConditionallyReliableLoggingHttpHandlerTest {
         }
     }
 
-    private static class DiagnosticFailureOffloader implements IChannelConnectionCaptureSerializer<Void> {
+    private static class DiagnosticFailureOffloader extends NoopChannelConnectionCaptureSerializer<Void> {
         private final AtomicInteger diagnosticAttempts = new AtomicInteger();
         private final AtomicInteger closeObservations = new AtomicInteger();
         private final AtomicInteger finalFlushes = new AtomicInteger();
@@ -464,7 +463,7 @@ public class ConditionallyReliableLoggingHttpHandlerTest {
     }
 
     private static class DelayedFinalAcknowledgementOffloader
-        implements IChannelConnectionCaptureSerializer<Void> {
+        extends NoopChannelConnectionCaptureSerializer<Void> {
         private final AtomicInteger closeObservations = new AtomicInteger();
         private final CompletableFuture<Void> finalAcknowledgement = new CompletableFuture<>();
 
