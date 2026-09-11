@@ -17,6 +17,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
@@ -31,6 +34,7 @@ import org.opensearch.migrations.tracing.RootOtelContext;
 import org.opensearch.migrations.trafficcapture.CodedOutputStreamHolder;
 import org.opensearch.migrations.trafficcapture.FileConnectionCaptureFactory;
 import org.opensearch.migrations.trafficcapture.IConnectionCaptureFactory;
+import org.opensearch.migrations.trafficcapture.IOrderlyRetirableCaptureFactory;
 import org.opensearch.migrations.trafficcapture.StreamChannelConnectionCaptureSerializer;
 import org.opensearch.migrations.trafficcapture.StreamLifecycleManager;
 import org.opensearch.migrations.trafficcapture.kafkaoffloader.CaptureMembershipAssignmentTracker;
@@ -72,6 +76,7 @@ import org.apache.logging.log4j.LogManager;
 public class CaptureProxy {
     static final int CAPTURE_FAILURE_EXIT_CODE = 78;
     static final Duration CAPTURE_FAILURE_LOG_FLUSH_TIMEOUT = Duration.ofSeconds(5);
+    static final Duration ORDERLY_SHUTDOWN_WARNING_TARGET = Duration.ofMinutes(5);
 
     public static class CaptureFailurePolicyConverter implements IStringConverter<CaptureFailurePolicy> {
         @Override
@@ -536,7 +541,10 @@ public class CaptureProxy {
         );
 
         var sslEngineSupplier = buildSslEngineSupplier(params);
-        var captureProcessState = new CaptureProcessState(params.captureFailurePolicy);
+        var captureProcessState = new CaptureProcessState(
+            params.captureFailurePolicy,
+            ctx.captureProcessMetrics::recordTransition
+        );
         captureProcessState.addTerminationListener(
             new CaptureFailureTerminator(
                 CAPTURE_FAILURE_EXIT_CODE,
@@ -586,17 +594,69 @@ public class CaptureProxy {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             try {
                 System.err.println("Received shutdown signal.  Trying to shutdown cleanly");
-                proxy.stop();
-                closeCaptureFactory(connectionCaptureFactory);
+                performOrderlyShutdown(
+                    proxy,
+                    connectionCaptureFactory,
+                    ORDERLY_SHUTDOWN_WARNING_TARGET,
+                    () -> log.atError()
+                        .setMessage(
+                            "Orderly proxy shutdown has exceeded its five-minute target; "
+                                + "continuing connection and writer retirement"
+                        )
+                        .log()
+                );
                 System.err.println("Done stopping the proxy.");
             } catch (InterruptedException e) {
                 System.err.println("Caught InterruptedException while shutting down, resetting interrupt status: " + e);
                 Thread.currentThread().interrupt();
+            } catch (RuntimeException e) {
+                log.atError().setCause(e).setMessage("Orderly proxy shutdown failed").log();
             }
         }));
         // This loop just gives the main() function something to do while the netty event loops
         // work in the background.
         proxy.waitForClose();
+    }
+
+    static void performOrderlyShutdown(
+        NettyScanningHttpProxy proxy,
+        IConnectionCaptureFactory<?> connectionCaptureFactory,
+        Duration warningTarget,
+        Runnable warningAction
+    ) throws InterruptedException {
+        if (warningTarget.isZero() || warningTarget.isNegative()) {
+            throw new IllegalArgumentException("warningTarget must be positive");
+        }
+        var shutdownFinished = new AtomicBoolean();
+        var warningExecutor = Executors.newSingleThreadScheduledExecutor(runnable -> {
+            var thread = new Thread(runnable, "proxy-orderly-shutdown-warning");
+            thread.setDaemon(true);
+            return thread;
+        });
+        var warningFuture = warningExecutor.schedule(
+            () -> {
+                if (!shutdownFinished.get()) {
+                    warningAction.run();
+                }
+            },
+            warningTarget.toNanos(),
+            TimeUnit.NANOSECONDS
+        );
+        try {
+            var retirement = connectionCaptureFactory instanceof IOrderlyRetirableCaptureFactory retirable
+                ? retirable.retireForOrderlyShutdown()
+                : CompletableFuture.<Void>completedFuture(null);
+            proxy.stop();
+            retirement.join();
+        } finally {
+            try {
+                closeCaptureFactory(connectionCaptureFactory);
+            } finally {
+                shutdownFinished.set(true);
+                warningFuture.cancel(false);
+                warningExecutor.shutdownNow();
+            }
+        }
     }
 
     private static void closeCaptureFactory(IConnectionCaptureFactory<?> connectionCaptureFactory) {

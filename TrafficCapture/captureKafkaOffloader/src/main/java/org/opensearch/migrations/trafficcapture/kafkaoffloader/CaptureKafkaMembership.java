@@ -13,6 +13,7 @@ import java.util.function.Consumer;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerRebalanceListener;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.errors.RetriableException;
 import org.apache.kafka.common.errors.WakeupException;
 
 /**
@@ -95,7 +96,8 @@ public final class CaptureKafkaMembership implements ConsumerRebalanceListener, 
         if (!initialAssignmentReported.get() && !minimumSatisfied) {
             return;
         }
-        publisher.installAssignment(kafkaAssignment)
+        var assignmentSnapshot = List.copyOf(kafkaAssignment);
+        publisher.installAssignment(assignmentSnapshot)
             .whenComplete((writerNodeId, failure) -> {
                 if (failure != null) {
                     publisher.failClosed(failure);
@@ -121,11 +123,36 @@ public final class CaptureKafkaMembership implements ConsumerRebalanceListener, 
         try {
             consumer.subscribe(List.of(topic), this);
             while (!closed.get()) {
-                var records = consumer.poll(POLL_INTERVAL);
-                if (!records.isEmpty()) {
-                    handleMembershipFailure(new IllegalStateException(
-                        "Paused capture membership consumer unexpectedly fetched traffic records"
-                    ));
+                try {
+                    var records = consumer.poll(POLL_INTERVAL);
+                    if (!records.isEmpty()) {
+                        handleMembershipFailure(new IllegalStateException(
+                            "Paused capture membership consumer unexpectedly fetched traffic records"
+                        ));
+                        return;
+                    }
+                } catch (WakeupException e) {
+                    if (!closed.get()) {
+                        handleMembershipFailure(e);
+                    }
+                    return;
+                } catch (RetriableException e) {
+                    log.atWarn()
+                        .setCause(e)
+                        .setMessage(
+                            "Transient Kafka membership poll failure; "
+                                + "continuing with the last usable assignment while polling retries"
+                        )
+                        .log();
+                } catch (Error e) {
+                    if (!closed.get()) {
+                        handleUnstableProcessFailure(e);
+                    }
+                    return;
+                } catch (RuntimeException e) {
+                    if (!closed.get()) {
+                        handleMembershipFailure(e);
+                    }
                     return;
                 }
             }
@@ -189,18 +216,27 @@ public final class CaptureKafkaMembership implements ConsumerRebalanceListener, 
 
     @Override
     public void close() {
+        try {
+            closeAsync().join();
+        } catch (RuntimeException e) {
+            log.atWarn().setCause(e).setMessage("Capture Kafka membership did not close cleanly").log();
+        }
+    }
+
+    CompletableFuture<Void> closeAsync() {
         if (closed.compareAndSet(false, true)) {
             if (started.get()) {
                 consumer.wakeup();
             } else {
-                closeConsumerWithoutPollThread();
+                var closeThread = new Thread(
+                    this::closeConsumerWithoutPollThread,
+                    "capture-kafka-membership-close"
+                );
+                closeThread.setDaemon(true);
+                closeThread.start();
             }
         }
-        try {
-            stopped.join();
-        } catch (RuntimeException e) {
-            log.atWarn().setCause(e).setMessage("Capture Kafka membership did not close cleanly").log();
-        }
+        return stopped;
     }
 
     private void closeConsumerWithoutPollThread() {
