@@ -65,7 +65,8 @@ class RepeatedGenerationLifecycleTest extends InstrumentationTest {
             RequestSenderOrchestrator.noSourceTerminationObligations(),
             metrics,
             metrics,
-            metrics
+            metrics,
+            rootContext.getReplayProcessFatalMetrics()
         );
         permitPool = new AsyncPermitPool(PERMIT_CAPACITY, Runnable::run, metrics);
         ledger = new RecordDispositionLedger(Runnable::run);

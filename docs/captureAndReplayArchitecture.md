@@ -816,10 +816,18 @@ The process is unstable because the sole owner of mutable connection, target, ti
 state no longer exists. The system does not transfer that ownership to another thread or construct
 successful completion from partial cleanup.
 
-The failure path should emit a high-severity log and metric when possible, stop accepting new work,
-and terminate non-successfully. It may be an abrupt or incomplete shutdown. Correctness relies on
-Kafka redelivering records whose offsets were not committed, just as it would after an out-of-memory
-failure or hard process kill.
+After fatal event-loop death is detected, the replayer emits a best-effort
+`replayFatalFailures{reason=event_loop_terminated}` metric and an ERROR diagnostic, synchronously
+flushes Log4j and standard error, and immediately invokes `Runtime.halt(80)`. Metric export is not
+guaranteed before termination. The reason-specific halt code is distinct from the replayer's normal
+`System.exit` codes.
+
+The replayer does not initiate cleanup, completion, or Kafka commit coordination because of
+event-loop death. Any concurrent external operation may or may not complete. Kafka's committed
+offset determines the durable outcome after restart.
+
+Correctness relies on Kafka redelivering records whose offsets were not committed, just as it would
+after an out-of-memory failure or hard process kill.
 
 ### 12.2 Normal replayer shutdown
 

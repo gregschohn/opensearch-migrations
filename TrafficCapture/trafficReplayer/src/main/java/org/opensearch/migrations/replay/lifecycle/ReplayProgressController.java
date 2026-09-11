@@ -124,6 +124,27 @@ public final class ReplayProgressController implements SourcePartitionLifecycleL
         });
     }
 
+    @Override
+    public void onRetired(@NonNull Collection<SourcePartitionKey> retired) {
+        ownerExecutor.execute(() -> {
+            for (var partition : retired) {
+                var progress = partitions.get(partition);
+                if (progress != null && !progress.admitted.isEmpty()) {
+                    throw new IllegalStateException(
+                        "source partition generation retired with replay work still admitted: " + partition
+                    );
+                }
+                partitions.remove(partition);
+                endedGenerationWatermarks.merge(
+                    identity(partition),
+                    partition.sourceGeneration(),
+                    Math::max
+                );
+            }
+            publish();
+        });
+    }
+
     public CompletionStage<WorkToken> admit(
         @NonNull SourcePartitionKey partition,
         @NonNull ReplayWorkId workId,
