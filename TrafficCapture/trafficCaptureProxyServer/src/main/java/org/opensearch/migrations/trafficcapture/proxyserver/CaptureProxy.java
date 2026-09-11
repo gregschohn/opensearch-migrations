@@ -126,7 +126,7 @@ public class CaptureProxy {
         @Parameter(required = false,
             names = { "--maxTrafficBufferSize" },
             arity = 1,
-            description = "The maximum number of bytes that will be written to a single TrafficStream object.")
+            description = "The maximum number of bytes that will be written to a single TrafficRecord.")
         public int maximumTrafficStreamSize = 1024 * 1024;
         @Parameter(required = false,
             names = { "--insecureDestination" },
@@ -348,7 +348,7 @@ public class CaptureProxy {
         );
     }
 
-    protected static String getNodeId() {
+    protected static String newCaptureActivationId() {
         return UUID.randomUUID().toString();
     }
 
@@ -358,10 +358,14 @@ public class CaptureProxy {
         RootCaptureContext rootContext,
         CaptureProcessState captureProcessState
     ) throws IOException {
-        var nodeId = getNodeId();
+        var captureActivationId = newCaptureActivationId();
         // Resist the urge for now though until it comes in as a request/need.
         if (params.traceDirectory != null) {
-            return new FileConnectionCaptureFactory(nodeId, params.traceDirectory, params.maximumTrafficStreamSize);
+            return new FileConnectionCaptureFactory(
+                captureActivationId,
+                params.traceDirectory,
+                params.maximumTrafficStreamSize
+            );
         } else if (params.kafkaParameters.kafkaBrokers != null) {
             KafkaProducer<String, byte[]> producer = null;
             try {
@@ -372,14 +376,14 @@ public class CaptureProxy {
                 var membershipConsumer = new KafkaConsumer<String, byte[]>(
                     KafkaConfig.buildMembershipConsumerProperties(
                         params.kafkaParameters,
-                        nodeId,
+                        captureActivationId,
                         params.kafakTopicName,
                         assignmentTracker
                     )
                 );
                 return new KafkaCaptureFactory(
                     rootContext,
-                    nodeId,
+                    captureActivationId,
                     producer,
                     membershipConsumer,
                     assignmentTracker,
