@@ -49,13 +49,13 @@ same-resource recovery remain unresolved. The managed-fleet companion document m
 possible mechanisms, but no implementation may depend on them as settled protocol or contradict
 the requirements above.
 
-One orderly-shutdown timing detail is also unresolved. Five minutes is the default operational
-target, not permission to stop retirement. After that target the proxy continues trying to
-acknowledge terminal observations, final empty manifests, and `NoMoreWrites`. The configured
-manifest expiration interval `E` is the terminal waiting limit, but the protocol has not yet fixed
-whether that interval begins when orderly shutdown starts or when periodic manifests are quiesced
-after the last accepted manifest. The process-level shutdown timer must not be implemented until
-that origin is settled.
+Five minutes is the default operational target for orderly shutdown, not permission to stop
+retirement. After that target the proxy continues trying to acknowledge terminal observations,
+final empty manifests, and `NoMoreWrites`. Periodic manifests continue while existing connections
+retire. After the connection registry is empty, the proxy quiesces periodic manifests and keeps
+trying to publish the final empty manifest and `NoMoreWrites` until the most recently acknowledged
+complete manifest reaches the configured manifest expiration interval `E`. An acknowledged final
+empty manifest becomes that most recent manifest before the proxy attempts `NoMoreWrites`.
 
 ## 2. System model
 
@@ -871,8 +871,8 @@ trustworthy, such as `SIGTERM`, a planned rollout, fleet-directed replacement, o
 administrative shutdown. It follows the connection and writer-retirement ordering in §§6–7. The
 default target for completing that orderly retirement is five minutes. Missing the target emits a
 high-severity diagnostic but does not stop retirement or skip `NoMoreWrites`. The proxy gives up
-only after the configured manifest expiration interval `E`; §1 records the unresolved origin of
-that interval.
+only when the most recently acknowledged complete manifest reaches the configured manifest
+expiration interval `E`.
 
 The orderly-retirement timing policy is not a general failure response. Capture-compromise and unstable
 process failures follow §12.4 instead.

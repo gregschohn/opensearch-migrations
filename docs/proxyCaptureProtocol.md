@@ -21,12 +21,13 @@ departed continues using its last usable assignment until it receives a replacem
 not capture-health or replay evidence and does not authorize another proxy to declare the departed
 proxy instance finished.
 
-One process-level timing detail remains unresolved. Five minutes is the default operational target
-for orderly retirement, not permission to terminate without attempting terminal self
-`NoMoreWrites`. Retirement continues after that target. The configured manifest expiration
-interval `E` is the terminal waiting limit, but the design has not yet fixed whether `E` begins when
-orderly shutdown starts or when periodic manifests are quiesced after the last accepted manifest.
-The shutdown timer must not be implemented until that origin is settled.
+Five minutes is the default operational target for orderly retirement, not permission to terminate
+without attempting terminal self `NoMoreWrites`. Retirement continues after that target. Periodic
+manifests continue while existing connections retire. After the connection registry is empty, the
+proxy quiesces periodic manifests and keeps trying to publish the final empty manifest and
+`NoMoreWrites` until the most recently acknowledged complete manifest reaches the configured
+manifest expiration interval `E`. An acknowledged final empty manifest becomes that most recent
+manifest before the proxy attempts `NoMoreWrites`.
 
 ---
 
@@ -302,9 +303,9 @@ A planned process retirement first becomes `DRAINING`:
 This orderly retirement is performed only while capture and Kafka publication remain trustworthy.
 Its default completion target is five minutes. Missing the target emits a high-severity diagnostic
 and retirement continues through final empty manifests and `NoMoreWrites`. The proxy gives up only
-after the configured manifest expiration interval `E`; the unresolved origin of that interval is
-called out above. This timing policy is not used for capture-compromise or unstable-process
-failures described in §7.
+when the most recently acknowledged complete manifest reaches the configured manifest expiration
+interval `E`. This timing policy is not used for capture-compromise or unstable-process failures
+described in §7.
 
 ### 3.6 Later use of a partition
 
@@ -1319,8 +1320,10 @@ orchestration around:
   retirement.
 - In `fail-open`, verify that existing and new TCP connections forward without capture and that
   Kafka recovery does not resume capture.
-- Verify that orderly trustworthy shutdown uses the five-minute default retirement bound, while
-  capture-compromise and unstable-process failures do not enter retirement.
+- Verify that orderly trustworthy shutdown emits a high-severity diagnostic after its five-minute
+  target, continues trying to publish the final empty manifest and `NoMoreWrites`, and gives up only
+  when the most recently acknowledged complete manifest reaches `E`. Capture-compromise and
+  unstable-process failures do not enter retirement.
 
 ### 11.5 Acceptance criteria
 
