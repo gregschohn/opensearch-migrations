@@ -16,6 +16,51 @@ export function editTarget(node: ManageNode): string | null {
 }
 
 
+export function navigationResourceId(
+  nodes: Record<string, ManageNode>,
+  targetId: string,
+): string | null {
+  const resource = Object.values(nodes).find(
+    (node) => (
+      ["resource", "config-definition"].includes(node.kind)
+      && editTarget(node) === targetId
+    ),
+  );
+  return resource?.id ?? null;
+}
+
+
+export function settledRenameResourceId(
+  nodes: Record<string, ManageNode>,
+  rename: PendingResourceRename,
+): string | null {
+  if (rename.id === rename.oldId) {
+    const stableNode = nodes[rename.id];
+    if (
+      stableNode?.resourceName === rename.resourceName
+      && editTarget(stableNode) === rename.editTargetId
+    ) {
+      return rename.id;
+    }
+    // A stable edit target does not promise a stable node id. The server can
+    // answer the rename by retiring the old identity and publishing the new
+    // name under a different node, so accept whichever node now owns the
+    // target under the new name - otherwise the overlay never settles and its
+    // synthesized row shadows the real one.
+    const republished = Object.values(nodes).find((node) => (
+      node.id !== rename.oldId
+      && node.resourceName === rename.resourceName
+      && editTarget(node) === rename.editTargetId
+    ));
+    return republished?.id ?? null;
+  }
+  if (nodes[rename.oldId]) return null;
+  if (nodes[rename.id]) return rename.id;
+  const resourceId = navigationResourceId(nodes, rename.editTargetId);
+  return resourceId === rename.oldId ? null : resourceId;
+}
+
+
 export interface ResourceValidationState {
   issueCount: number;
   label: string;

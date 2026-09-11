@@ -263,20 +263,23 @@ function resourceRenameOptions(nodes: EditNode[]): ResourceRenameOption[] {
         const collisionScope = source && target && snapshot
           ? `${source}-${target}-${snapshot}`
           : undefined;
+        const displayPrefix = `${
+          source || "<SOURCE>"
+        }-${target || "<TARGET>"}-${snapshot || "<SNAPSHOT>"}-`;
         result.push({
           collisionScope,
           currentName,
           editTargetStable: true,
           editTargetId: migration.id,
-          label: `${source}-${target}-${snapshot}-${currentName}`,
-          labelPrefix: `${source}-${target}-${snapshot}-`,
+          label: `${displayPrefix}${currentName || "<NAME>"}`,
+          labelPrefix: displayPrefix,
           operation: "set",
           path: [...migration.path, "slice"],
           pattern: typeof validation.pattern === "string"
             ? validation.pattern
             : KUBERNETES_NAME_PATTERN,
           placement,
-          resourceNamePrefix: `${source}-${target}-${snapshot}-`,
+          resourceNamePrefix: displayPrefix,
           validationMessage: typeof validation.message === "string"
             ? validation.message
             : KUBERNETES_NAME_MESSAGE,

@@ -5222,6 +5222,53 @@ test("shows a newly added resource while the server operation is pending", async
 });
 
 
+test("restores the previous selection after a resource add is rejected", async () => {
+  const draft = addLegacySourceNavigation(structuredClone(configDraft));
+  server.use(
+    http.get("*/api/v1/config", () => HttpResponse.json(draft)),
+    http.post("*/api/v1/config/operations", () =>
+      HttpResponse.json(
+        { detail: "Config entry already exists at sourceClusters.immediate" },
+        { status: 409 },
+      ),
+    ),
+  );
+  renderApp();
+  await enterEditMode();
+
+  const tree = await screen.findByRole("tree", { name: "Workflow resources" });
+  await userEvent.click(within(tree).getByRole("treeitem", {
+    name: /^legacy, Addition pending submission$/,
+  }));
+  expect(await screen.findByRole("heading", { name: "Edit legacy" }))
+    .toBeInTheDocument();
+
+  const sourceGroup = screen.getAllByRole("treeitem", {
+    name: /^Sources$/,
+  }).find((item) => item.getAttribute("aria-level") === "1");
+  if (!sourceGroup) throw new Error("Source group was not rendered");
+  await userEvent.click(within(sourceGroup).getByRole("button", {
+    name: "Add source cluster",
+  }));
+  await userEvent.type(
+    within(tree).getByRole("textbox", { name: "source cluster name" }),
+    "immediate{Enter}",
+  );
+
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Config entry already exists at sourceClusters.immediate",
+  );
+  expect(within(tree).queryByRole("treeitem", {
+    name: /^immediate,/,
+  })).toBeNull();
+  expect(await within(tree).findByRole("treeitem", {
+    name: /^legacy, Addition pending submission$/,
+  })).toHaveAttribute("aria-selected", "true");
+  expect(screen.getByRole("heading", { name: "Edit legacy" }))
+    .toBeInTheDocument();
+});
+
+
 test("cancels inline resource naming and restores tree selection and focus", async () => {
   const draft = addLegacySourceNavigation(structuredClone(configDraft));
   server.use(

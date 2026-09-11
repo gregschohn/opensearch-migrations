@@ -143,6 +143,10 @@ class ResourceNode:
     tree_change_summary: Optional[Dict[str, int]] = None
     tree_sort_index: Optional[int] = None
     display_fields: List[str] = field(default_factory=list)
+    # Parameters from the resolved config projection. Unlike `spec` (always the
+    # deployed CR spec, so it stays usable as the diff baseline) these are also
+    # populated for resources that only exist in submitted or pending config.
+    config_parameters: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -220,6 +224,9 @@ def apply_config_overlays(
             submitted.get(key),
             deployed_config.get(key),
         )
+        node.config_parameters = _resolved_parameters(
+            pending.get(key), submitted.get(key), deployed_config.get(key),
+        )
         node.diagnostics = _merged_resource_diagnostics(submitted.get(key), pending.get(key))
         node.display_fields = _merged_display_fields(deployed_config.get(key), submitted.get(key), pending.get(key))
         node.config_presence = _build_config_presence(
@@ -239,9 +246,10 @@ def apply_config_overlays(
 
     for key in sorted((set(deployed_config) | set(submitted) | set(pending)) - set(deployed)):
         plural, name = key
-        resolved = pending.get(key) or submitted.get(key) or deployed_config.get(key)
         deployed_resource = deployed_config.get(key)
-        parameters = (resolved or {}).get('parameters') or {}
+        parameters = _resolved_parameters(
+            pending.get(key), submitted.get(key), deployed_config.get(key),
+        )
         virtual = ResourceNode(
             name=name,
             plural=plural,
@@ -251,6 +259,7 @@ def apply_config_overlays(
             status={},
             display_fields=_merged_display_fields(deployed_resource, submitted.get(key), pending.get(key)),
             diagnostics=_merged_resource_diagnostics(deployed_resource, submitted.get(key), pending.get(key)),
+            config_parameters=parameters,
             config_presence=_build_config_presence(
                 deployed=key in deployed_config,
                 submitted=key in submitted if submitted_available else None,
@@ -625,6 +634,15 @@ def _add_virtual_resource(sections: List[ResourceSection], resource: ResourceNod
         group = ResourceGroup(plural=resource.plural, display_name=display_name, resources=[])
         section.groups.append(group)
     group.resources.append(resource)
+
+
+def _resolved_parameters(*resources: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Return the parameters of the first resource projection that has any."""
+    for resource in resources:
+        parameters = (resource or {}).get('parameters')
+        if parameters:
+            return parameters
+    return {}
 
 
 def _merged_resource_diagnostics(*resources: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
