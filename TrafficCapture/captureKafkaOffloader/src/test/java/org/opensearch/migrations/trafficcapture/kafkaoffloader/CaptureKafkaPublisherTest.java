@@ -454,6 +454,33 @@ class CaptureKafkaPublisherTest {
     }
 
     @Test
+    void corruptedWriterRetirementStateIsAnUnstableProcessFailure() throws Exception {
+        var producer = producer(false);
+        var routingState = new CaptureRoutingState(ACTIVATION_ID, 1);
+        var assignment = routingState.prepareAssignment(List.of(0));
+        var initialManifest = routingState.prepareInitialManifests(assignment).getFirst();
+        routingState.activateAssignment(assignment);
+        var unstableFailure = new AtomicReference<Throwable>();
+        var publisher = publisher(producer, routingState, unstableFailure::set);
+
+        var retirement = publisher.retireAllWriters();
+        awaitHistorySize(producer, 1);
+        assertTrue(producer.completeNext());
+        awaitHistorySize(producer, 2);
+
+        routingState.completeWriterRetirement(initialManifest);
+        assertTrue(producer.completeNext());
+
+        var failure = assertThrows(
+            ExecutionException.class,
+            () -> retirement.get(1, TimeUnit.SECONDS)
+        ).getCause();
+        assertTrue(failure instanceof CorruptedCaptureStateException);
+        assertEquals(failure, unstableFailure.get());
+        publisher.close();
+    }
+
+    @Test
     void diagnosticManifestTimestampsIncreaseWhenClockMovesBackward() throws Exception {
         var producer = producer(true);
         var routingState = new CaptureRoutingState(ACTIVATION_ID, 1);
