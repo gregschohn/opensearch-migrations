@@ -2448,7 +2448,7 @@ test("expands authored expert sections and supports animated collapse and expand
     .toBeInTheDocument();
   expect(within(config).getByRole("row", { name: /Expert mode/ }))
     .toBeInTheDocument();
-  expect(document.querySelector(".config-scroll-space")).toBeInTheDocument();
+  expect(document.querySelector(".config-scroll-space")).not.toBeInTheDocument();
   expect(screen.getByRole("checkbox", {
     name: "Show optional fields",
   })).toBeChecked();
@@ -2536,7 +2536,7 @@ test("keeps resource context while scoping edit mode to the selected resource", 
   expect(screen.getByRole("button", { name: "Remove legacy" }))
     .toBeInTheDocument();
   expect(within(config).queryByRole("row", {
-    name: /ConfigMap/,
+    name: /Config Map/,
   })).toBeNull();
 
   await userEvent.click(within(resources).getByRole("treeitem", {
@@ -2546,7 +2546,7 @@ test("keeps resource context while scoping edit mode to the selected resource", 
   expect(await screen.findByRole("heading", { name: "Edit replay" }))
     .toBeInTheDocument();
   expect(await within(config).findByRole("row", {
-    name: /^ConfigMap /,
+    name: /^Config Map /,
   })).toBeInTheDocument();
   expect(within(config).queryByRole("row", {
     name: /Endpoint/,
@@ -4624,7 +4624,7 @@ test("shows ConfigMap keys and selects the map plus key together", async () => {
     name: "Configuration fields",
   });
   const configMapRow = within(configTree).getByRole("row", {
-    name: /ConfigMap/,
+    name: /Config Map/,
   });
   await userEvent.click(within(configMapRow).getByRole("button", {
     name: /Configure$/,
@@ -4825,7 +4825,7 @@ test("allows an explicit ConfigMap and key when inventory is unavailable", async
     name: "Configuration fields",
   });
   const configMapRow = within(configTree).getByRole("row", {
-    name: /ConfigMap/,
+    name: /Config Map/,
   });
   await userEvent.click(
     within(configMapRow).getByRole("button", { name: /Configure$/ }),
@@ -4873,7 +4873,7 @@ test("dismisses Kubernetes resource selection without persistent inline controls
     name: "Configuration fields",
   });
   const configMapRow = within(configTree).getByRole("row", {
-    name: /ConfigMap/,
+    name: /Config Map/,
   });
   const configure = within(configMapRow).getByRole("button", {
     name: /Configure$/,
@@ -5608,7 +5608,7 @@ test("views and creates descriptor-driven ConfigMaps without raw YAML", async ()
     name: "Configuration fields",
   });
   const configMapRow = within(configTree).getByRole("row", {
-    name: /ConfigMap/,
+    name: /Config Map/,
   });
   await userEvent.click(within(configMapRow).getByRole("button", {
     name: /Configure$/,

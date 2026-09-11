@@ -5104,15 +5104,6 @@ button.secondary-button:hover:not(:disabled) {
   pointer-events: none;
 }
 
-.config-scroll-space {
-  width: 100%;
-  min-height: max(
-    240px,
-    calc(100% - 84px + var(--config-scroll-retention, 0px))
-  );
-  pointer-events: none;
-}
-
 .property-heading {
   display: grid;
   grid-template-columns: 22px minmax(0, 1fr);
