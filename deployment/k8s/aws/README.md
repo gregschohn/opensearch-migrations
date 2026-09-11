@@ -142,6 +142,43 @@ Run `migration-assistant help` for the complete list of accepted flags. Some
 `--subnet-ids`, and `--use-general-node-pool`. The CLI warns and ignores these
 flags. Use `aws-bootstrap.sh` directly when you need that functionality.
 
+## Tagging everything the deployment creates
+
+```bash
+./aws-bootstrap.sh --deploy-create-vpc-cfn --stack-name MA-Dev --stage dev \
+  --region us-east-1 --tags CostCenter=1234,Owner=platform-team
+```
+
+`--tags` covers two separate mechanisms, because AWS has no single one:
+
+- **CloudFormation stack tags.** Identical to filling in the console's
+  Tags step. CloudFormation copies them onto every taggable resource it
+  creates.
+- **EKS Auto Mode resources.** Nodes, EBS volumes, ENIs and load
+  balancers are created *after* the stack, by Auto Mode, so stack tags
+  never reach them. Auto Mode reads the tags to apply from in-cluster
+  objects instead, so `aws-bootstrap.sh` also:
+  - creates a custom `NodeClass` carrying the tags (the built-in
+    `default` NodeClass is owned by EKS and cannot be edited) and
+    disables the built-in `system`/`general-purpose` NodePools, whose
+    nodes are hard-wired to it;
+  - sets `tagSpecification_N` parameters on the `auto-ebs-sc`
+    StorageClass so provisioned volumes are tagged;
+  - emits load balancer tag annotations for any Service or Ingress the
+    chart creates.
+
+This requires the cluster IAM role to permit user-defined tags on Auto
+Mode resources. The solution CloudFormation template declares that
+policy, and `aws-bootstrap.sh --tags` also ensures the same named inline
+policy so older, adopted, and hand-built clusters need no manual IAM
+changes. The caller needs `iam:PutRolePolicy` on the cluster role;
+without it, adding a tag turns every `RunInstances` into `AccessDenied`.
+
+Two caveats: `--tags` is incompatible with `--use-general-node-pool`
+(it deletes that pool), and StorageClass `parameters` are immutable, so
+changing the tag set on an existing release means deleting
+`auto-ebs-sc` first. The script checks for both and tells you.
+
 ## Adopting a stack you deployed elsewhere
 
 If you provisioned the CFN stack with Terraform, CDK, or a previous
