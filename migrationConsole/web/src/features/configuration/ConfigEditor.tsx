@@ -47,6 +47,7 @@ import {
   readEditorDisplayPreferences,
   writeEditorDisplayPreferences,
 } from "./editorPreferences";
+import { humanizeFieldLabel } from "./fieldLabels";
 import { fieldValidationProblem } from "./fieldValidation";
 import {
   pendingResourceAddition,
@@ -330,9 +331,22 @@ function allNodeIds(nodes: EditNode[]): Set<string> {
 }
 
 
-function fieldName(node: EditNode): string {
+function fieldName(node: EditNode, parent: EditNode | null = null): string {
   const prefix = node.label.split(":", 1)[0].replace(/^\+ Add /, "");
-  return prefix || node.path.at(-1) || "Configuration";
+  if (
+    node.valueKind === "command"
+    || renameableConfigPath(node.path)
+    || (
+      node.path.length === 2
+      && node.path[0] === "snapshotMigrationConfigs"
+    )
+    || (parent?.valueKind === "record" || parent?.valueKind === "array")
+  ) {
+    return prefix || node.path.at(-1) || "Configuration";
+  }
+  return humanizeFieldLabel(
+    prefix || node.path.at(-1) || "Configuration",
+  );
 }
 
 
@@ -1271,7 +1285,7 @@ function ConfigPropertyRow({
   );
   const showDetails = Boolean(addingCommand)
     || (selected && structured);
-  const name = fieldName(node);
+  const name = fieldName(node, parent);
   const errorEmphasis = validationErrorEmphasis(node);
   const changeTitle = draftChangeTitle(node);
   const effectiveDefaultLabel = typeof node.effectiveDefault?.label === "string"
@@ -1735,7 +1749,6 @@ export function ConfigEditor({
   const [collapsingIds, setCollapsingIds] = useState<Set<string>>(
     () => new Set(),
   );
-  const [scrollRetention, setScrollRetention] = useState(0);
   const [locallyEditedIds, setLocallyEditedIds] = useState<Set<string>>(
     () => new Set(),
   );
@@ -2081,7 +2094,6 @@ export function ConfigEditor({
   ]);
 
   useEffect(() => {
-    setScrollRetention(0);
     pendingScrollTop.current = null;
     pendingRowAnchor.current = null;
   }, [expansionScopeId]);
@@ -2192,7 +2204,6 @@ export function ConfigEditor({
     const panel = configTablePanelRef.current;
     if (!panel) return;
     pendingScrollTop.current = panel.scrollTop;
-    setScrollRetention((current) => Math.max(current, panel.scrollTop));
   }, []);
   const clearRemovingRows = useCallback((rowIds: ReadonlySet<string>) => {
     const released = new Set<string>();
@@ -3268,7 +3279,7 @@ export function ConfigEditor({
                     style={{ "--config-depth": depth } as React.CSSProperties}
                   >
                     <ChevronRight aria-hidden="true" />
-                    <strong>{fieldName(node)}</strong>
+                    <strong>{fieldName(node, findParent(nodes, node.id))}</strong>
                   </span>
                   <span className="pinned-context-value">
                     {propertyChildren(node).length} {
@@ -3397,13 +3408,6 @@ export function ConfigEditor({
               ))}
             </div>
           ) : null}
-          <div
-            aria-hidden="true"
-            className="config-scroll-space"
-            style={{
-              "--config-scroll-retention": `${scrollRetention}px`,
-            } as React.CSSProperties}
-          />
         </section>
       </div>)}
       {exitPromptOpen ? (
