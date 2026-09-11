@@ -39,7 +39,7 @@ import org.apache.kafka.common.header.internals.RecordHeaders;
  * Owns the ordered Kafka submission lane for traffic and exact connection manifests.
  */
 @Slf4j
-public class CaptureKafkaPublisher implements AutoCloseable {
+public class CaptureKafkaPublisher implements CaptureAssignmentPublisher, AutoCloseable {
     public static final String RECORD_TYPE_HEADER = CaptureRecordTypes.RECORD_TYPE_HEADER;
     public static final String WRITER_NODE_ID_HEADER = CaptureRecordTypes.WRITER_NODE_ID_HEADER;
     public static final String TRAFFIC_RECORD_TYPE = CaptureRecordTypes.TRAFFIC_RECORD_TYPE;
@@ -160,7 +160,8 @@ public class CaptureKafkaPublisher implements AutoCloseable {
         writeGate.addTerminalFailureListener(this::failPublisher);
     }
 
-    CompletableFuture<String> installAssignment(Collection<Integer> partitions) {
+    @Override
+    public CompletableFuture<String> installAssignment(Collection<Integer> partitions) {
         var result = new CompletableFuture<String>();
         executeOnPublisher(() -> {
             var pendingAssignment = routingState.prepareAssignment(partitions);
@@ -704,7 +705,8 @@ public class CaptureKafkaPublisher implements AutoCloseable {
             .log();
     }
 
-    void failClosed(Throwable throwable) {
+    @Override
+    public void failClosed(Throwable throwable) {
         failPublisher(Objects.requireNonNull(throwable));
     }
 

@@ -16,10 +16,6 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 class CaptureKafkaMembershipTest {
     private static final String TOPIC = "traffic";
@@ -70,9 +66,11 @@ class CaptureKafkaMembershipTest {
     @Test
     void emptyCooperativeCallbackCanInstallTheRetainedMembershipAssignment() {
         var routingState = new CaptureRoutingState(ACTIVATION_ID, 3);
-        var membership = membership(routingState);
+        var consumer = new MockConsumer<String, byte[]>(OffsetResetStrategy.EARLIEST);
+        var membership = membership(routingState, consumer);
         var partition0 = new TopicPartition(TOPIC, 0);
         var partition1 = new TopicPartition(TOPIC, 1);
+        consumer.assign(List.of(partition0, partition1));
 
         membership.onPartitionsAssigned(List.of(partition0, partition1));
         membership.onPartitionsRevoked(List.of(partition1));
@@ -87,8 +85,9 @@ class CaptureKafkaMembershipTest {
         var routingState = new CaptureRoutingState(ACTIVATION_ID, 1);
         var tracker = assignmentTracker("node-a");
         var initialAssignment = new java.util.concurrent.atomic.AtomicInteger();
+        var consumer = new MockConsumer<String, byte[]>(OffsetResetStrategy.EARLIEST);
         var membership = new CaptureKafkaMembership(
-            mock(org.apache.kafka.clients.consumer.Consumer.class),
+            consumer,
             TOPIC,
             routingState,
             publisher(routingState),
@@ -99,6 +98,7 @@ class CaptureKafkaMembershipTest {
             ignored -> {}
         );
         var partition = new TopicPartition(TOPIC, 0);
+        consumer.assign(List.of(partition));
 
         membership.onPartitionsAssigned(List.of(partition));
 
@@ -120,8 +120,7 @@ class CaptureKafkaMembershipTest {
 
     @Test
     void lostPartitionsDoNotChangeTheLastUsableAssignment() {
-        @SuppressWarnings("unchecked")
-        var consumer = mock(org.apache.kafka.clients.consumer.Consumer.class);
+        var consumer = new MockConsumer<String, byte[]>(OffsetResetStrategy.EARLIEST);
         var routingState = activeState(3, List.of(0, 1));
         var publisher = publisher(routingState);
         var membershipFailure = new AtomicReference<Throwable>();
@@ -142,9 +141,11 @@ class CaptureKafkaMembershipTest {
         assertEquals(List.of(0, 1), routingState.assignedPartitions());
         assertEquals("activation:1", routingState.admitConnection("while-membership-is-changing").writerNodeId());
         assertEquals(null, membershipFailure.get());
-        verify(publisher, org.mockito.Mockito.never()).failClosed(any());
+        assertEquals(null, publisher.failure());
 
-        membership.onPartitionsAssigned(List.of(new TopicPartition(TOPIC, 2)));
+        var partition2 = new TopicPartition(TOPIC, 2);
+        consumer.assign(List.of(partition2));
+        membership.onPartitionsAssigned(List.of(partition2));
 
         assertEquals(List.of(0, 2), routingState.assignedPartitions());
         assertEquals("activation:2", routingState.admitConnection("after-normal-assignment").writerNodeId());
@@ -187,7 +188,7 @@ class CaptureKafkaMembershipTest {
         membership.close();
         assertEquals(0, routingState.admitConnection("after-membership-failure").partition());
         assertEquals(null, membershipFailure.get());
-        verify(publisher, org.mockito.Mockito.never()).failClosed(any());
+        assertEquals(null, publisher.failure());
     }
 
     @Test
@@ -285,23 +286,42 @@ class CaptureKafkaMembershipTest {
         assertTrue(consumer.closed());
     }
 
-    @SuppressWarnings("unchecked")
-    private static CaptureKafkaPublisher publisher(CaptureRoutingState routingState) {
-        var publisher = mock(CaptureKafkaPublisher.class);
-        when(publisher.installAssignment(any(Collection.class))).thenAnswer(invocation -> {
-            Collection<Integer> partitions = invocation.getArgument(0);
+    private static InMemoryAssignmentPublisher publisher(CaptureRoutingState routingState) {
+        return new InMemoryAssignmentPublisher(routingState);
+    }
+
+    private static class InMemoryAssignmentPublisher implements CaptureAssignmentPublisher {
+        private final CaptureRoutingState routingState;
+        private final AtomicReference<Throwable> failure = new AtomicReference<>();
+
+        private InMemoryAssignmentPublisher(CaptureRoutingState routingState) {
+            this.routingState = routingState;
+        }
+
+        @Override
+        public CompletableFuture<String> installAssignment(Collection<Integer> partitions) {
             var assignment = routingState.prepareAssignment(partitions);
             routingState.prepareInitialManifests(assignment);
             routingState.activateAssignment(assignment);
             return CompletableFuture.completedFuture(assignment.writerNodeId());
-        });
-        return publisher;
+        }
+
+        @Override
+        public void failClosed(Throwable failure) {
+            this.failure.compareAndSet(null, failure);
+        }
+
+        private Throwable failure() {
+            return failure.get();
+        }
     }
 
-    @SuppressWarnings("unchecked")
-    private static CaptureKafkaMembership membership(CaptureRoutingState routingState) {
+    private static CaptureKafkaMembership membership(
+        CaptureRoutingState routingState,
+        MockConsumer<String, byte[]> consumer
+    ) {
         return new CaptureKafkaMembership(
-            mock(org.apache.kafka.clients.consumer.Consumer.class),
+            consumer,
             TOPIC,
             routingState,
             publisher(routingState),
