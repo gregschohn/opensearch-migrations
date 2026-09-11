@@ -26,7 +26,7 @@ public final class CaptureKafkaMembership implements ConsumerRebalanceListener, 
     private final org.apache.kafka.clients.consumer.Consumer<String, byte[]> consumer;
     private final String topic;
     private final CaptureRoutingState routingState;
-    private final CaptureKafkaPublisher publisher;
+    private final CaptureAssignmentPublisher publisher;
     private final CaptureMembershipAssignmentTracker assignmentTracker;
     private final int minimumActiveProxyCount;
     private final Runnable initialAssignmentCallback;
@@ -43,7 +43,7 @@ public final class CaptureKafkaMembership implements ConsumerRebalanceListener, 
         org.apache.kafka.clients.consumer.Consumer<String, byte[]> consumer,
         String topic,
         CaptureRoutingState routingState,
-        CaptureKafkaPublisher publisher,
+        CaptureAssignmentPublisher publisher,
         CaptureMembershipAssignmentTracker assignmentTracker,
         int minimumActiveProxyCount,
         Runnable initialAssignmentCallback,
