@@ -49,6 +49,12 @@ export interface EditNode {
         gated?: number;
         blocked?: number;
     };
+    draftChange?: {
+        kind: "added" | "modified";
+        previousValue?: unknown;
+        previousValuePresent: boolean;
+    };
+    draftChangeCount?: number;
     inputHint?: EditInputHint;
     externalRef?: ExternalRefHint;
     effectiveDefault?: EffectiveDefaultHint;

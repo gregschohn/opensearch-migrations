@@ -39,7 +39,7 @@ import {
     USER_PROXY_WORKFLOW_OPTION_KEYS,
 } from "@opensearch-migrations/schemas/browser";
 import {z} from "zod";
-import {stringify} from "yaml";
+import {parse, stringify} from "yaml";
 import {
     DEFAULT_AUTO_CREATE_CONFIG,
     DEFAULT_KAFKA_CLUSTER_NAME,
@@ -111,6 +111,11 @@ import {
 
 export interface ConfigEditCoreOptions {
     unifiedSchema?: JsonSchema;
+}
+
+export interface ConfigYamlProjectionV1 {
+    config: unknown | null;
+    editState: EditStateV1;
 }
 
 type EditOption = NonNullable<EditInputHint["options"]>[number];
@@ -1302,6 +1307,120 @@ export function buildEditStateFromObjectWithValidation(
         );
     }
     return buildEditStateFromObject(config, validation, options);
+}
+
+function editNodesByPath(editState: EditStateV1): Map<string, EditNode> {
+    const result = new Map<string, EditNode>();
+    const visit = (nodes: EditNode[]) => {
+        for (const node of nodes) {
+            if (node.valueKind !== "command") {
+                result.set(JSON.stringify(node.path), node);
+            }
+            visit(node.children ?? []);
+        }
+    };
+    visit(editState.nodes);
+    return result;
+}
+
+export function annotateDraftChanges(
+    editState: EditStateV1,
+    baseEditState: EditStateV1,
+): EditStateV1 {
+    const annotated = structuredClone(editState);
+    const baseNodes = editNodesByPath(baseEditState);
+
+    const visit = (node: EditNode): number => {
+        const children = node.children ?? [];
+        const childCount = children.reduce(
+            (count, child) => count + visit(child),
+            0,
+        );
+        if (node.valueKind === "command") {
+            return childCount;
+        }
+
+        const baseNode = baseNodes.get(JSON.stringify(node.path));
+        const comparable = (
+            ["scalar", "boolean", "union"].includes(node.valueKind)
+            || (children.length === 0 && "value" in node)
+        );
+        let change: EditNode["draftChange"];
+        if (comparable && !baseNode) {
+            change = {
+                kind: "added",
+                previousValuePresent: false,
+            };
+        } else if (comparable && baseNode) {
+            const currentPresent = "value" in node;
+            const previousPresent = "value" in baseNode;
+            if (
+                currentPresent !== previousPresent
+                || !Object.is(node.value, baseNode.value)
+            ) {
+                change = {
+                    kind: "modified",
+                    previousValuePresent: previousPresent,
+                    ...(previousPresent
+                        ? {previousValue: structuredClone(baseNode.value)}
+                        : {}),
+                };
+            }
+        }
+
+        const currentChildPaths = new Set(
+            children
+                .filter(child => child.valueKind !== "command")
+                .map(child => JSON.stringify(child.path)),
+        );
+        const removedChildren = (baseNode?.children ?? []).filter(child =>
+            child.valueKind !== "command"
+            && !currentChildPaths.has(JSON.stringify(child.path)),
+        ).length;
+
+        if (change) {
+            node.draftChange = change;
+        } else {
+            delete node.draftChange;
+        }
+        const changeCount = childCount + removedChildren + (change ? 1 : 0);
+        if (changeCount > 0) {
+            node.draftChangeCount = changeCount;
+        } else {
+            delete node.draftChangeCount;
+        }
+        return changeCount;
+    };
+
+    annotated.nodes.forEach(visit);
+    return annotated;
+}
+
+export function projectConfigYaml(
+    rawYaml: string,
+    options: ConfigEditCoreOptions = {},
+): ConfigYamlProjectionV1 {
+    let config: unknown;
+    try {
+        config = rawYaml.trim() === "" ? {} : parse(rawYaml);
+    } catch (error) {
+        return {
+            config: null,
+            editState: rawRepairState(
+                syntaxValidation(error),
+                "The saved YAML must be repaired before the form editor can open it.",
+            ),
+        };
+    }
+    const validation = validationForConfig(config, options);
+    return {
+        config,
+        editState: buildEditStateFromObjectWithValidation(
+            config,
+            validation,
+            options,
+        ),
+    };
 }
 
 function ensureContainer(parent: any, key: string): Record<string, unknown> {

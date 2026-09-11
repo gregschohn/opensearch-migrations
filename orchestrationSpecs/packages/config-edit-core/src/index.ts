@@ -1,19 +1,31 @@
 export {
+    annotateDraftChanges,
     applyEditOperation,
     applyEditOperationToObject,
     buildEditStateFromObject,
     buildEditStateFromObjectWithValidation,
     inputSchemaValidationError,
+    projectConfigYaml,
     rawRepairState,
     syntaxValidation,
     validationForConfig,
     validationFromError,
     validationSuccess,
 } from "./editConfig";
-export type {ConfigEditCoreOptions} from "./editConfig";
+export type {
+    ConfigEditCoreOptions,
+    ConfigYamlProjectionV1,
+} from "./editConfig";
 export {
     configureEditModelUnifiedSchema,
 } from "./schemaEditModel";
+export {
+    createdExternalResourceOperations,
+    externalResourceSelectionOperations,
+} from "./externalResourceOperations";
+export type {
+    ExternalResourceSelectionValue,
+} from "./externalResourceOperations";
 export type {
     EditApplyResultV1,
     EditDiagnostic,
