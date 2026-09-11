@@ -63,10 +63,11 @@ mechanisms; each opens with the problem it solves, so they can be read in any or
 the example in mind. §15–§18 are rules, metrics, tests, and gates. §19 records the design decisions
 that constrain the first implementation.
 
-**Deliberate omissions.** Current class names and the migration sequence live in the companion
-crosswalk, not here. And the current replayer is not claimed to be broken in general: Kafka
-consumption, HTTP reconstruction, transformation, Netty I/O, tuple sinks, and offset-commit
-mechanics are all retained. Only their orchestration contracts change.
+**Deliberate omissions.** Current class names and migration sequencing are implementation
+bookkeeping, not prerequisites for understanding this design. The current replayer is not claimed
+to be broken in general: Kafka consumption, HTTP reconstruction, transformation, Netty I/O, tuple
+sinks, target retry policy, and offset-commit mechanics are retained. Only their orchestration
+contracts change.
 
 ---
 
@@ -492,7 +493,7 @@ from §1.1, that is named.
 | Every mutable state object has one executor or thread owner | Concurrent mutation of accumulator or session state — the class of bug that a `volatile` on one flag does not fix |
 | Cross-thread completions post typed messages to the owner; they never mutate foreign state | A second thread calling into single-threaded machinery (the wall-clock heartbeat-expiry hazard) |
 | Generation runway authority is owned by `KafkaSourceActor`; the ledger and transactions hold only monotonic observations | A transaction, ledger, and Kafka consumer disagree about whether an old generation may still commit |
-| Every resource is released by whoever accepted ownership of it | The refcount leaks of §13 (R16–R18) |
+| Every resource is released by whoever accepted ownership of it | Request, retry, signing, and tuple buffers can otherwise outlive the operation that accepted them |
 | No required lifecycle notification is an optional no-op callback | **F3** — a `default {}` method silently swallowing every close notification |
 
 Mandatory lifecycle interfaces use **no Java default methods and no built-in `NO_OP` instance**.
@@ -1556,6 +1557,32 @@ to resume legitimately. A new assignment-scoped identity gives new connections a
 initial manifest baseline while old connections keep their continuous old baseline until final
 retirement.
 
+### 10.9 Imported capture archives
+
+Bring-your-own capture input uses the archive contract in
+[`captureAndReplayArchitecture.md`](captureAndReplayArchitecture.md). The replayer accepts an
+archive only when its protocol version matches the input protocol implemented by that replayer.
+
+The importer recreates one Kafka application record per archived record on the archived partition,
+preserving binary key, value, ordered headers, and partition-local order. The imported Kafka topic
+assigns new offsets, and those new offsets are the parent-record identities used by the disposition
+ledger and commit path. Archived offsets are used only to verify that export and import were
+complete, ordered, and free of duplicates.
+
+The source adapter exposes one timestamp policy for the entire imported input:
+
+- `preserve`: the imported record timestamp is the original archived `LogAppendTime`. The user
+  asserts that the original capture run respected the archived skew bound `S`; the replayer may use
+  the archived `E`, `S`, and record timestamps for the ordinary broker-time expiration proof.
+- `rebase-without-expiration`: imported records receive new broker time and broker-time expiration
+  is disabled for that source. No component may reinterpret the new timestamps as proof about the
+  original capture run.
+
+The timestamp policy is immutable after replay starts. A missing timestamp, header, partition,
+partition-range boundary, `E`, `S`, or archive integrity value rejects `preserve` mode rather than
+silently weakening it. In either mode, file end is not a terminal connection observation,
+manifest, or `NoMoreWrites`.
+
 ---
 
 ## 11. Connection Actor
@@ -1622,7 +1649,8 @@ The actor owns:
 * the FIFO command deque,
 * **one** head timer,
 * **one** active target exchange,
-* channel creation and reconnection policy,
+* target-channel creation, reuse across requests from the same captured connection, and
+  reconnection policy,
 * the cancellation token,
 * the target-exchange abort and cleanup gate,
 * the session close acknowledgement,
@@ -1638,6 +1666,17 @@ not hardened — they are **deleted**.
 Preparation may run concurrently across requests and connections, so a later command may become ready
 first. The actor examines only the head command. That single rule preserves ordering without
 re-sorting completed preparation callbacks, and it is why the sorter can go.
+
+For a positive configured `speedupFactor`, a command's nominal scheduled time is:
+
+```text
+replayStart + (sourceObservationTime - firstSourceObservationTime) / speedupFactor
+```
+
+The actor applies that time only to the FIFO head. If an earlier request is still active when a
+later request's nominal time arrives, the later request waits. Exact pacing may therefore drift
+when the target is slower than the source, but a later request on the same captured connection can
+never overtake an earlier one. Independent connection actors continue concurrently.
 
 The actor never blocks its Netty thread. It reacts when the head's preparation future posts a
 `Prepared` message, or when its scheduled timer fires.
@@ -1704,7 +1743,7 @@ blocks on the semaphore — intake itself does not block; `queueWork` only `offe
 queue. So the cost is not a stalled intake thread but three other things: a queued acquisition is not
 addressable, so "cancel this request's pending acquisition" cannot be expressed at all; `close()`
 interrupts the feeder and leaves every queued `WorkItem` stranded, its task never invoked and its
-waiters never settled (audit row R2, and one of the ways a shutdown fails to be a shutdown); and the
+waiters never settled, so shutdown can return while accepted work remains ownerless; and the
 unbounded queue means backpressure shows up as memory rather than as refusal.
 
 `AsyncPermitPool` is the replacement for `TrafficStreamLimiter`, not a wrapper, subclass, or second
@@ -1748,8 +1787,8 @@ no settlement contract, not that it exists.
 
 **The problem.** A request's concerns are spread across several owners: the limiter releases the
 permit, the orchestrator releases a temporary buffer retain, a tracker holds the join future, tuple
-packaging closes some contexts, and a commit helper may or may not be reached. Audit rows R13–R15 are
-all the same story — the last link breaks and nothing owns the decision.
+packaging closes some contexts, and a commit helper may or may not be reached. If the last callback
+link breaks, nothing owns context closure, record disposition, or eventual commit eligibility.
 
 ### 13.1 Responsibilities
 
@@ -2453,6 +2492,8 @@ the production interface rather than adding callback configuration to the test.
 * request/close admission order with out-of-order preparation;
 * cancellation before permit, transformation, channel acquisition, pacing, send, response,
   retry delay, response finalization, and evidence durability;
+* time scaling with positive `speedupFactor`, target connection reuse, and a slow target that makes
+  same-connection pacing drift without allowing request reordering;
 * a response finalizer and channel acquisition that never complete normally, proving abort settles
   the owner-controlled exchange and cleanup gates;
 * late callbacks after actor termination and after a new generation has reused the same source
@@ -2470,6 +2511,10 @@ the production interface rather than adding callback configuration to the test.
 * duplicate and missing lifecycle events;
 * scanner follow-up, manifest-listed, manifest-omitted, terminal-self-completion,
   broker-time-expiration, skew-attestation-failure, inconclusive, and generation-change results;
+* imported `preserve` records retaining partition, binary key/value, ordered headers, original
+  timestamp, and protocol decisions while using new imported offsets for whole-record accounting;
+* imported `rebase-without-expiration` records never producing broker-time expiration, and
+  end-of-file never acting as completion evidence;
 * manifest-cycle cases: an incomplete manifest has no effect; M listing a connection preserves its
   incomplete accumulators across M; M does not expire an accumulator whose earliest contributing
   `TrafficObservation` is stamped after M; an applicable omission expires only the covered
@@ -2664,6 +2709,12 @@ fired).
   prepared or submitted; the replayer has no sticky-lapse state.
 * Proxy, replayer, and broker skew monitor receive identical `E` and `S` parameters in the test
   deployment.
+* Bring-your-own `preserve` import round-trips partition ranges, binary keys and values, duplicate
+  headers, manifest chunks, terminal `NoMoreWrites` headers, and original record timestamps;
+  corruption, omission, reordering, version mismatch, or required-metadata loss rejects the
+  archive.
+* Bring-your-own `rebase-without-expiration` import disables broker-time expiration even when the
+  new importing broker's timestamps span more than `E + S`.
 * Revocation after commit submission with no broker result completes old-assignment cleanup as
   `UnknownAfterRevocation`; the next assignment starts from Kafka's chosen offset.
 * Injected traffic after valid terminal `NoMoreWrites` retains the record, emits high-severity
@@ -2697,7 +2748,8 @@ each cycle, not only when the process exits.
 
 The redesigned path is ready to replace the current path when:
 
-1. The responsibility audit maps every concern to one proposed owner.
+1. Every lifecycle concern and owned resource named in this document maps to exactly one
+   implementation owner and at least one terminal-path test.
 2. All deterministic terminal-transition tests pass.
 3. Active target-exchange abort passes at every phase, including retry delay, channel acquisition,
    response wait, and a finalizer that never completes normally.
@@ -2823,10 +2875,14 @@ independently.
 
 ### 19.6 Target retries remain inside one exchange
 
-The target exchange performs retries while its actor command remains at the head of the FIFO. The
-transaction supplies the immutable retry and classification policy, receives one terminal
-`TargetOutcome`, and does not re-admit retries as new commands. This preserves per-connection ordering
-without another actor transition.
+Retry eligibility, classification, limits, and backoff remain the existing replayer policy and are
+out of scope for this architecture change. The implementation and its existing behavioral tests
+must not change that policy as part of this work.
+
+When the existing policy performs a retry, the retry remains inside the same target exchange while
+its actor command stays at the head of the FIFO. The transaction receives one terminal
+`TargetOutcome`; a retry is not re-admitted as a new actor command or Kafka obligation. This
+preserves per-connection ordering without redefining retry policy.
 
 ### 19.7 Proxy traffic assignments and manifests follow group membership
 
@@ -2861,6 +2917,8 @@ Deliberately out of scope:
 
 * Replacing Kafka or changing its at-least-once delivery model.
 * Rewriting HTTP reconstruction or request transformations.
+* Changing which target outcomes are retried, retry limits, retry backoff, or response-mismatch
+  policy.
 * Introducing a new durable tuple store in the first implementation.
 * Providing exactly-once target-side effects across process crashes.
 * Reproducing HTTP/2 multiplexing semantics.
