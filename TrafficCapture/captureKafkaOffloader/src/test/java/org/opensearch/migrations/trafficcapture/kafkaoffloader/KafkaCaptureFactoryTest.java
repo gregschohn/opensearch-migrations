@@ -81,6 +81,7 @@ public class KafkaCaptureFactoryTest {
         Assertions.assertTrue(fakeDataBytes.length > 1024 * 1024);
         var bb = Unpooled.wrappedBuffer(fakeDataBytes);
         serializer.addReadEvent(referenceTimestamp, bb);
+        serializer.addCloseEvent(referenceTimestamp);
         var future = serializer.flushCommitAndResetStream(true);
         future.get();
         for (ProducerRecord<String, byte[]> record : producer.history()) {
@@ -91,6 +92,54 @@ public class KafkaCaptureFactoryTest {
         }
         bb.release();
         producer.close();
+    }
+
+    @Test
+    void orderlyRetirementStopsNewConnectionsAndRetiresEveryAssignedWriter() throws Exception {
+        var producer = createMockProducer(true);
+        var factory = createFactory(producer, 1024 * 1024);
+
+        factory.retireForOrderlyShutdown().get(5, TimeUnit.SECONDS);
+
+        Assertions.assertThrows(
+            IllegalStateException.class,
+            () -> factory.createOffloader(createCtx())
+        );
+        Assertions.assertEquals(
+            4,
+            producer.history()
+                .stream()
+                .filter(record -> CaptureKafkaPublisher.isRecordType(
+                    record.headers(),
+                    CaptureKafkaPublisher.NO_MORE_WRITES_RECORD_TYPE
+                ))
+                .count()
+        );
+        factory.close();
+    }
+
+    @Test
+    void finalRecordWithoutTerminalCloseObservationReportsAnUnstableProcess() throws Exception {
+        var producer = createMockProducer(true);
+        var unstableFailure = new AtomicReference<Throwable>();
+        var factory = createFactory(
+            producer,
+            1024 * 1024,
+            ignored -> {},
+            unstableFailure::set
+        );
+        var serializer = factory.createOffloader(createCtx());
+
+        var result = serializer.flushCommitAndResetStream(true);
+
+        var failure = Assertions.assertThrows(
+            ExecutionException.class,
+            () -> result.get(5, TimeUnit.SECONDS)
+        ).getCause();
+        Assertions.assertInstanceOf(IllegalStateException.class, failure);
+        Assertions.assertSame(failure, unstableFailure.get());
+        Assertions.assertEquals(List.of(), trafficRecords(producer));
+        factory.close();
     }
 
     private static ConnectionContext createCtx() {
@@ -272,6 +321,7 @@ public class KafkaCaptureFactoryTest {
         var fakeDataBytes = testStr.getBytes(StandardCharsets.UTF_8);
         var bb = Unpooled.wrappedBuffer(fakeDataBytes);
         serializer.addReadEvent(referenceTimestamp, bb);
+        serializer.addCloseEvent(referenceTimestamp);
         var future = serializer.flushCommitAndResetStream(true);
         future.get();
 
@@ -311,6 +361,7 @@ public class KafkaCaptureFactoryTest {
         var serializer1MB = factory1MB.createOffloader(createCtx());
         var bb1 = Unpooled.wrappedBuffer(fakeDataBytes);
         serializer1MB.addReadEvent(referenceTimestamp, bb1);
+        serializer1MB.addCloseEvent(referenceTimestamp);
         serializer1MB.flushCommitAndResetStream(true).get();
         int fragments1MB = trafficRecords(producer1MB).size();
         bb1.release();
@@ -322,6 +373,7 @@ public class KafkaCaptureFactoryTest {
         var serializer8MB = factory8MB.createOffloader(createCtx());
         var bb8 = Unpooled.wrappedBuffer(fakeDataBytes);
         serializer8MB.addReadEvent(referenceTimestamp, bb8);
+        serializer8MB.addCloseEvent(referenceTimestamp);
         serializer8MB.flushCommitAndResetStream(true).get();
         int fragments8MB = trafficRecords(producer8MB).size();
         bb8.release();
@@ -349,6 +401,7 @@ public class KafkaCaptureFactoryTest {
         var fakeDataBytes = testStr.getBytes(StandardCharsets.UTF_8);
         var bb = Unpooled.wrappedBuffer(fakeDataBytes);
         serializer.addReadEvent(referenceTimestamp, bb);
+        serializer.addCloseEvent(referenceTimestamp);
         var future = serializer.flushCommitAndResetStream(true);
         future.get();
 
@@ -384,11 +437,13 @@ public class KafkaCaptureFactoryTest {
         byte[] payload = "small-payload".getBytes(StandardCharsets.UTF_8);
         var bb1 = Unpooled.wrappedBuffer(payload);
         offloader1.addReadEvent(referenceTimestamp, bb1);
+        offloader1.addCloseEvent(referenceTimestamp);
         offloader1.flushCommitAndResetStream(true).get();
         bb1.release();
 
         var bb2 = Unpooled.wrappedBuffer(payload);
         offloader2.addReadEvent(referenceTimestamp, bb2);
+        offloader2.addCloseEvent(referenceTimestamp);
         offloader2.flushCommitAndResetStream(true).get();
         bb2.release();
 
@@ -417,6 +472,7 @@ public class KafkaCaptureFactoryTest {
         byte[] payload = "tiny".getBytes(StandardCharsets.UTF_8);
         var bb = Unpooled.wrappedBuffer(payload);
         serializer.addReadEvent(referenceTimestamp, bb);
+        serializer.addCloseEvent(referenceTimestamp);
         serializer.flushCommitAndResetStream(true).get();
 
         var trafficRecords = trafficRecords(producer);
@@ -481,7 +537,9 @@ public class KafkaCaptureFactoryTest {
             1,
             topicName,
             1024 * 1024,
-            Duration.ofDays(1)
+            Duration.ofDays(1),
+            ignored -> {},
+            ignored -> {}
         );
 
         awaitHistorySize(producer, 2);
@@ -552,7 +610,8 @@ public class KafkaCaptureFactoryTest {
             topic,
             1024 * 1024,
             Duration.ofDays(1),
-            captureFailure::set
+            captureFailure::set,
+            ignored -> {}
         );
 
         var startupFailure = Assertions.assertThrows(
@@ -626,7 +685,8 @@ public class KafkaCaptureFactoryTest {
             failure -> {
                 captureFailure.set(failure);
                 captureFailureReported.countDown();
-            }
+            },
+            ignored -> {}
         );
 
         Assertions.assertThrows(
@@ -706,6 +766,70 @@ public class KafkaCaptureFactoryTest {
         factory.close();
     }
 
+    @Test
+    public void producerErrorReportsAnUnstableProcessInsteadOfApplyingCaptureFailurePolicy()
+        throws Exception {
+        var unstableError = new AssertionError("producer owner failed");
+        var topicName = KafkaCaptureFactory.DEFAULT_TOPIC_NAME_FOR_TRAFFIC;
+        var topicPartitions = partitionInfo(topicName, 4);
+        var producer = new MockProducer<String, byte[]>(
+            new Cluster("test", leaders(topicPartitions), topicPartitions, Set.of(), Set.of()),
+            true,
+            null,
+            new StringSerializer(),
+            new ByteArraySerializer()
+        ) {
+            @Override
+            public synchronized java.util.concurrent.Future<RecordMetadata> send(
+                ProducerRecord<String, byte[]> record,
+                Callback callback
+            ) {
+                if (CaptureKafkaPublisher.isRecordType(
+                    record.headers(),
+                    CaptureKafkaPublisher.LIVENESS_RECORD_TYPE
+                ) || CaptureKafkaPublisher.isRecordType(
+                    record.headers(),
+                    org.opensearch.migrations.trafficcapture.protos.CaptureRecordTypes.CAPABILITY_PROBE_RECORD_TYPE
+                )) {
+                    var metadata = new RecordMetadata(
+                        new TopicPartition(record.topic(), record.partition()),
+                        0,
+                        0,
+                        0,
+                        0,
+                        0
+                    );
+                    callback.onCompletion(metadata, null);
+                    return CompletableFuture.completedFuture(metadata);
+                }
+                throw unstableError;
+            }
+        };
+        var captureFailure = new AtomicReference<Throwable>();
+        var unstableFailure = new AtomicReference<Throwable>();
+        var factory = createFactory(
+            producer,
+            1024 * 1024,
+            captureFailure::set,
+            unstableFailure::set
+        );
+        var offloader = factory.createOffloader(createCtx());
+        var payload = Unpooled.wrappedBuffer("captured".getBytes(StandardCharsets.UTF_8));
+
+        offloader.addReadEvent(Instant.EPOCH, payload);
+        var published = offloader.flushCommitAndResetStream(false);
+        payload.release();
+
+        var executionFailure = Assertions.assertThrows(
+            ExecutionException.class,
+            () -> published.get(5, TimeUnit.SECONDS)
+        );
+        Assertions.assertEquals(unstableError, executionFailure.getCause());
+        Assertions.assertEquals(unstableError, unstableFailure.get());
+        Assertions.assertEquals(null, captureFailure.get());
+        factory.close();
+    }
+
     @SneakyThrows
     private KafkaCaptureFactory createFactory(Producer<String, byte[]> producer, int messageSize) {
         return createFactory(producer, messageSize, ignored -> {});
@@ -716,6 +840,16 @@ public class KafkaCaptureFactoryTest {
         Producer<String, byte[]> producer,
         int messageSize,
         Consumer<Throwable> captureFailureCallback
+    ) {
+        return createFactory(producer, messageSize, captureFailureCallback, ignored -> {});
+    }
+
+    @SneakyThrows
+    private KafkaCaptureFactory createFactory(
+        Producer<String, byte[]> producer,
+        int messageSize,
+        Consumer<Throwable> captureFailureCallback,
+        Consumer<Throwable> unstableProcessFailureCallback
     ) {
         var topicName = KafkaCaptureFactory.DEFAULT_TOPIC_NAME_FOR_TRAFFIC;
         var partitionInfo = partitionInfo(topicName, 4);
@@ -750,7 +884,8 @@ public class KafkaCaptureFactoryTest {
             topicName,
             messageSize,
             Duration.ofDays(1),
-            captureFailureCallback
+            captureFailureCallback,
+            unstableProcessFailureCallback
         );
         factory.publisherReady().get(5, TimeUnit.SECONDS);
         return factory;

@@ -31,6 +31,7 @@ public final class CaptureKafkaMembership implements ConsumerRebalanceListener, 
     private final int minimumActiveProxyCount;
     private final Runnable initialAssignmentCallback;
     private final Consumer<Throwable> membershipFailureCallback;
+    private final Consumer<Throwable> unstableProcessFailureCallback;
     private final Set<Integer> kafkaAssignment = new HashSet<>();
     private final AtomicBoolean initialAssignmentReported = new AtomicBoolean();
     private final AtomicBoolean closed = new AtomicBoolean();
@@ -46,7 +47,8 @@ public final class CaptureKafkaMembership implements ConsumerRebalanceListener, 
         CaptureMembershipAssignmentTracker assignmentTracker,
         int minimumActiveProxyCount,
         Runnable initialAssignmentCallback,
-        Consumer<Throwable> membershipFailureCallback
+        Consumer<Throwable> membershipFailureCallback,
+        Consumer<Throwable> unstableProcessFailureCallback
     ) {
         this.consumer = Objects.requireNonNull(consumer);
         this.topic = Objects.requireNonNull(topic);
@@ -60,6 +62,7 @@ public final class CaptureKafkaMembership implements ConsumerRebalanceListener, 
         this.minimumActiveProxyCount = minimumActiveProxyCount;
         this.initialAssignmentCallback = Objects.requireNonNull(initialAssignmentCallback);
         this.membershipFailureCallback = Objects.requireNonNull(membershipFailureCallback);
+        this.unstableProcessFailureCallback = Objects.requireNonNull(unstableProcessFailureCallback);
         pollThread = new Thread(this::runPollLoop, "capture-kafka-membership");
         pollThread.setDaemon(true);
     }
@@ -132,15 +135,28 @@ public final class CaptureKafkaMembership implements ConsumerRebalanceListener, 
             }
         } catch (Throwable t) {
             if (!closed.get()) {
-                handleMembershipFailure(t);
+                if (t instanceof Error) {
+                    handleUnstableProcessFailure(t);
+                } else {
+                    handleMembershipFailure(t);
+                }
             }
         } finally {
             try {
                 consumer.close(CLOSE_TIMEOUT);
                 stopped.complete(null);
             } catch (Throwable t) {
+                if (t instanceof Error) {
+                    unstableProcessFailureCallback.accept(t);
+                }
                 stopped.completeExceptionally(t);
             }
+        }
+    }
+
+    private void handleUnstableProcessFailure(Throwable failure) {
+        if (closed.compareAndSet(false, true)) {
+            unstableProcessFailureCallback.accept(failure);
         }
     }
 

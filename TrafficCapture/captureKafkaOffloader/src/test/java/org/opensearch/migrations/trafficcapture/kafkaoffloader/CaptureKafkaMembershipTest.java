@@ -40,7 +40,8 @@ class CaptureKafkaMembershipTest {
             assignmentTracker("node-a"),
             1,
             initialAssignment::countDown,
-            failure::set
+            failure::set,
+            ignored -> {}
         );
         var partition0 = new TopicPartition(TOPIC, 0);
         var partition1 = new TopicPartition(TOPIC, 1);
@@ -94,6 +95,7 @@ class CaptureKafkaMembershipTest {
             tracker,
             2,
             initialAssignment::incrementAndGet,
+            ignored -> {},
             ignored -> {}
         );
         var partition = new TopicPartition(TOPIC, 0);
@@ -131,7 +133,8 @@ class CaptureKafkaMembershipTest {
             assignmentTracker("node-a"),
             1,
             () -> {},
-            membershipFailure::set
+            membershipFailure::set,
+            ignored -> {}
         );
 
         membership.onPartitionsLost(List.of(new TopicPartition(TOPIC, 1)));
@@ -169,7 +172,8 @@ class CaptureKafkaMembershipTest {
             assignmentTracker("node-a"),
             1,
             initialAssignment::countDown,
-            membershipFailure::set
+            membershipFailure::set,
+            ignored -> {}
         );
 
         membership.start();
@@ -206,7 +210,8 @@ class CaptureKafkaMembershipTest {
             failure -> {
                 membershipFailure.set(failure);
                 failureReported.countDown();
-            }
+            },
+            ignored -> {}
         );
 
         membership.start();
@@ -217,6 +222,45 @@ class CaptureKafkaMembershipTest {
             IllegalStateException.class,
             () -> routingState.admitConnection("without-an-assignment")
         );
+        membership.close();
+    }
+
+    @Test
+    void errorAfterInitialAssignmentReportsAnUnstableProcess() throws Exception {
+        var consumer = new MockConsumer<String, byte[]>(OffsetResetStrategy.EARLIEST);
+        var routingState = new CaptureRoutingState(ACTIVATION_ID, 1);
+        var membershipFailure = new AtomicReference<Throwable>();
+        var unstableFailure = new AtomicReference<Throwable>();
+        var initialAssignment = new CountDownLatch(1);
+        var unstableFailureReported = new CountDownLatch(1);
+        var partition = new TopicPartition(TOPIC, 0);
+        var error = new AssertionError("membership owner failed");
+        consumer.updateBeginningOffsets(Map.of(partition, 0L));
+        consumer.schedulePollTask(() -> consumer.rebalance(List.of(partition)));
+        consumer.schedulePollTask(() -> {
+            throw error;
+        });
+        var membership = new CaptureKafkaMembership(
+            consumer,
+            TOPIC,
+            routingState,
+            publisher(routingState),
+            assignmentTracker("node-a"),
+            1,
+            initialAssignment::countDown,
+            membershipFailure::set,
+            failure -> {
+                unstableFailure.set(failure);
+                unstableFailureReported.countDown();
+            }
+        );
+
+        membership.start();
+
+        assertTrue(initialAssignment.await(1, TimeUnit.SECONDS));
+        assertTrue(unstableFailureReported.await(1, TimeUnit.SECONDS));
+        assertEquals(error, unstableFailure.get());
+        assertEquals(null, membershipFailure.get());
         membership.close();
     }
 
@@ -232,6 +276,7 @@ class CaptureKafkaMembershipTest {
             assignmentTracker("node-a"),
             1,
             () -> {},
+            ignored -> {},
             ignored -> {}
         );
 
@@ -263,6 +308,7 @@ class CaptureKafkaMembershipTest {
             assignmentTracker("node-a"),
             1,
             () -> {},
+            ignored -> {},
             ignored -> {}
         );
     }
