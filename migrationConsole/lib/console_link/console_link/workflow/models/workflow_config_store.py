@@ -138,54 +138,19 @@ class WorkflowConfigStore:
     ) -> StoredWorkflowConfigDocument:
         """Save only when the ConfigMap still has the expected resourceVersion."""
         current_map = self._read_config_map(session_name)
-        current = (
-            _stored_document(current_map)
-            if current_map is not None
-            else StoredWorkflowConfigDocument(
-                raw_yaml="",
-                persisted_revision=MISSING_CONFIG_REVISION,
-            )
-        )
+        current = _stored_document_or_missing(current_map)
         if current.persisted_revision != expected_revision:
             raise WorkflowConfigConflict(current)
 
         if current_map is None:
-            body = _new_config_map(session_name, config.raw_yaml)
-            try:
-                saved_map = self.v1.create_namespaced_config_map(
-                    namespace=self.namespace,
-                    body=body,
-                )
-            except ApiException as error:
-                if error.status == 409:
-                    raise WorkflowConfigConflict(
-                        self.load_document(session_name)
-                    ) from error
-                raise
+            saved_map = self._create_document(config, session_name)
         else:
-            body = deepcopy(current_map)
-            body.metadata.resource_version = expected_revision
-            labels = dict(getattr(body.metadata, "labels", None) or {})
-            labels.update(_config_map_labels(session_name))
-            body.metadata.labels = labels
-            data = dict(getattr(body, "data", None) or {})
-            data.update({
-                CONFIG_YAML_KEY: config.raw_yaml,
-                "session_name": session_name,
-            })
-            body.data = data
-            try:
-                saved_map = self.v1.replace_namespaced_config_map(
-                    name=session_name,
-                    namespace=self.namespace,
-                    body=body,
-                )
-            except ApiException as error:
-                if error.status in {404, 409}:
-                    raise WorkflowConfigConflict(
-                        self.load_document(session_name)
-                    ) from error
-                raise
+            saved_map = self._replace_document(
+                current_map,
+                config,
+                expected_revision,
+                session_name,
+            )
 
         saved = (
             _stored_document(saved_map)
@@ -197,6 +162,55 @@ class WorkflowConfigStore:
                 "Kubernetes did not return the saved workflow configuration"
             )
         return saved
+
+    def _create_document(
+        self,
+        config: WorkflowConfig,
+        session_name: str,
+    ):
+        body = _new_config_map(session_name, config.raw_yaml)
+        try:
+            return self.v1.create_namespaced_config_map(
+                namespace=self.namespace,
+                body=body,
+            )
+        except ApiException as error:
+            if error.status == 409:
+                raise WorkflowConfigConflict(
+                    self.load_document(session_name)
+                ) from error
+            raise
+
+    def _replace_document(
+        self,
+        current_map,
+        config: WorkflowConfig,
+        expected_revision: str,
+        session_name: str,
+    ):
+        body = deepcopy(current_map)
+        body.metadata.resource_version = expected_revision
+        labels = dict(getattr(body.metadata, "labels", None) or {})
+        labels.update(_config_map_labels(session_name))
+        body.metadata.labels = labels
+        data = dict(getattr(body, "data", None) or {})
+        data.update({
+            CONFIG_YAML_KEY: config.raw_yaml,
+            "session_name": session_name,
+        })
+        body.data = data
+        try:
+            return self.v1.replace_namespaced_config_map(
+                name=session_name,
+                namespace=self.namespace,
+                body=body,
+            )
+        except ApiException as error:
+            if error.status in {404, 409}:
+                raise WorkflowConfigConflict(
+                    self.load_document(session_name)
+                ) from error
+            raise
 
     def load_config(self, session_name: str = "default") -> Optional[WorkflowConfig]:
         """Load workflow configuration from Kubernetes ConfigMap
@@ -335,4 +349,13 @@ def _stored_document(config_map) -> StoredWorkflowConfigDocument:
     return StoredWorkflowConfigDocument(
         raw_yaml=str(data.get(CONFIG_YAML_KEY) or ""),
         persisted_revision=revision,
+    )
+
+
+def _stored_document_or_missing(config_map) -> StoredWorkflowConfigDocument:
+    if config_map is not None:
+        return _stored_document(config_map)
+    return StoredWorkflowConfigDocument(
+        raw_yaml="",
+        persisted_revision=MISSING_CONFIG_REVISION,
     )

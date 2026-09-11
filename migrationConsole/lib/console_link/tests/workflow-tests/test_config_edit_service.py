@@ -710,7 +710,7 @@ def test_snapshot_migration_edits_do_not_consult_cluster_resource_names():
         "value": "slice-9",
     }
 
-    operation, notices = service._prepare_operation("", requested)
+    operation, notices = service._prepare_operation(requested)
 
     assert operation == requested
     assert notices == ()

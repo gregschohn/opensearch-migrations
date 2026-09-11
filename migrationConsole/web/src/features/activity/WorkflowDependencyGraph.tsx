@@ -722,19 +722,19 @@ export function WorkflowDependencyGraph({
           <span><i className="legend-line" />requires</span>
           {routedPaths.some((route) => route.state === "blocked") ? (
             <span>
-              <i className="legend-line legend-blocked" />
+              <i className="legend-line legend-blocked" />{" "}
               blocked prerequisite
             </span>
           ) : null}
           {routedPaths.some((route) => route.state === "approval") ? (
             <span>
-              <i className="legend-line legend-approval" />
+              <i className="legend-line legend-approval" />{" "}
               approval gate
             </span>
           ) : null}
           {routedPaths.some((route) => route.state === "unknown") ? (
             <span>
-              <i className="legend-line legend-unknown" />
+              <i className="legend-line legend-unknown" />{" "}
               state unknown
             </span>
           ) : null}

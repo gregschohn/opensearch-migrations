@@ -6,6 +6,9 @@ import {spawnSync} from "child_process";
 import path from "path";
 import {mkdtempSync, rmSync, writeFileSync} from "fs";
 import {tmpdir} from "os";
+import {pathToFileURL} from "url";
+
+const TSX_IMPORT = pathToFileURL(require.resolve("tsx")).href;
 
 function findNode(nodes: EditNode[], id: string): EditNode | undefined {
     const stack = [...nodes];
@@ -23,7 +26,7 @@ function cleanLabel(node: EditNode | undefined): string {
     return (node?.label ?? "").replace(/^\[[^\]]+\]\s*/, "");
 }
 
-function withUnifiedSchemaFixture<T>(callback: () => T): T {
+function withUnifiedSchemaFixture<T>(callback: (schemaPath: string) => T): T {
     const tempDir = mkdtempSync(path.join(tmpdir(), "edit-config-unified-schema-"));
     const schemaPath = path.join(tempDir, "workflowMigration.schema.json");
     const strimziFixturePath = path.resolve(__dirname, "../../schemas/tests/fixtures/strimzi/minimal-openapi.json");
@@ -31,7 +34,7 @@ function withUnifiedSchemaFixture<T>(callback: () => T): T {
     try {
         writeFileSync(schemaPath, JSON.stringify(buildUnifiedSchema({strimziSchemaPath: strimziFixturePath}).schema));
         process.env.MIGRATION_UNIFIED_SCHEMA_PATH = schemaPath;
-        return callback();
+        return callback(schemaPath);
     } finally {
         if (previousPath === undefined) {
             delete process.env.MIGRATION_UNIFIED_SCHEMA_PATH;
@@ -1068,7 +1071,7 @@ describe("editConfig state", () => {
         expect(trafficResult.yaml).toContain("source: aux-source");
     });
 
-    it("applies hyphenated source references through the editConfig apply CLI", () => {
+    it("applies hyphenated source references through the editConfig apply CLI", () => withUnifiedSchemaFixture((schemaPath) => {
         const tempDir = mkdtempSync(path.join(tmpdir(), "edit-config-"));
         try {
             const configPath = path.join(tempDir, "config.yaml");
@@ -1099,7 +1102,7 @@ describe("editConfig state", () => {
                 process.execPath,
                 [
                     "--import",
-                    "tsx",
+                    TSX_IMPORT,
                     cliPath,
                     "editConfig",
                     "apply",
@@ -1108,7 +1111,11 @@ describe("editConfig state", () => {
                     "--operation",
                     operationPath,
                 ],
-                {encoding: "utf8", maxBuffer: 10 * 1024 * 1024},
+                {
+                    encoding: "utf8",
+                    env: {...process.env, MIGRATION_UNIFIED_SCHEMA_PATH: schemaPath},
+                    maxBuffer: 10 * 1024 * 1024,
+                },
             );
 
             expect(result.status).toBe(0);
@@ -1117,7 +1124,7 @@ describe("editConfig state", () => {
         } finally {
             rmSync(tempDir, {recursive: true, force: true});
         }
-    });
+    }));
 
     it("adds and removes virtual cluster config entries", () => {
         const added = applyEditOperationToObject({
@@ -3528,22 +3535,26 @@ describe("editConfig state", () => {
         expect(findNode(result.editState.nodes, "edit:snapshotMigrationConfigs.0")?.status).toBe("required");
     });
 
-    it("keeps CLI stdout parseable when validation emits diagnostics", () => {
+    it("keeps CLI stdout parseable when validation emits diagnostics", () => withUnifiedSchemaFixture((schemaPath) => {
         const cliPath = path.resolve(__dirname, "../src/cliRouter.ts");
         const samplePath = path.resolve(__dirname, "../scripts/samples/proxyWithoutTlsNoAuth.wf.yaml");
         const result = spawnSync(
             process.execPath,
-            ["--import", "tsx", cliPath, "editConfig", "state", "--pending-config", samplePath],
-            {encoding: "utf8", maxBuffer: 5 * 1024 * 1024},
+            ["--import", TSX_IMPORT, cliPath, "editConfig", "state", "--pending-config", samplePath],
+            {
+                encoding: "utf8",
+                env: {...process.env, MIGRATION_UNIFIED_SCHEMA_PATH: schemaPath},
+                maxBuffer: 5 * 1024 * 1024,
+            },
         );
 
         expect(result.status).toBe(0);
         expect(result.stdout.trimStart().startsWith("{")).toBe(true);
         expect(() => JSON.parse(result.stdout)).not.toThrow();
         expect(result.stderr).toBe("");
-    });
+    }));
 
-    it("opens a blank saved configuration as an addable structured draft", () => {
+    it("opens a blank saved configuration as an addable structured draft", () => withUnifiedSchemaFixture((schemaPath) => {
         const tempDir = mkdtempSync(path.join(tmpdir(), "edit-config-blank-"));
         try {
             const configPath = path.join(tempDir, "blank.yaml");
@@ -3554,14 +3565,18 @@ describe("editConfig state", () => {
                 process.execPath,
                 [
                     "--import",
-                    "tsx",
+                    TSX_IMPORT,
                     cliPath,
                     "editConfig",
                     "state",
                     "--pending-config",
                     configPath
                 ],
-                {encoding: "utf8", maxBuffer: 10 * 1024 * 1024},
+                {
+                    encoding: "utf8",
+                    env: {...process.env, MIGRATION_UNIFIED_SCHEMA_PATH: schemaPath},
+                    maxBuffer: 10 * 1024 * 1024,
+                },
             );
 
             expect(result.status).toBe(0);
@@ -3577,9 +3592,9 @@ describe("editConfig state", () => {
         } finally {
             rmSync(tempDir, {recursive: true, force: true});
         }
-    });
+    }));
 
-    it("returns raw repair state instead of failing for invalid YAML", () => {
+    it("returns raw repair state instead of failing for invalid YAML", () => withUnifiedSchemaFixture((schemaPath) => {
         const tempDir = mkdtempSync(path.join(tmpdir(), "edit-config-invalid-yaml-"));
         try {
             const configPath = path.join(tempDir, "invalid.yaml");
@@ -3590,14 +3605,17 @@ describe("editConfig state", () => {
                 process.execPath,
                 [
                     "--import",
-                    "tsx",
+                    TSX_IMPORT,
                     cliPath,
                     "editConfig",
                     "state",
                     "--pending-config",
                     configPath
                 ],
-                {encoding: "utf8"},
+                {
+                    encoding: "utf8",
+                    env: {...process.env, MIGRATION_UNIFIED_SCHEMA_PATH: schemaPath},
+                },
             );
 
             expect(result.status).toBe(0);
@@ -3616,7 +3634,7 @@ describe("editConfig state", () => {
         } finally {
             rmSync(tempDir, {recursive: true, force: true});
         }
-    });
+    }));
 
     it("uses raw repair state when malformed containers cannot be edited safely", async () => {
         const state = await buildEditStateFromObjectForSubmit({

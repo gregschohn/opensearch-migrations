@@ -24,12 +24,6 @@ function safeObjectEntries(obj: Record<string, unknown>) {
         .map(key => [key, obj[key]] as const);
 }
 
-function safeObjectValues(obj: Record<string, unknown>) {
-    return Object.keys(obj)
-        .filter(key => !POLLUTION_KEYS.has(key))
-        .map(key => obj[key]);
-}
-
 /** Unwrap Zod wrappers (optional, default, etc.) to reach the type that holds .meta(). */
 function unwrapZod(schema: z.ZodType): z.ZodType {
     if (schema instanceof z.ZodArray) return schema;
@@ -114,41 +108,54 @@ function injectMetaExtensions(jsonSchema: any, zodSchema: z.ZodType): void {
     }
 }
 
-function makeBareNullableSchemasAjvCompatible(jsonSchema: any): void {
+function makeBareNullableSchemasAjvCompatible(jsonSchema: unknown): unknown {
     if (Array.isArray(jsonSchema)) {
-        jsonSchema.forEach(makeBareNullableSchemasAjvCompatible);
-        return;
+        return jsonSchema.map(makeBareNullableSchemasAjvCompatible);
     }
     if (!isSafePlainObject(jsonSchema)) {
-        return;
+        return jsonSchema;
     }
 
+    const converted = Object.fromEntries(
+        safeObjectEntries(jsonSchema).map(([key, value]) => [
+            key,
+            makeBareNullableSchemasAjvCompatible(value),
+        ]),
+    );
     if (jsonSchema.nullable === true && jsonSchema.type === undefined
         && jsonSchema.$ref === undefined
         && jsonSchema.oneOf === undefined
         && jsonSchema.anyOf === undefined
         && jsonSchema.allOf === undefined) {
-        jsonSchema.type = ["string", "number", "boolean", "object", "array", "null"];
-        delete jsonSchema.nullable;
+        return Object.fromEntries([
+            ...safeObjectEntries(converted)
+                .filter(([key]) => key !== "nullable"),
+            ["type", ["string", "number", "boolean", "object", "array", "null"]],
+        ]);
     }
-
-    safeObjectValues(jsonSchema).forEach(makeBareNullableSchemasAjvCompatible);
+    return converted;
 }
 
-function removeRawUiHintMetadata(jsonSchema: any): void {
+const RAW_UI_HINT_KEYS = new Set([
+    "uiHint",
+    "externalRef",
+    "effectiveDefault",
+    "essential",
+    "expert",
+]);
+
+function removeRawUiHintMetadata(jsonSchema: unknown): unknown {
     if (Array.isArray(jsonSchema)) {
-        jsonSchema.forEach(removeRawUiHintMetadata);
-        return;
+        return jsonSchema.map(removeRawUiHintMetadata);
     }
     if (!isSafePlainObject(jsonSchema)) {
-        return;
+        return jsonSchema;
     }
-    delete jsonSchema.uiHint;
-    delete jsonSchema.externalRef;
-    delete jsonSchema.effectiveDefault;
-    delete jsonSchema.essential;
-    delete jsonSchema.expert;
-    safeObjectValues(jsonSchema).forEach(removeRawUiHintMetadata);
+    return Object.fromEntries(
+        safeObjectEntries(jsonSchema)
+            .filter(([key]) => !RAW_UI_HINT_KEYS.has(key))
+            .map(([key, value]) => [key, removeRawUiHintMetadata(value)]),
+    );
 }
 
 /**
@@ -177,9 +184,9 @@ export function zodSchemaToJsonSchema(
     const generator = new OpenApiGeneratorV3(registry.definitions);
     const components = generator.generateComponents();
 
-    const result = components.components?.schemas?.[schemaName];
+    let result: any = components.components?.schemas?.[schemaName];
     injectMetaExtensions(result, schemaToRegister);
-    removeRawUiHintMetadata(result);
-    makeBareNullableSchemasAjvCompatible(result);
+    result = removeRawUiHintMetadata(result);
+    result = makeBareNullableSchemasAjvCompatible(result);
     return result;
 }

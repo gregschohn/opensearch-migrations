@@ -116,7 +116,7 @@ class ConfigEditService:
         return self._run_edit_state(raw_yaml, validate_external_refs=True)
 
     def apply_operation(self, raw_yaml: str, operation: Dict[str, Any]) -> ConfigEditApplyResult:
-        prepared_operation, notices = self._prepare_operation(raw_yaml, operation)
+        prepared_operation, notices = self._prepare_operation(operation)
         with tempfile.NamedTemporaryFile(mode="w", suffix=YAML_SUFFIX, delete=True) as operation_file:
             json.dump(prepared_operation, operation_file)
             operation_file.flush()
@@ -146,7 +146,6 @@ class ConfigEditService:
 
     def _prepare_operation(
         self,
-        raw_yaml: str,
         operation: Dict[str, Any],
     ) -> tuple[Dict[str, Any], tuple[str, ...]]:
         return operation, ()

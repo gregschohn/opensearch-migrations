@@ -79,7 +79,8 @@ exports[`test schemas matches expected argo schema matches expected 1`] = `
                           "null"
                         ]
                       },
-                      "description": "Optional overrides merged into the generated Strimzi Kafka.spec. Workflow-managed fields such as resource names, required listeners, and workflow-owned auth settings may be overwritten by the workflow."
+                      "description": "Optional overrides merged into the generated Strimzi Kafka.spec. Workflow-managed fields such as resource names, required listeners, and workflow-owned auth settings may be overwritten by the workflow.",
+                      "x-expert": true
                     },
                     "nodePoolSpecOverrides": {
                       "type": "object",
@@ -93,7 +94,8 @@ exports[`test schemas matches expected argo schema matches expected 1`] = `
                           "null"
                         ]
                       },
-                      "description": "Optional overrides merged into the generated Strimzi KafkaNodePool.spec. Workflow-managed fields such as cluster labels may be overwritten by the workflow."
+                      "description": "Optional overrides merged into the generated Strimzi KafkaNodePool.spec. Workflow-managed fields such as cluster labels may be overwritten by the workflow.",
+                      "x-expert": true
                     },
                     "topicSpecOverrides": {
                       "type": "object",
@@ -107,7 +109,8 @@ exports[`test schemas matches expected argo schema matches expected 1`] = `
                           "null"
                         ]
                       },
-                      "description": "Optional overrides merged into generated Strimzi KafkaTopic.spec values for workflow-created topics."
+                      "description": "Optional overrides merged into generated Strimzi KafkaTopic.spec values for workflow-created topics.",
+                      "x-expert": true
                     }
                   },
                   "description": "Workflow-managed Strimzi Kafka cluster creation. Structural defaults for broker config, node pool, and topic settings are deep-merged here, while the auth default is resolved separately during transform-time policy application."
@@ -380,7 +383,8 @@ exports[`test schemas matches expected argo schema matches expected 1`] = `
                                     "type": "string",
                                     "pattern": "^(?:(?:https?|localstacks?):\\\\/\\\\/[^/]+\\\\/?)?$",
                                     "default": "",
-                                    "description": "Override the storage endpoint URL. Supports http://, https://, localstack://, and localstacks:// schemes. LocalStack endpoints are automatically resolved to IP addresses during config transformation. Used for S3 (LocalStack) or GCS (fake-gcs-server) testing."
+                                    "description": "Override the storage endpoint URL. Supports http://, https://, localstack://, and localstacks:// schemes. LocalStack endpoints are automatically resolved to IP addresses during config transformation. Used for S3 (LocalStack) or GCS (fake-gcs-server) testing.",
+                                    "x-expert": true
                                   },
                                   "s3RoleArn": {
                                     "type": "string",
@@ -443,12 +447,14 @@ exports[`test schemas matches expected argo schema matches expected 1`] = `
                                                 "default": "",
                                                 "description": "Prefix for auto-generated snapshot names. When set, the snapshot name is '<snapshotPrefix>_<uniqueId>'. When empty, defaults to '<sourceLabel>_<uniqueId>'.",
                                                 "changeRestriction": "impossible",
-                                                "x-change-restriction": "impossible"
+                                                "x-change-restriction": "impossible",
+                                                "x-expert": true
                                               },
                                               "jvmArgs": {
                                                 "type": "string",
                                                 "default": "",
-                                                "description": "Additional JVM arguments passed via JDK_JAVA_OPTIONS (e.g. '-Xmx4g -XX:+UseG1GC'). If setting -Xmx, ensure the heap size is smaller than the container's memory limit in resources to account for off-heap memory usage."
+                                                "description": "Additional JVM arguments passed via JDK_JAVA_OPTIONS (e.g. '-Xmx4g -XX:+UseG1GC'). If setting -Xmx, ensure the heap size is smaller than the container's memory limit in resources to account for off-heap memory usage.",
+                                                "x-expert": true
                                               },
                                               "loggingConfigurationOverrideConfigMap": {
                                                 "type": "string",
@@ -576,7 +582,8 @@ exports[`test schemas matches expected argo schema matches expected 1`] = `
                                               "maxSnapshotRateMbPerNode": {
                                                 "type": "number",
                                                 "default": 0,
-                                                "description": "Maximum snapshot throughput in MB/s per data node. 0 means no rate limiting. Use to reduce I/O impact on the source cluster during snapshot creation."
+                                                "description": "Maximum snapshot throughput in MB/s per data node. 0 means no rate limiting. Use to reduce I/O impact on the source cluster during snapshot creation.",
+                                                "x-expert": true
                                               },
                                               "compressionEnabled": {
                                                 "type": "boolean",
@@ -648,7 +655,8 @@ exports[`test schemas matches expected argo schema matches expected 1`] = `
                             },
                             "serializeSnapshotCreation": {
                               "type": "boolean",
-                              "description": "Controls whether snapshot creations for this source run one-at-a-time or in parallel. When true, all snapshot creations share a single semaphore so only one runs at any given time; when false, each snapshot can run in parallel with others for this source. When omitted, defaults to true for legacy sources (ES 1-7, OS 1) and false for modern sources (ES 8+, OS 2+). Set explicitly to override the version-based default. Common reason to force true on a modern source: the cluster only supports one snapshot at a time for the indices being captured (for example, OpenSearch UltraWarm indices, which only allow a single index per snapshot and cannot be snapshotted concurrently)."
+                              "description": "Controls whether snapshot creations for this source run one-at-a-time or in parallel. When true, all snapshot creations share a single semaphore so only one runs at any given time; when false, each snapshot can run in parallel with others for this source. When omitted, defaults to true for legacy sources (ES 1-7, OS 1) and false for modern sources (ES 8+, OS 2+). Set explicitly to override the version-based default. Common reason to force true on a modern source: the cluster only supports one snapshot at a time for the indices being captured (for example, OpenSearch UltraWarm indices, which only allow a single index per snapshot and cannot be snapshotted concurrently).",
+                              "x-expert": true
                             }
                           },
                           "required": [
@@ -683,7 +691,8 @@ exports[`test schemas matches expected argo schema matches expected 1`] = `
                                     "type": "string",
                                     "pattern": "^(?:(?:https?|localstacks?):\\\\/\\\\/[^/]+\\\\/?)?$",
                                     "default": "",
-                                    "description": "Override the storage endpoint URL. Supports http://, https://, localstack://, and localstacks:// schemes. LocalStack endpoints are automatically resolved to IP addresses during config transformation. Used for S3 (LocalStack) or GCS (fake-gcs-server) testing."
+                                    "description": "Override the storage endpoint URL. Supports http://, https://, localstack://, and localstacks:// schemes. LocalStack endpoints are automatically resolved to IP addresses during config transformation. Used for S3 (LocalStack) or GCS (fake-gcs-server) testing.",
+                                    "x-expert": true
                                   },
                                   "s3RoleArn": {
                                     "type": "string",
@@ -754,7 +763,8 @@ exports[`test schemas matches expected argo schema matches expected 1`] = `
                                           "cloud",
                                           "standalone"
                                         ],
-                                        "description": "Whether the source Solr runs as SolrCloud or standalone. Usually inferred, but required for an externally-managed backup whose layout identifies neither, which is the common case since the schema is staged into the backup while preparing it. Supplying it also skips inference on a restricted source."
+                                        "description": "Whether the source Solr runs as SolrCloud or standalone. Usually inferred, but required for an externally-managed backup whose layout identifies neither, which is the common case since the schema is staged into the backup while preparing it. Supplying it also skips inference on a restricted source.",
+                                        "x-expert": true
                                       },
                                       "otelTraceCollectorEndpoint": {
                                         "anyOf": [
@@ -790,7 +800,8 @@ exports[`test schemas matches expected argo schema matches expected 1`] = `
                                       "jvmArgs": {
                                         "type": "string",
                                         "default": "",
-                                        "description": "Additional JVM arguments passed via JDK_JAVA_OPTIONS (e.g. '-Xmx4g -XX:+UseG1GC'). If setting -Xmx, ensure the heap size is smaller than the container's memory limit in resources to account for off-heap memory usage."
+                                        "description": "Additional JVM arguments passed via JDK_JAVA_OPTIONS (e.g. '-Xmx4g -XX:+UseG1GC'). If setting -Xmx, ensure the heap size is smaller than the container's memory limit in resources to account for off-heap memory usage.",
+                                        "x-expert": true
                                       },
                                       "loggingConfigurationOverrideConfigMap": {
                                         "type": "string",
@@ -830,7 +841,8 @@ exports[`test schemas matches expected argo schema matches expected 1`] = `
                                           "snapshotPrefix": {
                                             "type": "string",
                                             "default": "",
-                                            "description": "Prefix for auto-generated Solr backup names. When set, the backup name is '<snapshotPrefix>_<uniqueId>'. When empty, defaults to '<sourceLabel>_<uniqueId>'."
+                                            "description": "Prefix for auto-generated Solr backup names. When set, the backup name is '<snapshotPrefix>_<uniqueId>'. When empty, defaults to '<sourceLabel>_<uniqueId>'.",
+                                            "x-expert": true
                                           },
                                           "collectionAllowlist": {
                                             "type": "array",
@@ -846,7 +858,8 @@ exports[`test schemas matches expected argo schema matches expected 1`] = `
                                               "cloud",
                                               "standalone"
                                             ],
-                                            "description": "Whether the source Solr runs as SolrCloud or standalone. Usually inferred, but required for an externally-managed backup whose layout identifies neither, which is the common case since the schema is staged into the backup while preparing it. Supplying it also skips inference on a restricted source."
+                                            "description": "Whether the source Solr runs as SolrCloud or standalone. Usually inferred, but required for an externally-managed backup whose layout identifies neither, which is the common case since the schema is staged into the backup while preparing it. Supplying it also skips inference on a restricted source.",
+                                            "x-expert": true
                                           },
                                           "otelTraceCollectorEndpoint": {
                                             "anyOf": [
@@ -882,7 +895,8 @@ exports[`test schemas matches expected argo schema matches expected 1`] = `
                                           "jvmArgs": {
                                             "type": "string",
                                             "default": "",
-                                            "description": "Additional JVM arguments passed via JDK_JAVA_OPTIONS (e.g. '-Xmx4g -XX:+UseG1GC'). If setting -Xmx, ensure the heap size is smaller than the container's memory limit in resources to account for off-heap memory usage."
+                                            "description": "Additional JVM arguments passed via JDK_JAVA_OPTIONS (e.g. '-Xmx4g -XX:+UseG1GC'). If setting -Xmx, ensure the heap size is smaller than the container's memory limit in resources to account for off-heap memory usage.",
+                                            "x-expert": true
                                           },
                                           "loggingConfigurationOverrideConfigMap": {
                                             "type": "string",
@@ -921,7 +935,8 @@ exports[`test schemas matches expected argo schema matches expected 1`] = `
                             },
                             "serializeSnapshotCreation": {
                               "type": "boolean",
-                              "description": "Controls whether Solr backup creation or prepare/validation steps for this source run one-at-a-time or in parallel. When omitted, defaults are version-based."
+                              "description": "Controls whether Solr backup creation or prepare/validation steps for this source run one-at-a-time or in parallel. When omitted, defaults are version-based.",
+                              "x-expert": true
                             }
                           },
                           "required": [
@@ -1408,7 +1423,8 @@ exports[`test schemas matches expected argo schema matches expected 1`] = `
                             "renewBefore": {
                               "type": "string",
                               "default": "360h",
-                              "description": "How long before certificate expiry to trigger renewal (e.g. '360h' = 15 days)."
+                              "description": "How long before certificate expiry to trigger renewal (e.g. '360h' = 15 days).",
+                              "x-expert": true
                             },
                             "clientAuth": {
                               "type": "object",
@@ -1438,7 +1454,8 @@ exports[`test schemas matches expected argo schema matches expected 1`] = `
                                             "IfNotPresent"
                                           ],
                                           "default": "IfNotPresent",
-                                          "description": "Kubernetes image pull policy. Use 'Always' for mutable tags like 'latest'; leave as 'IfNotPresent' for immutable tags or digests."
+                                          "description": "Kubernetes image pull policy. Use 'Always' for mutable tags like 'latest'; leave as 'IfNotPresent' for immutable tags or digests.",
+                                          "x-expert": true
                                         },
                                         "path": {
                                           "type": "string",
@@ -1747,7 +1764,8 @@ exports[`test schemas matches expected argo schema matches expected 1`] = `
                                             "IfNotPresent"
                                           ],
                                           "default": "IfNotPresent",
-                                          "description": "Kubernetes image pull policy. Use 'Always' for mutable tags like 'latest'; leave as 'IfNotPresent' for immutable tags or digests."
+                                          "description": "Kubernetes image pull policy. Use 'Always' for mutable tags like 'latest'; leave as 'IfNotPresent' for immutable tags or digests.",
+                                          "x-expert": true
                                         },
                                         "path": {
                                           "type": "string",
@@ -2428,7 +2446,8 @@ exports[`test schemas matches expected argo schema matches expected 1`] = `
                             ],
                             "description": "Whether the source Solr runs as SolrCloud or standalone. Usually inferred, but required for an externally-managed backup whose layout identifies neither, which is the common case since the schema is staged into the backup while preparing it. Supplying it also skips inference on a restricted source.",
                             "changeRestriction": "impossible",
-                            "x-change-restriction": "impossible"
+                            "x-change-restriction": "impossible",
+                            "x-expert": true
                           }
                         }
                       },
@@ -3133,7 +3152,8 @@ exports[`test schemas matches expected argo schema matches expected 1`] = `
                         "limits",
                         "requests"
                       ],
-                      "description": "Kubernetes resource limits and requests for the RFS container. Partial overrides are deep-merged with the built-in defaults. By default, limits equal requests, giving the pod 'Guaranteed' QoS (least likely to be evicted). Setting requests lower than limits results in 'Burstable' QoS. Ephemeral storage is auto-calculated from maxShardSizeBytes if not specified."
+                      "description": "Kubernetes resource limits and requests for the RFS container. Partial overrides are deep-merged with the built-in defaults. By default, limits equal requests, giving the pod 'Guaranteed' QoS (least likely to be evicted). Setting requests lower than limits results in 'Burstable' QoS. Ephemeral storage is auto-calculated from maxShardSizeBytes if not specified.",
+                      "x-expert": true
                     },
                     "indexAllowlist": {
                       "type": "array",
@@ -3287,7 +3307,8 @@ exports[`test schemas matches expected argo schema matches expected 1`] = `
                     },
                     "failedDocumentStreamS3Endpoint": {
                       "type": "string",
-                      "description": "Optional S3 endpoint override for failed document stream uploads (e.g. LocalStack). Resolved by the config processor (user value, else the snapshot repo's endpoint, else the deployment default). Ignored without a bucket."
+                      "description": "Optional S3 endpoint override for failed document stream uploads (e.g. LocalStack). Resolved by the config processor (user value, else the snapshot repo's endpoint, else the deployment default). Ignored without a bucket.",
+                      "x-expert": true
                     },
                     "failedDocumentStreamMaxBufferBytes": {
                       "type": "number",
@@ -4263,7 +4284,8 @@ exports[`test schemas matches expected argo schema matches expected 1`] = `
                     },
                     "userAgent": {
                       "type": "string",
-                      "description": "String appended to the User-Agent header on all replayed requests to the target cluster. Useful for identifying replayed traffic in target cluster logs."
+                      "description": "String appended to the User-Agent header on all replayed requests to the target cluster. Useful for identifying replayed traffic in target cluster logs.",
+                      "x-expert": true
                     },
                     "fileSourceVolumes": {
                       "type": "array",
@@ -4892,7 +4914,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
           "solrContextPath": {
             "type": "string",
             "default": "/solr",
-            "description": "The path Solr's APIs are served under, appended to this cluster's endpoint when building Solr URLs. Defaults to '/solr'. Set this when Solr runs with a custom solr.contextPath or sits behind a reverse proxy that rewrites the prefix; use an empty string when Solr is served at the root of the host. Only valid on Solr sources."
+            "description": "The path Solr's APIs are served under, appended to this cluster's endpoint when building Solr URLs. Defaults to '/solr'. Set this when Solr runs with a custom solr.contextPath or sits behind a reverse proxy that rewrites the prefix; use an empty string when Solr is served at the root of the host. Only valid on Solr sources.",
+            "x-expert": true
           },
           "snapshotInfo": {
             "anyOf": [
@@ -4923,7 +4946,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                           "type": "string",
                           "pattern": "^(?:(?:https?|localstacks?):\\\\/\\\\/[^/]+\\\\/?)?$",
                           "default": "",
-                          "description": "Override the storage endpoint URL. Supports http://, https://, localstack://, and localstacks:// schemes. LocalStack endpoints are automatically resolved to IP addresses during config transformation. Used for S3 (LocalStack) or GCS (fake-gcs-server) testing."
+                          "description": "Override the storage endpoint URL. Supports http://, https://, localstack://, and localstacks:// schemes. LocalStack endpoints are automatically resolved to IP addresses during config transformation. Used for S3 (LocalStack) or GCS (fake-gcs-server) testing.",
+                          "x-expert": true
                         },
                         "s3RoleArn": {
                           "type": "string",
@@ -4986,12 +5010,14 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                                       "default": "",
                                       "description": "Prefix for auto-generated snapshot names. When set, the snapshot name is '<snapshotPrefix>_<uniqueId>'. When empty, defaults to '<sourceLabel>_<uniqueId>'.",
                                       "changeRestriction": "impossible",
-                                      "x-change-restriction": "impossible"
+                                      "x-change-restriction": "impossible",
+                                      "x-expert": true
                                     },
                                     "jvmArgs": {
                                       "type": "string",
                                       "default": "",
-                                      "description": "Additional JVM arguments passed via JDK_JAVA_OPTIONS (e.g. '-Xmx4g -XX:+UseG1GC'). If setting -Xmx, ensure the heap size is smaller than the container's memory limit in resources to account for off-heap memory usage."
+                                      "description": "Additional JVM arguments passed via JDK_JAVA_OPTIONS (e.g. '-Xmx4g -XX:+UseG1GC'). If setting -Xmx, ensure the heap size is smaller than the container's memory limit in resources to account for off-heap memory usage.",
+                                      "x-expert": true
                                     },
                                     "loggingConfigurationOverrideConfigMap": {
                                       "type": "string",
@@ -5119,7 +5145,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                                     "maxSnapshotRateMbPerNode": {
                                       "type": "number",
                                       "default": 0,
-                                      "description": "Maximum snapshot throughput in MB/s per data node. 0 means no rate limiting. Use to reduce I/O impact on the source cluster during snapshot creation."
+                                      "description": "Maximum snapshot throughput in MB/s per data node. 0 means no rate limiting. Use to reduce I/O impact on the source cluster during snapshot creation.",
+                                      "x-expert": true
                                     },
                                     "compressionEnabled": {
                                       "type": "boolean",
@@ -5191,7 +5218,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                   },
                   "serializeSnapshotCreation": {
                     "type": "boolean",
-                    "description": "Controls whether snapshot creations for this source run one-at-a-time or in parallel. When true, all snapshot creations share a single semaphore so only one runs at any given time; when false, each snapshot can run in parallel with others for this source. When omitted, defaults to true for legacy sources (ES 1-7, OS 1) and false for modern sources (ES 8+, OS 2+). Set explicitly to override the version-based default. Common reason to force true on a modern source: the cluster only supports one snapshot at a time for the indices being captured (for example, OpenSearch UltraWarm indices, which only allow a single index per snapshot and cannot be snapshotted concurrently)."
+                    "description": "Controls whether snapshot creations for this source run one-at-a-time or in parallel. When true, all snapshot creations share a single semaphore so only one runs at any given time; when false, each snapshot can run in parallel with others for this source. When omitted, defaults to true for legacy sources (ES 1-7, OS 1) and false for modern sources (ES 8+, OS 2+). Set explicitly to override the version-based default. Common reason to force true on a modern source: the cluster only supports one snapshot at a time for the indices being captured (for example, OpenSearch UltraWarm indices, which only allow a single index per snapshot and cannot be snapshotted concurrently).",
+                    "x-expert": true
                   }
                 },
                 "required": [
@@ -5226,7 +5254,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                           "type": "string",
                           "pattern": "^(?:(?:https?|localstacks?):\\\\/\\\\/[^/]+\\\\/?)?$",
                           "default": "",
-                          "description": "Override the storage endpoint URL. Supports http://, https://, localstack://, and localstacks:// schemes. LocalStack endpoints are automatically resolved to IP addresses during config transformation. Used for S3 (LocalStack) or GCS (fake-gcs-server) testing."
+                          "description": "Override the storage endpoint URL. Supports http://, https://, localstack://, and localstacks:// schemes. LocalStack endpoints are automatically resolved to IP addresses during config transformation. Used for S3 (LocalStack) or GCS (fake-gcs-server) testing.",
+                          "x-expert": true
                         },
                         "s3RoleArn": {
                           "type": "string",
@@ -5297,7 +5326,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                                 "cloud",
                                 "standalone"
                               ],
-                              "description": "Whether the source Solr runs as SolrCloud or standalone. Usually inferred, but required for an externally-managed backup whose layout identifies neither, which is the common case since the schema is staged into the backup while preparing it. Supplying it also skips inference on a restricted source."
+                              "description": "Whether the source Solr runs as SolrCloud or standalone. Usually inferred, but required for an externally-managed backup whose layout identifies neither, which is the common case since the schema is staged into the backup while preparing it. Supplying it also skips inference on a restricted source.",
+                              "x-expert": true
                             },
                             "otelTraceCollectorEndpoint": {
                               "anyOf": [
@@ -5333,7 +5363,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                             "jvmArgs": {
                               "type": "string",
                               "default": "",
-                              "description": "Additional JVM arguments passed via JDK_JAVA_OPTIONS (e.g. '-Xmx4g -XX:+UseG1GC'). If setting -Xmx, ensure the heap size is smaller than the container's memory limit in resources to account for off-heap memory usage."
+                              "description": "Additional JVM arguments passed via JDK_JAVA_OPTIONS (e.g. '-Xmx4g -XX:+UseG1GC'). If setting -Xmx, ensure the heap size is smaller than the container's memory limit in resources to account for off-heap memory usage.",
+                              "x-expert": true
                             },
                             "loggingConfigurationOverrideConfigMap": {
                               "type": "string",
@@ -5373,7 +5404,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                                 "snapshotPrefix": {
                                   "type": "string",
                                   "default": "",
-                                  "description": "Prefix for auto-generated Solr backup names. When set, the backup name is '<snapshotPrefix>_<uniqueId>'. When empty, defaults to '<sourceLabel>_<uniqueId>'."
+                                  "description": "Prefix for auto-generated Solr backup names. When set, the backup name is '<snapshotPrefix>_<uniqueId>'. When empty, defaults to '<sourceLabel>_<uniqueId>'.",
+                                  "x-expert": true
                                 },
                                 "collectionAllowlist": {
                                   "type": "array",
@@ -5389,7 +5421,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                                     "cloud",
                                     "standalone"
                                   ],
-                                  "description": "Whether the source Solr runs as SolrCloud or standalone. Usually inferred, but required for an externally-managed backup whose layout identifies neither, which is the common case since the schema is staged into the backup while preparing it. Supplying it also skips inference on a restricted source."
+                                  "description": "Whether the source Solr runs as SolrCloud or standalone. Usually inferred, but required for an externally-managed backup whose layout identifies neither, which is the common case since the schema is staged into the backup while preparing it. Supplying it also skips inference on a restricted source.",
+                                  "x-expert": true
                                 },
                                 "otelTraceCollectorEndpoint": {
                                   "anyOf": [
@@ -5425,7 +5458,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                                 "jvmArgs": {
                                   "type": "string",
                                   "default": "",
-                                  "description": "Additional JVM arguments passed via JDK_JAVA_OPTIONS (e.g. '-Xmx4g -XX:+UseG1GC'). If setting -Xmx, ensure the heap size is smaller than the container's memory limit in resources to account for off-heap memory usage."
+                                  "description": "Additional JVM arguments passed via JDK_JAVA_OPTIONS (e.g. '-Xmx4g -XX:+UseG1GC'). If setting -Xmx, ensure the heap size is smaller than the container's memory limit in resources to account for off-heap memory usage.",
+                                  "x-expert": true
                                 },
                                 "loggingConfigurationOverrideConfigMap": {
                                   "type": "string",
@@ -5464,7 +5498,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                   },
                   "serializeSnapshotCreation": {
                     "type": "boolean",
-                    "description": "Controls whether Solr backup creation or prepare/validation steps for this source run one-at-a-time or in parallel. When omitted, defaults are version-based."
+                    "description": "Controls whether Solr backup creation or prepare/validation steps for this source run one-at-a-time or in parallel. When omitted, defaults are version-based.",
+                    "x-expert": true
                   }
                 },
                 "required": [
@@ -5807,7 +5842,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
               "jvmArgs": {
                 "type": "string",
                 "default": "",
-                "description": "Additional JVM arguments passed via JDK_JAVA_OPTIONS (e.g. '-Xmx4g -XX:+UseG1GC'). If setting -Xmx, ensure the heap size is smaller than the container's memory limit in resources to account for off-heap memory usage."
+                "description": "Additional JVM arguments passed via JDK_JAVA_OPTIONS (e.g. '-Xmx4g -XX:+UseG1GC'). If setting -Xmx, ensure the heap size is smaller than the container's memory limit in resources to account for off-heap memory usage.",
+                "x-expert": true
               },
               "loggingConfigurationOverrideConfigMap": {
                 "type": "string",
@@ -5943,7 +5979,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
               "clusterAwarenessAttributes": {
                 "type": "number",
                 "default": 1,
-                "description": "Number of shard allocation awareness attributes to preserve during metadata migration. Controls how index settings related to cluster topology are handled."
+                "description": "Number of shard allocation awareness attributes to preserve during metadata migration. Controls how index settings related to cluster topology are handled.",
+                "x-expert": true
               },
               "otelTraceCollectorEndpoint": {
                 "anyOf": [
@@ -5983,7 +6020,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                   "JSON"
                 ],
                 "default": "HUMAN_READABLE",
-                "description": "Output format for the metadata migration evaluation report. 'HUMAN_READABLE' for formatted text, 'JSON' for machine-parseable output."
+                "description": "Output format for the metadata migration evaluation report. 'HUMAN_READABLE' for formatted text, 'JSON' for machine-parseable output.",
+                "x-expert": true
               },
               "transformerConfigBase64": {
                 "type": "string",
@@ -6053,7 +6091,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                                             "IfNotPresent"
                                           ],
                                           "default": "IfNotPresent",
-                                          "description": "Kubernetes image pull policy. Use 'Always' for mutable tags like 'latest'; leave as 'IfNotPresent' for immutable tags or digests."
+                                          "description": "Kubernetes image pull policy. Use 'Always' for mutable tags like 'latest'; leave as 'IfNotPresent' for immutable tags or digests.",
+                                          "x-expert": true
                                         },
                                         "path": {
                                           "type": "string",
@@ -6164,7 +6203,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                                             "IfNotPresent"
                                           ],
                                           "default": "IfNotPresent",
-                                          "description": "Kubernetes image pull policy. Use 'Always' for mutable tags like 'latest'; leave as 'IfNotPresent' for immutable tags or digests."
+                                          "description": "Kubernetes image pull policy. Use 'Always' for mutable tags like 'latest'; leave as 'IfNotPresent' for immutable tags or digests.",
+                                          "x-expert": true
                                         },
                                         "path": {
                                           "type": "string",
@@ -6306,7 +6346,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                                               "Never",
                                               "IfNotPresent"
                                             ],
-                                            "default": "IfNotPresent"
+                                            "default": "IfNotPresent",
+                                            "x-expert": true
                                           },
                                           "path": {
                                             "type": "string",
@@ -6385,7 +6426,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                                                       "IfNotPresent"
                                                     ],
                                                     "default": "IfNotPresent",
-                                                    "description": "Kubernetes image pull policy. Use 'Always' for mutable tags like 'latest'; leave as 'IfNotPresent' for immutable tags or digests."
+                                                    "description": "Kubernetes image pull policy. Use 'Always' for mutable tags like 'latest'; leave as 'IfNotPresent' for immutable tags or digests.",
+                                                    "x-expert": true
                                                   },
                                                   "path": {
                                                     "type": "string",
@@ -6558,7 +6600,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                                               "Never",
                                               "IfNotPresent"
                                             ],
-                                            "default": "IfNotPresent"
+                                            "default": "IfNotPresent",
+                                            "x-expert": true
                                           },
                                           "path": {
                                             "type": "string",
@@ -6637,7 +6680,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                                                       "IfNotPresent"
                                                     ],
                                                     "default": "IfNotPresent",
-                                                    "description": "Kubernetes image pull policy. Use 'Always' for mutable tags like 'latest'; leave as 'IfNotPresent' for immutable tags or digests."
+                                                    "description": "Kubernetes image pull policy. Use 'Always' for mutable tags like 'latest'; leave as 'IfNotPresent' for immutable tags or digests.",
+                                                    "x-expert": true
                                                   },
                                                   "path": {
                                                     "type": "string",
@@ -6759,7 +6803,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                 "default": false,
                 "description": "When enabled, treat the _recovery_source stored field (present in ES 7+ / OpenSearch snapshots with soft-deletes) as _source. This field is transient and may not be present for all documents, so results can be inconsistent. Use only when reconstruction from doc_values and stored fields is insufficient.",
                 "changeRestriction": "impossible",
-                "x-change-restriction": "impossible"
+                "x-change-restriction": "impossible",
+                "x-expert": true
               }
             },
             "description": "Configuration for migrating index metadata (mappings, settings, templates) from the snapshot to the target. Omit to skip metadata migration."
@@ -6784,7 +6829,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
               "jvmArgs": {
                 "type": "string",
                 "default": "",
-                "description": "Additional JVM arguments passed via JDK_JAVA_OPTIONS (e.g. '-Xmx4g -XX:+UseG1GC'). If setting -Xmx, ensure the heap size is smaller than the container's memory limit in resources to account for off-heap memory usage."
+                "description": "Additional JVM arguments passed via JDK_JAVA_OPTIONS (e.g. '-Xmx4g -XX:+UseG1GC'). If setting -Xmx, ensure the heap size is smaller than the container's memory limit in resources to account for off-heap memory usage.",
+                "x-expert": true
               },
               "loggingConfigurationOverrideConfigMap": {
                 "type": "string",
@@ -6933,7 +6979,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                   "limits",
                   "requests"
                 ],
-                "description": "Kubernetes resource limits and requests for the RFS container. Partial overrides are deep-merged with the built-in defaults. By default, limits equal requests, giving the pod 'Guaranteed' QoS (least likely to be evicted). Setting requests lower than limits results in 'Burstable' QoS. Ephemeral storage is auto-calculated from maxShardSizeBytes if not specified."
+                "description": "Kubernetes resource limits and requests for the RFS container. Partial overrides are deep-merged with the built-in defaults. By default, limits equal requests, giving the pod 'Guaranteed' QoS (least likely to be evicted). Setting requests lower than limits results in 'Burstable' QoS. Ephemeral storage is auto-calculated from maxShardSizeBytes if not specified.",
+                "x-expert": true
               },
               "indexAllowlist": {
                 "type": "array",
@@ -7062,7 +7109,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                                             "IfNotPresent"
                                           ],
                                           "default": "IfNotPresent",
-                                          "description": "Kubernetes image pull policy. Use 'Always' for mutable tags like 'latest'; leave as 'IfNotPresent' for immutable tags or digests."
+                                          "description": "Kubernetes image pull policy. Use 'Always' for mutable tags like 'latest'; leave as 'IfNotPresent' for immutable tags or digests.",
+                                          "x-expert": true
                                         },
                                         "path": {
                                           "type": "string",
@@ -7173,7 +7221,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                                             "IfNotPresent"
                                           ],
                                           "default": "IfNotPresent",
-                                          "description": "Kubernetes image pull policy. Use 'Always' for mutable tags like 'latest'; leave as 'IfNotPresent' for immutable tags or digests."
+                                          "description": "Kubernetes image pull policy. Use 'Always' for mutable tags like 'latest'; leave as 'IfNotPresent' for immutable tags or digests.",
+                                          "x-expert": true
                                         },
                                         "path": {
                                           "type": "string",
@@ -7315,7 +7364,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                                               "Never",
                                               "IfNotPresent"
                                             ],
-                                            "default": "IfNotPresent"
+                                            "default": "IfNotPresent",
+                                            "x-expert": true
                                           },
                                           "path": {
                                             "type": "string",
@@ -7394,7 +7444,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                                                       "IfNotPresent"
                                                     ],
                                                     "default": "IfNotPresent",
-                                                    "description": "Kubernetes image pull policy. Use 'Always' for mutable tags like 'latest'; leave as 'IfNotPresent' for immutable tags or digests."
+                                                    "description": "Kubernetes image pull policy. Use 'Always' for mutable tags like 'latest'; leave as 'IfNotPresent' for immutable tags or digests.",
+                                                    "x-expert": true
                                                   },
                                                   "path": {
                                                     "type": "string",
@@ -7567,7 +7618,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                                               "Never",
                                               "IfNotPresent"
                                             ],
-                                            "default": "IfNotPresent"
+                                            "default": "IfNotPresent",
+                                            "x-expert": true
                                           },
                                           "path": {
                                             "type": "string",
@@ -7646,7 +7698,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                                                       "IfNotPresent"
                                                     ],
                                                     "default": "IfNotPresent",
-                                                    "description": "Kubernetes image pull policy. Use 'Always' for mutable tags like 'latest'; leave as 'IfNotPresent' for immutable tags or digests."
+                                                    "description": "Kubernetes image pull policy. Use 'Always' for mutable tags like 'latest'; leave as 'IfNotPresent' for immutable tags or digests.",
+                                                    "x-expert": true
                                                   },
                                                   "path": {
                                                     "type": "string",
@@ -7757,12 +7810,14 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
               "documentsPerBulkRequest": {
                 "type": "number",
                 "default": 2147483647,
-                "description": "Maximum number of documents per bulk indexing request to the target cluster. Lower values reduce per-request latency but increase overhead."
+                "description": "Maximum number of documents per bulk indexing request to the target cluster. Lower values reduce per-request latency but increase overhead.",
+                "x-expert": true
               },
               "documentsSizePerBulkRequest": {
                 "type": "number",
                 "default": 10485760,
-                "description": "Maximum aggregate document size in bytes per bulk indexing request. Individual documents larger than this limit are sent as single-document requests."
+                "description": "Maximum aggregate document size in bytes per bulk indexing request. Individual documents larger than this limit are sent as single-document requests.",
+                "x-expert": true
               },
               "initialLeaseDuration": {
                 "type": "string",
@@ -7778,7 +7833,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                 "default": 10,
                 "description": "Maximum number of concurrent HTTP connections from each RFS worker to the target cluster for bulk indexing.",
                 "changeRestriction": "gated",
-                "x-change-restriction": "gated"
+                "x-change-restriction": "gated",
+                "x-expert": true
               },
               "maxShardSizeBytes": {
                 "type": "number",
@@ -7826,7 +7882,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                   "NEVER"
                 ],
                 "default": "AUTO",
-                "description": "Controls document ID generation on the target. 'AUTO': auto-detect serverless TIMESERIES/VECTOR collections and enable server-generated IDs. 'ALWAYS': always use server-generated IDs (discards source IDs). 'NEVER': always preserve source document IDs (may fail on serverless TIMESERIES/VECTOR collections)."
+                "description": "Controls document ID generation on the target. 'AUTO': auto-detect serverless TIMESERIES/VECTOR collections and enable server-generated IDs. 'ALWAYS': always use server-generated IDs (discards source IDs). 'NEVER': always preserve source document IDs (may fail on serverless TIMESERIES/VECTOR collections).",
+                "x-expert": true
               },
               "emitDocType": {
                 "type": "string",
@@ -7844,7 +7901,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                 "x-checksum-for": [
                   "replayer"
                 ],
-                "x-change-restriction": "impossible"
+                "x-change-restriction": "impossible",
+                "x-expert": true
               },
               "allowedDocExceptionTypes": {
                 "type": "array",
@@ -7900,7 +7958,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                 "x-checksum-for": [
                   "replayer"
                 ],
-                "x-change-restriction": "impossible"
+                "x-change-restriction": "impossible",
+                "x-expert": true
               },
               "failedDocumentStreamS3Prefix": {
                 "type": "string",
@@ -7917,12 +7976,14 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
               },
               "failedDocumentStreamS3Endpoint": {
                 "type": "string",
-                "description": "Optional S3 endpoint override for failed document stream uploads (e.g. LocalStack). Resolved by the config processor (user value, else the snapshot repo's endpoint, else the deployment default). Ignored without a bucket."
+                "description": "Optional S3 endpoint override for failed document stream uploads (e.g. LocalStack). Resolved by the config processor (user value, else the snapshot repo's endpoint, else the deployment default). Ignored without a bucket.",
+                "x-expert": true
               },
               "failedDocumentStreamMaxBufferBytes": {
                 "type": "number",
                 "default": 67108864,
-                "description": "Maximum uncompressed bytes buffered in memory per target index before the failed document stream rotates to a new S3 object. Bounds heap use when a shard produces a very large number of terminal failures. Default 67108864 (64 MiB)."
+                "description": "Maximum uncompressed bytes buffered in memory per target index before the failed document stream rotates to a new S3 object. Bounds heap use when a shard produces a very large number of terminal failures. Default 67108864 (64 MiB).",
+                "x-expert": true
               },
               "positionGapStopword": {
                 "type": "string",
@@ -7935,7 +7996,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                 "x-checksum-for": [
                   "replayer"
                 ],
-                "x-change-restriction": "impossible"
+                "x-change-restriction": "impossible",
+                "x-expert": true
               }
             },
             "description": "Configuration for backfilling documents from the snapshot to the target using Reindex From Snapshot. Omit to skip document backfill."
@@ -7992,7 +8054,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                     "properties": {
                       "enableMSKAuth": {
                         "type": "boolean",
-                        "default": false
+                        "default": false,
+                        "x-expert": true
                       },
                       "kafkaConnection": {
                         "type": "string",
@@ -8606,18 +8669,21 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                   "destinationConnectionPoolSize": {
                     "type": "number",
                     "default": 0,
-                    "description": "Maximum number of persistent connections to the destination (source) cluster. 0 means unlimited connection pooling."
+                    "description": "Maximum number of persistent connections to the destination (source) cluster. 0 means unlimited connection pooling.",
+                    "x-expert": true
                   },
                   "destinationConnectionPoolTimeout": {
                     "type": "string",
                     "pattern": "^[-+]?P(?:(\\\\d+)D)?(?:T(?:(\\\\d+)H)?(?:(\\\\d+)M)?(?:(\\\\d+(?:\\\\.\\\\d+)?)S)?)?$",
                     "default": "PT30S",
-                    "description": "ISO 8601 duration for how long idle connections in the destination pool are kept alive before being closed (e.g. 'PT30S' = 30 seconds, 'PT5M' = 5 minutes)."
+                    "description": "ISO 8601 duration for how long idle connections in the destination pool are kept alive before being closed (e.g. 'PT30S' = 30 seconds, 'PT5M' = 5 minutes).",
+                    "x-expert": true
                   },
                   "kafkaClientId": {
                     "type": "string",
                     "default": "HttpCaptureProxyProducer",
-                    "description": "Kafka producer client ID used when publishing captured traffic to Kafka. Useful for identifying this proxy in Kafka broker logs and metrics."
+                    "description": "Kafka producer client ID used when publishing captured traffic to Kafka. Useful for identifying this proxy in Kafka broker logs and metrics.",
+                    "x-expert": true
                   },
                   "listenPort": {
                     "type": "number",
@@ -8640,7 +8706,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                     "default": 1048576,
                     "description": "Maximum size in bytes for buffering a single HTTP request/response payload before forwarding to Kafka.",
                     "changeRestriction": "gated",
-                    "x-change-restriction": "gated"
+                    "x-change-restriction": "gated",
+                    "x-expert": true
                   },
                   "noCapture": {
                     "type": "boolean",
@@ -8660,7 +8727,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                   "numThreads": {
                     "type": "number",
                     "default": 1,
-                    "description": "Number of Netty worker threads for the proxy to handle concurrent connections."
+                    "description": "Number of Netty worker threads for the proxy to handle concurrent connections.",
+                    "x-expert": true
                   },
                   "tls": {
                     "oneOf": [
@@ -8766,7 +8834,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                           "renewBefore": {
                             "type": "string",
                             "default": "360h",
-                            "description": "How long before certificate expiry to trigger renewal (e.g. '360h' = 15 days)."
+                            "description": "How long before certificate expiry to trigger renewal (e.g. '360h' = 15 days).",
+                            "x-expert": true
                           },
                           "clientAuth": {
                             "type": "object",
@@ -8796,7 +8865,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                                           "IfNotPresent"
                                         ],
                                         "default": "IfNotPresent",
-                                        "description": "Kubernetes image pull policy. Use 'Always' for mutable tags like 'latest'; leave as 'IfNotPresent' for immutable tags or digests."
+                                        "description": "Kubernetes image pull policy. Use 'Always' for mutable tags like 'latest'; leave as 'IfNotPresent' for immutable tags or digests.",
+                                        "x-expert": true
                                       },
                                       "path": {
                                         "type": "string",
@@ -9105,7 +9175,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                                           "IfNotPresent"
                                         ],
                                         "default": "IfNotPresent",
-                                        "description": "Kubernetes image pull policy. Use 'Always' for mutable tags like 'latest'; leave as 'IfNotPresent' for immutable tags or digests."
+                                        "description": "Kubernetes image pull policy. Use 'Always' for mutable tags like 'latest'; leave as 'IfNotPresent' for immutable tags or digests.",
+                                        "x-expert": true
                                       },
                                       "path": {
                                         "type": "string",
@@ -9308,7 +9379,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                     "default": false,
                     "description": "Enable SASL/IAM authentication for the proxy's Kafka producer when connecting to Amazon MSK. Uses the pod's IAM role via EKS Pod Identity.",
                     "changeRestriction": "gated",
-                    "x-change-restriction": "gated"
+                    "x-change-restriction": "gated",
+                    "x-expert": true
                   },
                   "suppressCaptureForHeaderMatch": {
                     "type": "object",
@@ -9504,7 +9576,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                 "type": "string",
                 "pattern": "^(?:(?:https?|localstacks?):\\\\/\\\\/[^/]+\\\\/?)?$",
                 "default": "",
-                "description": "Override the S3 endpoint URL. Supports http://, https://, localstack://, and localstacks:// schemes. LocalStack endpoints are automatically resolved to IP addresses during config transformation."
+                "description": "Override the S3 endpoint URL. Supports http://, https://, localstack://, and localstacks:// schemes. LocalStack endpoints are automatically resolved to IP addresses during config transformation.",
+                "x-expert": true
               },
               "kafka": {
                 "type": "string",
@@ -9679,7 +9752,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                   "jvmArgs": {
                     "type": "string",
                     "default": "",
-                    "description": "Additional JVM arguments passed via JDK_JAVA_OPTIONS (e.g. '-Xmx4g -XX:+UseG1GC'). If setting -Xmx, ensure the heap size is smaller than the container's memory limit in resources to account for off-heap memory usage."
+                    "description": "Additional JVM arguments passed via JDK_JAVA_OPTIONS (e.g. '-Xmx4g -XX:+UseG1GC'). If setting -Xmx, ensure the heap size is smaller than the container's memory limit in resources to account for off-heap memory usage.",
+                    "x-expert": true
                   },
                   "loggingConfigurationOverrideConfigMap": {
                     "type": "string",
@@ -9859,7 +9933,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                   "maxConcurrentRequests": {
                     "type": "number",
                     "default": 10000,
-                    "description": "Maximum number of HTTP requests that can be in-flight simultaneously to the target cluster. Limits concurrency to prevent overwhelming the target."
+                    "description": "Maximum number of HTTP requests that can be in-flight simultaneously to the target cluster. Limits concurrency to prevent overwhelming the target.",
+                    "x-expert": true
                   },
                   "numClientThreads": {
                     "type": "number",
@@ -9918,7 +9993,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                   "quiescentPeriodMs": {
                     "type": "number",
                     "default": 5000,
-                    "description": "Milliseconds to delay the first request on a resumed connection after a Kafka partition reassignment. Prevents request bursts during rebalancing."
+                    "description": "Milliseconds to delay the first request on a resumed connection after a Kafka partition reassignment. Prevents request bursts during rebalancing.",
+                    "x-expert": true
                   },
                   "removeAuthHeader": {
                     "type": "boolean",
@@ -10012,7 +10088,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                                                 "IfNotPresent"
                                               ],
                                               "default": "IfNotPresent",
-                                              "description": "Kubernetes image pull policy. Use 'Always' for mutable tags like 'latest'; leave as 'IfNotPresent' for immutable tags or digests."
+                                              "description": "Kubernetes image pull policy. Use 'Always' for mutable tags like 'latest'; leave as 'IfNotPresent' for immutable tags or digests.",
+                                              "x-expert": true
                                             },
                                             "path": {
                                               "type": "string",
@@ -10123,7 +10200,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                                                 "IfNotPresent"
                                               ],
                                               "default": "IfNotPresent",
-                                              "description": "Kubernetes image pull policy. Use 'Always' for mutable tags like 'latest'; leave as 'IfNotPresent' for immutable tags or digests."
+                                              "description": "Kubernetes image pull policy. Use 'Always' for mutable tags like 'latest'; leave as 'IfNotPresent' for immutable tags or digests.",
+                                              "x-expert": true
                                             },
                                             "path": {
                                               "type": "string",
@@ -10265,7 +10343,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                                                   "Never",
                                                   "IfNotPresent"
                                                 ],
-                                                "default": "IfNotPresent"
+                                                "default": "IfNotPresent",
+                                                "x-expert": true
                                               },
                                               "path": {
                                                 "type": "string",
@@ -10344,7 +10423,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                                                           "IfNotPresent"
                                                         ],
                                                         "default": "IfNotPresent",
-                                                        "description": "Kubernetes image pull policy. Use 'Always' for mutable tags like 'latest'; leave as 'IfNotPresent' for immutable tags or digests."
+                                                        "description": "Kubernetes image pull policy. Use 'Always' for mutable tags like 'latest'; leave as 'IfNotPresent' for immutable tags or digests.",
+                                                        "x-expert": true
                                                       },
                                                       "path": {
                                                         "type": "string",
@@ -10517,7 +10597,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                                                   "Never",
                                                   "IfNotPresent"
                                                 ],
-                                                "default": "IfNotPresent"
+                                                "default": "IfNotPresent",
+                                                "x-expert": true
                                               },
                                               "path": {
                                                 "type": "string",
@@ -10596,7 +10677,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                                                           "IfNotPresent"
                                                         ],
                                                         "default": "IfNotPresent",
-                                                        "description": "Kubernetes image pull policy. Use 'Always' for mutable tags like 'latest'; leave as 'IfNotPresent' for immutable tags or digests."
+                                                        "description": "Kubernetes image pull policy. Use 'Always' for mutable tags like 'latest'; leave as 'IfNotPresent' for immutable tags or digests.",
+                                                        "x-expert": true
                                                       },
                                                       "path": {
                                                         "type": "string",
@@ -10771,7 +10853,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                                                 "IfNotPresent"
                                               ],
                                               "default": "IfNotPresent",
-                                              "description": "Kubernetes image pull policy. Use 'Always' for mutable tags like 'latest'; leave as 'IfNotPresent' for immutable tags or digests."
+                                              "description": "Kubernetes image pull policy. Use 'Always' for mutable tags like 'latest'; leave as 'IfNotPresent' for immutable tags or digests.",
+                                              "x-expert": true
                                             },
                                             "path": {
                                               "type": "string",
@@ -10882,7 +10965,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                                                 "IfNotPresent"
                                               ],
                                               "default": "IfNotPresent",
-                                              "description": "Kubernetes image pull policy. Use 'Always' for mutable tags like 'latest'; leave as 'IfNotPresent' for immutable tags or digests."
+                                              "description": "Kubernetes image pull policy. Use 'Always' for mutable tags like 'latest'; leave as 'IfNotPresent' for immutable tags or digests.",
+                                              "x-expert": true
                                             },
                                             "path": {
                                               "type": "string",
@@ -11024,7 +11108,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                                                   "Never",
                                                   "IfNotPresent"
                                                 ],
-                                                "default": "IfNotPresent"
+                                                "default": "IfNotPresent",
+                                                "x-expert": true
                                               },
                                               "path": {
                                                 "type": "string",
@@ -11103,7 +11188,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                                                           "IfNotPresent"
                                                         ],
                                                         "default": "IfNotPresent",
-                                                        "description": "Kubernetes image pull policy. Use 'Always' for mutable tags like 'latest'; leave as 'IfNotPresent' for immutable tags or digests."
+                                                        "description": "Kubernetes image pull policy. Use 'Always' for mutable tags like 'latest'; leave as 'IfNotPresent' for immutable tags or digests.",
+                                                        "x-expert": true
                                                       },
                                                       "path": {
                                                         "type": "string",
@@ -11276,7 +11362,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                                                   "Never",
                                                   "IfNotPresent"
                                                 ],
-                                                "default": "IfNotPresent"
+                                                "default": "IfNotPresent",
+                                                "x-expert": true
                                               },
                                               "path": {
                                                 "type": "string",
@@ -11355,7 +11442,8 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                                                           "IfNotPresent"
                                                         ],
                                                         "default": "IfNotPresent",
-                                                        "description": "Kubernetes image pull policy. Use 'Always' for mutable tags like 'latest'; leave as 'IfNotPresent' for immutable tags or digests."
+                                                        "description": "Kubernetes image pull policy. Use 'Always' for mutable tags like 'latest'; leave as 'IfNotPresent' for immutable tags or digests.",
+                                                        "x-expert": true
                                                       },
                                                       "path": {
                                                         "type": "string",
@@ -11482,32 +11570,37 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                     "default": "",
                     "description": "Custom S3 endpoint URL for tuple output.",
                     "changeRestriction": "gated",
-                    "x-change-restriction": "gated"
+                    "x-change-restriction": "gated",
+                    "x-expert": true
                   },
                   "tupleMaxBufferSeconds": {
                     "type": "number",
                     "default": 60,
                     "description": "Maximum seconds before rotating/uploading a tuple file to S3.",
                     "changeRestriction": "gated",
-                    "x-change-restriction": "gated"
+                    "x-change-restriction": "gated",
+                    "x-expert": true
                   },
                   "tupleMaxFileSizeMb": {
                     "type": "number",
                     "default": 256,
                     "description": "Maximum uncompressed size in MB before rotating a tuple file to S3.",
                     "changeRestriction": "gated",
-                    "x-change-restriction": "gated"
+                    "x-change-restriction": "gated",
+                    "x-expert": true
                   },
                   "tupleMaxPerFile": {
                     "type": "number",
                     "default": 0,
                     "description": "Maximum number of tuples per S3 object. 0 means no count limit.",
                     "changeRestriction": "gated",
-                    "x-change-restriction": "gated"
+                    "x-change-restriction": "gated",
+                    "x-expert": true
                   },
                   "userAgent": {
                     "type": "string",
-                    "description": "String appended to the User-Agent header on all replayed requests to the target cluster. Useful for identifying replayed traffic in target cluster logs."
+                    "description": "String appended to the User-Agent header on all replayed requests to the target cluster. Useful for identifying replayed traffic in target cluster logs.",
+                    "x-expert": true
                   }
                 },
                 "description": "Optional replayer configuration overrides. If omitted, replayer runs with schema defaults."
