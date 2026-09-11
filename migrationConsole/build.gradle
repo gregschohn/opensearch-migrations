@@ -20,6 +20,7 @@ def configProcessorP   = orchestrationP.dir("packages/config-processor")
 def workflowTemplatesP = orchestrationP.dir("packages/migration-workflow-templates")
 def argoWorkflowBuildersP = orchestrationP.dir("packages/argo-workflow-builders")
 def schemasP           = orchestrationP.dir("packages/schemas")
+def configEditCoreP    = orchestrationP.dir("packages/config-edit-core")
 def cloudWatchDashboardsP = rootProject.layout.projectDirectory.dir(
         "deployment/k8s/charts/aggregates/migrationAssistantWithArgo/files/cloudwatch-dashboards")
 def configProcessorStagingP =
@@ -244,6 +245,8 @@ tasks.register('installManageWebDependencies', NpmTask) {
 
     inputs.file(manageWebP.file("package.json"))
     inputs.file(manageWebP.file("package-lock.json"))
+    inputs.file(configEditCoreP.file("package.json"))
+    inputs.file(schemasP.file("package.json"))
     outputs.dir(manageWebP.dir("node_modules"))
 }
 
@@ -281,6 +284,8 @@ tasks.register('testManageWeb', NpmTask) {
     dependsOn generateManageWebClient
 
     inputs.dir(manageWebP.dir("src"))
+    inputs.dir(configEditCoreP.dir("src"))
+    inputs.dir(schemasP.dir("src"))
     inputs.file(manageWebP.file("vite.config.ts"))
     outputs.upToDateWhen { false }
 }
@@ -292,6 +297,8 @@ tasks.register('buildManageWeb', NpmTask) {
     dependsOn generateManageWebClient
 
     inputs.dir(manageWebP.dir("src"))
+    inputs.dir(configEditCoreP.dir("src"))
+    inputs.dir(schemasP.dir("src"))
     inputs.file(manageWebP.file("index.html"))
     inputs.file(manageWebP.file("tsconfig.json"))
     inputs.file(manageWebP.file("tsconfig.app.json"))
