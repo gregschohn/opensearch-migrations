@@ -5,13 +5,10 @@ import { afterAll, afterEach, beforeAll } from "vitest";
 
 import { server } from "./server";
 
-globalThis.__WORKFLOW_BROWSER_LOCAL_EDITING__ = false;
-
 beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
 afterEach(() => {
   cleanup();
   server.resetHandlers();
-  globalThis.__WORKFLOW_BROWSER_LOCAL_EDITING__ = false;
   window.localStorage.clear();
   window.sessionStorage.clear();
 });

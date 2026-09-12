@@ -1,7 +1,20 @@
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 
-import { configDraft, manageSnapshot } from "./fixtures";
+import { manageSnapshot } from "./fixtures";
+
+
+const defaultRawConfig = `sourceClusters:
+  legacy:
+    endpoint: https://legacy.example.com:9200
+    version: ES 7.10
+targetClusters:
+  target:
+    endpoint: https://target.example.com:9200
+    version: OS 2.15
+snapshotMigrationConfigs: []
+`;
+
 
 export const server = setupServer(
   http.get("*/api/v1/system/health", () =>
@@ -72,27 +85,44 @@ export const server = setupServer(
       warnings: [],
     }),
   ),
-  http.get("*/api/v1/config", () =>
-    HttpResponse.json(configDraft),
-  ),
   http.get("*/api/v1/config/document", () =>
     HttpResponse.json({
       modelVersion: "1",
-      persistedRevision: configDraft.baseRevision,
-      rawYaml: "{}\n",
+      persistedRevision: "config-base-1",
+      rawYaml: defaultRawConfig,
     }),
   ),
-  http.post("*/api/v1/config/close", () =>
-    new HttpResponse(null, { status: 204 }),
-  ),
-  http.post("*/api/v1/config/review", () =>
-    HttpResponse.json({
-      persistedRevision: configDraft.baseRevision,
-      valid: configDraft.editState.validation.valid,
-      validationMessages: configDraft.editState.validation.errors,
+  http.put("*/api/v1/config/document", async ({ request }) => {
+    const body = await request.json() as {
+      rawYaml: string;
+    };
+    return HttpResponse.json({
+      modelVersion: "1",
+      persistedRevision: "config-base-saved",
+      rawYaml: body.rawYaml,
+    });
+  }),
+  http.post("*/api/v1/config/diagnostics", async ({ request }) => {
+    const body = await request.json() as {
+      draftFingerprint: string;
+    };
+    return HttpResponse.json({
+      draftFingerprint: body.draftFingerprint,
+      status: "valid",
+      diagnostics: [],
+    });
+  }),
+  http.post("*/api/v1/config/review", async ({ request }) => {
+    const body = await request.json() as {
+      expectedPersistedRevision: string;
+    };
+    return HttpResponse.json({
+      persistedRevision: body.expectedPersistedRevision,
+      valid: true,
+      validationMessages: [],
       changes: [],
-    }),
-  ),
+    });
+  }),
   http.post("*/api/v1/config/preflight", () =>
     HttpResponse.json({
       checkedResources: 0,
@@ -233,20 +263,9 @@ export const server = setupServer(
       message: null,
     }),
   ),
-  http.post("*/api/v1/config/removal-impact", async ({ request }) => {
-    const body = await request.json() as {
-      path: string[];
-    };
-    return HttpResponse.json({
-      targetPath: body.path,
-      targetLabel: body.path.at(-1) ?? "configuration",
-      affected: [],
-    });
-  }),
-  http.get("*/api/v1/external-resources", () =>
+  http.post("*/api/v1/external-resources", () =>
     HttpResponse.json({
       nodeId: "edit:traffic.transform.configMap",
-      draftRevision: configDraft.draftRevision,
       displayName: "Transform ConfigMap",
       rows: [{
         name: "transform-code",
@@ -269,10 +288,9 @@ export const server = setupServer(
       }],
     }),
   ),
-  http.get("*/api/v1/external-resources/details", () =>
+  http.post("*/api/v1/external-resources/details", () =>
     HttpResponse.json({
       nodeId: "edit:traffic.transform.configMap",
-      draftRevision: configDraft.draftRevision,
       displayName: "Transform ConfigMap",
       name: "transform-code",
       kind: "ConfigMap",
@@ -289,11 +307,6 @@ export const server = setupServer(
   ),
   http.post("*/api/v1/external-resources/save", () =>
     HttpResponse.json({
-      draft: {
-        ...configDraft,
-        dirty: true,
-        draftRevision: "config-draft-external-save",
-      },
       name: "transform-code",
       kind: "ConfigMap",
       message: "ConfigMap updated: transform-code",

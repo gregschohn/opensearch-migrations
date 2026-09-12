@@ -11,9 +11,9 @@ import uvicorn
 
 from ..application.manage_state import ManageStateService
 from ..application.observations import ObservationCoordinator
-from ..application.config_drafts import ConfigDraftService
 from ..application.config_documents import ConfigurationDocumentService
 from ..application.config_submission import SavedConfigSubmissionService
+from ..application.external_resources import ExternalResourceService
 from ..application.outputs import OutputService
 from ..application.logs import KubernetesLogSource, LogStreamService
 from ..application.operations import OperationManager
@@ -135,11 +135,9 @@ def run_server(
                 namespace,
             )
 
-        config_drafts = ConfigDraftService(config_service)
         config_documents = ConfigurationDocumentService(
             store=config_store,
             validate=config_service.validate_raw_config_for_save,
-            on_saved=config_drafts.invalidate_saved_config,
         )
         configuration_service = SavedConfigSubmissionService(
             config_documents,
@@ -149,7 +147,7 @@ def run_server(
             static_dir=static_dir,
             coordinator=coordinator,
             workflow_name=workflow_name,
-            config_drafts=config_drafts,
+            external_resources=ExternalResourceService(config_service),
             config_documents=configuration_service,
             config_diagnostics=config_service,
             outputs=OutputService(

@@ -2,26 +2,27 @@ import {
   annotateDraftChanges,
   applyEditOperationToObject,
   projectConfigYaml,
+  type EditOperation,
   type EditStateV1,
 } from "@opensearch-migrations/config-edit-core";
 import { parse } from "yaml";
 
 import type {
-  ConfigDraft,
   ConfigurationDocument,
-  EditOperation,
   ManageSnapshot,
 } from "../../api/client";
 
 
-declare global {
-  var __WORKFLOW_BROWSER_LOCAL_EDITING__: boolean | undefined;
-}
-
-
-export interface BrowserConfigDraft extends ConfigDraft {
+export interface BrowserConfigDraft {
+  baseRevision: string;
+  draftRevision: string;
+  dirty: boolean;
+  editState: EditStateV1;
+  navigation: ManageSnapshot | null;
+  rawYaml?: string;
+  notices: string[];
   baseStale: boolean;
-  baseEditState: ConfigDraft["editState"];
+  baseEditState: EditStateV1;
   config: unknown;
   persistedRevision: string;
   rawDocument: string;
@@ -36,22 +37,9 @@ export const BROWSER_CONFIG_DRAFT_QUERY_KEY = ["browser-config-draft"] as const;
 let localRevision = 0;
 
 
-export function browserLocalEditingEnabled(): boolean {
-  if (globalThis.__WORKFLOW_BROWSER_LOCAL_EDITING__ !== undefined) {
-    return globalThis.__WORKFLOW_BROWSER_LOCAL_EDITING__;
-  }
-  return import.meta.env.VITE_BROWSER_LOCAL_CONFIG_EDITING !== "false";
-}
-
-
 function nextRevision(persistedRevision: string): string {
   localRevision += 1;
   return `browser:${persistedRevision}:${localRevision}`;
-}
-
-
-function apiEditState(editState: EditStateV1): ConfigDraft["editState"] {
-  return editState as ConfigDraft["editState"];
 }
 
 
@@ -65,7 +53,7 @@ function projectedDraft(
   navigation?: ManageSnapshot | null,
 ): BrowserConfigDraft {
   const projection = projectConfigYaml(document.rawYaml);
-  const editState = apiEditState(projection.editState);
+  const editState = projection.editState;
   return {
     baseRevision: document.persistedRevision,
     draftRevision: nextRevision(document.persistedRevision),
@@ -108,10 +96,10 @@ export function applyBrowserEditOperation(
     operation,
   );
   const config = result.yaml.trim() === "" ? {} : parseYaml(result.yaml);
-  const editState = apiEditState(annotateDraftChanges(
+  const editState = annotateDraftChanges(
     result.editState,
-    draft.baseEditState as EditStateV1,
-  ));
+    draft.baseEditState,
+  );
   return {
     ...draft,
     draftRevision: nextRevision(draft.persistedRevision),
@@ -134,13 +122,13 @@ export function replaceBrowserConfigYaml(
     ? projection.editState
     : annotateDraftChanges(
       projection.editState,
-      draft.baseEditState as EditStateV1,
+      draft.baseEditState,
     );
   return {
     ...draft,
     draftRevision: nextRevision(draft.persistedRevision),
     dirty: rawYaml !== draft.savedRawDocument,
-    editState: apiEditState(projectedEditState),
+    editState: projectedEditState,
     rawYaml: projection.editState.provenance.mode === "raw"
       ? rawYaml
       : undefined,

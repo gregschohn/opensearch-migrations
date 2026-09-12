@@ -56,19 +56,6 @@ STATUS_COUNT_KEY = {
 YAML_SUFFIX = ".yaml"
 
 
-@dataclass
-class ConfigEditSession:
-    raw_yaml: str
-    edit_state: Dict[str, Any]
-
-
-@dataclass
-class ConfigEditApplyResult:
-    raw_yaml: str
-    edit_state: Dict[str, Any]
-    notices: tuple[str, ...] = ()
-
-
 class AdmissionPreflightBlocked(ValueError):
     def __init__(self, report: AdmissionPreflightReport):
         self.report = report
@@ -99,80 +86,9 @@ class ConfigEditService:
     custom_api: Optional[Any] = None
     secret_store: Optional[SecretStore] = None
 
-    def load_edit_session(self) -> ConfigEditSession:
-        store = self.store or WorkflowConfigStore(namespace=self.namespace)
-        config = store.load_config(self.session_name)
-        raw_yaml = config.raw_yaml if config else ""
-        return ConfigEditSession(
-            raw_yaml=raw_yaml,
-            edit_state=self._run_edit_state(raw_yaml, validate_external_refs=False),
-        )
-
-    def load_edit_state(self) -> Dict[str, Any]:
-        return self.load_edit_session().edit_state
-
     def project_raw_yaml(self, raw_yaml: str) -> Dict[str, Any]:
         """Build a structured or raw-repair edit projection without saving."""
         return self._run_edit_state(raw_yaml, validate_external_refs=False)
-
-    def apply_operation(self, raw_yaml: str, operation: Dict[str, Any]) -> ConfigEditApplyResult:
-        prepared_operation, notices = self._prepare_operation(operation)
-        with tempfile.NamedTemporaryFile(mode="w", suffix=YAML_SUFFIX, delete=True) as operation_file:
-            json.dump(prepared_operation, operation_file)
-            operation_file.flush()
-
-            with tempfile.NamedTemporaryFile(mode="w", suffix=YAML_SUFFIX, delete=True) as config_file:
-                config_file.write(raw_yaml)
-                config_file.flush()
-                output = self._run_config_processor_node_script(
-                    "editConfig",
-                    "apply",
-                    "--pending-config",
-                    config_file.name,
-                    "--operation",
-                    operation_file.name,
-                )
-
-        result = json.loads(output)
-        return ConfigEditApplyResult(
-            raw_yaml=result["yaml"],
-            edit_state=result["editState"],
-            notices=notices,
-        )
-
-    def _prepare_operation(
-        self,
-        operation: Dict[str, Any],
-    ) -> tuple[Dict[str, Any], tuple[str, ...]]:
-        return operation, ()
-
-    def validate_operation(self, raw_yaml: str, operation: Dict[str, Any]) -> ConfigEditApplyResult:
-        """Preview one operation through TS validation without saving the result."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=YAML_SUFFIX, delete=True) as operation_file:
-            json.dump(operation, operation_file)
-            operation_file.flush()
-
-            with tempfile.NamedTemporaryFile(mode="w", suffix=YAML_SUFFIX, delete=True) as config_file:
-                config_file.write(raw_yaml)
-                config_file.flush()
-                output = self._run_config_processor_node_script(
-                    "editConfig",
-                    "apply",
-                    "--pending-config",
-                    config_file.name,
-                    "--operation",
-                    operation_file.name,
-                )
-
-        result = json.loads(output)
-        return ConfigEditApplyResult(
-            raw_yaml=result["yaml"],
-            edit_state=result["editState"],
-        )
-
-    def save_raw_yaml(self, raw_yaml: str) -> str:
-        store = self.store or WorkflowConfigStore(namespace=self.namespace)
-        return store.save_config(WorkflowConfig(raw_yaml=raw_yaml), self.session_name)
 
     def list_external_resources(
         self,

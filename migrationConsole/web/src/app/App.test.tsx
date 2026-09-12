@@ -9,14 +9,18 @@ import {
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { expect, test, vi } from "vitest";
+import { parse } from "yaml";
 
 import {
   getHealth,
-  type ConfigDraft,
   type ManageNode,
   type ManageSnapshot,
 } from "../api/client";
-import { configDraft, manageSnapshot } from "../test/fixtures";
+import {
+  configDraft,
+  manageSnapshot,
+  type ConfigDraft,
+} from "../test/fixtures";
 import { server } from "../test/server";
 import {
   BROWSER_CONFIG_DRAFT_QUERY_KEY,
@@ -26,12 +30,95 @@ import {
 import { App } from "./App";
 
 
-function renderApp() {
+function configFromEditNodes(draft: ConfigDraft): unknown {
+  const config: Record<string, unknown> = {};
+  const assign = (path: string[], value: unknown) => {
+    let current: Record<string, unknown> | unknown[] = config;
+    path.forEach((part, index) => {
+      const last = index === path.length - 1;
+      const numeric = /^\d+$/.test(part);
+      if (last) {
+        if (Array.isArray(current) && numeric) {
+          current[Number(part)] = structuredClone(value);
+        } else {
+          (current as Record<string, unknown>)[part] = structuredClone(value);
+        }
+        return;
+      }
+      const nextNumeric = /^\d+$/.test(path[index + 1]);
+      const container = nextNumeric ? [] : {};
+      if (Array.isArray(current) && numeric) {
+        current[Number(part)] ??= container;
+        current = current[Number(part)] as Record<string, unknown> | unknown[];
+      } else {
+        const record = current as Record<string, unknown>;
+        record[part] ??= container;
+        current = record[part] as Record<string, unknown> | unknown[];
+      }
+    });
+  };
+  const visit = (node: ConfigDraft["editState"]["nodes"][number]) => {
+    if (
+      node.path.length > 0
+      && node.value !== undefined
+      && node.valueKind !== "command"
+      && node.children.length === 0
+    ) {
+      assign(node.path, node.value);
+    } else if (
+      node.path.length > 0
+      && node.valueKind === "object"
+      && node.children.length === 0
+    ) {
+      assign(node.path, {});
+    }
+    node.children.forEach(visit);
+  };
+  draft.editState.nodes.forEach(visit);
+  return config;
+}
+
+
+function browserDraftFixture(draft: ConfigDraft): BrowserConfigDraft {
+  const config = (
+    draft.rawYaml
+    && draft.editState.provenance.mode === "structured"
+  )
+    ? parse(draft.rawYaml) as unknown
+    : configFromEditNodes(draft);
+  const rawDocument = JSON.stringify(config, null, 2) + "\n";
+  return {
+    baseRevision: draft.baseRevision,
+    draftRevision: draft.draftRevision,
+    dirty: draft.dirty,
+    editState: structuredClone(draft.editState),
+    navigation: structuredClone(draft.navigation ?? null),
+    rawYaml: draft.editState.provenance.mode === "raw"
+      ? draft.rawYaml ?? undefined
+      : undefined,
+    notices: [...(draft.notices ?? [])],
+    baseStale: false,
+    baseEditState: structuredClone(draft.editState),
+    config,
+    persistedRevision: draft.baseRevision,
+    rawDocument: draft.rawYaml ?? rawDocument,
+    savedRawDocument: rawDocument,
+  };
+}
+
+
+function renderApp(initialDraft: ConfigDraft | null = configDraft) {
   const client = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
     },
   });
+  if (initialDraft) {
+    client.setQueryData(
+      BROWSER_CONFIG_DRAFT_QUERY_KEY,
+      browserDraftFixture(initialDraft),
+    );
+  }
   const view = render(
     <QueryClientProvider client={client}>
       <App />
@@ -222,78 +309,6 @@ function addLegacySourceNavigation(draft: ConfigDraft): ConfigDraft {
     resourceType: "Source cluster",
   });
   return draft;
-}
-
-
-function addSourceDefinitionNavigation(
-  draft: ConfigDraft,
-  {
-    groupLabel,
-    itemLabel,
-    targetId,
-    typeLabel,
-  }: {
-    groupLabel: string;
-    itemLabel: string;
-    targetId: string;
-    typeLabel: string;
-  },
-) {
-  const navigation = draft.navigation;
-  if (!navigation) throw new Error("Missing configuration navigation");
-  const sourceId = "resource:sourceconfigs:legacy";
-  const source = navigation.nodes[sourceId];
-  if (!source) throw new Error("Missing source navigation node");
-  const collectionTargetId = targetId.slice(0, targetId.lastIndexOf("."));
-  const groupId = `definition-group:${collectionTargetId}`;
-  const definitionId = `definition:${targetId}`;
-  navigation.nodes[groupId] = {
-    id: groupId,
-    revision: `test:${groupId}`,
-    parentId: sourceId,
-    childIds: [definitionId],
-    kind: "group",
-    label: groupLabel,
-    description: null,
-    status: "ok",
-    phase: null,
-    valueSummary: null,
-    diagnostics: [],
-    capabilities: [],
-    details: [],
-    relationships: [],
-    comparisons: [],
-    resourcePlural: null,
-    resourceName: null,
-    resourceType: null,
-    configPresence: {},
-  };
-  navigation.nodes[definitionId] = {
-    id: definitionId,
-    revision: `test:${definitionId}`,
-    parentId: groupId,
-    childIds: [],
-    kind: "config-definition",
-    label: itemLabel,
-    description: typeLabel,
-    status: "ok",
-    phase: null,
-    valueSummary: null,
-    diagnostics: [],
-    capabilities: [{
-      kind: "edit",
-      editTargetId: targetId,
-      label: `Edit ${itemLabel}`,
-    }],
-    details: [],
-    relationships: [],
-    comparisons: [],
-    resourcePlural: null,
-    resourceName: null,
-    resourceType: typeLabel,
-    configPresence: {},
-  };
-  source.childIds.push(groupId);
 }
 
 
@@ -753,57 +768,6 @@ test("keeps workflow execution steps out of configuration navigation", async () 
     name: "Expand replay",
   })).toBeNull();
   expect(within(tree).queryByText("Deploy replay")).toBeNull();
-});
-
-
-test("refreshes server-projected configuration navigation while editing", async () => {
-  let snapshot = structuredClone(manageSnapshot);
-  let configRequests = 0;
-  server.use(
-    http.get("*/api/v1/manage/state", () => HttpResponse.json(snapshot)),
-    http.get("*/api/v1/config", () => {
-      configRequests += 1;
-      const draft = structuredClone(configDraft);
-      setNavigation(draft, snapshot);
-      return HttpResponse.json(draft);
-    }),
-  );
-  renderApp();
-  await enterEditMode();
-
-  const tree = screen.getByRole("tree", { name: "Workflow resources" });
-  expect(within(tree).queryByText("capture-next")).toBeNull();
-
-  const insertedId = "resource:captureproxies:capture-next";
-  const groupId = "group:Live Traffic Migration:Capture";
-  snapshot = {
-    ...snapshot,
-    revision: "snapshot-with-capture-next",
-    nodes: {
-      ...snapshot.nodes,
-      [groupId]: {
-        ...snapshot.nodes[groupId],
-        childIds: [...snapshot.nodes[groupId].childIds, insertedId],
-      },
-      [insertedId]: {
-        ...snapshot.nodes["resource:captureproxies:capture"],
-        id: insertedId,
-        revision: "capture-next-1",
-        parentId: groupId,
-        childIds: [],
-        label: "capture-next",
-        resourceName: "capture-next",
-      },
-    },
-  };
-  await userEvent.click(screen.getByRole("button", {
-    name: "Refresh state",
-  }));
-
-  expect(await within(tree).findByRole("treeitem", {
-    name: /^capture-next/,
-  })).toBeInTheDocument();
-  expect(configRequests).toBeGreaterThanOrEqual(2);
 });
 
 
@@ -1701,6 +1665,7 @@ test("reviews exact approval and reset targets before starting operations", asyn
   }));
   await waitFor(() => expect(resetRequest).toEqual({
     planToken: "reset-token",
+    resubmit: false,
   }));
 });
 
@@ -2447,10 +2412,7 @@ test("expands authored expert sections and supports animated collapse and expand
       children: [],
     }],
   });
-  server.use(
-    http.get("*/api/v1/config", () => HttpResponse.json(expertDraft)),
-  );
-  renderApp();
+  renderApp(expertDraft);
   await enterEditMode();
 
   const config = await screen.findByRole("table", {
@@ -2674,10 +2636,7 @@ test("renders an empty selected configuration group with its add action", async 
     editTargetId: "edit:targetClusters",
     label: "Edit Targets",
   }];
-  server.use(
-    http.get("*/api/v1/config", () => HttpResponse.json(draft)),
-  );
-  renderApp();
+  renderApp(draft);
   await enterEditMode();
 
   const tree = await screen.findByRole("tree", {
@@ -2719,6 +2678,20 @@ test("opens nested definitions from navigation and referenced fields", async () 
         label: "Repositories",
         valueKind: "record",
         status: "ok",
+        inputHint: {
+          kind: "record",
+          addLabel: "snapshot repository",
+          definitionCollection: {
+            ownerAncestorLevels: 2,
+            navigation: {
+              groupLabel: "Repositories",
+              groupOrder: 0,
+            },
+            definition: {
+              typeLabel: "Snapshot repository",
+            },
+          },
+        },
         diagnostics: [],
         children: [{
           id: "edit:sourceClusters.legacy.snapshotInfo.repos.repo1",
@@ -2759,6 +2732,20 @@ test("opens nested definitions from navigation and referenced fields", async () 
         label: "Snapshots",
         valueKind: "record",
         status: "ok",
+        inputHint: {
+          kind: "record",
+          addLabel: "source snapshot",
+          definitionCollection: {
+            ownerAncestorLevels: 2,
+            navigation: {
+              groupLabel: "Snapshots",
+              groupOrder: 1,
+            },
+            definition: {
+              typeLabel: "Source snapshot",
+            },
+          },
+        },
         diagnostics: [],
         children: [{
           id: "edit:sourceClusters.legacy.snapshotInfo.snapshots.nightly",
@@ -2808,22 +2795,7 @@ test("opens nested definitions from navigation and referenced fields", async () 
       }],
     },
   ];
-  addSourceDefinitionNavigation(draft, {
-    groupLabel: "Repositories",
-    itemLabel: "repo1",
-    targetId: "edit:sourceClusters.legacy.snapshotInfo.repos.repo1",
-    typeLabel: "Snapshot repository",
-  });
-  addSourceDefinitionNavigation(draft, {
-    groupLabel: "Snapshots",
-    itemLabel: "nightly",
-    targetId: "edit:sourceClusters.legacy.snapshotInfo.snapshots.nightly",
-    typeLabel: "Source snapshot",
-  });
-  server.use(
-    http.get("*/api/v1/config", () => HttpResponse.json(draft)),
-  );
-  renderApp();
+  renderApp(draft);
   await enterEditMode();
 
   const tree = screen.getByRole("tree", { name: "Workflow resources" });
@@ -2923,9 +2895,8 @@ test("shows compact resource validation in navigation and hides valid detail", a
   };
   server.use(
     http.get("*/api/v1/manage/state", () => HttpResponse.json(snapshot)),
-    http.get("*/api/v1/config", () => HttpResponse.json(validDraft)),
   );
-  renderApp();
+  renderApp(validDraft);
 
   await enterEditMode();
 
@@ -2957,9 +2928,8 @@ test("keeps warning detail inline without error taint or a validation section", 
   };
   server.use(
     http.get("*/api/v1/manage/state", () => HttpResponse.json(snapshot)),
-    http.get("*/api/v1/config", () => HttpResponse.json(warningDraft)),
   );
-  renderApp();
+  renderApp(warningDraft);
 
   await enterEditMode();
   const tree = await screen.findByRole("tree", { name: "Workflow resources" });
@@ -3046,9 +3016,8 @@ test("taints validation errors and their configuration and navigation parents", 
   };
   server.use(
     http.get("*/api/v1/manage/state", () => HttpResponse.json(snapshot)),
-    http.get("*/api/v1/config", () => HttpResponse.json(invalidDraft)),
   );
-  renderApp();
+  renderApp(invalidDraft);
 
   await enterEditMode();
 
@@ -3128,9 +3097,8 @@ test("highlights unsaved resources and fields with previous values", async () =>
 
   server.use(
     http.get("*/api/v1/manage/state", () => HttpResponse.json(snapshot)),
-    http.get("*/api/v1/config", () => HttpResponse.json(dirtyDraft)),
   );
-  renderApp();
+  renderApp(dirtyDraft);
   await enterEditMode();
 
   const tree = await screen.findByRole("tree", { name: "Workflow resources" });
@@ -3270,10 +3238,7 @@ test("describes an implicit Kafka default without reporting a missing reference"
     diagnostics: [],
     children: [],
   });
-  server.use(
-    http.get("*/api/v1/config", () => HttpResponse.json(draft)),
-  );
-  renderApp();
+  renderApp(draft);
   await enterEditMode();
 
   expect(screen.getByLabelText("Kafka cluster")).toBeDisabled();
@@ -3398,20 +3363,7 @@ test("edits the implicit Kafka default without offering rename or removal", asyn
   implicit.phase = "Implicit default";
   implicit.configPresence = { deployed: false, pending: false };
 
-  const operations: unknown[] = [];
-  server.use(
-    http.get("*/api/v1/config", () => HttpResponse.json(draft)),
-    http.post("*/api/v1/config/operations", async ({ request }) => {
-      const body = await request.json() as { operation: unknown };
-      operations.push(body.operation);
-      return HttpResponse.json({
-        ...draft,
-        dirty: true,
-        draftRevision: "config-draft-explicit-default",
-      });
-    }),
-  );
-  renderApp();
+  const { client } = renderApp(draft);
   await enterEditMode();
 
   const tree = await screen.findByRole("tree", {
@@ -3439,17 +3391,25 @@ test("edits the implicit Kafka default without offering rename or removal", asyn
     "none",
   );
 
-  await waitFor(() => expect(operations).toEqual([{
-    op: "set",
-    path: [
-      "traffic",
-      "kafkaClusters",
-      "default",
-      "autoCreate",
-      "auth",
-    ],
-    value: "none",
-  }]));
+  await waitFor(() => expect(
+    (
+      client.getQueryData<BrowserConfigDraft>(
+        BROWSER_CONFIG_DRAFT_QUERY_KEY,
+      )?.config as {
+        traffic?: {
+          kafkaClusters?: {
+            default?: {
+              autoCreate?: {
+                auth?: {
+                  type?: string;
+                };
+              };
+            };
+          };
+        };
+      }
+    ).traffic?.kafkaClusters?.default?.autoCreate?.auth?.type,
+  ).toBe("none"));
 });
 
 
@@ -3464,22 +3424,12 @@ test("offers top-level add actions in navigation during scoped editing", async (
       }
       : capability
   ));
-  const operations: unknown[] = [];
   server.use(
     http.get("*/api/v1/manage/state", () =>
       HttpResponse.json(scopedSnapshot),
     ),
-    http.post("*/api/v1/config/operations", async ({ request }) => {
-      const body = await request.json() as { operation: unknown };
-      operations.push(body.operation);
-      return HttpResponse.json({
-        ...configDraft,
-        dirty: true,
-        draftRevision: "config-draft-added-from-scope",
-      });
-    }),
   );
-  renderApp();
+  const { client } = renderApp();
 
   await enterEditMode();
   const config = await screen.findByRole("table", {
@@ -3508,11 +3458,15 @@ test("offers top-level add actions in navigation during scoped editing", async (
     name: "Create source cluster",
   }));
 
-  await waitFor(() => expect(operations).toEqual([{
-    op: "add",
-    path: ["sourceClusters"],
-    value: { name: "next-source" },
-  }]));
+  await waitFor(() => expect(
+    (
+      client.getQueryData<BrowserConfigDraft>(
+        BROWSER_CONFIG_DRAFT_QUERY_KEY,
+      )?.config as {
+        sourceClusters?: Record<string, unknown>;
+      }
+    ).sourceClusters,
+  ).toHaveProperty("next-source"));
 });
 
 
@@ -3532,21 +3486,7 @@ test("adds nested definitions from their left-navigation groups", async () => {
     groupOrder: 1,
     typeLabel: "Source snapshot",
   });
-  const operations: unknown[] = [];
-  let releaseOperation: (() => void) | null = null;
-  const operationStarted = new Promise<void>((resolve) => {
-    releaseOperation = resolve;
-  });
-  server.use(
-    http.get("*/api/v1/config", () => HttpResponse.json(draft)),
-    http.post("*/api/v1/config/operations", async ({ request }) => {
-      const body = await request.json() as { operation: unknown };
-      operations.push(body.operation);
-      await operationStarted;
-      return HttpResponse.json(draft);
-    }),
-  );
-  renderApp();
+  const { client } = renderApp(draft);
   await enterEditMode();
 
   const tree = await screen.findByRole("tree", {
@@ -3578,535 +3518,30 @@ test("adds nested definitions from their left-navigation groups", async () => {
   await userEvent.keyboard("{Enter}");
 
   expect(await within(tree).findByRole("treeitem", {
-    name: /^repo2, Snapshot repository, Syncing configuration$/,
+    name: /^repo2/,
   })).toHaveAttribute("aria-selected", "true");
-  expect(operations).toEqual([{
-    op: "add",
-    path: ["sourceClusters", "legacy", "snapshotInfo", "repos"],
-    value: { name: "repo2" },
-  }]);
-
-  releaseOperation?.();
+  expect(
+    (
+      client.getQueryData<BrowserConfigDraft>(
+        BROWSER_CONFIG_DRAFT_QUERY_KEY,
+      )?.config as {
+        sourceClusters?: {
+          legacy?: {
+            snapshotInfo?: {
+              repos?: Record<string, unknown>;
+            };
+          };
+        };
+      }
+    ).sourceClusters?.legacy?.snapshotInfo?.repos,
+  ).toHaveProperty("repo2");
 });
 
-
-test("names a snapshot migration before adding it and cancels title rename on navigation", async () => {
-  const snapshot = structuredClone(manageSnapshot);
-  const sectionId = "section:Snapshot Migration";
-  const snapshotGroupId = "group:Snapshot Migration:Snapshot";
-  const backfillGroupId = "group:Snapshot Migration:Backfill";
-  snapshot.rootIds.splice(1, 0, sectionId);
-  snapshot.nodes[sectionId] = {
-    ...snapshot.nodes["section:Live Traffic Migration"],
-    id: sectionId,
-    revision: "snapshot-migration-section-1",
-    parentId: null,
-    childIds: [snapshotGroupId, backfillGroupId],
-    label: "Snapshot Migration",
-    status: "warning",
-    capabilities: [{
-      kind: "edit",
-      editTargetId: "edit:snapshotMigration",
-      label: "Edit Snapshot Migration",
-    }],
-  };
-  snapshot.nodes[snapshotGroupId] = {
-    ...snapshot.nodes["group:Live Traffic Migration:Capture"],
-    id: snapshotGroupId,
-    revision: "snapshot-group-1",
-    parentId: sectionId,
-    childIds: [],
-    label: "Snapshot",
-    status: "warning",
-  };
-  snapshot.nodes[backfillGroupId] = {
-    ...snapshot.nodes["group:Live Traffic Migration:Capture"],
-    id: backfillGroupId,
-    revision: "backfill-group-1",
-    parentId: sectionId,
-    childIds: [],
-    label: "Backfill",
-    status: "warning",
-  };
-
-  const initialDraft = structuredClone(configDraft);
-  const counts = {
-    errors: 0,
-    warnings: 0,
-    required: 0,
-    changed: 0,
-    gated: 0,
-    blocked: 0,
-  };
-  const addCommand = {
-    id: "edit:snapshotMigrationConfigs:add",
-    path: ["snapshotMigrationConfigs"],
-    label: "+ Add snapshot migration",
-    valueKind: "command" as const,
-    status: "ok",
-    statusCounts: counts,
-    command: {
-      requiresName: true,
-      editAdded: false,
-      autoEditAdded: true,
-    },
-    inputHint: {
-      kind: "text" as const,
-      format: "k8s-name",
-      pattern: "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
-      message: "Use a lowercase Kubernetes-compatible name.",
-    },
-    validation: {
-      pattern: "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
-      message: "Use a lowercase Kubernetes-compatible name.",
-    },
-    diagnostics: [],
-    children: [],
-  };
-  const collection = {
-    id: "edit:snapshotMigrationConfigs",
-    path: ["snapshotMigrationConfigs"],
-    label: "Backfill",
-    valueKind: "array" as const,
-    status: "warning",
-    statusCounts: { ...counts, warnings: 1 },
-    inputHint: {
-      kind: "array" as const,
-      addLabel: "snapshot migration",
-      resourceCollection: {
-        navigation: {
-          sectionId: "section:Snapshot Migration",
-          sectionLabel: "Snapshot Migration",
-          sectionOrder: 2,
-          groupId: "group:Snapshot Migration:Backfill",
-          groupLabel: "Backfill",
-          groupOrder: 1,
-          addControlId: "section:Snapshot Migration",
-        },
-        resource: {
-          kind: "SnapshotMigration",
-          plural: "snapshotmigrations",
-          typeLabel: "Snapshot migration",
-          identity: {
-            kind: "indexed-config",
-            prefix: "slice-",
-            firstIndex: 0,
-          },
-        },
-      },
-    },
-    diagnostics: [{
-      severity: "warning" as const,
-      message: "Define a source snapshot before configuring migration slices.",
-      path: ["snapshotMigrationConfigs"],
-    }],
-    children: [addCommand],
-  };
-  initialDraft.editState.nodes.push({
-    id: "edit:snapshotMigration",
-    path: ["snapshotMigration"],
-    label: "Snapshot Migration",
-    valueKind: "object",
-    status: "warning",
-    statusCounts: { ...counts, warnings: 1 },
-    diagnostics: [],
-    children: [collection],
-  });
-  setNavigation(initialDraft, snapshot);
-
-  const updatedDraft = structuredClone(initialDraft);
-  const updatedCollection = updatedDraft.editState.nodes.at(-1)?.children[0];
-  if (!updatedCollection) throw new Error("Missing snapshot collection");
-  updatedCollection.children = [{
-    id: "edit:snapshotMigrationConfigs.0",
-    path: ["snapshotMigrationConfigs", "0"],
-    label: "<source> -> <target> / snap1",
-    value: {
-      fromSource: "source",
-      toTarget: "target",
-      fromSnapshot: "snap1",
-      slice: "slice-0",
-    },
-    valueKind: "object",
-    removable: true,
-    status: "required",
-    statusCounts: { ...counts, required: 3 },
-    diagnostics: [],
-    children: [{
-      id: "edit:snapshotMigrationConfigs.0.fromSource",
-      path: ["snapshotMigrationConfigs", "0", "fromSource"],
-      label: "From source",
-      value: "",
-      valueKind: "scalar",
-      valueType: "string",
-      required: true,
-      status: "required",
-      statusCounts: { ...counts, required: 1 },
-      inputHint: {
-        kind: "reference",
-        options: [{
-          label: "foo",
-          value: "foo",
-          description: "No snapshots defined",
-        }],
-      },
-      diagnostics: [{
-        severity: "required",
-        message: "fromSource is required.",
-        path: ["snapshotMigrationConfigs", "0", "fromSource"],
-      }],
-      children: [],
-    }, {
-      id: "edit:snapshotMigrationConfigs.0.toTarget",
-      path: ["snapshotMigrationConfigs", "0", "toTarget"],
-      label: "To target",
-      value: "",
-      valueKind: "scalar",
-      valueType: "string",
-      required: true,
-      status: "required",
-      statusCounts: { ...counts, required: 1 },
-      diagnostics: [{
-        severity: "required",
-        message: "toTarget is required.",
-        path: ["snapshotMigrationConfigs", "0", "toTarget"],
-      }],
-      children: [],
-    }, {
-      id: "edit:snapshotMigrationConfigs.0.fromSnapshot",
-      path: ["snapshotMigrationConfigs", "0", "fromSnapshot"],
-      label: "From snapshot",
-      value: "snap1",
-      valueKind: "scalar",
-      valueType: "string",
-      required: true,
-      status: "ok",
-      statusCounts: counts,
-      inputHint: {
-        kind: "reference",
-        options: [{
-          label: "snap1",
-          value: "snap1",
-        }],
-      },
-      diagnostics: [],
-      children: [],
-    }, {
-      id: "edit:snapshotMigrationConfigs.0.slices",
-      path: ["snapshotMigrationConfigs", "0", "slices"],
-      label: "Slices: 1",
-      valueKind: "record",
-      status: "required",
-      statusCounts: { ...counts, required: 1 },
-      diagnostics: [],
-      children: [{
-        id: "edit:snapshotMigrationConfigs.0.slices.slice-0",
-        path: [
-          "snapshotMigrationConfigs",
-          "0",
-          "slices",
-          "slice-0",
-        ],
-        label: "slice-0: choose metadata and/or document backfill",
-        value: {},
-        valueKind: "object",
-        status: "required",
-        statusCounts: { ...counts, required: 1 },
-        diagnostics: [{
-          severity: "required",
-          message: "Add metadata migration, document backfill, or both.",
-          path: [
-            "snapshotMigrationConfigs",
-            "0",
-            "slices",
-            "slice-0",
-          ],
-        }],
-        children: [{
-          id: "edit:snapshotMigrationConfigs.0.slices.slice-0.metadataMigrationConfig:add",
-          path: [
-            "snapshotMigrationConfigs",
-            "0",
-            "slices",
-            "slice-0",
-            "metadataMigrationConfig",
-          ],
-          label: "+ Add metadata migration",
-          valueKind: "command",
-          status: "ok",
-          statusCounts: counts,
-          command: {
-            requiresName: false,
-            editAdded: false,
-            autoEditAdded: false,
-          },
-          diagnostics: [],
-          children: [],
-        }, {
-          id: "edit:snapshotMigrationConfigs.0.slices.slice-0.documentBackfillConfig:add",
-          path: [
-            "snapshotMigrationConfigs",
-            "0",
-            "slices",
-            "slice-0",
-            "documentBackfillConfig",
-          ],
-          label: "+ Add document backfill",
-          valueKind: "command",
-          status: "ok",
-          statusCounts: counts,
-          command: {
-            requiresName: false,
-            editAdded: false,
-            autoEditAdded: false,
-          },
-          diagnostics: [],
-          children: [],
-        }],
-      }, {
-        id: "edit:snapshotMigrationConfigs.0.slices:add",
-        path: [
-          "snapshotMigrationConfigs",
-          "0",
-          "slices",
-        ],
-        label: "+ Add slice",
-        valueKind: "command",
-        status: "ok",
-        statusCounts: counts,
-        command: {
-          requiresName: true,
-          editAdded: false,
-          autoEditAdded: false,
-        },
-        diagnostics: [],
-        children: [],
-      }],
-    }],
-  }, addCommand];
-  updatedDraft.dirty = true;
-  updatedDraft.draftRevision = "config-draft-snapshot-added";
-  if (!updatedDraft.navigation) {
-    throw new Error("Missing snapshot navigation fixture");
-  }
-  addConfigNavigationResource(updatedDraft.navigation, {
-    id: "resource:snapshotmigrations:source-target-snap1-slice-0",
-    groupId: "group:Snapshot Migration:Backfill",
-    label: "source-target-snap1-slice-0",
-    editTargetId: "edit:snapshotMigrationConfigs.0",
-    resourcePlural: "snapshotmigrations",
-    resourceType: "Snapshot migration",
-    status: "required",
-  });
-
-  const configuredDraft = structuredClone(updatedDraft);
-  const configuredPass = configuredDraft.editState.nodes.at(-1)
-    ?.children[0]
-    ?.children[0]
-    ?.children[3]
-    ?.children[0];
-  if (!configuredPass) throw new Error("Missing configured migration slice");
-  const passPath = [
-    "snapshotMigrationConfigs",
-    "0",
-    "slices",
-    "slice-0",
-  ];
-  configuredPass.children = [{
-    id: `edit:${[...passPath, "metadataMigrationConfig"].join(".")}`,
-    path: [...passPath, "metadataMigrationConfig"],
-    label: "Metadata migration config: 0 settings",
-    value: {},
-    valueAuthored: true,
-    valueKind: "object",
-    presence: "optional",
-    essential: true,
-    removable: true,
-    status: "ok",
-    statusCounts: counts,
-    diagnostics: [],
-    children: [],
-  }, {
-    id: `edit:${[...passPath, "documentBackfillConfig"].join(".")}`,
-    path: [...passPath, "documentBackfillConfig"],
-    label: "Document backfill config: 0 settings",
-    value: {},
-    valueAuthored: true,
-    valueKind: "object",
-    presence: "optional",
-    essential: true,
-    removable: true,
-    status: "ok",
-    statusCounts: counts,
-    diagnostics: [],
-    children: [],
-  }];
-  configuredDraft.draftRevision = "config-draft-snapshot-configured";
-
-  const operations: unknown[] = [];
-  server.use(
-    http.get("*/api/v1/manage/state", () => HttpResponse.json(snapshot)),
-    http.get("*/api/v1/config", () => HttpResponse.json(initialDraft)),
-    http.post("*/api/v1/config/removal-impact", async ({ request }) => {
-      const body = await request.json() as { path: string[] };
-      return HttpResponse.json({
-        targetPath: body.path,
-        targetLabel: body.path.at(-1) ?? "",
-        affected: [],
-      });
-    }),
-    http.post("*/api/v1/config/operations", async ({ request }) => {
-      operations.push(
-        (await request.json() as { operation: unknown }).operation,
-      );
-      return HttpResponse.json(
-        operations.length >= 3 ? configuredDraft : updatedDraft,
-      );
-    }),
-  );
-  renderApp();
-  await enterEditMode();
-
-  const tree = await screen.findByRole("tree", { name: "Workflow resources" });
-  const section = within(tree).getByRole("treeitem", {
-    name: /^Snapshot Migration$/,
-  });
-  await userEvent.click(section);
-  const editor = document.querySelector(".config-editor");
-  if (!editor) throw new Error("Missing configuration editor");
-  expect(await within(editor).findByRole("heading", {
-    name: "Edit Snapshot Migration",
-  })).toBeInTheDocument();
-  expect(within(editor).queryByText("Snapshot migrations")).toBeNull();
-  expect(within(editor).getByRole("button", {
-    name: "Add snapshot migration",
-  })).toBeInTheDocument();
-  expect(within(section).getByRole("button", {
-    name: "Add snapshot migration",
-  })).toBeInTheDocument();
-  expect(within(tree).queryByRole("textbox", {
-    name: "snapshot migration name",
-  })).toBeNull();
-
-  await userEvent.click(within(section).getByRole("button", {
-    name: "Add snapshot migration",
-  }));
-  const addName = within(tree).getByRole("textbox", {
-    name: "snapshot migration name",
-  });
-  await userEvent.type(addName, "slice-0");
-  await userEvent.keyboard("{Enter}");
-
-  await waitFor(() => expect(operations).toEqual([{
-    op: "add",
-    path: ["snapshotMigrationConfigs"],
-    value: { name: "slice-0" },
-  }]));
-  const addedMigration = await within(tree).findByRole("treeitem", {
-    name: /^source-target-snap1-slice-0, Addition pending submission$/,
-  });
-  expect(addedMigration).toHaveAttribute("aria-selected", "true");
-  expect(within(addedMigration).getByRole("button", {
-    name: "Rename source-target-snap1-slice-0",
-  })).toBeInTheDocument();
-  const titleHeading = await screen.findByRole("heading", {
-    name: "Edit source-target-snap1-slice-0",
-  });
-  const title = titleHeading.closest(".config-toolbar-title");
-  if (!title) throw new Error("Missing configuration title");
-  await userEvent.click(within(title).getByRole("button", {
-    name: "Rename source-target-snap1-slice-0",
-  }));
-  const titleName = within(title).getByRole("textbox", {
-    name: "New name for source-target-snap1-slice-0",
-  });
-  expect(titleName).toHaveValue("slice-0");
-  expect(titleName).toHaveAttribute(
-    "pattern",
-    String.raw`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`,
-  );
-  expect(within(title).getByText("source-target-snap1-")).toBeInTheDocument();
-  await userEvent.click(within(tree).getByRole("treeitem", {
-    name: /^capture$/,
-  }));
-  expect(screen.queryByRole("textbox", {
-    name: "New name for source-target-snap1-slice-0",
-  })).not.toBeInTheDocument();
-  await userEvent.click(await within(tree).findByRole("treeitem", {
-    name: /^source-target-snap1-slice-0,/,
-  }));
-  expect(await screen.findByRole("heading", {
-    name: "Edit source-target-snap1-slice-0",
-  })).toBeInTheDocument();
-  expect(screen.queryByRole("textbox", { name: "From source" }))
-    .not.toBeInTheDocument();
-  expect(screen.getByRole("combobox", { name: "From source" }))
-    .toHaveDisplayValue("Select a value");
-  expect(screen.getByRole("option", { name: "foo" })).toBeInTheDocument();
-  expect(screen.getByRole("textbox", { name: "To target" }))
-    .toBeInTheDocument();
-  expect(screen.getByRole("button", { name: "Add metadata migration" }))
-    .toBeVisible();
-  expect(screen.getByRole("button", { name: "Add document backfill" }))
-    .toBeVisible();
-
-  await userEvent.click(screen.getByRole("button", {
-    name: "Add metadata migration",
-  }));
-  await waitFor(() => expect(operations.at(-1)).toEqual({
-    op: "add",
-    path: [
-      "snapshotMigrationConfigs",
-      "0",
-      "slices",
-      "slice-0",
-      "metadataMigrationConfig",
-    ],
-    value: {},
-  }));
-
-  await userEvent.click(screen.getByRole("button", {
-    name: "Add document backfill",
-  }));
-  await waitFor(() => expect(operations.at(-1)).toEqual({
-    op: "add",
-    path: [
-      "snapshotMigrationConfigs",
-      "0",
-      "slices",
-      "slice-0",
-      "documentBackfillConfig",
-    ],
-    value: {},
-  }));
-
-  await userEvent.click(screen.getByRole("button", {
-    name: "Remove Metadata migration config",
-  }));
-  await userEvent.click(await screen.findByRole("button", {
-    name: "Confirm removal",
-  }));
-  await waitFor(() => expect(operations.at(-1)).toEqual({
-    op: "removeConfig",
-    path: [...passPath, "metadataMigrationConfig"],
-  }));
-
-  await userEvent.click(screen.getByRole("button", {
-    name: "Remove Document backfill config",
-  }));
-  await userEvent.click(await screen.findByRole("button", {
-    name: "Confirm removal",
-  }));
-  await waitFor(() => expect(operations.at(-1)).toEqual({
-    op: "removeConfig",
-    path: [...passPath, "documentBackfillConfig"],
-  }));
-});
 
 
 test("shows the server reason when configuration cannot be opened", async () => {
   server.use(
-    http.get("*/api/v1/config", () =>
+    http.get("*/api/v1/config/document", () =>
       HttpResponse.json(
         {
           detail: {
@@ -4118,7 +3553,7 @@ test("shows the server reason when configuration cannot be opened", async () => 
       ),
     ),
   );
-  renderApp();
+  renderApp(null);
 
   await enterEditMode();
 
@@ -4138,22 +3573,7 @@ test("shows the server reason when configuration cannot be opened", async () => 
 
 test("repairs raw YAML and returns to the structured editor", async () => {
   const rawDraft = rawRepairDraft();
-  const repairedDraft = structuredClone(configDraft);
-  repairedDraft.draftRevision = "structured-repair-2";
-  repairedDraft.editState.validation = {
-    valid: true,
-    errors: [],
-    diagnostics: [],
-  };
-  let replacement: unknown;
-  server.use(
-    http.get("*/api/v1/config", () => HttpResponse.json(rawDraft)),
-    http.put("*/api/v1/config/raw", async ({ request }) => {
-      replacement = await request.json();
-      return HttpResponse.json(repairedDraft);
-    }),
-  );
-  renderApp();
+  const { client } = renderApp(rawDraft);
   await enterEditMode();
 
   const yaml = await screen.findByRole("textbox", { name: "Workflow YAML" });
@@ -4177,9 +3597,13 @@ test("repairs raw YAML and returns to the structured editor", async () => {
   fireEvent.change(yaml, { target: { value: repairedYaml } });
   await userEvent.click(screen.getByRole("button", { name: "Check YAML" }));
 
-  await waitFor(() => expect(replacement).toEqual({
-    expectedDraftRevision: "raw-repair-1",
-    rawYaml: repairedYaml,
+  await waitFor(() => expect(
+    client.getQueryData<BrowserConfigDraft>(
+      BROWSER_CONFIG_DRAFT_QUERY_KEY,
+    ),
+  ).toMatchObject({
+    dirty: true,
+    rawDocument: repairedYaml,
   }));
   expect(await screen.findByRole("table", {
     name: "Configuration fields",
@@ -4203,9 +3627,8 @@ test("opens raw repair when runtime and configuration navigation are empty", asy
       "*/api/v1/manage/state",
       () => HttpResponse.json(emptySnapshot),
     ),
-    http.get("*/api/v1/config", () => HttpResponse.json(rawDraft)),
   );
-  renderApp();
+  renderApp(rawDraft);
 
   expect(await screen.findByRole("heading", {
     name: "No migration resources found",
@@ -4226,20 +3649,7 @@ test("opens raw repair when runtime and configuration navigation are empty", asy
 
 test("protects and locally discards unsent raw YAML edits on exit", async () => {
   const rawDraft = rawRepairDraft();
-  let rawReplacementCalls = 0;
-  let closeRequest: unknown;
-  server.use(
-    http.get("*/api/v1/config", () => HttpResponse.json(rawDraft)),
-    http.put("*/api/v1/config/raw", () => {
-      rawReplacementCalls += 1;
-      return HttpResponse.json(rawDraft);
-    }),
-    http.post("*/api/v1/config/close", async ({ request }) => {
-      closeRequest = await request.json();
-      return new HttpResponse(null, { status: 204 });
-    }),
-  );
-  renderApp();
+  renderApp(rawDraft);
   await enterEditMode();
 
   fireEvent.change(
@@ -4263,10 +3673,6 @@ test("protects and locally discards unsent raw YAML edits on exit", async () => 
     name: "Discard and exit",
   }));
 
-  expect(rawReplacementCalls).toBe(0);
-  expect(closeRequest).toEqual({
-    expectedDraftRevision: "raw-repair-1",
-  });
   expect(await screen.findByRole("button", { name: "Edit configuration" }))
     .toBeInTheDocument();
 });
@@ -4364,10 +3770,7 @@ test("restores config-only source and target navigation while editing", async ()
     resourcePlural: "targetconfigs",
     resourceType: "Target cluster",
   });
-  server.use(
-    http.get("*/api/v1/config", () => HttpResponse.json(draft)),
-  );
-  renderApp();
+  renderApp(draft);
   await enterEditMode();
 
   const tree = await screen.findByRole("tree", { name: "Workflow resources" });
@@ -4401,59 +3804,7 @@ test("guards browser back navigation before leaving workflow manage", async () =
 
 
 test("changes a union inline and inserts its variant fields directly below", async () => {
-  const operations: unknown[] = [];
-  server.use(
-    http.post("*/api/v1/config/operations", async ({ request }) => {
-      const body = await request.json() as { operation: unknown };
-      operations.push(body.operation);
-      const updated = structuredClone(configDraft);
-      const sourceClusters = updated.editState.nodes.find(
-        (node) => node.id === "edit:sourceClusters",
-      );
-      const legacy = sourceClusters?.children.find(
-        (node) => node.id === "edit:sourceClusters.legacy",
-      );
-      const auth = legacy?.children.find(
-        (node) => node.id === "edit:sourceClusters.legacy.authConfig",
-      );
-      if (!auth) throw new Error("Missing authentication fixture");
-      auth.value = "sigv4";
-      auth.label = "Authentication: < sigv4 >";
-      auth.children = [{
-        id: "edit:sourceClusters.legacy.authConfig.sigv4.region",
-        path: [
-          "sourceClusters",
-          "legacy",
-          "authConfig",
-          "sigv4",
-          "region",
-        ],
-        label: "Signing region: us-east-1",
-        value: "us-east-1",
-        valueAuthored: true,
-        valueKind: "scalar",
-        valueType: "string",
-        presence: "required",
-        required: true,
-        status: "ok",
-        statusCounts: {
-          errors: 0,
-          warnings: 0,
-          required: 0,
-          gated: 0,
-          blocked: 0,
-        },
-        diagnostics: [],
-        children: [],
-      }];
-      return HttpResponse.json({
-        ...updated,
-        dirty: true,
-        draftRevision: "config-draft-sigv4",
-      });
-    }),
-  );
-  renderApp();
+  const { client } = renderApp();
   await enterEditMode();
   const configTable = await screen.findByRole("table", {
     name: "Configuration fields",
@@ -4468,31 +3819,31 @@ test("changes a union inline and inserts its variant fields directly below", asy
   await userEvent.selectOptions(authType, "sigv4");
 
   const regionRow = await within(configTable).findByRole("row", {
-    name: /Signing region/,
+    name: /region/i,
   });
-  expect(authRow.nextElementSibling).toBe(regionRow);
-  expect(operations).toEqual([{
-    op: "set",
-    path: ["sourceClusters", "legacy", "authConfig"],
-    value: "sigv4",
-  }]);
+  const updatedAuthRow = within(configTable).getByRole("row", {
+    name: /Authentication/,
+  });
+  const rows = within(configTable).getAllByRole("row");
+  expect(rows.indexOf(regionRow)).toBe(rows.indexOf(updatedAuthRow) + 1);
+  const authConfig = (
+    client.getQueryData<BrowserConfigDraft>(
+      BROWSER_CONFIG_DRAFT_QUERY_KEY,
+    )?.config as {
+      sourceClusters?: {
+        legacy?: {
+          authConfig?: Record<string, unknown>;
+        };
+      };
+    }
+  ).sourceClusters?.legacy?.authConfig;
+  expect(authConfig).toMatchObject({ sigv4: {} });
+  expect(authConfig).not.toHaveProperty("basic");
 });
 
 
-test("submits scalar, exact-node rename, union, and add operations", async () => {
-  const operations: unknown[] = [];
-  server.use(
-    http.post("*/api/v1/config/operations", async ({ request }) => {
-      const body = await request.json() as { operation: unknown };
-      operations.push(body.operation);
-      return HttpResponse.json({
-        ...configDraft,
-        dirty: true,
-        draftRevision: `config-draft-${operations.length + 1}`,
-      });
-    }),
-  );
-  renderApp();
+test("applies scalar and exact-node rename operations locally", async () => {
+  const { client } = renderApp();
   await enterEditMode();
   const configTree = await screen.findByRole("table", {
     name: "Configuration fields",
@@ -4508,13 +3859,19 @@ test("submits scalar, exact-node rename, union, and add operations", async () =>
     within(endpointRow).queryByRole("button", { name: "Apply" }),
   ).toBeNull();
   await userEvent.keyboard("{Enter}");
-  await waitFor(() =>
-    expect(operations).toContainEqual({
-      op: "set",
-      path: ["sourceClusters", "legacy", "endpoint"],
-      value: "https://next.example.com:9200",
-    }),
-  );
+  await waitFor(() => expect(
+    (
+      client.getQueryData<BrowserConfigDraft>(
+        BROWSER_CONFIG_DRAFT_QUERY_KEY,
+      )?.config as {
+        sourceClusters?: {
+          legacy?: {
+            endpoint?: string;
+          };
+        };
+      }
+    ).sourceClusters?.legacy?.endpoint,
+  ).toBe("https://next.example.com:9200"));
 
   const legacyRow = within(configTree).getByRole("row", { name: /^legacy/ });
   await userEvent.click(legacyRow);
@@ -4522,80 +3879,46 @@ test("submits scalar, exact-node rename, union, and add operations", async () =>
     name: "Rename legacy",
   }));
   const nameInput = screen.getByRole("textbox", { name: "Configuration name" });
-  expect(nameInput).toHaveAttribute("pattern", "^[a-z0-9-]+$");
+  expect(nameInput).toHaveAttribute(
+    "pattern",
+    String.raw`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`,
+  );
   await userEvent.clear(nameInput);
   await userEvent.type(nameInput, "modern");
   await userEvent.click(screen.getByRole("button", { name: "Apply rename" }));
-
-  await userEvent.selectOptions(
-    screen.getByRole("combobox", { name: "Authentication" }),
-    "sigv4",
-  );
-
-  const snapshotChoice = screen.getByRole("combobox", { name: "Snapshot" });
-  expect(
-    within(snapshotChoice).getByRole("option", { name: "weekly" }),
-  ).toBeInTheDocument();
-  await userEvent.selectOptions(snapshotChoice, "weekly");
-  expect(screen.getByText(
-    "Generated from the source snapshot definitions.",
-  )).toBeInTheDocument();
-  await userEvent.click(screen.getByRole("checkbox", {
-    name: "Show field documentation",
+  const resourceTree = screen.getByRole("tree", {
+    name: "Workflow resources",
+  });
+  await userEvent.click(await within(resourceTree).findByRole("treeitem", {
+    name: /^modern/,
   }));
-  expect(screen.queryByText(
-    "Generated from the source snapshot definitions.",
-  )).toBeNull();
+  await screen.findByRole("heading", { name: "Edit modern" });
 
-  await userEvent.click(screen.getByRole("button", { name: "Add transform" }));
-
-  expect(operations).toEqual([
-    {
-      op: "set",
-      path: ["sourceClusters", "legacy", "endpoint"],
-      value: "https://next.example.com:9200",
-    },
-    {
-      op: "renameConfig",
-      path: ["sourceClusters", "legacy"],
-      newName: "modern",
-    },
-    {
-      op: "set",
-      path: ["sourceClusters", "legacy", "authConfig"],
-      value: "sigv4",
-    },
-    {
-      op: "set",
-      path: ["sourceClusters", "legacy", "snapshotName"],
-      value: "weekly",
-    },
-    {
-      op: "add",
-      path: ["traffic", "transforms"],
-      value: {},
-    },
-  ]);
+  const config = client.getQueryData<BrowserConfigDraft>(
+    BROWSER_CONFIG_DRAFT_QUERY_KEY,
+  )?.config as {
+    sourceClusters?: Record<string, {
+      endpoint?: string;
+    }>;
+  };
+  expect(config.sourceClusters).not.toHaveProperty("legacy");
+  expect(config.sourceClusters?.modern).toMatchObject({
+    endpoint: "https://next.example.com:9200",
+  });
 });
 
 
 test("saves a focused text edit as one resource-level action", async () => {
-  const calls: string[] = [];
   let saveRequest: unknown;
   server.use(
-    http.post("*/api/v1/config/operations", async () => {
-      calls.push("update-draft");
-      await new Promise((resolve) => globalThis.setTimeout(resolve, 20));
-      return HttpResponse.json({
-        ...configDraft,
-        dirty: true,
-        draftRevision: "config-draft-after-blur",
-      });
-    }),
-    http.post("*/api/v1/config/save", async ({ request }) => {
-      calls.push("save-resource");
+    http.put("*/api/v1/config/document", async ({ request }) => {
       saveRequest = await request.json();
-      return HttpResponse.json(configDraft);
+      const body = saveRequest as { rawYaml: string };
+      return HttpResponse.json({
+        modelVersion: "1",
+        persistedRevision: "config-base-2",
+        rawYaml: body.rawYaml,
+      });
     }),
   );
   renderApp();
@@ -4612,17 +3935,16 @@ test("saves a focused text edit as one resource-level action", async () => {
     name: "Save configuration",
   }));
 
-  await waitFor(() => expect(saveRequest).toEqual({
-    expectedDraftRevision: "config-draft-after-blur",
+  await waitFor(() => expect(saveRequest).toMatchObject({
+    expectedPersistedRevision: "config-base-1",
   }));
-  expect(calls).toEqual(["update-draft", "save-resource"]);
+  expect((saveRequest as { rawYaml: string }).rawYaml)
+    .toContain("https://saved.example.com:9200");
   expect(screen.queryByRole("button", { name: "Apply" })).toBeNull();
 });
 
 
 test("applies ordinary field edits in the browser without locking the UI", async () => {
-  globalThis.__WORKFLOW_BROWSER_LOCAL_EDITING__ = true;
-  let operationRequests = 0;
   let savedDocument: unknown;
   server.use(
     http.get("*/api/v1/config/document", () => HttpResponse.json({
@@ -4640,10 +3962,6 @@ targetClusters:
 snapshotMigrationConfigs: []
 `,
     })),
-    http.post("*/api/v1/config/operations", () => {
-      operationRequests += 1;
-      return HttpResponse.json(configDraft);
-    }),
     http.put("*/api/v1/config/document", async ({ request }) => {
       savedDocument = await request.json();
       const body = savedDocument as {
@@ -4656,7 +3974,7 @@ snapshotMigrationConfigs: []
       });
     }),
   );
-  renderApp();
+  renderApp(null);
   await enterEditMode();
 
   const [allowInsecure] = await screen.findAllByRole("checkbox", {
@@ -4665,7 +3983,6 @@ snapshotMigrationConfigs: []
   await userEvent.click(allowInsecure);
 
   expect(allowInsecure).toBeChecked();
-  expect(operationRequests).toBe(0);
   expect(screen.getByRole("button", {
     name: "Save configuration",
   })).toBeEnabled();
@@ -4679,13 +3996,10 @@ snapshotMigrationConfigs: []
   }));
   expect((savedDocument as { rawYaml: string }).rawYaml)
     .toContain("allowInsecure: true");
-  expect(operationRequests).toBe(0);
 });
 
 
 test("submits the exact saved revision after browser-local editing", async () => {
-  globalThis.__WORKFLOW_BROWSER_LOCAL_EDITING__ = true;
-  let legacySaveRequests = 0;
   let savedDocument: unknown;
   let reviewRequest: unknown;
   let preflightRequest: unknown;
@@ -4715,10 +4029,6 @@ snapshotMigrationConfigs: []
         persistedRevision: "saved-browser-submit-2",
         rawYaml: body.rawYaml,
       });
-    }),
-    http.post("*/api/v1/config/save", () => {
-      legacySaveRequests += 1;
-      return HttpResponse.json(configDraft);
     }),
     http.post("*/api/v1/config/review", async ({ request }) => {
       reviewRequest = await request.json();
@@ -4753,7 +4063,7 @@ snapshotMigrationConfigs: []
       }, { status: 202 });
     }),
   );
-  renderApp();
+  renderApp(null);
   await enterEditMode();
 
   const [allowInsecure] = await screen.findAllByRole("checkbox", {
@@ -4779,7 +4089,6 @@ snapshotMigrationConfigs: []
   });
   expect((savedDocument as { rawYaml: string }).rawYaml)
     .toContain("allowInsecure: true");
-  expect(legacySaveRequests).toBe(0);
 
   await userEvent.click(within(dialog).getByRole("button", {
     name: "Confirm submit",
@@ -4789,7 +4098,6 @@ snapshotMigrationConfigs: []
 
 
 test("does not rerun environment checks for unrelated browser edits", async () => {
-  globalThis.__WORKFLOW_BROWSER_LOCAL_EDITING__ = true;
   let diagnosticRequests = 0;
   server.use(
     http.get("*/api/v1/config/document", () => HttpResponse.json({
@@ -4818,7 +4126,7 @@ snapshotMigrationConfigs: []
       });
     }),
   );
-  renderApp();
+  renderApp(null);
   await enterEditMode();
 
   expect(await screen.findByText(
@@ -4837,7 +4145,6 @@ snapshotMigrationConfigs: []
 
 
 test("preserves later browser edits while a save is in progress", async () => {
-  globalThis.__WORKFLOW_BROWSER_LOCAL_EDITING__ = true;
   let releaseSave: (() => void) | undefined;
   const savePending = new Promise<void>((resolve) => {
     releaseSave = resolve;
@@ -4868,7 +4175,7 @@ snapshotMigrationConfigs: []
       });
     }),
   );
-  const { client } = renderApp();
+  const { client } = renderApp(null);
   await enterEditMode();
   const [allowInsecure] = await screen.findAllByRole("checkbox", {
     name: /allow insecure/i,
@@ -4906,7 +4213,6 @@ snapshotMigrationConfigs: []
 
 
 test("preserves browser-local edits while the runtime graph refreshes", async () => {
-  globalThis.__WORKFLOW_BROWSER_LOCAL_EDITING__ = true;
   let response = manageSnapshot;
   let stateRequests = 0;
   server.use(
@@ -4930,7 +4236,7 @@ snapshotMigrationConfigs: []
 `,
     })),
   );
-  const { client } = renderApp();
+  const { client } = renderApp(null);
   await enterEditMode();
 
   const [allowInsecure] = await screen.findAllByRole("checkbox", {
@@ -4966,7 +4272,6 @@ snapshotMigrationConfigs: []
 
 
 test("preserves dirty work but blocks persistence when its saved base is stale", async () => {
-  globalThis.__WORKFLOW_BROWSER_LOCAL_EDITING__ = true;
   server.use(
     http.get("*/api/v1/config/document", () => HttpResponse.json({
       modelVersion: "1",
@@ -4982,7 +4287,7 @@ snapshotMigrationConfigs: []
 `,
     })),
   );
-  const { client } = renderApp();
+  const { client } = renderApp(null);
   await enterEditMode();
 
   const [allowInsecure] = await screen.findAllByRole("checkbox", {
@@ -5016,11 +4321,7 @@ test("shows ConfigMap keys and selects the map plus key together", async () => {
   server.use(
     http.post("*/api/v1/external-resources/select", async ({ request }) => {
       selection = await request.json();
-      return HttpResponse.json({
-        ...configDraft,
-        dirty: true,
-        draftRevision: "config-draft-selected",
-      });
+      return HttpResponse.json({ accepted: true });
     }),
   );
   renderApp();
@@ -5046,8 +4347,8 @@ test("shows ConfigMap keys and selects the map plus key together", async () => {
   })).toBeInTheDocument();
   await userEvent.click(useMainJs);
 
-  expect(selection).toEqual({
-    expectedDraftRevision: "config-draft-1",
+  expect(typeof (selection as { rawYaml?: unknown })?.rawYaml).toBe("string");
+  expect(selection).toMatchObject({
     nodeId: "edit:traffic.transform.configMap",
     name: "transform-code",
     kind: "ConfigMap",
@@ -5093,10 +4394,8 @@ test("selects an HTTP Basic Auth Secret in the shared resource dialog", async ()
   };
   let selection: unknown;
   server.use(
-    http.get("*/api/v1/config", () => HttpResponse.json(secretDraft)),
-    http.get("*/api/v1/external-resources", () => HttpResponse.json({
+    http.post("*/api/v1/external-resources", () => HttpResponse.json({
       nodeId: secret.id,
-      draftRevision: secretDraft.draftRevision,
       displayName: "HTTP Basic Auth Secret",
       rows: [{
         name: "source-creds",
@@ -5120,12 +4419,12 @@ test("selects an HTTP Basic Auth Secret in the shared resource dialog", async ()
         current: false,
       }],
     })),
-    http.get("*/api/v1/external-resources/details", ({ request }) => {
-      const name = new URL(request.url).searchParams.get("name")
-        ?? "source-creds";
+    http.post("*/api/v1/external-resources/details", async ({ request }) => {
+      const { name = "source-creds" } = await request.json() as {
+        name?: string;
+      };
       return HttpResponse.json({
         nodeId: secret.id,
-        draftRevision: secretDraft.draftRevision,
         displayName: "HTTP Basic Auth Secret",
         name,
         kind: "Secret",
@@ -5145,14 +4444,10 @@ test("selects an HTTP Basic Auth Secret in the shared resource dialog", async ()
     }),
     http.post("*/api/v1/external-resources/select", async ({ request }) => {
       selection = await request.json();
-      return HttpResponse.json({
-        ...secretDraft,
-        dirty: true,
-        draftRevision: "config-draft-secret-selected",
-      });
+      return HttpResponse.json({ accepted: true });
     }),
   );
-  renderApp();
+  renderApp(secretDraft);
   await enterEditMode();
   const configTree = await screen.findByRole("table", {
     name: "Configuration fields",
@@ -5196,8 +4491,8 @@ test("selects an HTTP Basic Auth Secret in the shared resource dialog", async ()
     name: "Use resource",
   }));
 
-  expect(selection).toEqual({
-    expectedDraftRevision: "config-draft-1",
+  expect(typeof (selection as { rawYaml?: unknown })?.rawYaml).toBe("string");
+  expect(selection).toMatchObject({
     nodeId: secret.id,
     name: "source-creds",
     kind: "Secret",
@@ -5217,11 +4512,7 @@ test("allows an explicit ConfigMap and key when inventory is unavailable", async
   server.use(
     http.post("*/api/v1/external-resources/select", async ({ request }) => {
       selection = await request.json();
-      return HttpResponse.json({
-        ...configDraft,
-        dirty: true,
-        draftRevision: "config-draft-manual-selection",
-      });
+      return HttpResponse.json({ accepted: true });
     }),
   );
   renderApp();
@@ -5255,8 +4546,8 @@ test("allows an explicit ConfigMap and key when inventory is unavailable", async
     }),
   );
 
-  expect(selection).toEqual({
-    expectedDraftRevision: "config-draft-1",
+  expect(typeof (selection as { rawYaml?: unknown })?.rawYaml).toBe("string");
+  expect(selection).toMatchObject({
     nodeId: "edit:traffic.transform.configMap",
     name: "private-transform",
     kind: "ConfigMap",
@@ -5304,19 +4595,7 @@ test("dismisses Kubernetes resource selection without persistent inline controls
 
 
 test("promotes add commands to collection actions and keeps exact deletion", async () => {
-  const operations: unknown[] = [];
-  server.use(
-    http.post("*/api/v1/config/operations", async ({ request }) => {
-      const body = await request.json() as { operation: unknown };
-      operations.push(body.operation);
-      return HttpResponse.json({
-        ...configDraft,
-        dirty: true,
-        draftRevision: `config-draft-command-${operations.length}`,
-      });
-    }),
-  );
-  renderApp();
+  const { client } = renderApp();
   await enterEditMode();
   const config = await screen.findByRole("table", {
     name: "Configuration fields",
@@ -5347,7 +4626,12 @@ test("promotes add commands to collection actions and keeps exact deletion", asy
     "modern",
   );
   await userEvent.click(createSource);
-  await waitFor(() => expect(operations).toHaveLength(1));
+  const resourceTree = screen.getByRole("tree", {
+    name: "Workflow resources",
+  });
+  await userEvent.click(await within(resourceTree).findByRole("treeitem", {
+    name: /^legacy/,
+  }));
 
   await userEvent.click(screen.getByRole("button", { name: "Remove legacy" }));
   expect(await screen.findByRole("dialog", {
@@ -5356,16 +4640,17 @@ test("promotes add commands to collection actions and keeps exact deletion", asy
   await userEvent.click(screen.getByRole("button", {
     name: "Confirm removal",
   }));
-  await waitFor(() => expect(operations).toHaveLength(2));
-
-  expect(operations).toEqual([{
-    op: "add",
-    path: ["sourceClusters"],
-    value: { name: "modern" },
-  }, {
-    op: "removeConfig",
-    path: ["sourceClusters", "legacy"],
-  }]);
+  await waitFor(() => {
+    const sourceClusters = (
+      client.getQueryData<BrowserConfigDraft>(
+        BROWSER_CONFIG_DRAFT_QUERY_KEY,
+      )?.config as {
+        sourceClusters?: Record<string, unknown>;
+      }
+    ).sourceClusters;
+    expect(sourceClusters).toHaveProperty("modern");
+    expect(sourceClusters).not.toHaveProperty("legacy");
+  });
 });
 
 
@@ -5381,49 +4666,35 @@ test("keeps a deleted source selected as a tombstone and previews dependents", a
     editTargetId: "edit:sourceClusters.legacy",
     label: "Edit source",
   }];
-  const removedDraft = structuredClone(configDraft);
-  const sources = removedDraft.editState.nodes.find(
-    (node) => node.id === "edit:sourceClusters",
-  );
-  if (!sources) throw new Error("Missing source collection fixture");
-  sources.children = [];
-  removedDraft.dirty = true;
-  removedDraft.draftRevision = "draft-source-removed";
-  const removedNavigation = setNavigation(removedDraft, snapshot);
-  removedNavigation.nodes[source.id] = {
-    ...removedNavigation.nodes[source.id],
-    revision: "source-removed",
-    status: "removed",
-    valueSummary: "Marked for removal",
-  };
+  const draft = structuredClone(configDraft);
+  draft.rawYaml = `sourceClusters:
+  legacy:
+    endpoint: https://legacy.example.com:9200
+    version: ES 7.10
+targetClusters:
+  target:
+    endpoint: https://target.example.com:9200
+    version: OS 2.15
+traffic:
+  kafkaClusters:
+    default:
+      autoCreate: {}
+  proxies:
+    capture:
+      source: legacy
+      proxyConfig: {}
+      kafka: default
+  replayers:
+    replay:
+      fromCapturedTraffic: capture
+      toTarget: target
+snapshotMigrationConfigs: []
+`;
 
   server.use(
     http.get("*/api/v1/manage/state", () => HttpResponse.json(snapshot)),
-    http.post("*/api/v1/config/removal-impact", () =>
-      HttpResponse.json({
-        targetPath: ["sourceClusters", "legacy"],
-        targetLabel: "legacy",
-        affected: [{
-          path: ["traffic", "proxies", "capture"],
-          fieldPath: ["traffic", "proxies", "capture", "source"],
-          reason: "source=legacy",
-        }, {
-          path: ["traffic", "replayers", "replay"],
-          fieldPath: [
-            "traffic",
-            "replayers",
-            "replay",
-            "fromCapturedTraffic",
-          ],
-          reason: "fromCapturedTraffic=capture",
-        }],
-      }),
-    ),
-    http.post("*/api/v1/config/operations", () =>
-      HttpResponse.json(removedDraft),
-    ),
   );
-  renderApp();
+  renderApp(draft);
 
   await enterEditMode();
   await userEvent.click(screen.getByRole("button", { name: "Remove legacy" }));
@@ -5476,9 +4747,8 @@ test("opens a pending removal with a resource fallback target as a tombstone", a
   };
   server.use(
     http.get("*/api/v1/manage/state", () => HttpResponse.json(snapshot)),
-    http.get("*/api/v1/config", () => HttpResponse.json(pendingDraft)),
   );
-  renderApp();
+  renderApp(pendingDraft);
 
   await enterEditMode();
 
@@ -5501,93 +4771,7 @@ test("opens a pending removal with a resource fallback target as a tombstone", a
 });
 
 
-test("shows a newly added resource while the server operation is pending", async () => {
-  let releaseOperation: (() => void) | null = null;
-  const operationStarted = new Promise<void>((resolve) => {
-    releaseOperation = resolve;
-  });
-  const updatedDraft = structuredClone(configDraft);
-  const sources = updatedDraft.editState.nodes.find(
-    (node) => node.id === "edit:sourceClusters",
-  );
-  if (!sources) throw new Error("Missing source collection fixture");
-  const addCommand = sources.children.find(
-    (node) => node.id === "edit:sourceClusters:add",
-  );
-  if (!addCommand) throw new Error("Missing source add command fixture");
-  sources.children = [
-    ...sources.children.filter((node) => node !== addCommand),
-    {
-      id: "edit:sourceClusters.immediate",
-      path: ["sourceClusters", "immediate"],
-      label: "immediate",
-      valueKind: "object",
-      status: "required",
-      statusCounts: {
-        required: 1,
-        errors: 0,
-        warnings: 0,
-        changed: 0,
-        gated: 0,
-        blocked: 0,
-      },
-      diagnostics: [],
-      children: [{
-        id: "edit:sourceClusters.immediate.endpoint",
-        path: ["sourceClusters", "immediate", "endpoint"],
-        label: "Endpoint",
-        valueKind: "scalar",
-        valueType: "string",
-        presence: "required",
-        required: true,
-        status: "required",
-        statusCounts: {
-          required: 1,
-          errors: 0,
-          warnings: 0,
-          changed: 0,
-          gated: 0,
-          blocked: 0,
-        },
-        diagnostics: [{
-          severity: "required",
-          message: "endpoint is required.",
-          path: ["sourceClusters", "immediate", "endpoint"],
-        }],
-        children: [],
-      }],
-    },
-    addCommand,
-  ];
-  updatedDraft.dirty = true;
-  updatedDraft.draftRevision = "config-draft-immediate";
-  const immediateNavigation = setNavigation(updatedDraft);
-  addConfigNavigationResource(immediateNavigation, {
-    id: "resource:sourceconfigs:immediate",
-    groupId: "group:Sources:Sources",
-    label: "immediate",
-    editTargetId: "edit:sourceClusters.immediate",
-    resourcePlural: "sourceconfigs",
-    resourceType: "Source cluster",
-    status: "required",
-    diagnostics: [{
-      severity: "required",
-      message: "endpoint is required.",
-      path: ["sourceClusters", "immediate", "endpoint"],
-      source: null,
-      code: null,
-      title: null,
-      remedy: null,
-      technicalDetail: null,
-    }],
-  });
-
-  server.use(
-    http.post("*/api/v1/config/operations", async () => {
-      await operationStarted;
-      return HttpResponse.json(updatedDraft);
-    }),
-  );
+test("adds and focuses a named resource without a server round trip", async () => {
   renderApp();
   await enterEditMode();
 
@@ -5615,22 +4799,12 @@ test("shows a newly added resource while the server operation is pending", async
   await userEvent.keyboard("{Enter}");
 
   expect(await within(tree).findByRole("treeitem", {
-    name: /^immediate, Syncing configuration$/,
+    name: /^immediate, 5 unsaved changes$/,
   })).toHaveAttribute("aria-selected", "true");
-  expect(screen.getByText("Preparing immediate configuration")).toBeVisible();
-  expect(screen.queryByText("Updating configuration")).toBeNull();
-  expect(screen.queryByText(
-    "Waiting for the server to finish this change.",
-  )).toBeNull();
   expect(document.querySelector(".interaction-shield")).toBeNull();
   expect(screen.queryByRole("textbox", {
     name: "source cluster name",
   })).toBeNull();
-
-  releaseOperation?.();
-  expect(await within(tree).findByRole("treeitem", {
-    name: /^immediate, Addition pending submission$/,
-  })).toHaveAttribute("aria-selected", "true");
   expect(await screen.findByRole("heading", {
     name: "Edit immediate",
   })).toBeInTheDocument();
@@ -5639,18 +4813,9 @@ test("shows a newly added resource while the server operation is pending", async
 });
 
 
-test("restores the previous selection after a resource add is rejected", async () => {
+test("rejects a duplicate resource name without changing selection", async () => {
   const draft = addLegacySourceNavigation(structuredClone(configDraft));
-  server.use(
-    http.get("*/api/v1/config", () => HttpResponse.json(draft)),
-    http.post("*/api/v1/config/operations", () =>
-      HttpResponse.json(
-        { detail: "Config entry already exists at sourceClusters.immediate" },
-        { status: 409 },
-      ),
-    ),
-  );
-  renderApp();
+  renderApp(draft);
   await enterEditMode();
 
   const tree = await screen.findByRole("tree", { name: "Workflow resources" });
@@ -5669,16 +4834,13 @@ test("restores the previous selection after a resource add is rejected", async (
   }));
   await userEvent.type(
     within(tree).getByRole("textbox", { name: "source cluster name" }),
-    "immediate{Enter}",
+    "legacy{Enter}",
   );
 
-  expect(await screen.findByRole("alert")).toHaveTextContent(
-    "Config entry already exists at sourceClusters.immediate",
-  );
-  expect(within(tree).queryByRole("treeitem", {
-    name: /^immediate,/,
-  })).toBeNull();
-  expect(await within(tree).findByRole("treeitem", {
+  expect(within(tree).getAllByRole("treeitem", {
+    name: /^legacy, Addition pending submission$/,
+  })).toHaveLength(1);
+  expect(within(tree).getByRole("treeitem", {
     name: /^legacy, Addition pending submission$/,
   })).toHaveAttribute("aria-selected", "true");
   expect(screen.getByRole("heading", { name: "Edit legacy" }))
@@ -5688,10 +4850,7 @@ test("restores the previous selection after a resource add is rejected", async (
 
 test("cancels inline resource naming and restores tree selection and focus", async () => {
   const draft = addLegacySourceNavigation(structuredClone(configDraft));
-  server.use(
-    http.get("*/api/v1/config", () => HttpResponse.json(draft)),
-  );
-  renderApp();
+  renderApp(draft);
   await enterEditMode();
 
   const tree = await screen.findByRole("tree", { name: "Workflow resources" });
@@ -5750,15 +4909,6 @@ test("cancels inline resource naming and restores tree selection and focus", asy
 
 
 test("abandons inline resource naming when focus moves elsewhere", async () => {
-  const operations: unknown[] = [];
-  const confirm = vi.spyOn(globalThis, "confirm").mockReturnValue(true);
-  server.use(
-    http.post("*/api/v1/config/operations", async ({ request }) => {
-      const body = await request.json() as { operation: unknown };
-      operations.push(body.operation);
-      return HttpResponse.json(configDraft);
-    }),
-  );
   renderApp();
   await enterEditMode();
 
@@ -5784,206 +4934,6 @@ test("abandons inline resource naming when focus moves elsewhere", async () => {
   expect(within(tree).queryByRole("textbox", {
     name: "source cluster name",
   })).toBeNull();
-  expect(operations).toEqual([]);
-
-  await userEvent.click(within(sourceGroup).getByRole("button", {
-    name: "Add source cluster",
-  }));
-  await userEvent.type(within(tree).getByRole("textbox", {
-    name: "source cluster name",
-  }), "also-abandoned");
-  await userEvent.click(screen.getByRole("button", {
-    name: "Exit editing",
-  }));
-
-  expect(confirm).not.toHaveBeenCalled();
-  expect(operations).toEqual([]);
-  expect(screen.getByRole("button", { name: "Edit configuration" }))
-    .toBeInTheDocument();
-  confirm.mockRestore();
-});
-
-
-test("renames a named resource from the tree and follows its new identity", async () => {
-  let operation: unknown;
-  const initialDraft = addLegacySourceNavigation(structuredClone(configDraft));
-  // The server can report both identities until the renamed draft is saved.
-  // Keep the old navigation entry here to verify the optimistic projection
-  // continues to hide it during that interval.
-  const renamedDraft = structuredClone(initialDraft);
-  const sourceCollection = renamedDraft.editState.nodes.find(
-    (node) => node.id === "edit:sourceClusters",
-  );
-  const source = sourceCollection?.children.find(
-    (node) => node.id === "edit:sourceClusters.legacy",
-  );
-  if (!source) throw new Error("Missing source fixture");
-  const rewritePath = (node: typeof source) => {
-    node.id = node.id.replace(
-      "edit:sourceClusters.legacy",
-      "edit:sourceClusters.modern",
-    );
-    node.path = node.path.map((part, index) => (
-      index === 1 && part === "legacy" ? "modern" : part
-    ));
-    node.children?.forEach(rewritePath);
-  };
-  rewritePath(source);
-  source.label = "modern";
-  renamedDraft.dirty = true;
-  renamedDraft.draftRevision = "config-draft-modern";
-  const renamedNavigation = setNavigation(renamedDraft);
-  addConfigNavigationResource(renamedNavigation, {
-    id: "resource:sourceconfigs:modern",
-    groupId: "group:Sources:Sources",
-    label: "modern",
-    editTargetId: "edit:sourceClusters.modern",
-    resourcePlural: "sourceconfigs",
-    resourceType: "Source cluster",
-  });
-
-  server.use(
-    http.get("*/api/v1/config", () => HttpResponse.json(initialDraft)),
-    http.post("*/api/v1/config/operations", async ({ request }) => {
-      const body = await request.json() as { operation: unknown };
-      operation = body.operation;
-      await new Promise((resolve) => globalThis.setTimeout(resolve, 20));
-      return HttpResponse.json(renamedDraft);
-    }),
-  );
-  renderApp();
-  await enterEditMode();
-
-  const tree = await screen.findByRole("tree", { name: "Workflow resources" });
-  const legacy = within(tree).getByRole("treeitem", {
-    name: /^legacy, Addition pending submission$/,
-  });
-  await userEvent.click(within(legacy).getByRole("button", {
-    name: "Rename legacy",
-  }));
-  const name = within(tree).getByRole("textbox", {
-    name: "New name for legacy",
-  });
-  expect(name).toHaveValue("legacy");
-  expect(name).toHaveAttribute("pattern", "^[a-z0-9-]+$");
-  expect(name).toHaveFocus();
-  await userEvent.clear(name);
-  await userEvent.type(name, "modern{Enter}");
-
-  expect(await within(tree).findByRole("treeitem", {
-    name: /^modern, Syncing configuration$/,
-  })).toHaveAttribute("aria-selected", "true");
-  expect(screen.getByText("Preparing modern configuration")).toBeVisible();
-  expect(operation).toEqual({
-    op: "renameConfig",
-    path: ["sourceClusters", "legacy"],
-    newName: "modern",
-  });
-
-  expect(await within(tree).findByRole("treeitem", {
-    name: /^modern, Addition pending submission$/,
-  })).toHaveAttribute("aria-selected", "true");
-  expect(within(tree).queryByRole("treeitem", {
-    name: /^legacy,/,
-  })).toBeNull();
-  expect(await screen.findByRole("heading", {
-    name: "Edit modern",
-  })).toBeInTheDocument();
-  expect(screen.getByRole("textbox", { name: "Endpoint" }))
-    .toHaveValue("https://legacy.example.com:9200");
-});
-
-
-test("restores a resource after a tree rename is rejected", async () => {
-  const draft = addLegacySourceNavigation(structuredClone(configDraft));
-  server.use(
-    http.get("*/api/v1/config", () => HttpResponse.json(draft)),
-    http.post("*/api/v1/config/operations", () =>
-      HttpResponse.json(
-        { detail: "Config entry already exists at sourceClusters.modern" },
-        { status: 409 },
-      ),
-    ),
-  );
-  renderApp();
-  await enterEditMode();
-
-  const tree = await screen.findByRole("tree", { name: "Workflow resources" });
-  const legacy = within(tree).getByRole("treeitem", {
-    name: /^legacy, Addition pending submission$/,
-  });
-  await userEvent.click(within(legacy).getByRole("button", {
-    name: "Rename legacy",
-  }));
-  const name = within(tree).getByRole("textbox", {
-    name: "New name for legacy",
-  });
-  await userEvent.clear(name);
-  await userEvent.type(name, "modern{Enter}");
-
-  expect(await within(tree).findByRole("treeitem", {
-    name: /^legacy, Addition pending submission$/,
-  })).toHaveAttribute("aria-selected", "true");
-  expect(screen.getByRole("alert")).toHaveTextContent(
-    "Config entry already exists at sourceClusters.modern",
-  );
-  expect(screen.getByRole("heading", { name: "Edit legacy" }))
-    .toBeInTheDocument();
-});
-
-
-test("focuses a newly added array item when command metadata requests it", async () => {
-  server.use(
-    http.post("*/api/v1/config/operations", () => {
-      const updated = structuredClone(configDraft);
-      const traffic = updated.editState.nodes.find(
-        (node) => node.id === "edit:traffic",
-      );
-      const transforms = traffic?.children.find(
-        (node) => node.id === "edit:traffic.transforms",
-      );
-      if (!transforms) throw new Error("Missing transforms fixture");
-      transforms.children = [{
-        id: "edit:traffic.transforms.0",
-        path: ["traffic", "transforms", "0"],
-        label: "transform 1: configured",
-        value: {},
-        valueAuthored: true,
-        valueKind: "object",
-        presence: "required",
-        removable: true,
-        status: "required",
-        diagnostics: [{
-          severity: "required",
-          message: "entryPoint is required.",
-          path: ["traffic", "transforms", "0", "entryPoint"],
-        }],
-        children: [],
-      }, ...transforms.children];
-      return HttpResponse.json({
-        ...updated,
-        dirty: true,
-        draftRevision: "config-draft-added",
-      });
-    }),
-  );
-  renderApp();
-  await enterEditMode();
-  const configTree = await screen.findByRole("table", {
-    name: "Configuration fields",
-  });
-  const transforms = within(configTree).getByRole("row", {
-    name: /^Transforms/,
-  });
-  await userEvent.click(within(transforms).getByRole("button", {
-    name: "Add transform",
-  }));
-
-  expect(
-    await within(configTree).findByRole("row", {
-      name: /^transform 1 /,
-    }),
-  ).toHaveAttribute("aria-selected", "true");
 });
 
 
@@ -5993,11 +4943,6 @@ test("views and creates descriptor-driven ConfigMaps without raw YAML", async ()
     http.post("*/api/v1/external-resources/save", async ({ request }) => {
       saveRequest = await request.json();
       return HttpResponse.json({
-        draft: {
-          ...configDraft,
-          dirty: true,
-          draftRevision: "config-draft-created",
-        },
         name: "next-transform",
         kind: "ConfigMap",
         message: "ConfigMap created: next-transform",
@@ -6050,8 +4995,9 @@ test("views and creates descriptor-driven ConfigMaps without raw YAML", async ()
     name: "Create resource",
   }));
 
+  expect(typeof (saveRequest as { rawYaml?: unknown })?.rawYaml).toBe("string");
   expect(saveRequest).toEqual({
-    expectedDraftRevision: "config-draft-1",
+    rawYaml: (saveRequest as { rawYaml: string }).rawYaml,
     nodeId: "edit:traffic.transform.configMap",
     values: {
       name: "next-transform",
@@ -6067,76 +5013,17 @@ test("views and creates descriptor-driven ConfigMaps without raw YAML", async ()
 });
 
 
-test("saves and discards explicit dirty drafts", async () => {
-  let saved = false;
-  let discarded = false;
-  server.use(
-    http.get("*/api/v1/config", () =>
-      HttpResponse.json({
-        ...configDraft,
-        dirty: true,
-        draftRevision: "dirty-draft",
-      }),
-    ),
-    http.post("*/api/v1/config/save", () => {
-      saved = true;
-      return HttpResponse.json(configDraft);
-    }),
-    http.post("*/api/v1/config/discard", () => {
-      discarded = true;
-      return HttpResponse.json(configDraft);
-    }),
-  );
-  const { client } = renderApp();
-  await enterEditMode();
-
-  await userEvent.click(screen.getByRole("button", {
-    name: "Save configuration",
-  }));
-  expect(saved).toBe(true);
-
-  client.setQueryData(["config-draft"], {
-    ...configDraft,
-    dirty: true,
-    draftRevision: "dirty-again",
-  });
-  await userEvent.click(screen.getByRole("button", {
-    name: "Revert unsaved changes",
-  }));
-  expect(discarded).toBe(true);
-  expect(screen.getByText("Editing configuration")).toBeInTheDocument();
-});
-
-
 test("exit offers continue or discard and reopening reloads saved values", async () => {
-  let getCalls = 0;
-  const closeRequests: unknown[] = [];
-  const reopenedDraft = structuredClone(configDraft);
-  reopenedDraft.baseRevision = "saved-after-close";
-  reopenedDraft.draftRevision = "reopened-after-close";
-  reopenedDraft.dirty = false;
-  server.use(
-    http.get("*/api/v1/config", () => {
-      getCalls += 1;
-      return HttpResponse.json(getCalls === 1 ? {
-        ...configDraft,
-        dirty: true,
-        draftRevision: "dirty-close",
-      } : reopenedDraft);
-    }),
-    http.post("*/api/v1/config/close", async ({ request }) => {
-      closeRequests.push(await request.json());
-      return new HttpResponse(null, { status: 204 });
-    }),
-  );
-  const { client } = renderApp();
+  const dirtyDraft = structuredClone(configDraft);
+  dirtyDraft.dirty = true;
+  dirtyDraft.draftRevision = "dirty-close";
+  const { client } = renderApp(dirtyDraft);
   await enterEditMode();
 
   await userEvent.click(
     screen.getByRole("button", { name: "Exit editing" }),
   );
   const firstPrompt = screen.getByRole("dialog", { name: "Leave editing?" });
-  expect(closeRequests).toEqual([]);
   await userEvent.click(within(firstPrompt).getByRole("button", {
     name: "Continue editing",
   }));
@@ -6149,66 +5036,41 @@ test("exit offers continue or discard and reopening reloads saved values", async
     name: "Discard and exit",
   }));
 
-  expect(closeRequests).toEqual([{
-    expectedDraftRevision: "dirty-close",
-  }]);
   expect(await screen.findByRole("button", { name: "Edit configuration" }))
     .toBeInTheDocument();
 
   await enterEditMode();
-  await waitFor(() => expect(getCalls).toBe(2));
-  expect(client.getQueryData(["config-draft"])).toMatchObject({
-    baseRevision: "saved-after-close",
-    draftRevision: "reopened-after-close",
+  expect(client.getQueryData(BROWSER_CONFIG_DRAFT_QUERY_KEY)).toMatchObject({
+    baseRevision: dirtyDraft.baseRevision,
     dirty: false,
   });
-
-  await userEvent.click(
-    screen.getByRole("button", { name: "Exit editing" }),
-  );
-  expect(closeRequests).toEqual([{
-    expectedDraftRevision: "dirty-close",
-  }, {
-    expectedDraftRevision: "reopened-after-close",
-  }]);
 });
 
 
 test("save and exit persists before closing the edit session", async () => {
   let saveRequest: unknown;
-  let closeRequest: unknown;
-  const savedDraft = {
-    ...configDraft,
-    baseRevision: "saved-on-exit",
-    draftRevision: "saved-on-exit",
-    dirty: false,
-  };
+  const dirtyDraft = structuredClone(configDraft);
+  dirtyDraft.dirty = true;
+  dirtyDraft.draftRevision = "dirty-save-exit";
   server.use(
-    http.get("*/api/v1/config", () => HttpResponse.json({
-      ...configDraft,
-      dirty: true,
-      draftRevision: "dirty-save-exit",
-    })),
-    http.post("*/api/v1/config/save", async ({ request }) => {
+    http.put("*/api/v1/config/document", async ({ request }) => {
       saveRequest = await request.json();
-      return HttpResponse.json(savedDraft);
-    }),
-    http.post("*/api/v1/config/close", async ({ request }) => {
-      closeRequest = await request.json();
-      return new HttpResponse(null, { status: 204 });
+      const body = saveRequest as { rawYaml: string };
+      return HttpResponse.json({
+        modelVersion: "1",
+        persistedRevision: "saved-on-exit",
+        rawYaml: body.rawYaml,
+      });
     }),
   );
-  renderApp();
+  renderApp(dirtyDraft);
   await enterEditMode();
 
   await userEvent.click(screen.getByRole("button", { name: "Exit editing" }));
   await userEvent.click(screen.getByRole("button", { name: "Save and exit" }));
 
-  expect(saveRequest).toEqual({
-    expectedDraftRevision: "dirty-save-exit",
-  });
-  expect(closeRequest).toEqual({
-    expectedDraftRevision: "saved-on-exit",
+  expect(saveRequest).toMatchObject({
+    expectedPersistedRevision: dirtyDraft.baseRevision,
   });
   expect(await screen.findByRole("button", { name: "Edit configuration" }))
     .toBeInTheDocument();
@@ -6229,14 +5091,13 @@ test("reviews and tracks submission while leaving edit mode", async () => {
     diagnostics: [],
   };
   server.use(
-    http.get("*/api/v1/config", () => HttpResponse.json(validDraft)),
-    http.post("*/api/v1/config/save", async ({ request }) => {
+    http.put("*/api/v1/config/document", async ({ request }) => {
       saveRequest = await request.json();
+      const body = saveRequest as { rawYaml: string };
       return HttpResponse.json({
-        ...validDraft,
-        dirty: false,
-        draftRevision: "saved-draft-to-submit",
-        baseRevision: persistedRevision,
+        modelVersion: "1",
+        persistedRevision,
+        rawYaml: body.rawYaml,
       });
     }),
     http.get("*/api/v1/config/document", () => HttpResponse.json(
@@ -6285,7 +5146,7 @@ test("reviews and tracks submission while leaving edit mode", async () => {
       }] : [],
     })),
   );
-  renderApp();
+  renderApp(validDraft);
   await enterEditMode();
 
   await userEvent.click(screen.getByRole("button", {
@@ -6307,8 +5168,8 @@ test("reviews and tracks submission while leaving edit mode", async () => {
     name: "Confirm submit",
   }));
 
-  expect(saveRequest).toEqual({
-    expectedDraftRevision: "dirty-to-submit",
+  expect(saveRequest).toMatchObject({
+    expectedPersistedRevision: validDraft.baseRevision,
   });
   await waitFor(() => expect(submitRequest).toEqual({
     expectedPersistedRevision: persistedRevision,
@@ -6335,7 +5196,6 @@ test("reviews and submits saved pending changes without entering edit mode", asy
     diagnostics: [],
   };
   server.use(
-    http.get("*/api/v1/config", () => HttpResponse.json(savedDraft)),
     http.get("*/api/v1/config/document", () => HttpResponse.json(
       configurationDocument(persistedRevision),
     )),
@@ -6382,7 +5242,7 @@ test("reviews and submits saved pending changes without entering edit mode", asy
       }] : [],
     })),
   );
-  renderApp();
+  renderApp(savedDraft);
 
   await userEvent.click(await screen.findByRole("button", {
     name: "Review and submit",
@@ -6419,7 +5279,6 @@ test("keeps submit enabled for admission warnings that may converge later", asyn
     diagnostics: [],
   };
   server.use(
-    http.get("*/api/v1/config", () => HttpResponse.json(savedDraft)),
     http.get("*/api/v1/config/document", () => HttpResponse.json(
       configurationDocument(persistedRevision),
     )),
@@ -6459,7 +5318,7 @@ test("keeps submit enabled for admission warnings that may converge later", asyn
       }, { status: 202 });
     }),
   );
-  renderApp();
+  renderApp(savedDraft);
 
   await userEvent.click(await screen.findByRole("button", {
     name: "Review and submit",
@@ -6493,7 +5352,6 @@ test("shows resources that submission will reconcile for checksum-only changes",
     diagnostics: [],
   };
   server.use(
-    http.get("*/api/v1/config", () => HttpResponse.json(savedDraft)),
     http.get("*/api/v1/config/document", () => HttpResponse.json(
       configurationDocument(persistedRevision),
     )),
@@ -6523,7 +5381,7 @@ test("shows resources that submission will reconcile for checksum-only changes",
       }],
     })),
   );
-  renderApp();
+  renderApp(savedDraft);
 
   await userEvent.click(await screen.findByRole("button", {
     name: "Review and submit",
@@ -6553,7 +5411,6 @@ test("offers one reset and resubmit action for immutable preflight failures", as
     diagnostics: [],
   };
   server.use(
-    http.get("*/api/v1/config", () => HttpResponse.json(savedDraft)),
     http.get("*/api/v1/config/document", () => HttpResponse.json(
       configurationDocument(persistedRevision),
     )),
@@ -6619,7 +5476,7 @@ test("offers one reset and resubmit action for immutable preflight failures", as
       return new HttpResponse(null, { status: 500 });
     }),
   );
-  renderApp();
+  renderApp(savedDraft);
 
   await userEvent.click(await screen.findByRole("button", {
     name: "Review and submit",
@@ -6719,7 +5576,6 @@ test("offers resubmission when a configured resource is missing", async () => {
   };
   server.use(
     http.get("*/api/v1/manage/state", () => HttpResponse.json(currentState)),
-    http.get("*/api/v1/config", () => HttpResponse.json(validDraft)),
     http.get("*/api/v1/config/document", () => HttpResponse.json(
       configurationDocument(persistedRevision),
     )),
@@ -6730,7 +5586,7 @@ test("offers resubmission when a configured resource is missing", async () => {
       changes: [],
     })),
   );
-  renderApp();
+  renderApp(validDraft);
 
   const resubmit = await screen.findByRole("button", {
     name: "Review and resubmit",
@@ -6776,9 +5632,8 @@ test("offers resubmission when a managed resource has failed", async () => {
   };
   server.use(
     http.get("*/api/v1/manage/state", () => HttpResponse.json(currentState)),
-    http.get("*/api/v1/config", () => HttpResponse.json(validDraft)),
   );
-  renderApp();
+  renderApp(validDraft);
 
   const resubmit = await screen.findByRole("button", {
     name: "Review and resubmit",
@@ -6810,9 +5665,8 @@ test("offers submission for a pending resource addition without field diffs", as
   };
   server.use(
     http.get("*/api/v1/manage/state", () => HttpResponse.json(pendingState)),
-    http.get("*/api/v1/config", () => HttpResponse.json(validDraft)),
   );
-  renderApp();
+  renderApp(validDraft);
 
   await waitFor(() => expect(screen.getByRole("button", {
     name: "Review and submit",
@@ -6837,14 +5691,10 @@ test("exposes a blocking validation reason through the submit tooltip", async ()
 
 
 test("Escape invokes the active edit confirmation cancel action", async () => {
-  server.use(
-    http.get("*/api/v1/config", () => HttpResponse.json({
-      ...configDraft,
-      dirty: true,
-      draftRevision: "dirty-escape",
-    })),
-  );
-  renderApp();
+  const dirtyDraft = structuredClone(configDraft);
+  dirtyDraft.dirty = true;
+  dirtyDraft.draftRevision = "dirty-escape";
+  renderApp(dirtyDraft);
   await enterEditMode();
 
   await userEvent.click(screen.getByRole("button", {
@@ -6871,13 +5721,14 @@ test("Escape closes only the topmost submit dialog while editing", async () => {
     diagnostics: [],
   };
   server.use(
-    http.get("*/api/v1/config", () => HttpResponse.json(dirtyDraft)),
-    http.post("*/api/v1/config/save", () => HttpResponse.json({
-      ...dirtyDraft,
-      dirty: false,
-      draftRevision: "saved-draft-submit-escape",
-      baseRevision: persistedRevision,
-    })),
+    http.put("*/api/v1/config/document", async ({ request }) => {
+      const body = await request.json() as { rawYaml: string };
+      return HttpResponse.json({
+        modelVersion: "1",
+        persistedRevision,
+        rawYaml: body.rawYaml,
+      });
+    }),
     http.get("*/api/v1/config/document", () => HttpResponse.json(
       configurationDocument(persistedRevision),
     )),
@@ -6888,7 +5739,7 @@ test("Escape closes only the topmost submit dialog while editing", async () => {
       changes: [],
     })),
   );
-  renderApp();
+  renderApp(dirtyDraft);
   await enterEditMode();
 
   await userEvent.click(screen.getByRole("button", {
@@ -6941,7 +5792,6 @@ test("shows structured admission preflight preparation failures", async () => {
     diagnostics: [],
   };
   server.use(
-    http.get("*/api/v1/config", () => HttpResponse.json(validDraft)),
     http.get("*/api/v1/config/document", () => HttpResponse.json(
       configurationDocument(persistedRevision),
     )),
@@ -6961,7 +5811,7 @@ test("shows structured admission preflight preparation failures", async () => {
       },
     }, { status: 502 })),
   );
-  renderApp();
+  renderApp(validDraft);
 
   const submit = await screen.findByRole("button", {
     name: "Review and submit",

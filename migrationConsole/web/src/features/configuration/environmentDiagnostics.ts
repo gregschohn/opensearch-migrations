@@ -5,9 +5,11 @@ import {
 } from "react";
 
 import {
+  type EditNode,
+} from "@opensearch-migrations/config-edit-core";
+import {
   diagnoseConfigurationEnvironment,
   type ConfigEnvironmentDiagnostics,
-  type EditNode,
 } from "../../api/client";
 import type { BrowserConfigDraft } from "./browserDraft";
 
