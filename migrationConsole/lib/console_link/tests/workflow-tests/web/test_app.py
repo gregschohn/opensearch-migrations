@@ -1064,8 +1064,7 @@ def test_vap_reset_saves_then_submits_a_new_workflow_without_approving_old_gate(
         approvals=approvals,
         resets=resets,
         operations=operations,
-        config_documents=documents,
-        config_submission=submissions,
+        config_documents=submissions,
         workflow_name="migration-test",
     )
 
@@ -1110,8 +1109,7 @@ def test_reset_worker_rechecks_saved_revision_before_deleting_resources(
         static_dir=_static_bundle(tmp_path),
         resets=resets,
         operations=operations,
-        config_documents=documents,
-        config_submission=submissions,
+        config_documents=submissions,
     )
 
     with TestClient(app) as client:
@@ -1847,8 +1845,7 @@ def test_config_review_and_submit_start_a_tracked_operation(tmp_path):
     operations = _Operations()
     app = create_app(
         static_dir=_static_bundle(tmp_path),
-        config_documents=documents,
-        config_submission=submissions,
+        config_documents=submissions,
         operations=operations,
         workflow_name="migration-test",
     )
@@ -1891,8 +1888,7 @@ def test_submit_worker_rejects_a_saved_configuration_changed_after_acceptance(
     operations = _Operations()
     app = create_app(
         static_dir=_static_bundle(tmp_path),
-        config_documents=documents,
-        config_submission=submissions,
+        config_documents=submissions,
         operations=operations,
     )
 
@@ -1916,8 +1912,7 @@ def test_config_preflight_reports_blocking_and_nonblocking_admission_results(
     submissions = _Submissions(documents)
     app = create_app(
         static_dir=_static_bundle(tmp_path),
-        config_documents=documents,
-        config_submission=submissions,
+        config_documents=submissions,
         workflow_name="migration-test",
     )
 
@@ -1988,8 +1983,7 @@ def test_config_preflight_reports_preparation_failures_without_plain_500(
     submissions.preflight = fail_preflight
     app = create_app(
         static_dir=_static_bundle(tmp_path),
-        config_documents=documents,
-        config_submission=submissions,
+        config_documents=submissions,
         workflow_name="migration-test",
     )
 

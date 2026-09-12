@@ -141,16 +141,16 @@ def run_server(
             validate=config_service.validate_raw_config_for_save,
             on_saved=config_drafts.invalidate_saved_config,
         )
+        configuration_service = SavedConfigSubmissionService(
+            config_documents,
+            config_service,
+        )
         app = create_app(
             static_dir=static_dir,
             coordinator=coordinator,
             workflow_name=workflow_name,
             config_drafts=config_drafts,
-            config_documents=config_documents,
-            config_submission=SavedConfigSubmissionService(
-                config_documents,
-                config_service,
-            ),
+            config_documents=configuration_service,
             config_diagnostics=config_service,
             outputs=OutputService(
                 namespace=namespace,

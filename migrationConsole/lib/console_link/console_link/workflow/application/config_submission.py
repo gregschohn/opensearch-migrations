@@ -29,11 +29,21 @@ class PreparedConfigSubmission:
 
 
 class SavedConfigSubmissionService:
-    """Reviews and submits one exact saved configuration document."""
+    """Loads, saves, reviews, and submits saved configuration documents."""
 
     def __init__(self, documents: Any, edit_service: Any):
         self._documents = documents
         self._edit_service = edit_service
+
+    def load(self) -> ConfigurationDocument:
+        return self._documents.load()
+
+    def save(
+        self,
+        expected_persisted_revision: str,
+        raw_yaml: str,
+    ) -> ConfigurationDocument:
+        return self._documents.save(expected_persisted_revision, raw_yaml)
 
     def review(
         self,
