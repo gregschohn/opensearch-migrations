@@ -1,6 +1,6 @@
 # Workflow Manage Browser-Local Editing Plan
 
-Status: proposed follow-up to the native web conversion
+Status: implemented through PR 7 on 2026-09-12
 
 This document describes how to move routine workflow configuration editing out
 of the FastAPI request path and into the browser without moving Kubernetes,
@@ -345,15 +345,15 @@ No API or visible web behavior changes in this PR.
 ### PR 2: Add The Revisioned Configuration Document API
 
 Branch objective: introduce stateless load and authoritative save while
-preserving the existing server draft API.
+temporarily preserving the existing server draft API.
 
 - Add the configuration document response.
 - Add save-by-persisted-revision.
 - Revalidate the exact save payload server-side.
 - Publish saved-configuration invalidation.
 - Add ConfigMap concurrency tests.
-- Keep current `/config/operations` and `ConfigDraftService` behavior available
-  as a compatibility path.
+- Keep the server draft behavior available temporarily as a compatibility
+  path. PR 7 removes it after the browser path is proven.
 
 Workflow submit continues using the existing path.
 
@@ -369,7 +369,7 @@ Branch objective: remove HTTP from ordinary edit operations.
 - Preserve save, discard, exit, and browser navigation prompts.
 - Remove the global lock from local edits.
 - Add a Web Worker if scale measurements exceed the main-thread frame budget.
-- Retain a temporary feature flag or fallback to the server draft path.
+- Retain a temporary fallback to the server draft path until PR 7.
 
 Workflow submit remains usable. The browser saves through the new API before
 invoking the existing submission path.
@@ -432,6 +432,16 @@ equivalent.
 - Update architecture and operating documentation.
 
 This PR intentionally adds no user-facing functionality.
+
+Implementation result:
+
+- ordinary edits, projection, comparison, dependency analysis, removal impact,
+  and navigation run through `config-edit-core` in browser memory;
+- FastAPI persists revisioned documents and owns environment-dependent work;
+- submit operates on an exact saved revision;
+- external-resource endpoints are stateless with respect to editing; and
+- the legacy server draft, per-edit subprocess, compatibility flag, and
+  duplicate Python projection code have been removed.
 
 ## Testing Strategy
 

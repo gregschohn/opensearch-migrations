@@ -15,9 +15,9 @@ the phase acceptance criteria in
 | [x] | Resource status | `resource_tree.py`, `manage_tree_status.py` | `ManageStateService` | 1 and 3 | Python application and API fixtures |
 | [x] | Workflow progress | `tree_utils.py`, Argo workflow data | `ManageStateService` | 1 and 3 | Python application fixtures |
 | [x] | Deployed/submitted/pending comparison | `apply_config_overlays`, `ConfigEditService` | `ManageStateService` | 1 and 3 | Python application and React detail tests |
-| [x] | Schema-guided editing | config-processor `EditStateV1` and `EditOperation` | `ConfigDraftService` | 4 | Cross-language fixtures and component tests |
-| [x] | External references | `ConfigEditService` external-resource methods | Config API and React pickers | 4 | Python API and React picker tests |
-| [x] | Draft save/discard | `WorkflowConfigStore` | `ConfigDraftService` | 4 | Python service and API conflict tests |
+| [x] | Schema-guided editing | `config-edit-core` `EditStateV1` and `EditOperation` | Browser-local shared core | 4 plus local-edit stack | Shared-core and component tests |
+| [x] | External references | schema external-reference hints | `ExternalResourceService` and React pickers | 4 plus local-edit stack | Python API and React picker tests |
+| [x] | Draft save/discard | `WorkflowConfigStore` | Browser memory and `ConfigurationDocumentService` | 4 plus local-edit stack | Document conflict and browser tests |
 | [x] | Review and submit | config-processor validation and `submit_saved_config` | Review service and operation manager | 6 | Python API and browser flow |
 | [x] | Approval | approval-node detection and `approve_step` | `ApprovalService` | 7 | Exact-target service and browser tests |
 | [x] | Reset | reset planning and execution helpers | `ResetService` | 7 | Plan-token and integration tests |
@@ -38,8 +38,8 @@ capability.
 | `WorkflowTreeApp._workflow_has_active_rollout` | Extract | presentation-neutral active-rollout helper |
 | `WorkflowTreeApp._assign_workflow_progress` and recursive helpers | Extract | presentation-neutral workflow/resource association |
 | `WorkflowTreeApp._workflow_output_ref_map` | Extracted | `OutputService` in Phase 5 |
-| `WorkflowTreeApp` config draft fields and apply/save workers | Extracted | `ConfigDraftService` in Phase 4 |
-| `WorkflowTreeApp` submit worker | Extracted | `ConfigDraftService` review plus `OperationManager` in Phase 6 |
+| `WorkflowTreeApp` config draft fields and apply/save workers | Replaced | browser-local `config-edit-core` plus `ConfigurationDocumentService` |
+| `WorkflowTreeApp` submit worker | Extracted | `SavedConfigSubmissionService` plus `OperationManager` |
 | `WorkflowTreeApp` approval callback | Extracted | exact-target `ApprovalService` in Phase 7 |
 | `WorkflowTreeApp` reset command construction | Replaced | version-bound `ResetService` using direct reset helpers in Phase 7 |
 | `WorkflowTreeApp` log actions and `LogManager` pager behavior | Replace later | cancellable `LogStreamService` in Phase 8 |
