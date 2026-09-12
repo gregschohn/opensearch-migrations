@@ -75,14 +75,19 @@ export const server = setupServer(
   http.get("*/api/v1/config", () =>
     HttpResponse.json(configDraft),
   ),
+  http.get("*/api/v1/config/document", () =>
+    HttpResponse.json({
+      modelVersion: "1",
+      persistedRevision: configDraft.baseRevision,
+      rawYaml: "{}\n",
+    }),
+  ),
   http.post("*/api/v1/config/close", () =>
     new HttpResponse(null, { status: 204 }),
   ),
   http.post("*/api/v1/config/review", () =>
     HttpResponse.json({
-      draftRevision: configDraft.draftRevision,
-      baseRevision: configDraft.baseRevision,
-      dirty: configDraft.dirty,
+      persistedRevision: configDraft.baseRevision,
       valid: configDraft.editState.validation.valid,
       validationMessages: configDraft.editState.validation.errors,
       changes: [],

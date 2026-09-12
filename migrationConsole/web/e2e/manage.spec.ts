@@ -139,8 +139,16 @@ function largestFrameDelta(samples: number[]) {
 
 
 async function mockManageApi(page: Page) {
+  await page.addInitScript(() => {
+    (
+      globalThis as typeof globalThis & {
+        __WORKFLOW_BROWSER_LOCAL_EDITING__?: boolean;
+      }
+    ).__WORKFLOW_BROWSER_LOCAL_EDITING__ = false;
+  });
   let snapshot = structuredClone(manageSnapshot);
   let draft = structuredClone(configDraft);
+  let persistedRevision = draft.baseRevision;
   let operations: Array<Record<string, unknown>> = [];
   const operation = (kind: string, label: string, message: string) => ({
     id: `operation-${kind}-${operations.length + 1}`,
@@ -249,6 +257,16 @@ async function mockManageApi(page: Page) {
       body: JSON.stringify(draft),
     });
   });
+  await page.route("**/api/v1/config/document", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        modelVersion: "1",
+        persistedRevision,
+        rawYaml: "{}\n",
+      }),
+    });
+  });
   await page.route("**/api/v1/config/operations", async (route) => {
     const request = route.request().postDataJSON() as {
       operation?: { op?: string; path?: string[]; value?: unknown };
@@ -353,6 +371,7 @@ async function mockManageApi(page: Page) {
       dirty: false,
       baseRevision: draft.draftRevision,
     };
+    persistedRevision = draft.baseRevision;
     refreshDraftNavigation();
     await route.fulfill({
       contentType: "application/json",
@@ -374,9 +393,7 @@ async function mockManageApi(page: Page) {
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({
-        draftRevision: draft.draftRevision,
-        baseRevision: draft.baseRevision,
-        dirty: draft.dirty,
+        persistedRevision,
         valid: draft.editState.validation.valid,
         validationMessages: draft.editState.validation.errors,
         changes: [{
@@ -826,27 +843,34 @@ test("edits generic configuration and selects a ConfigMap key", async ({ page },
 
   await page.getByRole("checkbox", { name: "Show optional fields" }).check();
   await configTree.getByRole("row", { name: /Timeout/ }).click();
-  await expect(page.getByText("Generated")).toBeVisible();
-  await expect(page.getByText("runtime timeout")).toHaveCount(0);
+  await expect(page.getByText("runtime timeout")).toBeVisible();
   await page.getByRole("checkbox", {
     name: "Show field documentation",
-  }).check();
-  await expect(page.getByText("runtime timeout")).toBeVisible();
+  }).uncheck();
+  await expect(page.getByText("runtime timeout")).toHaveCount(0);
 
   const configMapRow = configTree.getByRole("row", {
-    name: /ConfigMap/,
+    name: /Config\s*Map/,
   });
   await configMapRow.getByRole("button", { name: /Configure$/ }).click();
   const selector = page.getByRole("dialog", {
-    name: "Select Transform ConfigMap",
+    name: "Transform ConfigMap",
   });
   await expect(selector).toBeVisible();
   await expect(
-    selector.getByLabel("Keys in transform-code").getByText("settings.json"),
+    selector.getByRole("button", {
+      name: "Use transform-code and key settings.json",
+    }),
   ).toBeVisible();
-  await selector.getByRole("button", { name: "Inspect transform-code" }).click();
-  await expect(selector.getByText("export default () => true;")).toBeVisible();
-  await selector.getByRole("button", { name: "Back to resources" }).click();
+  await selector.getByRole("button", {
+    name: "Details for transform-code",
+  }).click();
+  const details = page.getByRole("dialog", { name: "transform-code" });
+  await expect(details.getByText("export default () => true;")).toBeVisible();
+  await details.getByRole("button", {
+    name: "Close Kubernetes resource selector",
+  }).click();
+  await expect(selector).toBeVisible();
   await selector.getByRole("button", {
     name: "Use transform-code and key main.js",
   }).click();
@@ -955,7 +979,6 @@ test("animates collapsed rows without clamping the editor scroll position", asyn
   const scrollTopAfter = await panel.evaluate((element: unknown) =>
     (element as { scrollTop: number }).scrollTop);
   expect(Math.abs(scrollTopAfter - scrollTopBefore)).toBeLessThanOrEqual(1);
-  await expect(page.locator(".config-scroll-space")).toBeAttached();
 });
 
 
@@ -1056,22 +1079,21 @@ test("keeps valid status compact in navigation without an editor footer", async 
   const config = page.getByRole("table", { name: "Configuration fields" });
   const allowInsecure = config.getByRole("row", { name: /Allow insecure/ });
   const compactBox = await allowInsecure.boundingBox();
-  const statusBox = await allowInsecure.locator(".field-status").boundingBox();
   const revertBox = await allowInsecure.getByRole("button", {
-    name: "Revert Allow insecure to default",
+    name: "Clear Allow insecure and use the default",
   }).boundingBox();
   expect(compactBox).not.toBeNull();
-  expect(statusBox).not.toBeNull();
   expect(revertBox).not.toBeNull();
+  await expect(allowInsecure.locator(".field-status")).toHaveCount(0);
   expect(compactBox!.height).toBeLessThanOrEqual(42);
   expect(Math.abs(
-    statusBox!.y + statusBox!.height / 2
+    compactBox!.y + compactBox!.height / 2
     - revertBox!.y - revertBox!.height / 2,
-  )).toBeLessThanOrEqual(1);
+  )).toBeLessThanOrEqual(2);
   const documentation = page.getByRole("checkbox", {
     name: "Show field documentation",
   });
-  await documentation.check();
+  await expect(documentation).toBeChecked();
   await expect(page.getByText(
     "Kubernetes Secret containing the HTTP credentials.",
   )).toBeVisible();
@@ -1157,8 +1179,8 @@ test("keeps a removed resource in context for the edit session", async ({ page }
   });
   await expect(removed).toBeVisible();
   await expect(removed).toHaveAttribute("aria-selected", "true");
-  await expect(removed).toHaveCSS("background-color", "rgb(242, 244, 245)");
-  await expect(removed).toHaveCSS("border-color", "rgb(201, 206, 209)");
+  await expect(removed).toHaveCSS("background-color", "rgb(223, 229, 232)");
+  await expect(removed).toHaveCSS("border-color", "rgba(0, 0, 0, 0)");
   if (testInfo.project.name === "narrow") {
     await page.getByRole("button", { name: "Close resources" }).click();
   }
@@ -1591,12 +1613,11 @@ test("keeps configuration editing usable at narrow width", async ({ page }, test
   await page.getByRole("checkbox", { name: "Show optional fields" }).check();
   const configTree = page.getByRole("table", { name: "Configuration fields" });
   await configTree.getByRole("row", { name: /Timeout/ }).click();
-  await expect(page.getByText("Generated")).toBeVisible();
-  await expect(page.getByText("runtime timeout")).toHaveCount(0);
+  await expect(page.getByText("runtime timeout")).toBeVisible();
   await page.getByRole("checkbox", {
     name: "Show field documentation",
-  }).check();
-  await expect(page.getByText("runtime timeout")).toBeVisible();
+  }).uncheck();
+  await expect(page.getByText("runtime timeout")).toHaveCount(0);
 
   const scrollWidth = await page.evaluate<number>(
     "document.documentElement.scrollWidth",

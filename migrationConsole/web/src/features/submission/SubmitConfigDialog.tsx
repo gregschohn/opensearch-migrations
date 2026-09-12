@@ -13,16 +13,16 @@ import {
   ConfigApiError,
   executeReset,
   getCombinedResetPlan,
-  getConfigDraft,
+  getConfigurationDocument,
   getConfigPreflight,
   getConfigReview,
-  submitConfigDraft,
+  submitSavedConfiguration,
 } from "../../api/client";
 import { ModalDialog } from "../../components/ModalDialog";
 
 
 interface SubmitConfigDialogProps {
-  draftRevision?: string;
+  persistedRevision?: string;
   intent?: "submit" | "resubmit";
   onClose: () => void;
   onSubmitted: () => void;
@@ -31,7 +31,7 @@ interface SubmitConfigDialogProps {
 
 
 export function SubmitConfigDialog({
-  draftRevision,
+  persistedRevision,
   intent = "submit",
   onClose,
   onSubmitted,
@@ -41,13 +41,15 @@ export function SubmitConfigDialog({
   const sessionKey = useId();
   const [submitting, setSubmitting] = useState(false);
   const [problem, setProblem] = useState("");
-  const currentDraft = useQuery({
-    queryKey: ["submission-draft", sessionKey],
-    queryFn: getConfigDraft,
-    enabled: draftRevision === undefined,
+  const currentDocument = useQuery({
+    queryKey: ["submission-document", sessionKey],
+    queryFn: getConfigurationDocument,
+    enabled: persistedRevision === undefined,
     staleTime: 0,
   });
-  const revision = draftRevision ?? currentDraft.data?.draftRevision;
+  const revision = (
+    persistedRevision ?? currentDocument.data?.persistedRevision
+  );
   const review = useQuery({
     queryKey: ["config-review", sessionKey, revision],
     queryFn: () => getConfigReview(revision ?? ""),
@@ -78,12 +80,12 @@ export function SubmitConfigDialog({
     (issue) => issue.blocking && !issue.resetTargetId,
   ) ?? false;
   const loading = (
-    draftRevision === undefined && currentDraft.isPending
+    persistedRevision === undefined && currentDocument.isPending
   ) || (
     revision !== undefined
     && (review.isPending || preflight.isPending)
   );
-  const loadError = currentDraft.error ?? review.error ?? preflight.error;
+  const loadError = currentDocument.error ?? review.error ?? preflight.error;
   const resubmitting = intent === "resubmit";
   const resetActionCount = resetPlan.data?.targets.length
     ?? resetTargetIds.length;
@@ -104,14 +106,16 @@ export function SubmitConfigDialog({
     : "Building the dependency-safe reset plan.";
   useEffect(() => () => {
     // Session-keyed queries are unreachable after the dialog closes.
-    queryClient.removeQueries({ queryKey: ["submission-draft", sessionKey] });
+    queryClient.removeQueries({
+      queryKey: ["submission-document", sessionKey],
+    });
     queryClient.removeQueries({ queryKey: ["config-review", sessionKey] });
     queryClient.removeQueries({ queryKey: ["config-preflight", sessionKey] });
   }, [queryClient, sessionKey]);
 
   const retry = () => {
     setProblem("");
-    if (currentDraft.isError) void currentDraft.refetch();
+    if (currentDocument.isError) void currentDocument.refetch();
     else {
       void review.refetch();
       void preflight.refetch();
@@ -123,15 +127,17 @@ export function SubmitConfigDialog({
     setSubmitting(true);
     setProblem("");
     try {
-      await submitConfigDraft(review.data.draftRevision);
-      queryClient.removeQueries({ queryKey: ["config-draft"] });
-      queryClient.removeQueries({ queryKey: ["submission-draft"] });
+      await submitSavedConfiguration(review.data.persistedRevision);
+      queryClient.removeQueries({ queryKey: ["submission-document"] });
       void queryClient.invalidateQueries({ queryKey: ["operations"] });
       void queryClient.invalidateQueries({ queryKey: ["manage-state"] });
       onSubmitted();
     } catch (error) {
-      if (error instanceof ConfigApiError && error.current) {
-        queryClient.setQueryData(["config-draft"], error.current);
+      if (error instanceof ConfigApiError && error.currentDocument) {
+        queryClient.setQueryData(
+          ["submission-document", sessionKey],
+          error.currentDocument,
+        );
       }
       setProblem(error instanceof Error ? error.message : String(error));
     } finally {
@@ -145,16 +151,18 @@ export function SubmitConfigDialog({
     try {
       await executeReset(resetPlan.data.token, {
         resubmit: true,
-        expectedDraftRevision: review.data.draftRevision,
+        expectedPersistedRevision: review.data.persistedRevision,
       });
-      queryClient.removeQueries({ queryKey: ["config-draft"] });
-      queryClient.removeQueries({ queryKey: ["submission-draft"] });
+      queryClient.removeQueries({ queryKey: ["submission-document"] });
       void queryClient.invalidateQueries({ queryKey: ["operations"] });
       void queryClient.invalidateQueries({ queryKey: ["manage-state"] });
       onSubmitted();
     } catch (error) {
-      if (error instanceof ConfigApiError && error.current) {
-        queryClient.setQueryData(["config-draft"], error.current);
+      if (error instanceof ConfigApiError && error.currentDocument) {
+        queryClient.setQueryData(
+          ["submission-document", sessionKey],
+          error.currentDocument,
+        );
       }
       setProblem(error instanceof Error ? error.message : String(error));
       void resetPlan.refetch();

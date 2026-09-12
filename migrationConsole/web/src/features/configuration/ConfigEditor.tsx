@@ -1883,7 +1883,7 @@ export function ConfigEditor({
   const [pendingRemoval, setPendingRemoval] =
     useState<PendingRemoval | null>(null);
   const [confirmSubmit, setConfirmSubmit] = useState(false);
-  const [submitDraftRevision, setSubmitDraftRevision] =
+  const [submitPersistedRevision, setSubmitPersistedRevision] =
     useState<string | null>(null);
   const [exitPromptOpen, setExitPromptOpen] = useState(false);
   const [pinnedContext, setPinnedContext] = useState<PinnedContext[]>([]);
@@ -2972,13 +2972,9 @@ export function ConfigEditor({
         const saved = await persistBrowserDraft(
           current as BrowserConfigDraft,
         );
-        const compatibilityDraft = queryClient.getQueryData<ConfigDraft>([
-          "config-draft",
-        ]);
-        if (!compatibilityDraft) return;
         setLocallyEditedIds(new Set());
         setRawYamlDirty(false);
-        setSubmitDraftRevision(compatibilityDraft.draftRevision);
+        setSubmitPersistedRevision(saved.persistedRevision);
         queryClient.setQueryData(BROWSER_CONFIG_DRAFT_QUERY_KEY, saved);
       } catch (error) {
         setProblem(error instanceof Error ? error.message : String(error));
@@ -2987,7 +2983,25 @@ export function ConfigEditor({
         setActionPending(false);
       }
     } else {
-      setSubmitDraftRevision(current.draftRevision);
+      setActionPending(true);
+      try {
+        if (current.dirty) {
+          const saved = await saveConfigDraft(current.draftRevision);
+          queryClient.setQueryData(["config-draft"], saved);
+          setLocallyEditedIds(new Set());
+          setRawYamlDirty(false);
+        }
+        const document = await getConfigurationDocument();
+        setSubmitPersistedRevision(document.persistedRevision);
+      } catch (error) {
+        if (error instanceof ConfigApiError && error.current) {
+          queryClient.setQueryData(["config-draft"], error.current);
+        }
+        setProblem(error instanceof Error ? error.message : String(error));
+        return;
+      } finally {
+        setActionPending(false);
+      }
     }
     setConfirmSubmit(true);
   };
@@ -3939,10 +3953,14 @@ export function ConfigEditor({
       ) : null}
       {confirmSubmit && draft ? (
         <SubmitConfigDialog
-          draftRevision={submitDraftRevision ?? draft.draftRevision}
-          onClose={() => setConfirmSubmit(false)}
+          persistedRevision={submitPersistedRevision ?? undefined}
+          onClose={() => {
+            setSubmitPersistedRevision(null);
+            setConfirmSubmit(false);
+          }}
           onSubmitted={() => {
             setLocallyEditedIds(new Set());
+            setSubmitPersistedRevision(null);
             setConfirmSubmit(false);
             onSubmitted();
           }}

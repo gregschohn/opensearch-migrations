@@ -41,6 +41,15 @@ function renderApp() {
 }
 
 
+function configurationDocument(persistedRevision: string) {
+  return {
+    modelVersion: "1",
+    persistedRevision,
+    rawYaml: "{}\n",
+  };
+}
+
+
 async function enterEditMode() {
   await userEvent.click(
     await screen.findByRole("button", { name: "Edit configuration" }),
@@ -4674,6 +4683,111 @@ snapshotMigrationConfigs: []
 });
 
 
+test("submits the exact saved revision after browser-local editing", async () => {
+  globalThis.__WORKFLOW_BROWSER_LOCAL_EDITING__ = true;
+  let legacySaveRequests = 0;
+  let savedDocument: unknown;
+  let reviewRequest: unknown;
+  let preflightRequest: unknown;
+  let submitRequest: unknown;
+  const rawYaml = `
+sourceClusters:
+  source:
+    endpoint: https://source.example.com:9200
+    version: ES 7.10
+    allowInsecure: false
+targetClusters:
+  target:
+    endpoint: https://target.example.com:9200
+snapshotMigrationConfigs: []
+`;
+  server.use(
+    http.get("*/api/v1/config/document", () => HttpResponse.json({
+      modelVersion: "1",
+      persistedRevision: "saved-browser-submit",
+      rawYaml,
+    })),
+    http.put("*/api/v1/config/document", async ({ request }) => {
+      savedDocument = await request.json();
+      const body = savedDocument as { rawYaml: string };
+      return HttpResponse.json({
+        modelVersion: "1",
+        persistedRevision: "saved-browser-submit-2",
+        rawYaml: body.rawYaml,
+      });
+    }),
+    http.post("*/api/v1/config/save", () => {
+      legacySaveRequests += 1;
+      return HttpResponse.json(configDraft);
+    }),
+    http.post("*/api/v1/config/review", async ({ request }) => {
+      reviewRequest = await request.json();
+      return HttpResponse.json({
+        persistedRevision: "saved-browser-submit-2",
+        valid: true,
+        validationMessages: [],
+        changes: [],
+      });
+    }),
+    http.post("*/api/v1/config/preflight", async ({ request }) => {
+      preflightRequest = await request.json();
+      return HttpResponse.json({
+        checkedResources: 0,
+        allowed: true,
+        issues: [],
+      });
+    }),
+    http.post("*/api/v1/config/submit", async ({ request }) => {
+      submitRequest = await request.json();
+      return HttpResponse.json({
+        id: "operation-browser-submit",
+        kind: "submit",
+        label: "Submit workflow configuration",
+        status: "queued",
+        targetIds: [],
+        createdAt: "2026-09-12T12:00:00Z",
+        updatedAt: "2026-09-12T12:00:00Z",
+        message: "Queued",
+        detail: null,
+        result: {},
+      }, { status: 202 });
+    }),
+  );
+  renderApp();
+  await enterEditMode();
+
+  const [allowInsecure] = await screen.findAllByRole("checkbox", {
+    name: /allow insecure/i,
+  });
+  await userEvent.click(allowInsecure);
+  await userEvent.click(screen.getByRole("button", {
+    name: "Save and submit",
+  }));
+
+  const dialog = await screen.findByRole("dialog", {
+    name: "Submit configuration?",
+  });
+  const expectedRevision = {
+    expectedPersistedRevision: "saved-browser-submit-2",
+  };
+  await waitFor(() => {
+    expect(savedDocument).toMatchObject({
+      expectedPersistedRevision: "saved-browser-submit",
+    });
+    expect(reviewRequest).toEqual(expectedRevision);
+    expect(preflightRequest).toEqual(expectedRevision);
+  });
+  expect((savedDocument as { rawYaml: string }).rawYaml)
+    .toContain("allowInsecure: true");
+  expect(legacySaveRequests).toBe(0);
+
+  await userEvent.click(within(dialog).getByRole("button", {
+    name: "Confirm submit",
+  }));
+  await waitFor(() => expect(submitRequest).toEqual(expectedRevision));
+});
+
+
 test("does not rerun environment checks for unrelated browser edits", async () => {
   globalThis.__WORKFLOW_BROWSER_LOCAL_EDITING__ = true;
   let diagnosticRequests = 0;
@@ -6102,8 +6216,10 @@ test("save and exit persists before closing the edit session", async () => {
 
 
 test("reviews and tracks submission while leaving edit mode", async () => {
+  let saveRequest: unknown;
   let submitRequest: unknown;
   let submitAccepted = false;
+  const persistedRevision = "saved-to-submit";
   const validDraft = structuredClone(configDraft);
   validDraft.dirty = true;
   validDraft.draftRevision = "dirty-to-submit";
@@ -6114,10 +6230,20 @@ test("reviews and tracks submission while leaving edit mode", async () => {
   };
   server.use(
     http.get("*/api/v1/config", () => HttpResponse.json(validDraft)),
+    http.post("*/api/v1/config/save", async ({ request }) => {
+      saveRequest = await request.json();
+      return HttpResponse.json({
+        ...validDraft,
+        dirty: false,
+        draftRevision: "saved-draft-to-submit",
+        baseRevision: persistedRevision,
+      });
+    }),
+    http.get("*/api/v1/config/document", () => HttpResponse.json(
+      configurationDocument(persistedRevision),
+    )),
     http.post("*/api/v1/config/review", () => HttpResponse.json({
-      draftRevision: validDraft.draftRevision,
-      baseRevision: validDraft.baseRevision,
-      dirty: true,
+      persistedRevision,
       valid: true,
       validationMessages: [],
       changes: [{
@@ -6181,8 +6307,11 @@ test("reviews and tracks submission while leaving edit mode", async () => {
     name: "Confirm submit",
   }));
 
-  await waitFor(() => expect(submitRequest).toEqual({
+  expect(saveRequest).toEqual({
     expectedDraftRevision: "dirty-to-submit",
+  });
+  await waitFor(() => expect(submitRequest).toEqual({
+    expectedPersistedRevision: persistedRevision,
   }));
   expect(await screen.findByRole("button", { name: "Edit configuration" }))
     .toBeInTheDocument();
@@ -6196,6 +6325,7 @@ test("reviews and tracks submission while leaving edit mode", async () => {
 test("reviews and submits saved pending changes without entering edit mode", async () => {
   let submitRequest: unknown;
   let submitAccepted = false;
+  const persistedRevision = "saved-pending-revision";
   const savedDraft = structuredClone(configDraft);
   savedDraft.dirty = false;
   savedDraft.draftRevision = "saved-pending-revision";
@@ -6206,10 +6336,11 @@ test("reviews and submits saved pending changes without entering edit mode", asy
   };
   server.use(
     http.get("*/api/v1/config", () => HttpResponse.json(savedDraft)),
+    http.get("*/api/v1/config/document", () => HttpResponse.json(
+      configurationDocument(persistedRevision),
+    )),
     http.post("*/api/v1/config/review", () => HttpResponse.json({
-      draftRevision: savedDraft.draftRevision,
-      baseRevision: savedDraft.baseRevision,
-      dirty: false,
+      persistedRevision,
       valid: true,
       validationMessages: [],
       changes: [{
@@ -6267,7 +6398,7 @@ test("reviews and submits saved pending changes without entering edit mode", asy
   }));
 
   await waitFor(() => expect(submitRequest).toEqual({
-    expectedDraftRevision: "saved-pending-revision",
+    expectedPersistedRevision: persistedRevision,
   }));
   expect(screen.queryByText("Editing configuration")).toBeNull();
   expect(await screen.findByText(
@@ -6278,6 +6409,7 @@ test("reviews and submits saved pending changes without entering edit mode", asy
 
 test("keeps submit enabled for admission warnings that may converge later", async () => {
   let submitRequest: unknown;
+  const persistedRevision = "warning-preflight";
   const savedDraft = structuredClone(configDraft);
   savedDraft.dirty = false;
   savedDraft.draftRevision = "warning-preflight";
@@ -6288,10 +6420,11 @@ test("keeps submit enabled for admission warnings that may converge later", asyn
   };
   server.use(
     http.get("*/api/v1/config", () => HttpResponse.json(savedDraft)),
+    http.get("*/api/v1/config/document", () => HttpResponse.json(
+      configurationDocument(persistedRevision),
+    )),
     http.post("*/api/v1/config/review", () => HttpResponse.json({
-      draftRevision: savedDraft.draftRevision,
-      baseRevision: savedDraft.baseRevision,
-      dirty: false,
+      persistedRevision,
       valid: true,
       validationMessages: [],
       changes: [],
@@ -6344,12 +6477,13 @@ test("keeps submit enabled for admission warnings that may converge later", asyn
   await userEvent.click(submit);
 
   await waitFor(() => expect(submitRequest).toEqual({
-    expectedDraftRevision: "warning-preflight",
+    expectedPersistedRevision: persistedRevision,
   }));
 });
 
 
 test("shows resources that submission will reconcile for checksum-only changes", async () => {
+  const persistedRevision = "checksum-impact";
   const savedDraft = structuredClone(configDraft);
   savedDraft.dirty = false;
   savedDraft.draftRevision = "checksum-impact";
@@ -6360,10 +6494,11 @@ test("shows resources that submission will reconcile for checksum-only changes",
   };
   server.use(
     http.get("*/api/v1/config", () => HttpResponse.json(savedDraft)),
+    http.get("*/api/v1/config/document", () => HttpResponse.json(
+      configurationDocument(persistedRevision),
+    )),
     http.post("*/api/v1/config/review", () => HttpResponse.json({
-      draftRevision: savedDraft.draftRevision,
-      baseRevision: savedDraft.baseRevision,
-      dirty: false,
+      persistedRevision,
       valid: true,
       validationMessages: [],
       changes: [],
@@ -6408,6 +6543,7 @@ test("shows resources that submission will reconcile for checksum-only changes",
 test("offers one reset and resubmit action for immutable preflight failures", async () => {
   let resetRequest: unknown;
   let submitCalled = false;
+  const persistedRevision = "immutable-preflight";
   const savedDraft = structuredClone(configDraft);
   savedDraft.dirty = false;
   savedDraft.draftRevision = "immutable-preflight";
@@ -6418,10 +6554,11 @@ test("offers one reset and resubmit action for immutable preflight failures", as
   };
   server.use(
     http.get("*/api/v1/config", () => HttpResponse.json(savedDraft)),
+    http.get("*/api/v1/config/document", () => HttpResponse.json(
+      configurationDocument(persistedRevision),
+    )),
     http.post("*/api/v1/config/review", () => HttpResponse.json({
-      draftRevision: savedDraft.draftRevision,
-      baseRevision: savedDraft.baseRevision,
-      dirty: false,
+      persistedRevision,
       valid: true,
       validationMessages: [],
       changes: [],
@@ -6519,7 +6656,7 @@ test("offers one reset and resubmit action for immutable preflight failures", as
   await waitFor(() => expect(resetRequest).toEqual({
     planToken: "preflight-reset-token",
     resubmit: true,
-    expectedDraftRevision: "immutable-preflight",
+    expectedPersistedRevision: persistedRevision,
   }));
   expect(submitCalled).toBe(false);
 });
@@ -6574,6 +6711,7 @@ test("offers resubmission when a configured resource is missing", async () => {
   };
   capture.comparisons = [];
   const validDraft = structuredClone(configDraft);
+  const persistedRevision = "missing-resource-resubmit";
   validDraft.editState.validation = {
     valid: true,
     errors: [],
@@ -6582,10 +6720,11 @@ test("offers resubmission when a configured resource is missing", async () => {
   server.use(
     http.get("*/api/v1/manage/state", () => HttpResponse.json(currentState)),
     http.get("*/api/v1/config", () => HttpResponse.json(validDraft)),
+    http.get("*/api/v1/config/document", () => HttpResponse.json(
+      configurationDocument(persistedRevision),
+    )),
     http.post("*/api/v1/config/review", () => HttpResponse.json({
-      draftRevision: validDraft.draftRevision,
-      baseRevision: validDraft.baseRevision,
-      dirty: false,
+      persistedRevision,
       valid: true,
       validationMessages: [],
       changes: [],
@@ -6722,6 +6861,7 @@ test("Escape invokes the active edit confirmation cancel action", async () => {
 
 
 test("Escape closes only the topmost submit dialog while editing", async () => {
+  const persistedRevision = "saved-submit-escape";
   const dirtyDraft = structuredClone(configDraft);
   dirtyDraft.dirty = true;
   dirtyDraft.draftRevision = "dirty-submit-escape";
@@ -6732,6 +6872,21 @@ test("Escape closes only the topmost submit dialog while editing", async () => {
   };
   server.use(
     http.get("*/api/v1/config", () => HttpResponse.json(dirtyDraft)),
+    http.post("*/api/v1/config/save", () => HttpResponse.json({
+      ...dirtyDraft,
+      dirty: false,
+      draftRevision: "saved-draft-submit-escape",
+      baseRevision: persistedRevision,
+    })),
+    http.get("*/api/v1/config/document", () => HttpResponse.json(
+      configurationDocument(persistedRevision),
+    )),
+    http.post("*/api/v1/config/review", () => HttpResponse.json({
+      persistedRevision,
+      valid: true,
+      validationMessages: [],
+      changes: [],
+    })),
   );
   renderApp();
   await enterEditMode();
@@ -6778,6 +6933,7 @@ test("Escape invokes the reset dialog Cancel action", async () => {
 
 
 test("shows structured admission preflight preparation failures", async () => {
+  const persistedRevision = "preflight-failure";
   const validDraft = structuredClone(configDraft);
   validDraft.editState.validation = {
     valid: true,
@@ -6786,6 +6942,15 @@ test("shows structured admission preflight preparation failures", async () => {
   };
   server.use(
     http.get("*/api/v1/config", () => HttpResponse.json(validDraft)),
+    http.get("*/api/v1/config/document", () => HttpResponse.json(
+      configurationDocument(persistedRevision),
+    )),
+    http.post("*/api/v1/config/review", () => HttpResponse.json({
+      persistedRevision,
+      valid: true,
+      validationMessages: [],
+      changes: [],
+    })),
     http.post("*/api/v1/config/preflight", () => HttpResponse.json({
       detail: {
         code: "admission_preflight_unavailable",

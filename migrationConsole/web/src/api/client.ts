@@ -354,12 +354,12 @@ export async function getConfigRemovalImpact(
 }
 
 
-export async function submitConfigDraft(
-  draftRevision: string,
+export async function submitSavedConfiguration(
+  persistedRevision: string,
 ): Promise<Operation> {
   const { data, error, response } = await client.POST(
     "/api/v1/config/submit",
-    { body: { expectedDraftRevision: draftRevision } },
+    { body: { expectedPersistedRevision: persistedRevision } },
   );
   if (!response.ok || error || !data) {
     throw new ConfigApiError(
@@ -373,11 +373,11 @@ export async function submitConfigDraft(
 
 
 export async function getConfigReview(
-  draftRevision: string,
+  persistedRevision: string,
 ): Promise<ConfigReview> {
   const { data, error, response } = await client.POST(
     "/api/v1/config/review",
-    { body: { expectedDraftRevision: draftRevision } },
+    { body: { expectedPersistedRevision: persistedRevision } },
   );
   if (!response.ok || error || !data) {
     throw new ConfigApiError(
@@ -390,11 +390,11 @@ export async function getConfigReview(
 }
 
 export async function getConfigPreflight(
-  draftRevision: string,
+  persistedRevision: string,
 ): Promise<AdmissionPreflight> {
   const { data, error, response } = await client.POST(
     "/api/v1/config/preflight",
-    { body: { expectedDraftRevision: draftRevision } },
+    { body: { expectedPersistedRevision: persistedRevision } },
   );
   if (!response.ok || error || !data) {
     throw new ConfigApiError(
@@ -534,7 +534,7 @@ export async function executeReset(
   planToken: string,
   options: {
     resubmit?: boolean;
-    expectedDraftRevision?: string;
+    expectedPersistedRevision?: string;
   } = {},
 ): Promise<Operation> {
   const { data, error, response } = await client.POST(
