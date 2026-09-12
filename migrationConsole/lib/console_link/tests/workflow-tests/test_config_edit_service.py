@@ -445,7 +445,7 @@ def test_list_external_resources_accepts_unmanaged_matching_secret():
     }]
 
 
-def test_load_edit_session_marks_missing_external_secret_as_error():
+def test_load_edit_session_does_not_block_on_external_secret_validation():
     runner = MagicMock()
     runner.run_config_processor_node_script.return_value = json.dumps(
         edit_state_with_external_ref("target-creds", basic_auth_secret_external_ref())
@@ -461,23 +461,31 @@ def test_load_edit_session_marks_missing_external_secret_as_error():
     with patch.object(service, "_core_v1", return_value=core):
         session = service.load_edit_session()
 
-    root = session.edit_state["nodes"][0]
-    target = root["children"][0]
-    secret = target["children"][0]
-    assert root["statusCounts"]["errors"] == 1
-    assert target["statusCounts"]["errors"] == 1
-    assert secret["status"] == "error"
-    assert secret["statusCounts"]["errors"] == 1
-    assert secret["essential"] is True
-    assert secret["diagnostics"][0]["severity"] == "error"
-    assert "Secret 'target-creds' was not found in namespace 'ma'" in secret["diagnostics"][0]["message"]
-    assert session.edit_state["validation"]["valid"] is False
-    assert session.edit_state["validation"]["diagnostics"][0]["path"] == [
+    assert session.edit_state["validation"]["valid"] is True
+    core.read_namespaced_secret.assert_not_called()
+
+
+def test_external_diagnostics_mark_missing_secret_as_error():
+    runner = MagicMock()
+    runner.run_config_processor_node_script.return_value = json.dumps(
+        edit_state_with_external_ref("target-creds", basic_auth_secret_external_ref())
+    )
+    core = MagicMock()
+    core.read_namespaced_secret.side_effect = ApiException(status=404, reason="Not Found")
+    service = ConfigEditService(namespace="ma", runner=runner)
+
+    with patch.object(service, "_core_v1", return_value=core):
+        result = service.diagnose_external_resources("targetClusters: {}\n")
+
+    assert result["status"] == "error"
+    assert result["diagnostics"][0]["severity"] == "error"
+    assert "Secret 'target-creds' was not found in namespace 'ma'" in result["diagnostics"][0]["message"]
+    assert result["diagnostics"][0]["path"] == [
         "targetClusters", "target", "authConfig", "basic", "secretName",
     ]
 
 
-def test_load_edit_session_accepts_unmanaged_matching_secret():
+def test_external_diagnostics_accept_unmanaged_matching_secret():
     runner = MagicMock()
     runner.run_config_processor_node_script.return_value = json.dumps(
         edit_state_with_external_ref("a", basic_auth_secret_external_ref())
@@ -501,16 +509,13 @@ def test_load_edit_session_accepts_unmanaged_matching_secret():
     )
 
     with patch.object(service, "_core_v1", return_value=core):
-        session = service.load_edit_session()
+        result = service.diagnose_external_resources(service.store.config.raw_yaml)
 
-    secret = session.edit_state["nodes"][0]["children"][0]["children"][0]
-    assert secret["status"] == "ok"
-    assert secret["statusCounts"] == {}
-    assert session.edit_state["validation"] == {"valid": True, "errors": []}
+    assert result == {"status": "valid", "diagnostics": []}
     core.read_namespaced_secret.assert_called_once_with(name="a", namespace="ma")
 
 
-def test_load_edit_session_validates_external_secret_from_pending_yaml_value():
+def test_external_diagnostics_use_pending_yaml_value():
     state = edit_state_with_external_ref("", basic_auth_secret_external_ref())
     secret_node = state["nodes"][0]["children"][0]["children"][0]
     secret_node.pop("value", None)
@@ -532,16 +537,14 @@ def test_load_edit_session_validates_external_secret_from_pending_yaml_value():
     )
 
     with patch.object(service, "_core_v1", return_value=core):
-        session = service.load_edit_session()
+        result = service.diagnose_external_resources(service.store.config.raw_yaml)
 
-    secret = session.edit_state["nodes"][0]["children"][0]["children"][0]
-    assert secret["status"] == "error"
-    assert secret["statusCounts"]["errors"] == 1
-    assert "Secret 'a' was not found in namespace 'ma'" in secret["diagnostics"][0]["message"]
+    assert result["status"] == "error"
+    assert "Secret 'a' was not found in namespace 'ma'" in result["diagnostics"][0]["message"]
     core.read_namespaced_secret.assert_called_once_with(name="a", namespace="ma")
 
 
-def test_load_edit_session_marks_existing_external_config_map_with_bad_keys_as_error():
+def test_external_diagnostics_mark_config_map_with_bad_keys_as_error():
     state = edit_state_with_external_ref("proxy-log-config", config_map_external_ref())
     node = state["nodes"][0]["children"][0]["children"][0]
     node["path"] = ["traffic", "proxies", "cap", "proxyConfig", "loggingConfigurationOverrideConfigMap"]
@@ -560,14 +563,11 @@ def test_load_edit_session_marks_existing_external_config_map_with_bad_keys_as_e
     )
 
     with patch.object(service, "_core_v1", return_value=core):
-        session = service.load_edit_session()
+        result = service.diagnose_external_resources("traffic: {}\n")
 
-    config_map = session.edit_state["nodes"][0]["children"][0]["children"][0]
-    assert config_map["status"] == "error"
-    assert config_map["statusCounts"]["errors"] == 1
-    assert "ConfigMap 'proxy-log-config' does not satisfy this reference" in config_map["diagnostics"][0]["message"]
-    assert "missing log4j2.properties" in config_map["diagnostics"][0]["message"]
-    assert session.edit_state["validation"]["valid"] is False
+    assert result["status"] == "error"
+    assert "ConfigMap 'proxy-log-config' does not satisfy this reference" in result["diagnostics"][0]["message"]
+    assert "missing log4j2.properties" in result["diagnostics"][0]["message"]
 
 
 def test_read_external_resource_returns_missing_payload_for_not_found_secret():

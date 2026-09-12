@@ -105,7 +105,7 @@ class ConfigEditService:
         raw_yaml = config.raw_yaml if config else ""
         return ConfigEditSession(
             raw_yaml=raw_yaml,
-            edit_state=self._run_edit_state(raw_yaml, validate_external_refs=True),
+            edit_state=self._run_edit_state(raw_yaml, validate_external_refs=False),
         )
 
     def load_edit_state(self) -> Dict[str, Any]:
@@ -113,7 +113,7 @@ class ConfigEditService:
 
     def project_raw_yaml(self, raw_yaml: str) -> Dict[str, Any]:
         """Build a structured or raw-repair edit projection without saving."""
-        return self._run_edit_state(raw_yaml, validate_external_refs=True)
+        return self._run_edit_state(raw_yaml, validate_external_refs=False)
 
     def apply_operation(self, raw_yaml: str, operation: Dict[str, Any]) -> ConfigEditApplyResult:
         prepared_operation, notices = self._prepare_operation(operation)
@@ -134,10 +134,6 @@ class ConfigEditService:
                 )
 
         result = json.loads(output)
-        self._annotate_external_resource_diagnostics(
-            result["editState"],
-            _parse_raw_yaml(result.get("yaml") or ""),
-        )
         return ConfigEditApplyResult(
             raw_yaml=result["yaml"],
             edit_state=result["editState"],
@@ -411,6 +407,29 @@ class ConfigEditService:
         edit_state = self._run_edit_state(raw_yaml, validate_external_refs=False)
         self._require_valid_edit_state(edit_state, action="save")
 
+    def diagnose_external_resources(self, raw_yaml: str) -> Dict[str, Any]:
+        """Check configured Kubernetes references without changing edit validity."""
+        edit_state = self._run_edit_state(raw_yaml, validate_external_refs=False)
+        diagnostics = self._external_resource_diagnostics(
+            edit_state,
+            _parse_raw_yaml(raw_yaml),
+        )
+        severities = {
+            str(diagnostic.get("severity") or "")
+            for diagnostic in diagnostics
+        }
+        status = (
+            "error"
+            if "error" in severities
+            else "warning"
+            if "warning" in severities
+            else "valid"
+        )
+        return {
+            "status": status,
+            "diagnostics": diagnostics,
+        }
+
     @staticmethod
     def _require_valid_edit_state(
         edit_state: Dict[str, Any],
@@ -444,19 +463,11 @@ class ConfigEditService:
         pending_config: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Mark configured Secret/ConfigMap references that cannot satisfy the schema hint."""
-        cache: dict[tuple[str, str], Optional[Dict[str, Any]]] = {}
-        validation_diagnostics: list[Dict[str, Any]] = []
-
-        def visit(node: Dict[str, Any], ancestors: list[Dict[str, Any]]) -> None:
-            diagnostic = self._external_resource_node_diagnostic(node, cache, pending_config or {})
-            if diagnostic and _add_diagnostic_with_counts(node, ancestors, diagnostic):
-                validation_diagnostics.append(diagnostic)
-            for child in node.get("children") or []:
-                visit(child, [*ancestors, node])
-
-        for root in edit_state.get("nodes") or []:
-            visit(root, [])
-
+        validation_diagnostics = self._external_resource_diagnostics(
+            edit_state,
+            pending_config or {},
+            annotate_nodes=True,
+        )
         if validation_diagnostics:
             validation = edit_state.setdefault("validation", {})
             existing = list(validation.get("diagnostics") or [])
@@ -466,6 +477,28 @@ class ConfigEditService:
             validation["diagnostics"] = existing
             if any(diagnostic.get("severity") in {"error", "required", "blocked"} for diagnostic in existing):
                 validation["valid"] = False
+
+    def _external_resource_diagnostics(
+        self,
+        edit_state: Dict[str, Any],
+        pending_config: Dict[str, Any],
+        *,
+        annotate_nodes: bool = False,
+    ) -> list[Dict[str, Any]]:
+        cache: dict[tuple[str, str], Optional[Dict[str, Any]]] = {}
+        validation_diagnostics: list[Dict[str, Any]] = []
+
+        def visit(node: Dict[str, Any], ancestors: list[Dict[str, Any]]) -> None:
+            diagnostic = self._external_resource_node_diagnostic(node, cache, pending_config)
+            if diagnostic:
+                if not annotate_nodes or _add_diagnostic_with_counts(node, ancestors, diagnostic):
+                    validation_diagnostics.append(diagnostic)
+            for child in node.get("children") or []:
+                visit(child, [*ancestors, node])
+
+        for root in edit_state.get("nodes") or []:
+            visit(root, [])
+        return validation_diagnostics
 
     def _external_resource_node_diagnostic(
         self,

@@ -458,6 +458,17 @@ class SaveConfigurationDocumentRequestV1(WebModel):
     raw_yaml: str
 
 
+class ConfigEnvironmentDiagnosticsRequestV1(WebModel):
+    raw_yaml: str
+    draft_fingerprint: str
+
+
+class ConfigEnvironmentDiagnosticsV1(WebModel):
+    draft_fingerprint: str
+    status: Literal["valid", "warning", "error"]
+    diagnostics: List[EditDiagnosticV1] = Field(default_factory=list)
+
+
 class SetEditOperationV1(WebModel):
     op: Literal["set"]
     path: List[str]
