@@ -62,3 +62,25 @@ export {
     buildValidationElements,
     validateInputAgainstUnifiedSchema,
 } from "./unifiedSchemaValidator";
+export {
+    buildConfigDependencyGraph,
+} from "./configDependencies";
+export type {
+    ConfigReferenceEdge,
+} from "./configDependencies";
+export {
+    configReferences,
+    configRemovalImpact,
+    groupSnapshotMigrationNavigation,
+    projectConfigResourceGraph,
+} from "./resourceGraph";
+export type {
+    ConfigReference,
+    ConfigRemovalImpactEntry,
+    ResourceGraphDiagnostic,
+    ResourceGraphDraft,
+    ResourceGraphEditCapability,
+    ResourceGraphNode,
+    ResourceGraphRelationship,
+    ResourceGraphSnapshot,
+} from "./resourceGraph";
