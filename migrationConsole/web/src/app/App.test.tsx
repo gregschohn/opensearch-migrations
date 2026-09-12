@@ -2175,13 +2175,28 @@ test("marks only newly inserted rows without remounting existing rows", async ()
     },
   };
 
+  let observedInsertion = false;
+  const insertionObserver = new MutationObserver(() => {
+    observedInsertion ||= Boolean(
+      tree.querySelector(
+        `[data-node-id="${insertedId}"].inserted`,
+      ),
+    );
+  });
+  insertionObserver.observe(tree, {
+    attributes: true,
+    attributeFilter: ["class"],
+    childList: true,
+    subtree: true,
+  });
   await client.invalidateQueries({ queryKey: ["manage-state"] });
-  const inserted = await within(tree).findByRole(
+  await within(tree).findByRole(
     "treeitem",
     { name: /^capture-next, Ready$/ },
   );
 
-  expect(inserted).toHaveClass("inserted");
+  await waitFor(() => expect(observedInsertion).toBe(true));
+  insertionObserver.disconnect();
   expect(
     within(tree).getByRole("treeitem", { name: /^capture, Ready$/ }),
   ).toBe(capture);
