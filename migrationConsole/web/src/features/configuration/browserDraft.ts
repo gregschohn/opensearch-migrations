@@ -160,6 +160,19 @@ export function savedBrowserConfigDraft(
 }
 
 
+export function acknowledgeSavedBrowserConfigDraft(
+  document: ConfigurationDocument,
+  savedSnapshot: BrowserConfigDraft,
+  current: BrowserConfigDraft,
+): BrowserConfigDraft {
+  if (current.draftRevision === savedSnapshot.draftRevision) {
+    return savedBrowserConfigDraft(document, current);
+  }
+  const saved = projectedDraft(document, current.navigation);
+  return replaceBrowserConfigYaml(saved, current.rawDocument);
+}
+
+
 export function revertedBrowserConfigDraft(
   draft: BrowserConfigDraft,
 ): BrowserConfigDraft {

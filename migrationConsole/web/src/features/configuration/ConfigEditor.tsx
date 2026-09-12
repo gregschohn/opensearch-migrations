@@ -51,18 +51,23 @@ import { SubmitConfigDialog } from "../submission/SubmitConfigDialog";
 import { ExternalResourceEditor } from "./ExternalResourceEditor";
 import {
   BROWSER_CONFIG_DRAFT_QUERY_KEY,
+  acknowledgeSavedBrowserConfigDraft,
   applyBrowserEditOperation,
   browserLocalEditingEnabled,
   createBrowserConfigDraft,
   replaceBrowserConfigYaml,
   revertedBrowserConfigDraft,
-  savedBrowserConfigDraft,
   type BrowserConfigDraft,
 } from "./browserDraft";
 import {
   readEditorDisplayPreferences,
   writeEditorDisplayPreferences,
 } from "./editorPreferences";
+import {
+  diagnosticsForScope,
+  useEnvironmentDiagnostics,
+  type EnvironmentDiagnosticLifecycle,
+} from "./environmentDiagnostics";
 import { humanizeFieldLabel } from "./fieldLabels";
 import { fieldValidationProblem } from "./fieldValidation";
 import {
@@ -129,6 +134,86 @@ interface EditRow {
 interface PinnedContext {
   id: string;
   progress: number;
+}
+
+
+function environmentLifecycleLabel(
+  lifecycle: EnvironmentDiagnosticLifecycle,
+): string {
+  switch (lifecycle) {
+    case "not-checked":
+      return "Not checked";
+    case "checking":
+      return "Checking";
+    case "valid":
+      return "Valid";
+    case "warning":
+      return "Warning";
+    case "error":
+      return "Error";
+    case "stale":
+      return "Refreshing";
+  }
+}
+
+
+function EnvironmentDiagnostics({
+  diagnostics,
+  lifecycle,
+}: Readonly<{
+  diagnostics: ConfigDraft["editState"]["validation"]["diagnostics"];
+  lifecycle: EnvironmentDiagnosticLifecycle;
+}>) {
+  const blocking = diagnostics.filter(
+    (diagnostic) => diagnostic.severity === "error",
+  );
+  const warnings = diagnostics.filter(
+    (diagnostic) => diagnostic.severity === "warning",
+  );
+  const scopedLifecycle = (
+    lifecycle === "not-checked"
+    || lifecycle === "checking"
+    || lifecycle === "stale"
+  )
+    ? lifecycle
+    : blocking.length > 0
+      ? "error"
+      : warnings.length > 0
+        ? "warning"
+        : "valid";
+  return (
+    <section
+      aria-live="polite"
+      className={`environment-diagnostics status-${scopedLifecycle}`}
+    >
+      <header>
+        {scopedLifecycle === "checking" || scopedLifecycle === "stale"
+          ? <LoaderCircle className="spin" aria-hidden="true" />
+          : scopedLifecycle === "valid"
+            ? <Check aria-hidden="true" />
+            : <AlertTriangle aria-hidden="true" />}
+        <strong>Environment checks</strong>
+        <span>{environmentLifecycleLabel(scopedLifecycle)}</span>
+      </header>
+      {diagnostics.length > 0 ? (
+        <ul>
+          {diagnostics.map((diagnostic, index) => (
+            <li key={`${diagnostic.path.join(".")}:${diagnostic.message}:${index}`}>
+              {diagnostic.message}
+            </li>
+          ))}
+        </ul>
+      ) : scopedLifecycle === "not-checked" ? (
+        <p>Configured Kubernetes references have not been checked yet.</p>
+      ) : scopedLifecycle === "checking" ? (
+        <p>Checking configured Kubernetes references.</p>
+      ) : scopedLifecycle === "stale" ? (
+        <p>Configured references changed; refreshing their checks.</p>
+      ) : (
+        <p>Configured Kubernetes references are available for this resource.</p>
+      )}
+    </section>
+  );
 }
 
 
@@ -1846,9 +1931,12 @@ export function ConfigEditor({
     ? browserDraftQuery
     : compatibilityDraftQuery;
   const draft = draftQuery.data;
-  const interactionPending = busy || actionPending || resourceSyncing;
+  const editorBusy = busy || resourceSyncing;
   const draftBaseStale = useBrowserDraft
     && Boolean((draft as BrowserConfigDraft | undefined)?.baseStale);
+  const environmentDiagnostics = useEnvironmentDiagnostics(
+    useBrowserDraft ? draft as BrowserConfigDraft | undefined : undefined,
+  );
 
   useEffect(() => {
     const preferences = readEditorDisplayPreferences(resourceType);
@@ -1881,6 +1969,13 @@ export function ConfigEditor({
   const scope = useMemo(
     () => target ? editScope(nodes, target.id) : null,
     [nodes, target],
+  );
+  const scopedEnvironmentDiagnostics = useMemo(
+    () => diagnosticsForScope(
+      environmentDiagnostics.diagnostics,
+      scope?.path ?? null,
+    ),
+    [environmentDiagnostics.diagnostics, scope?.path],
   );
   const renderedScope = useMemo(
     () => contentScope(scope),
@@ -2595,7 +2690,8 @@ export function ConfigEditor({
     promise,
     localOperations = [],
   ) => {
-    setBusy(true);
+    const blocksEditor = !useBrowserDraft || localOperations.length === 0;
+    if (blocksEditor) setBusy(true);
     setProblem("");
     try {
       const next = await promise;
@@ -2621,7 +2717,7 @@ export function ConfigEditor({
       setProblem(error instanceof Error ? error.message : String(error));
       return false;
     } finally {
-      setBusy(false);
+      if (blocksEditor) setBusy(false);
     }
   };
 
@@ -2738,9 +2834,14 @@ export function ConfigEditor({
         persistedRevision: current.persistedRevision,
         rawYaml: current.savedRawDocument,
       };
-    const saved = savedBrowserConfigDraft(
+    await waitForPendingCommit();
+    const latest = queryClient.getQueryData<BrowserConfigDraft>(
+      BROWSER_CONFIG_DRAFT_QUERY_KEY,
+    ) ?? current;
+    const saved = acknowledgeSavedBrowserConfigDraft(
       document,
       current,
+      latest,
     );
     queryClient.setQueryData(BROWSER_CONFIG_DRAFT_QUERY_KEY, saved);
     await refreshCompatibilityDraft();
@@ -2767,8 +2868,10 @@ export function ConfigEditor({
       if (!current?.dirty) return;
       if (useBrowserDraft) {
         try {
-          await persistBrowserDraft(current as BrowserConfigDraft);
-          setLocallyEditedIds(new Set());
+          const saved = await persistBrowserDraft(
+            current as BrowserConfigDraft,
+          );
+          if (!saved.dirty) setLocallyEditedIds(new Set());
           return;
         } catch (error) {
           setProblem(error instanceof Error ? error.message : String(error));
@@ -3169,7 +3272,7 @@ export function ConfigEditor({
   return (
     <section
       aria-label={`Edit ${resourceLabel} configuration`}
-      aria-busy={interactionPending}
+      aria-busy={busy || actionPending || resourceSyncing}
       className="workspace config-editor"
     >
       <header className="config-toolbar">
@@ -3229,7 +3332,7 @@ export function ConfigEditor({
               <button
                 aria-label="Apply rename"
                 disabled={
-                  interactionPending
+                  editorBusy
                   || !titleRenameName.trim()
                   || titleRenameName.trim() === titleRenameOption.currentName
                   || Boolean(titleRenameProblem)
@@ -3241,7 +3344,7 @@ export function ConfigEditor({
               </button>
               <button
                 aria-label="Cancel rename"
-                disabled={interactionPending}
+                disabled={editorBusy}
                 onClick={() => setTitleRenaming(false)}
                 title="Cancel rename"
                 type="button"
@@ -3261,7 +3364,7 @@ export function ConfigEditor({
                 <button
                   aria-label={`Rename ${resourceLabel}`}
                   className="icon-button title-rename-button"
-                  disabled={interactionPending}
+                  disabled={editorBusy}
                   onClick={() => {
                     setTitleRenameName(titleRenameOption.currentName);
                     setTitleRenaming(true);
@@ -3392,6 +3495,12 @@ export function ConfigEditor({
           <span>{notice}</span>
           <button onClick={() => setNotice("")} type="button">Dismiss</button>
         </div>
+      ) : null}
+      {environmentDiagnostics.fingerprint ? (
+        <EnvironmentDiagnostics
+          diagnostics={scopedEnvironmentDiagnostics}
+          lifecycle={environmentDiagnostics.lifecycle}
+        />
       ) : null}
       {draft.rawYaml !== undefined ? (
         <section className="raw-config-repair">
@@ -3838,18 +3947,6 @@ export function ConfigEditor({
             onSubmitted();
           }}
         />
-      ) : null}
-      {interactionPending ? (
-        <div
-          aria-live="polite"
-          className="interaction-shield"
-          role="status"
-        >
-          <div>
-            <LoaderCircle className="spin" aria-hidden="true" />
-            <span>Updating configuration</span>
-          </div>
-        </div>
       ) : null}
     </section>
   );
