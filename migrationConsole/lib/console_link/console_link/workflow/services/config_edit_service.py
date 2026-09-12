@@ -418,13 +418,12 @@ class ConfigEditService:
             str(diagnostic.get("severity") or "")
             for diagnostic in diagnostics
         }
-        status = (
-            "error"
-            if "error" in severities
-            else "warning"
-            if "warning" in severities
-            else "valid"
-        )
+        if "error" in severities:
+            status = "error"
+        elif "warning" in severities:
+            status = "warning"
+        else:
+            status = "valid"
         return {
             "status": status,
             "diagnostics": diagnostics,
