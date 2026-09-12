@@ -1,7 +1,7 @@
 # Proxy Capture Protocol
 
 **Status:** standalone design contract
-**Last revised:** 2026-09-11
+**Last revised:** 2026-09-12
 
 This document defines horizontal scaling and failure behavior for capture proxies that write traffic
 to Kafka for later replay. It covers the controller-less deployment. Managed-fleet terminal-failure
@@ -66,6 +66,10 @@ The design accepts:
 - hard process death may prevent a final proxy-completion record;
 - pass-through mode may create a known interval in which source traffic is not replayable; and
 - restoring strict capture after such an interval requires a new capture and replay run; and
+- HTTP/1.x pipelined requests are outside the settled protocol contract. The protocol does not
+  define behavior when one source connection has multiple outstanding requests or one inbound read
+  contains bytes from more than one request. The current implementation behavior remains unchanged
+  and carries no correctness guarantee for those cases; and
 - this redesign supports only source request handling that cannot mutate state before the complete
   HTTP request arrives. Streaming source handlers that can act on an incomplete body remain out of
   scope; and
@@ -257,9 +261,16 @@ While in `PROBING`, it:
 1. refreshes metadata for the traffic topic;
 2. chooses one representative traffic partition for every distinct current leader broker;
 3. emits a semantically inert `CaptureCapabilityProbe` carrying
-   `writerNodeId = captureActivationId + ":PROBE"` to each representative partition;
-4. waits for all probe acknowledgements; and
-5. refreshes metadata again before joining the group.
+   `writerNodeId = captureActivationId + ":PROBE"` and a producer timestamp of zero to each
+   representative partition;
+4. accepts each acknowledgement only when its Kafka record metadata reports a positive timestamp,
+   proving that the broker replaced the supplied timestamp with `LogAppendTime`;
+5. waits for all probe acknowledgements; and
+6. refreshes metadata again before joining the group.
+
+A topic configured with `CreateTime` either rejects the deliberately stale producer timestamp or
+returns it unchanged. Either result fails the probe. Workflow-managed capture topics set
+`message.timestamp.type=LogAppendTime`; unmanaged deployments must configure the same property.
 
 `CaptureCapabilityProbe` is not replay input. If the replayer later encounters the Kafka record, it
 performs no replay action and allows the record to become commit-eligible through ordinary
@@ -649,7 +660,7 @@ stop-the-world ordering across ordinary packets.
 ### 5.2 Manifest completeness
 
 Every current or still-draining `(writerNodeId, partition)` with an active publisher emits a
-complete manifest at `manifestInterval`, with a default operational target of 30 seconds.
+complete manifest at `manifestInterval`. The default interval is 30 seconds.
 
 Manifest publication is sequenced per partition. A later cycle is not prepared or submitted until
 the previous cycle's complete chunk set has been acknowledged. Overlapping periodic callbacks
@@ -705,9 +716,12 @@ The initial complete manifest establishes `lastAcceptedManifestLogAppendTime`. T
 continuous for the lifetime of the `(writerNodeId, partition)`. Empty manifests, inactivity, and
 later assignments do not reset it.
 
-Let `E` be the configured manifest expiration interval. The proxy and replayer must receive the
-same `E` and `S` values for one capture-and-replay run; the managed orchestration requirement is
-defined in
+The default configured manifest expiration interval `E` is two full-manifest intervals, or 60
+seconds with the default 30-second interval. The interval and `E` are configurable, but
+`manifestInterval` must remain lower than `E`.
+
+The proxy and replayer must receive the same `E` and `S` values for one capture-and-replay run; the
+managed orchestration requirement is defined in
 [Managed Fleet Capture Recovery](managedFleetCaptureRecovery.md).
 Unmanaged deployment configuration must preserve the same agreement.
 
@@ -756,7 +770,8 @@ before that syscall was allowed.
 ### 5.6 Timing relationship
 
 The configured manifest publication interval remains lower than `E`, with margin for scheduling,
-Kafka publication, acknowledgement latency, retries, and the fleet's operational skew threshold:
+Kafka publication, acknowledgement latency, retries, and the fleet's operational skew threshold.
+The defaults are 30 seconds and 60 seconds respectively:
 
 ```text
 manifestInterval < E

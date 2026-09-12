@@ -32,6 +32,11 @@ The protocol in this document is complete for:
 - committing or retaining whole Kafka records; and
 - stopping safely during replayer rebalance, shutdown, or internal process failure.
 
+HTTP/1.x pipelined requests are outside the settled protocol contract. In particular, this document
+does not define behavior when one source connection has multiple outstanding requests or one
+inbound read contains bytes from more than one request. The current implementation behavior is
+preserved without a new correctness claim and will be resolved separately.
+
 Managed-fleet recovery after an interval of uncaptured source traffic is not fully designed. The
 settled requirements are:
 
@@ -266,19 +271,29 @@ needed to reconstruct that complete request.
 The converse is intentionally false. Kafka may contain a complete request that the proxy ultimately
 does not send to the source.
 
-Kafka must assign record timestamps using `LogAppendTime`. For each `(writerNodeId, partition)`, the
-proxy tracks `lastAcceptedManifestLogAppendTime`, initially established by the acknowledged initial
-complete manifest required by §3. For a chunked manifest, its `manifestLogAppendTime` is the maximum
-Kafka `LogAppendTime` across all of its chunks.
+Kafka must assign record timestamps using `LogAppendTime`. Workflow-managed capture topics set
+`message.timestamp.type=LogAppendTime`; unmanaged deployments must configure the same topic
+property. Before joining the proxy group, each Kafka capability probe supplies a producer timestamp
+of zero and accepts the acknowledgement only when Kafka reports a positive record timestamp.
+`LogAppendTime` replaces the supplied timestamp with broker time. A topic using `CreateTime` either
+rejects the stale timestamp or reports it unchanged, so the proxy rejects startup in either case.
+
+For each `(writerNodeId, partition)`, the proxy tracks
+`lastAcceptedManifestLogAppendTime`, initially established by the acknowledged initial complete
+manifest required by §3. For a chunked manifest, its `manifestLogAppendTime` is the maximum Kafka
+`LogAppendTime` across all of its chunks.
 
 The baseline is continuous for the lifetime of that writer identity and partition. Neither an empty
 manifest, inactivity, nor a later assignment resets it.
 
-Let `E` be the configured proxy manifest expiration interval. The proxy and replayer must receive
-the same `E` and `S` values for one capture-and-replay run; `S` is defined in §8. A managed
-orchestration layer supplies the agreed values to all participating processes. In an unmanaged
-deployment, maintaining that agreement is an operator requirement. The timestamp proof in §8 is
-invalid when the processes are configured with different values.
+Complete manifests are published every 30 seconds by default. The default proxy manifest expiration
+interval `E` is two full-manifest intervals, or 60 seconds. The interval and `E` are configurable,
+but the manifest interval must remain lower than `E`.
+
+The proxy and replayer must receive the same `E` and `S` values for one capture-and-replay run; `S`
+is defined in §8. A managed orchestration layer supplies the agreed values to all participating
+processes. In an unmanaged deployment, maintaining that agreement is an operator requirement. The
+timestamp proof in §8 is invalid when the processes are configured with different values.
 
 A subsequent complete manifest
 updates `lastAcceptedManifestLogAppendTime` only when:
