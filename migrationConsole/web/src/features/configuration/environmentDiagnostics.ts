@@ -66,8 +66,8 @@ function externalReferenceSignature(nodes: EditNode[]): string {
 function hashSignature(signature: string): string {
   let first = 0x811c9dc5;
   let second = 0x9e3779b9;
-  for (let index = 0; index < signature.length; index += 1) {
-    const code = signature.charCodeAt(index);
+  for (const character of signature) {
+    const code = character.codePointAt(0) ?? 0;
     first = Math.imul(first ^ code, 0x01000193);
     second = Math.imul(second ^ code, 0x85ebca6b);
   }
