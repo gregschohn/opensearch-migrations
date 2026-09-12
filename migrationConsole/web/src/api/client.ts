@@ -10,6 +10,8 @@ export type RuntimeStatus = components["schemas"]["RuntimeStatusV1"];
 export type ConfigDraft = components["schemas"]["ConfigDraftV1"];
 export type ConfigurationDocument =
   components["schemas"]["ConfigurationDocumentV1"];
+export type ConfigEnvironmentDiagnostics =
+  components["schemas"]["ConfigEnvironmentDiagnosticsV1"];
 export type ConfigRemovalImpact =
   components["schemas"]["ConfigRemovalImpactV1"];
 export type ConfigSubmission = components["schemas"]["ConfigSubmissionV1"];
@@ -194,6 +196,32 @@ export async function saveConfigurationDocument(
     throw new ConfigApiError(
       response.status,
       "The configuration document could not be saved",
+      error,
+    );
+  }
+  return data;
+}
+
+
+export async function diagnoseConfigurationEnvironment(
+  rawYaml: string,
+  draftFingerprint: string,
+  signal?: AbortSignal,
+): Promise<ConfigEnvironmentDiagnostics> {
+  const { data, error, response } = await client.POST(
+    "/api/v1/config/diagnostics",
+    {
+      body: {
+        rawYaml,
+        draftFingerprint,
+      },
+      signal,
+    },
+  );
+  if (!response.ok || error || !data) {
+    throw new ConfigApiError(
+      response.status,
+      "Configuration environment checks could not be completed",
       error,
     );
   }

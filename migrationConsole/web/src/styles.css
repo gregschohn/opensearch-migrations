@@ -4331,6 +4331,77 @@ button.secondary-button:hover:not(:disabled) {
   text-decoration: underline;
 }
 
+.environment-diagnostics {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 5px;
+  padding: 7px 14px;
+  border-bottom: 1px solid var(--border);
+  background: #f6f8fa;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.environment-diagnostics > header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.environment-diagnostics > header svg {
+  width: 15px;
+  height: 15px;
+  color: var(--accent);
+}
+
+.environment-diagnostics > header span {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.environment-diagnostics p,
+.environment-diagnostics ul {
+  margin: 0 0 0 22px;
+}
+
+.environment-diagnostics ul {
+  display: grid;
+  gap: 3px;
+  padding-left: 16px;
+}
+
+.environment-diagnostics.status-valid {
+  border-bottom-color: #9fc7ab;
+  background: #edf8f0;
+  color: #215c35;
+}
+
+.environment-diagnostics.status-valid > header svg {
+  color: #277741;
+}
+
+.environment-diagnostics.status-warning {
+  border-bottom-color: #d5b55f;
+  background: #fff9e8;
+  color: #67531d;
+}
+
+.environment-diagnostics.status-warning > header svg {
+  color: #8b6b13;
+}
+
+.environment-diagnostics.status-error {
+  border-bottom-color: #d9a09b;
+  background: #fff0ef;
+  color: #772f29;
+}
+
+.environment-diagnostics.status-error > header svg {
+  color: var(--danger);
+}
+
 .raw-config-repair {
   display: grid;
   grid-template-rows: auto minmax(18rem, 1fr) auto;
@@ -6005,38 +6076,6 @@ button.secondary-button:hover:not(:disabled) {
 .external-resource-view > header > div:last-child,
 .external-form-actions {
   gap: 7px;
-}
-
-.interaction-shield {
-  position: fixed;
-  z-index: 200;
-  inset: 0;
-  display: flex;
-  align-items: flex-start;
-  justify-content: flex-end;
-  padding: 70px 14px 14px;
-  background: transparent;
-  cursor: progress;
-}
-
-.interaction-shield > div {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 9px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  box-shadow: 0 3px 10px rgb(23 33 43 / 12%);
-  background: var(--surface);
-  color: var(--text-muted);
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.interaction-shield svg {
-  width: 14px;
-  height: 14px;
-  color: var(--accent);
 }
 
 .external-resource-form,

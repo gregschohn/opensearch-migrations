@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { ConfigurationDocument } from "../../api/client";
 import {
+  acknowledgeSavedBrowserConfigDraft,
   applyBrowserEditOperation,
   createBrowserConfigDraft,
   markBrowserConfigDraftStale,
@@ -76,5 +77,32 @@ describe("browser configuration drafts", () => {
     expect(stale.persistedRevision).toBe("saved-1");
     expect(stale.remotePersistedRevision).toBe("saved-2");
     expect(stale.rawDocument).toContain("allowInsecure: true");
+  });
+
+  it("keeps edits made after a save snapshot was sent", () => {
+    const savedSnapshot = applyBrowserEditOperation(
+      createBrowserConfigDraft(document),
+      {
+        op: "set",
+        path: ["sourceClusters", "source", "allowInsecure"],
+        value: true,
+      },
+    );
+    const current = applyBrowserEditOperation(savedSnapshot, {
+      op: "set",
+      path: ["sourceClusters", "source", "allowInsecure"],
+      value: false,
+    });
+
+    const acknowledged = acknowledgeSavedBrowserConfigDraft({
+      modelVersion: "1",
+      persistedRevision: "saved-2",
+      rawYaml: savedSnapshot.rawDocument,
+    }, savedSnapshot, current);
+
+    expect(acknowledged.persistedRevision).toBe("saved-2");
+    expect(acknowledged.savedRawDocument).toContain("allowInsecure: true");
+    expect(acknowledged.rawDocument).toContain("allowInsecure: false");
+    expect(acknowledged.dirty).toBe(true);
   });
 });

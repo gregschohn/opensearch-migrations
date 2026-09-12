@@ -695,6 +695,7 @@ function ExternalResourceDialogContent({
     null,
   );
   const [loading, setLoading] = useState(false);
+  const [selecting, setSelecting] = useState(false);
   const [pane, setPane] = useState<Pane | null>(null);
   const [allResourcesOpen, setAllResourcesOpen] = useState(false);
   const [allResourcesPane, setAllResourcesPane] = useState<Pane | null>(null);
@@ -786,14 +787,19 @@ function ExternalResourceDialogContent({
       setWarning({ selection, message });
       return;
     }
-    const applied = await replaceDraft(
-      selectExternalResource(draft.draftRevision, selection),
-      externalResourceSelectionOperations(
-        node as CoreEditNode,
-        selection,
-      ),
-    );
-    if (applied) onClose();
+    setSelecting(true);
+    try {
+      const applied = await replaceDraft(
+        selectExternalResource(draft.draftRevision, selection),
+        externalResourceSelectionOperations(
+          node as CoreEditNode,
+          selection,
+        ),
+      );
+      if (applied) onClose();
+    } finally {
+      setSelecting(false);
+    }
   };
   const acceptWarning = async () => {
     if (!warning) return;
@@ -801,14 +807,19 @@ function ExternalResourceDialogContent({
       ...warning.selection,
       acceptWarning: true,
     };
-    const applied = await replaceDraft(
-      selectExternalResource(draft.draftRevision, acceptedSelection),
-      externalResourceSelectionOperations(
-        node as CoreEditNode,
-        acceptedSelection,
-      ),
-    );
-    if (applied) onClose();
+    setSelecting(true);
+    try {
+      const applied = await replaceDraft(
+        selectExternalResource(draft.draftRevision, acceptedSelection),
+        externalResourceSelectionOperations(
+          node as CoreEditNode,
+          acceptedSelection,
+        ),
+      );
+      if (applied) onClose();
+    } finally {
+      setSelecting(false);
+    }
   };
   const selectionForRow = (
     row: ExternalResourceInventory["rows"][number],
@@ -895,7 +906,7 @@ function ExternalResourceDialogContent({
         <div className="external-entry-actions">
           <button
             className="secondary-button"
-            disabled={busy || loading}
+            disabled={busy || loading || selecting}
             onClick={() => void load()}
             type="button"
           >
@@ -904,7 +915,7 @@ function ExternalResourceDialogContent({
           </button>
           <button
             className="secondary-button"
-            disabled={busy}
+            disabled={busy || selecting}
             onClick={() => setPane({ mode: "manual" })}
             type="button"
           >
@@ -944,7 +955,7 @@ function ExternalResourceDialogContent({
             <button
               aria-label="Refresh external resources"
               className="icon-button"
-              disabled={loading}
+              disabled={loading || selecting}
               onClick={() => void load()}
               type="button"
             >
@@ -964,7 +975,7 @@ function ExternalResourceDialogContent({
                 || "This resource does not match all requirements."}
             </span>
             <button
-              disabled={busy}
+              disabled={busy || selecting}
               onClick={() => void acceptWarning()}
               type="button"
             >
@@ -976,7 +987,7 @@ function ExternalResourceDialogContent({
           </div>
         ) : null}
         <ExternalResourceRows
-          busy={busy || loading}
+          busy={busy || loading || selecting}
           onInspect={(row) => void inspect(row, "view")}
           onSelect={(row, key) => void select(
             selectionForRow(row, key),
@@ -996,7 +1007,7 @@ function ExternalResourceDialogContent({
               <button
                 aria-label={`Create ${descriptor.label}`}
                 className="primary-button"
-                disabled={busy}
+                disabled={busy || selecting}
                 onClick={() => setPane({ mode: "create" })}
                 type="button"
               >
@@ -1008,7 +1019,7 @@ function ExternalResourceDialogContent({
         ) : null}
         <footer className="external-picker-footer">
           <button
-            disabled={busy}
+            disabled={busy || selecting}
             onClick={() => setPane({ mode: "manual" })}
             type="button"
           >
@@ -1016,7 +1027,7 @@ function ExternalResourceDialogContent({
             Enter reference manually
           </button>
           <button
-            disabled={busy}
+            disabled={busy || selecting}
             onClick={() => setAllResourcesOpen(true)}
             type="button"
           >
@@ -1030,7 +1041,7 @@ function ExternalResourceDialogContent({
           backdropClassName="nested-modal-backdrop"
           className="external-resource-dialog"
           closeLabel="Close all Kubernetes resources"
-          escapeDisabled={busy}
+          escapeDisabled={busy || selecting}
           icon={<Database aria-hidden="true" />}
           kicker="Kubernetes resource inventory"
           onClose={() => {
@@ -1048,7 +1059,7 @@ function ExternalResourceDialogContent({
                       || "This resource does not match all requirements."}
                   </span>
                   <button
-                    disabled={busy}
+                    disabled={busy || selecting}
                     onClick={() => void acceptWarning()}
                     type="button"
                   >
@@ -1104,7 +1115,7 @@ function ExternalResourceDialogContent({
                       )
                     : (
                       <ExternalResourceRows
-                        busy={busy || loading}
+                        busy={busy || loading || selecting}
                         onInspect={(row) => void inspect(
                           row,
                           "view",

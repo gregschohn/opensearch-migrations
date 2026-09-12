@@ -4674,6 +4674,123 @@ snapshotMigrationConfigs: []
 });
 
 
+test("does not rerun environment checks for unrelated browser edits", async () => {
+  globalThis.__WORKFLOW_BROWSER_LOCAL_EDITING__ = true;
+  let diagnosticRequests = 0;
+  server.use(
+    http.get("*/api/v1/config/document", () => HttpResponse.json({
+      modelVersion: "1",
+      persistedRevision: "saved-browser-draft",
+      rawYaml: `
+sourceClusters:
+  source:
+    endpoint: https://source.example.com:9200
+    version: ES 7.10
+    allowInsecure: false
+    authConfig:
+      basic:
+        secretName: source-creds
+targetClusters: {}
+snapshotMigrationConfigs: []
+`,
+    })),
+    http.post("*/api/v1/config/diagnostics", async ({ request }) => {
+      diagnosticRequests += 1;
+      const body = await request.json() as { draftFingerprint: string };
+      return HttpResponse.json({
+        draftFingerprint: body.draftFingerprint,
+        status: "valid",
+        diagnostics: [],
+      });
+    }),
+  );
+  renderApp();
+  await enterEditMode();
+
+  expect(await screen.findByText(
+    "Configured Kubernetes references are available for this resource.",
+  )).toBeInTheDocument();
+  expect(diagnosticRequests).toBe(1);
+  const [allowInsecure] = await screen.findAllByRole("checkbox", {
+    name: /allow insecure/i,
+  });
+  await userEvent.click(allowInsecure);
+
+  await new Promise((resolve) => globalThis.setTimeout(resolve, 450));
+  expect(diagnosticRequests).toBe(1);
+  expect(allowInsecure).toBeChecked();
+});
+
+
+test("preserves later browser edits while a save is in progress", async () => {
+  globalThis.__WORKFLOW_BROWSER_LOCAL_EDITING__ = true;
+  let releaseSave: (() => void) | undefined;
+  const savePending = new Promise<void>((resolve) => {
+    releaseSave = resolve;
+  });
+  let savedRawYaml = "";
+  server.use(
+    http.get("*/api/v1/config/document", () => HttpResponse.json({
+      modelVersion: "1",
+      persistedRevision: "saved-browser-draft",
+      rawYaml: `
+sourceClusters:
+  source:
+    endpoint: https://source.example.com:9200
+    version: ES 7.10
+    allowInsecure: false
+targetClusters: {}
+snapshotMigrationConfigs: []
+`,
+    })),
+    http.put("*/api/v1/config/document", async ({ request }) => {
+      const body = await request.json() as { rawYaml: string };
+      savedRawYaml = body.rawYaml;
+      await savePending;
+      return HttpResponse.json({
+        modelVersion: "1",
+        persistedRevision: "saved-browser-draft-2",
+        rawYaml: body.rawYaml,
+      });
+    }),
+  );
+  const { client } = renderApp();
+  await enterEditMode();
+  const [allowInsecure] = await screen.findAllByRole("checkbox", {
+    name: /allow insecure/i,
+  });
+  await userEvent.click(allowInsecure);
+  await userEvent.click(screen.getByRole("button", {
+    name: "Save configuration",
+  }));
+  await waitFor(() => expect(savedRawYaml).toContain("allowInsecure: true"));
+
+  const [currentAllowInsecure] = await screen.findAllByRole("checkbox", {
+    name: /allow insecure/i,
+  });
+  expect(currentAllowInsecure).toBeEnabled();
+  await userEvent.click(currentAllowInsecure);
+  expect(currentAllowInsecure).not.toBeChecked();
+  await waitFor(() => expect(
+    client.getQueryData<BrowserConfigDraft>(
+      BROWSER_CONFIG_DRAFT_QUERY_KEY,
+    )?.rawDocument,
+  ).toContain("allowInsecure: false"));
+  releaseSave?.();
+
+  await waitFor(() => expect(client.getQueryData<BrowserConfigDraft>(
+    BROWSER_CONFIG_DRAFT_QUERY_KEY,
+  )).toMatchObject({
+    dirty: true,
+    persistedRevision: "saved-browser-draft-2",
+  }));
+  await waitFor(() => expect(screen.getByRole("button", {
+    name: "Save configuration",
+  })).toBeEnabled());
+  expect(currentAllowInsecure).not.toBeChecked();
+});
+
+
 test("preserves browser-local edits while the runtime graph refreshes", async () => {
   globalThis.__WORKFLOW_BROWSER_LOCAL_EDITING__ = true;
   let response = manageSnapshot;
@@ -5387,14 +5504,11 @@ test("shows a newly added resource while the server operation is pending", async
     name: /^immediate, Syncing configuration$/,
   })).toHaveAttribute("aria-selected", "true");
   expect(screen.getByText("Preparing immediate configuration")).toBeVisible();
-  expect(screen.getAllByRole("status").some(
-    (element) => element.textContent?.includes("Updating configuration"),
-  )).toBe(true);
+  expect(screen.queryByText("Updating configuration")).toBeNull();
   expect(screen.queryByText(
     "Waiting for the server to finish this change.",
   )).toBeNull();
-  expect(document.querySelector(".interaction-shield"))
-    .toHaveClass("interaction-shield");
+  expect(document.querySelector(".interaction-shield")).toBeNull();
   expect(screen.queryByRole("textbox", {
     name: "source cluster name",
   })).toBeNull();
