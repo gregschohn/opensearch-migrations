@@ -820,6 +820,60 @@ def test_submit_saved_config_replaces_existing_workflow(
     _delete_workflow.assert_called_once_with("test", "migration")
 
 
+@patch(
+    "console_link.workflow.services.config_edit_service.workflow_exists",
+    return_value=False,
+)
+@patch(
+    "console_link.workflow.services.config_edit_service."
+    "verify_configured_secrets_exist",
+)
+def test_submit_raw_config_uses_captured_yaml_instead_of_reloading_store(
+    _verify_secrets,
+    _workflow_exists,
+):
+    runner = MagicMock()
+    runner.run_config_processor_node_script.return_value = json.dumps({
+        "validation": {"valid": True, "errors": []},
+    })
+    prepared = MagicMock(report={
+        "formatVersion": 1,
+        "allowed": True,
+        "checkedResources": 0,
+        "issues": [],
+    })
+    runner.prepare_workflow.return_value = prepared
+    runner.commit_prepared_workflow.return_value = {
+        "workflow_name": "migration",
+    }
+    service = ConfigEditService(
+        namespace="test",
+        store=FakeStore(WorkflowConfig(
+            raw_yaml="sourceClusters:\n  stale: {}\n",
+        )),
+        runner=runner,
+        secret_store=MagicMock(),
+    )
+
+    result = service.submit_raw_config(
+        "targetClusters:\n  captured: {}\n",
+        "migration",
+        unique_run_nonce="123",
+    )
+
+    assert result == {"workflow_name": "migration"}
+    runner.prepare_workflow.assert_called_once_with(
+        "targetClusters:\n  captured: {}\n",
+        [
+            "--workflow-name", "migration",
+            "--namespace", "test",
+            "--unique-run-nonce", "123",
+        ],
+    )
+    _verify_secrets.assert_called_once()
+    prepared.cleanup.assert_called_once()
+
+
 @patch("console_link.workflow.services.config_edit_service.workflow_exists")
 @patch("console_link.workflow.services.config_edit_service.verify_configured_secrets_exist")
 def test_submit_preflight_blocks_before_workflow_is_touched(

@@ -328,7 +328,32 @@ class ConfigEditService:
         unique_run_nonce: Optional[str] = None,
     ) -> Dict[str, Any]:
         config = self.validate_saved_config_for_submit()
+        return self._submit_validated_config(
+            config,
+            workflow_name,
+            unique_run_nonce,
+        )
 
+    def submit_raw_config(
+        self,
+        raw_yaml: str,
+        workflow_name: str = DEFAULT_WORKFLOW_NAME,
+        unique_run_nonce: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Submit a captured configuration without reloading the saved document."""
+        config = self.validate_config_for_submit(raw_yaml)
+        return self._submit_validated_config(
+            config,
+            workflow_name,
+            unique_run_nonce,
+        )
+
+    def _submit_validated_config(
+        self,
+        config: WorkflowConfig,
+        workflow_name: str,
+        unique_run_nonce: Optional[str],
+    ) -> Dict[str, Any]:
         runner = self.runner or ScriptRunner()
         prepared = runner.prepare_workflow(
             config.raw_yaml,
@@ -371,17 +396,25 @@ class ConfigEditService:
         """Validate the saved config and references before destructive work."""
         store = self.store or WorkflowConfigStore(namespace=self.namespace)
         config = store.load_config(self.session_name)
-        if not config or not config.raw_yaml.strip():
-            raise ValueError(f"No workflow configuration found for session '{self.session_name}'")
+        return self.validate_config_for_submit(
+            config.raw_yaml if config else "",
+        )
 
-        self.validate_raw_config_for_submit(config.raw_yaml)
+    def validate_config_for_submit(self, raw_yaml: str) -> WorkflowConfig:
+        """Validate one exact configuration and its external references."""
+        if not raw_yaml.strip():
+            raise ValueError(
+                "No workflow configuration found for session "
+                f"'{self.session_name}'"
+            )
 
+        self.validate_raw_config_for_submit(raw_yaml)
         secret_store = (
             self.secret_store
             or get_credentials_secret_store_for_namespace(self.namespace)
         )
-        verify_configured_secrets_exist(secret_store, config.raw_yaml)
-        return config
+        verify_configured_secrets_exist(secret_store, raw_yaml)
+        return WorkflowConfig(raw_yaml=raw_yaml)
 
     def preflight_raw_config(
         self,
