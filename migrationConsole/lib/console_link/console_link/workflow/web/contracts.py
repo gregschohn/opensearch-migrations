@@ -197,6 +197,7 @@ class ManageNodeV1(WebModel):
     resource_type: Optional[str] = None
     config_presence: Dict[str, bool] = Field(default_factory=dict)
     config_state: Optional[ConfigNodeStateV1] = None
+    navigation_key: List[str] = Field(default_factory=list)
 
 
 class WorkflowV1(WebModel):

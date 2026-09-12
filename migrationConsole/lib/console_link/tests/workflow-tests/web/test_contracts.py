@@ -25,6 +25,7 @@ def test_snapshot_transport_uses_camel_case_and_exact_capability_target():
                 kind="resource",
                 label="capture",
                 status="ok",
+                navigation_key=("source", "target", "snapshot", "slice-0"),
                 relationships=(
                     ManageRelationship(
                         kind="runtime-dependency",
@@ -75,6 +76,12 @@ def test_snapshot_transport_uses_camel_case_and_exact_capability_target():
             "targetPhase": "Ready",
             "targetStatus": "ok",
         },
+    ]
+    assert payload["nodes"]["resource:captureproxies:capture"]["navigationKey"] == [
+        "source",
+        "target",
+        "snapshot",
+        "slice-0",
     ]
 
 
