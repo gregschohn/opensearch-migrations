@@ -28,6 +28,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -137,6 +138,34 @@ class CaptureKafkaPublisherTest {
         assertThrows(ExecutionException.class, () -> manifest.get(1, TimeUnit.SECONDS));
 
         assertEquals(1_234L, routingState.lastAcceptedManifestLogAppendTime("activation:1", 0));
+        publisher.close();
+    }
+
+    @Test
+    void missingInitialManifestBaselineIsAnUnstableProcessFailure() {
+        var producer = producer(true);
+        var routingState = new CaptureRoutingState(ACTIVATION_ID, 1);
+        var assignment = routingState.prepareAssignment(List.of(0));
+        routingState.prepareInitialManifests(assignment);
+        routingState.activateAssignment(assignment);
+        var route = routingState.admitConnection("connection");
+        var unstableFailure = new AtomicReference<Throwable>();
+        var publisher = publisher(producer, routingState, unstableFailure::set);
+        var acknowledgement = new RecordMetadata(
+            new TopicPartition(TOPIC, 0),
+            0,
+            0,
+            1_000L,
+            0,
+            0
+        );
+
+        var observed = assertThrows(
+            CorruptedCaptureStateException.class,
+            () -> publisher.validateCriticalMutationTrafficAcknowledgement(route, acknowledgement)
+        );
+
+        assertSame(observed, unstableFailure.get());
         publisher.close();
     }
 

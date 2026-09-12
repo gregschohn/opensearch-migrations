@@ -271,6 +271,30 @@ public class CaptureKafkaPublisher implements CaptureAssignmentPublisher, AutoCl
         return result;
     }
 
+    void validateCriticalMutationTrafficAcknowledgement(
+        CaptureRoutingState.ConnectionRoute route,
+        RecordMetadata acknowledgement
+    ) {
+        Objects.requireNonNull(route);
+        if (acknowledgement == null
+            || acknowledgement.partition() != route.partition()
+            || !acknowledgement.hasTimestamp()) {
+            throw new IllegalStateException(
+                "Kafka returned invalid acknowledgement metadata for Critical Mutation Traffic"
+            );
+        }
+        try {
+            routingState.validateCriticalMutationTrafficAcknowledgement(
+                route,
+                acknowledgement.timestamp(),
+                manifestExpirationInterval
+            );
+        } catch (CorruptedCaptureStateException e) {
+            failUnstableProcess(e);
+            throw e;
+        }
+    }
+
     CompletableFuture<Void> retireAllWriters() {
         var result = new CompletableFuture<Void>();
         executeOnPublisher(() -> {
