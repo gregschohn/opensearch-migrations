@@ -4,6 +4,7 @@ import type { ConfigurationDocument } from "../../api/client";
 import {
   applyBrowserEditOperation,
   createBrowserConfigDraft,
+  markBrowserConfigDraftStale,
   replaceBrowserConfigYaml,
   revertedBrowserConfigDraft,
 } from "./browserDraft";
@@ -56,5 +57,24 @@ describe("browser configuration drafts", () => {
     expect(reverted.dirty).toBe(false);
     expect(reverted.rawYaml).toBeUndefined();
     expect(reverted.rawDocument).toBe(document.rawYaml);
+  });
+
+  it("retains dirty local work when its saved base changes remotely", () => {
+    const draft = applyBrowserEditOperation(
+      createBrowserConfigDraft(document),
+      {
+        op: "set",
+        path: ["sourceClusters", "source", "allowInsecure"],
+        value: true,
+      },
+    );
+
+    const stale = markBrowserConfigDraftStale(draft, "saved-2");
+
+    expect(stale.dirty).toBe(true);
+    expect(stale.baseStale).toBe(true);
+    expect(stale.persistedRevision).toBe("saved-1");
+    expect(stale.remotePersistedRevision).toBe("saved-2");
+    expect(stale.rawDocument).toContain("allowInsecure: true");
   });
 });

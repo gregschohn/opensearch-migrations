@@ -20,10 +20,12 @@ declare global {
 
 
 export interface BrowserConfigDraft extends ConfigDraft {
+  baseStale: boolean;
   baseEditState: ConfigDraft["editState"];
   config: unknown;
   persistedRevision: string;
   rawDocument: string;
+  remotePersistedRevision?: string;
   savedRawDocument: string;
 }
 
@@ -74,6 +76,7 @@ function projectedDraft(
       ? document.rawYaml
       : undefined,
     notices: [],
+    baseStale: false,
     baseEditState: structuredClone(editState),
     config: projection.config,
     persistedRevision: document.persistedRevision,
@@ -175,4 +178,25 @@ export function withBrowserDraftNavigation(
   return navigation === undefined || navigation === draft.navigation
     ? draft
     : { ...draft, navigation };
+}
+
+
+export function markBrowserConfigDraftStale(
+  draft: BrowserConfigDraft,
+  remotePersistedRevision: string,
+): BrowserConfigDraft {
+  if (
+    draft.persistedRevision === remotePersistedRevision
+    || (
+      draft.baseStale
+      && draft.remotePersistedRevision === remotePersistedRevision
+    )
+  ) {
+    return draft;
+  }
+  return {
+    ...draft,
+    baseStale: true,
+    remotePersistedRevision,
+  };
 }

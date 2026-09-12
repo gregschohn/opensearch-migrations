@@ -6,7 +6,30 @@ import { connectEventSource, type EventConnectionState } from "./eventSource";
 export type { EventConnectionState } from "./eventSource";
 
 
-export function useManageEvents(queryClient: QueryClient) {
+export function savedConfigurationRevision(
+  eventData: unknown,
+): string | null {
+  try {
+    const data = JSON.parse(String(eventData)) as {
+      reason?: unknown;
+      persistedRevision?: unknown;
+    };
+    return (
+      data.reason === "configuration-saved"
+      && typeof data.persistedRevision === "string"
+    )
+      ? data.persistedRevision
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+
+export function useManageEvents(
+  queryClient: QueryClient,
+  onConfigurationSaved?: (persistedRevision: string) => void,
+) {
   const [connection, setConnection] =
     useState<EventConnectionState>("connecting");
 
@@ -17,12 +40,14 @@ export function useManageEvents(queryClient: QueryClient) {
     },
     listeners: {
       heartbeat: () => setConnection("live"),
-      "state-invalidated": () => {
+      "state-invalidated": (event) => {
         setConnection("live");
         void queryClient.invalidateQueries({ queryKey: ["manage-state"] });
+        const persistedRevision = savedConfigurationRevision(event.data);
+        if (persistedRevision) onConfigurationSaved?.(persistedRevision);
       },
     },
-  }), [queryClient]);
+  }), [onConfigurationSaved, queryClient]);
 
   return connection;
 }

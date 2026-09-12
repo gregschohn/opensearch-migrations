@@ -26,6 +26,9 @@ import {
 } from "lucide-react";
 
 import {
+  configRemovalImpact as localConfigRemovalImpact,
+} from "@opensearch-migrations/config-edit-core";
+import {
   ConfigApiError,
   applyEditOperation as applyServerEditOperation,
   closeConfigDraft,
@@ -40,6 +43,7 @@ import {
   type ConfigRemovalImpact,
   type EditNode,
   type EditOperation,
+  type ManageSnapshot,
 } from "../../api/client";
 import { ModalDialog } from "../../components/ModalDialog";
 import { useEscapeCancel } from "../../hooks/useEscapeCancel";
@@ -100,6 +104,7 @@ interface ConfigEditorProps {
   resourceType: string;
   resourceSyncing?: boolean;
   stateSummary?: string | null;
+  navigationSnapshot?: ManageSnapshot | null;
 }
 
 
@@ -1732,6 +1737,7 @@ export function ConfigEditor({
   resourceType,
   resourceSyncing = false,
   stateSummary = null,
+  navigationSnapshot = null,
 }: Readonly<ConfigEditorProps>) {
   const queryClient = useQueryClient();
   const useBrowserDraft = browserLocalEditingEnabled();
@@ -1742,20 +1748,9 @@ export function ConfigEditor({
   });
   const browserDraftQuery = useQuery({
     queryKey: BROWSER_CONFIG_DRAFT_QUERY_KEY,
-    queryFn: async () => {
-      const [document, compatibilityDraft] = await Promise.all([
-        getConfigurationDocument(),
-        queryClient.fetchQuery({
-          queryKey: ["config-draft"],
-          queryFn: getConfigDraft,
-          staleTime: Infinity,
-        }),
-      ]);
-      return createBrowserConfigDraft(
-        document,
-        compatibilityDraft.navigation,
-      );
-    },
+    queryFn: async () => createBrowserConfigDraft(
+      await getConfigurationDocument(),
+    ),
     enabled: useBrowserDraft,
     staleTime: Infinity,
   });
@@ -1852,6 +1847,8 @@ export function ConfigEditor({
     : compatibilityDraftQuery;
   const draft = draftQuery.data;
   const interactionPending = busy || actionPending || resourceSyncing;
+  const draftBaseStale = useBrowserDraft
+    && Boolean((draft as BrowserConfigDraft | undefined)?.baseStale);
 
   useEffect(() => {
     const preferences = readEditorDisplayPreferences(resourceType);
@@ -1944,7 +1941,9 @@ export function ConfigEditor({
   );
   const editSurfaces = useMemo(() => {
     const surfaces: { kind: string; label: string; targetId: string }[] = [];
-    Object.values(draft?.navigation?.nodes ?? {}).forEach((navNode) => {
+    Object.values(
+      navigationSnapshot?.nodes ?? draft?.navigation?.nodes ?? {},
+    ).forEach((navNode) => {
       if (!["resource", "config-definition"].includes(navNode.kind)) return;
       navNode.capabilities.forEach((capability) => {
         if (capability.kind !== "edit") return;
@@ -1956,7 +1955,7 @@ export function ConfigEditor({
       });
     });
     return surfaces;
-  }, [draft?.navigation]);
+  }, [draft?.navigation, navigationSnapshot]);
   const scopeTargetId = scope?.id ?? null;
   const usedIn = useMemo(() => {
     if (!scopeTargetId) return [];
@@ -2739,25 +2738,22 @@ export function ConfigEditor({
         persistedRevision: current.persistedRevision,
         rawYaml: current.savedRawDocument,
       };
-    const savedWithoutNavigationRefresh = savedBrowserConfigDraft(
+    const saved = savedBrowserConfigDraft(
       document,
       current,
     );
-    queryClient.setQueryData(
-      BROWSER_CONFIG_DRAFT_QUERY_KEY,
-      savedWithoutNavigationRefresh,
-    );
-    const compatibilityDraft = await refreshCompatibilityDraft();
-    const saved = savedBrowserConfigDraft(
-      document,
-      savedWithoutNavigationRefresh,
-      compatibilityDraft.navigation,
-    );
     queryClient.setQueryData(BROWSER_CONFIG_DRAFT_QUERY_KEY, saved);
+    await refreshCompatibilityDraft();
     return saved;
   };
 
   const save = async () => {
+    if (draftBaseStale) {
+      setProblem(
+        "The saved configuration changed elsewhere. Revert to load the current saved configuration before saving.",
+      );
+      return;
+    }
     setActionPending(true);
     try {
       if (!await waitForPendingCommit()) return;
@@ -2793,6 +2789,27 @@ export function ConfigEditor({
         BROWSER_CONFIG_DRAFT_QUERY_KEY,
       );
       if (!current) return false;
+      if (current.baseStale) {
+        setActionPending(true);
+        try {
+          const document = await getConfigurationDocument();
+          queryClient.setQueryData(
+            BROWSER_CONFIG_DRAFT_QUERY_KEY,
+            createBrowserConfigDraft(document),
+          );
+          setLocallyEditedIds(new Set());
+          setRawYamlText(document.rawYaml);
+          setRawYamlDirty(false);
+          setProblem("");
+          onDraftReverted();
+          return true;
+        } catch (error) {
+          setProblem(error instanceof Error ? error.message : String(error));
+          return false;
+        } finally {
+          setActionPending(false);
+        }
+      }
       queryClient.setQueryData(
         BROWSER_CONFIG_DRAFT_QUERY_KEY,
         revertedBrowserConfigDraft(current),
@@ -2841,6 +2858,12 @@ export function ConfigEditor({
         : queryClient.getQueryData<ConfigDraft>(["config-draft"]);
     if (!current) return;
     if (useBrowserDraft) {
+      if ((current as BrowserConfigDraft).baseStale) {
+        setProblem(
+          "The saved configuration changed elsewhere. Revert to load it before submitting.",
+        );
+        return;
+      }
       setActionPending(true);
       try {
         const saved = await persistBrowserDraft(
@@ -2867,8 +2890,28 @@ export function ConfigEditor({
   };
 
   const requestRemoval = async (node: EditNode) => {
-    const current = queryClient.getQueryData<ConfigDraft>(["config-draft"]);
+    const current = useBrowserDraft
+      ? queryClient.getQueryData<BrowserConfigDraft>(
+        BROWSER_CONFIG_DRAFT_QUERY_KEY,
+      )
+      : queryClient.getQueryData<ConfigDraft>(["config-draft"]);
     if (!current) return;
+    if (useBrowserDraft) {
+      setPendingRemoval({
+        node,
+        impact: {
+          targetPath: node.path,
+          targetLabel: fieldName(node),
+          affected: localConfigRemovalImpact(
+            (current as BrowserConfigDraft).config,
+            node.path,
+          ),
+        },
+        loading: false,
+        error: "",
+      });
+      return;
+    }
     setPendingRemoval({
       node,
       impact: null,
@@ -2997,6 +3040,11 @@ export function ConfigEditor({
         if (!current) return;
         try {
           if (saveChanges) {
+            if (current.baseStale) {
+              throw new Error(
+                "The saved configuration changed elsewhere. Revert to load it before saving.",
+              );
+            }
             await persistBrowserDraft(current);
           }
           const compatibilityDraft = queryClient.getQueryData<ConfigDraft>([
@@ -3235,9 +3283,11 @@ export function ConfigEditor({
           <span>
             {removalState
               ?? stateSummary
-              ?? (draft.dirty || hasLocalEdits
-                ? "Unsaved changes"
-                : "Saved configuration")}
+              ?? (draftBaseStale
+                ? "Saved configuration changed elsewhere"
+                : draft.dirty || hasLocalEdits
+                  ? "Unsaved changes"
+                  : "Saved configuration")}
           </span>
         </div>
         {!removalState && draft.rawYaml === undefined
@@ -3279,7 +3329,11 @@ export function ConfigEditor({
             aria-label="Revert unsaved changes"
             disabled={
               actionPending
-              || (!hasLocalEdits && (busy || !draft.dirty))
+              || (
+                !draftBaseStale
+                && !hasLocalEdits
+                && (busy || !draft.dirty)
+              )
             }
             onClick={() => void revert()}
             title="Reread the saved configuration and discard unsaved changes"
@@ -3303,6 +3357,7 @@ export function ConfigEditor({
             className="primary-button"
             disabled={
               actionPending
+              || draftBaseStale
               || (!hasLocalEdits && (busy || !draft.dirty))
             }
             onClick={() => void save()}
@@ -3319,6 +3374,16 @@ export function ConfigEditor({
           <AlertTriangle />
           <span>{problem}</span>
           <button onClick={() => setProblem("")} type="button">Dismiss</button>
+        </div>
+      ) : null}
+      {draftBaseStale && !problem ? (
+        <div className="config-problem" role="alert">
+          <AlertTriangle />
+          <span>
+            The saved configuration changed elsewhere. Your local changes are
+            still here; revert to load the current saved version before saving
+            or submitting.
+          </span>
         </div>
       ) : null}
       {notice ? (
@@ -3668,7 +3733,7 @@ export function ConfigEditor({
               </button>
               <button
                 className="primary-button"
-                disabled={actionPending}
+                disabled={actionPending || draftBaseStale}
                 onClick={() => void finishExit(true)}
                 type="button"
               >
