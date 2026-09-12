@@ -15,8 +15,17 @@ class _Documents:
             raw_yaml="sourceClusters: {}\n",
             persisted_revision="11",
         )
+        self.saved = None
 
     def load(self):
+        return self.current
+
+    def save(self, expected_persisted_revision, raw_yaml):
+        self.saved = (expected_persisted_revision, raw_yaml)
+        self.current = ConfigurationDocument(
+            raw_yaml=raw_yaml,
+            persisted_revision="12",
+        )
         return self.current
 
 
@@ -67,6 +76,18 @@ def test_review_and_preflight_use_the_exact_saved_revision():
     assert review.changes[0].path == "sourceClusters"
     assert preflight == {"allowed": True}
     assert edits.preflight == ("sourceClusters: {}\n", "migration")
+
+
+def test_document_load_and_save_delegate_to_the_revisioned_store():
+    documents = _Documents()
+    service = SavedConfigSubmissionService(documents, _EditService())
+
+    loaded = service.load()
+    saved = service.save("11", "targetClusters: {}\n")
+
+    assert loaded.persisted_revision == "11"
+    assert saved.persisted_revision == "12"
+    assert documents.saved == ("11", "targetClusters: {}\n")
 
 
 def test_stale_saved_revision_is_rejected_before_validation():

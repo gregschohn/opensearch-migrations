@@ -95,7 +95,6 @@ def create_app(
     coordinator: Optional[ObservationCoordinator] = None,
     config_drafts: Optional[Any] = None,
     config_documents: Optional[Any] = None,
-    config_submission: Optional[Any] = None,
     config_diagnostics: Optional[Any] = None,
     outputs: Optional[Any] = None,
     operations: Optional[Any] = None,
@@ -232,12 +231,13 @@ def create_app(
         return config_diagnostics
 
     def submission_service():
-        if config_submission is None:
+        service = document_service()
+        if not hasattr(service, "prepare"):
             raise HTTPException(
                 status_code=503,
                 detail="Configuration submission is not configured",
             )
-        return config_submission
+        return service
 
     def draft_navigation(draft: Any) -> Optional[Any]:
         observation = (
@@ -1221,11 +1221,8 @@ def create_app(
             raise _action_error(409, "reset_plan_stale", error) from error
 
         resubmit = request_body.resubmit or bool(request_body.approvals)
-        if resubmit and config_submission is None:
-            raise HTTPException(
-                status_code=503,
-                detail="Configuration submission is not configured",
-            )
+        if resubmit:
+            submission_service()
         if request_body.expected_persisted_revision:
             if not resubmit:
                 raise HTTPException(
