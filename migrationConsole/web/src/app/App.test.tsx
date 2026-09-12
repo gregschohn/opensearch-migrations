@@ -18,6 +18,11 @@ import {
 } from "../api/client";
 import { configDraft, manageSnapshot } from "../test/fixtures";
 import { server } from "../test/server";
+import {
+  BROWSER_CONFIG_DRAFT_QUERY_KEY,
+  markBrowserConfigDraftStale,
+  type BrowserConfigDraft,
+} from "../features/configuration/browserDraft";
 import { App } from "./App";
 
 
@@ -4666,6 +4671,112 @@ snapshotMigrationConfigs: []
   expect((savedDocument as { rawYaml: string }).rawYaml)
     .toContain("allowInsecure: true");
   expect(operationRequests).toBe(0);
+});
+
+
+test("preserves browser-local edits while the runtime graph refreshes", async () => {
+  globalThis.__WORKFLOW_BROWSER_LOCAL_EDITING__ = true;
+  let response = manageSnapshot;
+  let stateRequests = 0;
+  server.use(
+    http.get("*/api/v1/manage/state", () => {
+      stateRequests += 1;
+      return HttpResponse.json(response);
+    }),
+    http.get("*/api/v1/config/document", () => HttpResponse.json({
+      modelVersion: "1",
+      persistedRevision: "saved-browser-draft",
+      rawYaml: `
+sourceClusters:
+  source:
+    endpoint: https://source.example.com:9200
+    version: ES 7.10
+    allowInsecure: false
+targetClusters:
+  target:
+    endpoint: https://target.example.com:9200
+snapshotMigrationConfigs: []
+`,
+    })),
+  );
+  const { client } = renderApp();
+  await enterEditMode();
+
+  const [allowInsecure] = await screen.findAllByRole("checkbox", {
+    name: /allow insecure/i,
+  });
+  await userEvent.click(allowInsecure);
+  expect(allowInsecure).toBeChecked();
+  const requestsBeforeRefresh = stateRequests;
+
+  response = {
+    ...manageSnapshot,
+    revision: "runtime-after-browser-edit",
+    nodes: {
+      ...manageSnapshot.nodes,
+      "resource:captureproxies:capture": {
+        ...manageSnapshot.nodes["resource:captureproxies:capture"],
+        revision: "capture-after-browser-edit",
+        phase: "Running",
+        status: "running",
+      },
+    },
+  };
+  await client.invalidateQueries({ queryKey: ["manage-state"] });
+  await waitFor(() => expect(stateRequests).toBeGreaterThan(
+    requestsBeforeRefresh,
+  ));
+
+  expect(allowInsecure).toBeChecked();
+  expect(screen.getByRole("button", {
+    name: "Save configuration",
+  })).toBeEnabled();
+});
+
+
+test("preserves dirty work but blocks persistence when its saved base is stale", async () => {
+  globalThis.__WORKFLOW_BROWSER_LOCAL_EDITING__ = true;
+  server.use(
+    http.get("*/api/v1/config/document", () => HttpResponse.json({
+      modelVersion: "1",
+      persistedRevision: "saved-browser-draft",
+      rawYaml: `
+sourceClusters:
+  source:
+    endpoint: https://source.example.com:9200
+    version: ES 7.10
+    allowInsecure: false
+targetClusters: {}
+snapshotMigrationConfigs: []
+`,
+    })),
+  );
+  const { client } = renderApp();
+  await enterEditMode();
+
+  const [allowInsecure] = await screen.findAllByRole("checkbox", {
+    name: /allow insecure/i,
+  });
+  await userEvent.click(allowInsecure);
+  client.setQueryData<BrowserConfigDraft>(
+    BROWSER_CONFIG_DRAFT_QUERY_KEY,
+    (current) => (
+      current
+        ? markBrowserConfigDraftStale(current, "saved-elsewhere")
+        : current
+    ),
+  );
+
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "The saved configuration changed elsewhere",
+  );
+  expect(allowInsecure).toBeChecked();
+  expect(screen.getByRole("button", {
+    name: "Save configuration",
+  })).toBeDisabled();
+  expect(screen.getByRole("button", {
+    name: "Revert unsaved changes",
+  })).toBeEnabled();
 });
 
 

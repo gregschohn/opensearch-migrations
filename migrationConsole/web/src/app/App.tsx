@@ -9,6 +9,9 @@ import {
 } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  projectConfigResourceGraph,
+} from "@opensearch-migrations/config-edit-core";
+import {
   Activity,
   CircleAlert,
   LogOut,
@@ -26,6 +29,7 @@ import {
   getApprovalGates,
   getApprovalReview,
   getConfigDraft,
+  getConfigurationDocument,
   getHealth,
   getManageState,
   getOperations,
@@ -53,6 +57,13 @@ import {
   resourceValidationStates,
   settledRenameResourceId,
 } from "../features/configuration/editProjection";
+import {
+  BROWSER_CONFIG_DRAFT_QUERY_KEY,
+  browserLocalEditingEnabled,
+  createBrowserConfigDraft,
+  markBrowserConfigDraftStale,
+  type BrowserConfigDraft,
+} from "../features/configuration/browserDraft";
 import type {
   PendingResourceAddition,
   PendingResourceRename,
@@ -240,6 +251,9 @@ function promptedApprovalKeys(): Set<string> {
 
 function ManageApp() {
   const queryClient = useQueryClient();
+  const useBrowserDraft = browserLocalEditingEnabled();
+  const [savedConfigurationRevision, setSavedConfigurationRevision] =
+    useState<string | null>(null);
   const health = useQuery({
     queryKey: ["system-health"],
     queryFn: getHealth,
@@ -252,7 +266,13 @@ function ManageApp() {
     structuralSharing: (previous, incoming) =>
       reconcileManageState(previous, incoming),
   });
-  const eventConnection = useManageEvents(queryClient);
+  const noteSavedConfiguration = useCallback((persistedRevision: string) => {
+    setSavedConfigurationRevision(persistedRevision);
+  }, []);
+  const eventConnection = useManageEvents(
+    queryClient,
+    noteSavedConfiguration,
+  );
   useOperationEvents(queryClient);
   const operations = useQuery({
     queryKey: ["operations"],
@@ -327,9 +347,20 @@ function ManageApp() {
   const configDraft = useQuery({
     queryKey: ["config-draft"],
     queryFn: getConfigDraft,
-    enabled: editContext !== null || submissionAvailable,
+    enabled: (!useBrowserDraft && editContext !== null) || submissionAvailable,
     staleTime: Infinity,
   });
+  const browserConfigDraft = useQuery({
+    queryKey: BROWSER_CONFIG_DRAFT_QUERY_KEY,
+    queryFn: async () => createBrowserConfigDraft(
+      await getConfigurationDocument(),
+    ),
+    enabled: useBrowserDraft && editContext !== null,
+    staleTime: Infinity,
+  });
+  const editingConfigDraft = useBrowserDraft
+    ? browserConfigDraft
+    : configDraft;
   const resetTargetIds = useMemo(
     () => activeResetTargetIds(operations.data),
     [operations.data],
@@ -341,6 +372,55 @@ function ManageApp() {
     () => presentActiveResets(state.data, resetTargetIds),
     [resetTargetIds, state.data],
   );
+
+  useEffect(() => {
+    if (!useBrowserDraft || !savedConfigurationRevision) return;
+    const current = queryClient.getQueryData<BrowserConfigDraft>(
+      BROWSER_CONFIG_DRAFT_QUERY_KEY,
+    );
+    if (!editContext) {
+      if (current?.persistedRevision !== savedConfigurationRevision) {
+        queryClient.removeQueries({
+          queryKey: BROWSER_CONFIG_DRAFT_QUERY_KEY,
+        });
+        queryClient.removeQueries({ queryKey: ["config-draft"] });
+      }
+      return;
+    }
+    if (!current || current.persistedRevision === savedConfigurationRevision) {
+      return;
+    }
+    if (current.dirty) {
+      queryClient.setQueryData(
+        BROWSER_CONFIG_DRAFT_QUERY_KEY,
+        markBrowserConfigDraftStale(current, savedConfigurationRevision),
+      );
+      return;
+    }
+    let cancelled = false;
+    void getConfigurationDocument()
+      .then((document) => {
+        if (
+          cancelled
+          || document.persistedRevision !== savedConfigurationRevision
+        ) {
+          return;
+        }
+        queryClient.setQueryData(
+          BROWSER_CONFIG_DRAFT_QUERY_KEY,
+          createBrowserConfigDraft(document),
+        );
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    editContext,
+    queryClient,
+    savedConfigurationRevision,
+    useBrowserDraft,
+  ]);
 
   useEffect(() => {
     const currentState = (
@@ -400,19 +480,28 @@ function ManageApp() {
     () => (
       observedState && editContext
         ? projectEditSnapshot(
-          configDraft.data?.navigation ?? observedState,
+          (
+            useBrowserDraft && browserConfigDraft.data
+              ? projectConfigResourceGraph(
+                observedState,
+                browserConfigDraft.data,
+              )
+              : configDraft.data?.navigation ?? observedState
+          ),
           pendingResourceAdditions,
           pendingResourceRenames,
         )
         : overviewState
     ),
     [
+      browserConfigDraft.data,
       configDraft.data,
       editContext,
       overviewState,
       pendingResourceAdditions,
       pendingResourceRenames,
       observedState,
+      useBrowserDraft,
     ],
   );
   const displayedResourceCount = useMemo(
@@ -505,7 +594,10 @@ function ManageApp() {
       submitActive,
     ),
   ) ?? [];
-  const submitValidation = configDraft.data?.editState.validation;
+  const activeValidationQuery = editContext
+    ? editingConfigDraft
+    : configDraft;
+  const submitValidation = activeValidationQuery.data?.editState.validation;
   const blockingDiagnosticCount = submitValidation?.diagnostics?.filter(
     (diagnostic) => (
       diagnostic.severity === "error"
@@ -519,16 +611,16 @@ function ManageApp() {
   const submitValidationBlocked = (
     submissionAvailable
     && (
-      configDraft.isPending
-      || configDraft.isError
+      activeValidationQuery.isPending
+      || activeValidationQuery.isError
       || submitValidation?.valid === false
     )
   );
   const submissionBlockedReason = submitActive
     ? "Submission in progress"
-    : submissionAvailable && configDraft.isPending
+    : submissionAvailable && activeValidationQuery.isPending
       ? "Checking configuration"
-      : submissionAvailable && configDraft.isError
+      : submissionAvailable && activeValidationQuery.isError
         ? "Configuration validation unavailable"
         : submissionAvailable && submitValidation?.valid === false
           ? (
@@ -549,9 +641,9 @@ function ManageApp() {
     : "Review and submit";
   const submitTitle = submitActive
     ? "A configuration submission is already in progress"
-    : submissionAvailable && configDraft.isPending
+    : submissionAvailable && activeValidationQuery.isPending
       ? "Checking configuration before submission"
-      : submissionAvailable && configDraft.isError
+      : submissionAvailable && activeValidationQuery.isError
         ? "Configuration validation is unavailable"
         : submissionAvailable && submitValidation?.valid === false
           ? (
@@ -631,7 +723,9 @@ function ManageApp() {
       "config-draft",
     ]);
     const resourceId = navigationResourceId(
-      draftNavigationNodes(currentDraft),
+      useBrowserDraft
+        ? resourceNavigationState?.nodes ?? {}
+        : draftNavigationNodes(currentDraft),
       addition.editTargetId,
     );
     setPendingResourceAdditions((current) => (
@@ -648,7 +742,7 @@ function ManageApp() {
       resourceId: resourceId ?? addition.id,
       targetId: addition.editTargetId,
     });
-  }, [queryClient]);
+  }, [queryClient, resourceNavigationState?.nodes, useBrowserDraft]);
   const resourceRenameStarted = useCallback((
     rename: PendingResourceRename,
   ) => {
@@ -682,7 +776,9 @@ function ManageApp() {
       "config-draft",
     ]);
     const resourceId = settledRenameResourceId(
-      draftNavigationNodes(currentDraft),
+      useBrowserDraft
+        ? resourceNavigationState?.nodes ?? {}
+        : draftNavigationNodes(currentDraft),
       rename,
     );
     setPendingResourceRenames((current) => (
@@ -699,7 +795,7 @@ function ManageApp() {
       resourceId: resourceId ?? rename.id,
       targetId: rename.editTargetId,
     });
-  }, [queryClient]);
+  }, [queryClient, resourceNavigationState?.nodes, useBrowserDraft]);
   const resourceDraftReverted = useCallback(() => {
     const addedIds = new Set(
       pendingResourceAdditions.map((addition) => addition.id),
@@ -731,8 +827,10 @@ function ManageApp() {
   }, [pendingResourceAdditions, pendingResourceRenames]);
 
   useEffect(() => {
-    if (!configDraft.data) return;
-    const nodes = draftNavigationNodes(configDraft.data);
+    if (!editingConfigDraft.data) return;
+    const nodes = useBrowserDraft
+      ? resourceNavigationState?.nodes ?? {}
+      : draftNavigationNodes(editingConfigDraft.data);
     const settledAdditions = pendingResourceAdditions.flatMap((addition) => {
       const resourceId = navigationResourceId(nodes, addition.editTargetId);
       return resourceId ? [{ addition, resourceId }] : [];
@@ -787,9 +885,11 @@ function ManageApp() {
       return next.length === current.length ? current : next;
     });
   }, [
-    configDraft.data,
+    editingConfigDraft.data,
     pendingResourceAdditions,
     pendingResourceRenames,
+    resourceNavigationState?.nodes,
+    useBrowserDraft,
   ]);
 
   useEffect(() => {
@@ -1477,6 +1577,9 @@ function ManageApp() {
                     }
                     resourceSyncing={selectedNode?.status === "syncing"}
                     stateSummary={editStateSummary}
+                    navigationSnapshot={
+                      resourceNavigationState ?? displayedState
+                    }
                   />
                 </Suspense>
               ) : selectedNode ? (
@@ -1510,7 +1613,11 @@ function ManageApp() {
                 onReviewApproval={setApprovalDialogTargetId}
                 onSelectNode={selectNode}
                 selectedNode={observedSelectedNode}
-                snapshot={observedState ?? state.data}
+                snapshot={
+                  editContext
+                    ? displayedState
+                    : observedState ?? state.data
+                }
               />
             </main>
           )}
