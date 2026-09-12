@@ -623,7 +623,6 @@ export async function selectExternalResource(
       error,
     );
   }
-  return;
 }
 
 
