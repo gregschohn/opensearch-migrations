@@ -15,8 +15,6 @@ from ..application.models import (
 )
 from ..application.config_drafts import (
     ConfigDraft,
-    ConfigReview,
-    ConfigReviewChange,
     ConfigRemovalImpact,
     ConfigSubmission,
     ExternalResourceDetails,
@@ -24,6 +22,8 @@ from ..application.config_drafts import (
     ExternalResourceMutation,
 )
 from ..application.config_documents import ConfigurationDocument
+from ..application.config_review import ConfigReviewChange
+from ..application.config_submission import SavedConfigReview
 from ..application.operations import Operation
 from ..application.actions import (
     ApprovalGateInventory,
@@ -518,6 +518,10 @@ class DraftRevisionRequestV1(WebModel):
     expected_draft_revision: str
 
 
+class PersistedRevisionRequestV1(WebModel):
+    expected_persisted_revision: str
+
+
 class ReplaceRawConfigRequestV1(DraftRevisionRequestV1):
     raw_yaml: str
 
@@ -588,9 +592,7 @@ class ConfigReviewChangeV1(WebModel):
 
 
 class ConfigReviewV1(WebModel):
-    draft_revision: str
-    base_revision: str
-    dirty: bool
+    persisted_revision: str
     valid: bool
     validation_messages: List[str]
     changes: List[ConfigReviewChangeV1]
@@ -598,13 +600,11 @@ class ConfigReviewV1(WebModel):
     @classmethod
     def from_domain(
         cls,
-        review: Union[ConfigReview, Mapping[str, Any]],
+        review: Union[SavedConfigReview, Mapping[str, Any]],
     ) -> "ConfigReviewV1":
         source = review if isinstance(review, Mapping) else review.__dict__
         return cls(
-            draft_revision=str(source["draft_revision"]),
-            base_revision=str(source["base_revision"]),
-            dirty=bool(source["dirty"]),
+            persisted_revision=str(source["persisted_revision"]),
             valid=bool(source["valid"]),
             validation_messages=list(source["validation_messages"]),
             changes=[
@@ -1002,7 +1002,7 @@ class ResetApprovalRequestV1(WebModel):
 class ExecuteResetRequestV1(WebModel):
     plan_token: str
     resubmit: bool = False
-    expected_draft_revision: Optional[str] = None
+    expected_persisted_revision: Optional[str] = None
     # Kept for one contract transition; legacy reset-and-retry clients now
     # trigger resubmission and these old gate revisions are never approved.
     approvals: List[ResetApprovalRequestV1] = Field(default_factory=list)
