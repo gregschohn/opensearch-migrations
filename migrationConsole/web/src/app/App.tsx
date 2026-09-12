@@ -454,25 +454,26 @@ function ManageApp() {
     ),
     [observedState, resourceViewMode],
   );
+  const configurationState = useMemo(
+    () => (
+      observedState && browserConfigDraft.data
+        ? projectConfigResourceGraph(observedState, browserConfigDraft.data)
+        : observedState
+    ),
+    [browserConfigDraft.data, observedState],
+  );
   const displayedState = useMemo(
     () => (
       observedState && editContext
         ? projectEditSnapshot(
-          (
-            browserConfigDraft.data
-              ? projectConfigResourceGraph(
-                observedState,
-                browserConfigDraft.data,
-              )
-              : observedState
-          ),
+          configurationState ?? observedState,
           pendingResourceAdditions,
           pendingResourceRenames,
         )
         : overviewState
     ),
     [
-      browserConfigDraft.data,
+      configurationState,
       editContext,
       overviewState,
       pendingResourceAdditions,
@@ -865,12 +866,13 @@ function ManageApp() {
 
   const startEditing = () => {
     if (!state.data) return;
+    const editSource = configurationState ?? state.data;
     const resourceId = (
-      selectedId && state.data.nodes[selectedId]
+      selectedId && editSource.nodes[selectedId]
         ? selectedId
-        : firstSelectableId(state.data)
+        : firstSelectableId(editSource)
     );
-    const node = resourceId ? state.data.nodes[resourceId] : null;
+    const node = resourceId ? editSource.nodes[resourceId] : null;
     const targetId = node ? editTarget(node) : null;
     setLinkedNavigation([]);
     setSelectedId(targetId && node ? node.id : null);

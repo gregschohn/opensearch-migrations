@@ -1,3 +1,4 @@
+import { projectConfigYaml } from "@opensearch-migrations/config-edit-core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   fireEvent,
@@ -2299,6 +2300,10 @@ test("opens a generic configuration editor and explains generated values", async
   const configTree = screen.getByRole("table", {
     name: "Configuration fields",
   });
+  expect(within(configTree).queryByRole("columnheader", { name: "State" }))
+    .toBeNull();
+  expect(within(configTree).getByRole("columnheader", { name: "Row actions" }))
+    .toBeInTheDocument();
   expect(screen.getByRole("checkbox", {
     name: "Show field documentation",
   })).toBeChecked();
@@ -2336,8 +2341,8 @@ test("opens a generic configuration editor and explains generated values", async
   expect(screen.getByText(
     "Generated from the standard runtime profile.",
   )).toBeInTheDocument();
-  const state = timeout.querySelector(".property-state-cell");
-  expect(state?.querySelector(".property-state-content")).toBeInTheDocument();
+  const state = timeout.querySelector(".property-action-cell");
+  expect(state?.querySelector(".property-action-content")).toBeInTheDocument();
   // Healthy fields render no status chip and no per-field revert; both
   // added clutter to every row.
   expect(within(state as HTMLElement).queryByText("ok")).toBeNull();
@@ -2374,6 +2379,113 @@ test("opens a generic configuration editor and explains generated values", async
   await waitFor(() => expect(
     within(configTree).queryByRole("row", { name: /Timeout/ }),
   ).toBeNull());
+});
+
+
+test("opens a selected snapshot slice through the projected edit target", async () => {
+  const snapshot = structuredClone(manageSnapshot);
+  const sectionId = "section:Snapshot Migration";
+  const groupId = "group:Snapshot Migration:Backfill";
+  const migrationId =
+    "resource:snapshotmigrations:source-target-snap-slice-n";
+  const template = snapshot.nodes["resource:captureproxies:capture"];
+  snapshot.rootIds.push(sectionId);
+  snapshot.nodes[sectionId] = {
+    ...snapshot.nodes["section:Sources"],
+    id: sectionId,
+    revision: "snapshot-migration-section-1",
+    parentId: null,
+    childIds: [groupId],
+    label: "Snapshot Migration",
+  };
+  snapshot.nodes[groupId] = {
+    ...snapshot.nodes["group:Sources:Sources"],
+    id: groupId,
+    revision: "snapshot-migration-group-1",
+    parentId: sectionId,
+    childIds: [migrationId],
+    label: "Backfill",
+  };
+  snapshot.nodes[migrationId] = {
+    ...template,
+    id: migrationId,
+    revision: "snapshot-migration-1",
+    parentId: groupId,
+    childIds: [],
+    label: "source-target-snap-slice-n",
+    status: "pending",
+    phase: "Pending Config",
+    valueSummary: "Addition pending submission",
+    diagnostics: [],
+    capabilities: [{
+      kind: "edit",
+      editTargetId: "edit:sourceClusters.source.version",
+      label: "Edit source-target-snap-slice-n",
+    }],
+    relationships: [],
+    comparisons: [],
+    resourcePlural: "snapshotmigrations",
+    resourceName: "source-target-snap-slice-n",
+    resourceType: "Snapshot migration",
+    configPresence: { deployed: false, pending: true },
+    navigationKey: ["source", "target", "snap", "slice-n"],
+  };
+  const rawYaml = `sourceClusters:
+  source:
+    endpoint: https://source.example.com:9200
+    version: ES 7.10
+    snapshotInfo:
+      repos:
+        repo:
+          repoPathUri: s3://bucket/
+          awsRegion: us-east-2
+      snapshots:
+        snap:
+          repoName: repo
+          config:
+            createSnapshotConfig: {}
+snapshotMigrationConfigs:
+  - fromSource: source
+    toTarget: target
+    fromSnapshot: snap
+    slices:
+      slice-n:
+        metadataMigrationConfig: {}
+targetClusters:
+  target:
+    endpoint: https://target.example.com:9200
+`;
+  const projection = projectConfigYaml(rawYaml);
+  const draft: ConfigDraft = {
+    baseRevision: "snapshot-slice-base",
+    draftRevision: "snapshot-slice-draft",
+    dirty: false,
+    editState: projection.editState,
+    rawYaml,
+    notices: [],
+  };
+  server.use(
+    http.get("*/api/v1/manage/state", () => HttpResponse.json(snapshot)),
+  );
+  renderApp(draft);
+
+  await userEvent.click(await screen.findByRole("button", {
+    name: /Open source-target-snap-slice-n/,
+  }));
+  await userEvent.click(screen.getByRole("button", {
+    name: "Edit configuration",
+  }));
+
+  expect(await screen.findByRole("heading", {
+    name: "Edit source-target-snap-slice-n",
+  })).toBeInTheDocument();
+  const configTree = screen.getByRole("table", {
+    name: "Configuration fields",
+  });
+  expect(within(configTree).getByRole("row", { name: /From Source/ }))
+    .toBeInTheDocument();
+  expect(within(configTree).queryByRole("row", { name: /^Endpoint/ }))
+    .toBeNull();
 });
 
 

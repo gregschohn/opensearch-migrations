@@ -141,6 +141,85 @@ test("keeps disconnected resources as roots", () => {
 });
 
 
+test("omits source and target configuration nodes without workflow steps", () => {
+  const snapshot = structuredClone(manageSnapshot);
+  const template = snapshot.nodes["resource:captureproxies:capture"];
+  const sourceId = "resource:sourceconfigs:source";
+  const targetId = "resource:targetconfigs:target";
+  snapshot.nodes[sourceId] = {
+    ...template,
+    id: sourceId,
+    revision: "source-1",
+    parentId: "group:Sources:Sources",
+    childIds: [],
+    label: "source",
+    resourceName: "source",
+    resourcePlural: "sourceconfigs",
+    relationships: [],
+  };
+  snapshot.nodes[targetId] = {
+    ...template,
+    id: targetId,
+    revision: "target-1",
+    parentId: "group:Sources:Sources",
+    childIds: [],
+    label: "target",
+    resourceName: "target",
+    resourcePlural: "targetconfigs",
+    relationships: [],
+  };
+  snapshot.nodes["group:Sources:Sources"].childIds = [sourceId, targetId];
+  snapshot.nodes["resource:trafficreplays:replay"].relationships = [{
+    kind: "runtime-dependency",
+    direction: "requires",
+    targetId: sourceId,
+    targetName: "source",
+    targetPlural: "sourceconfigs",
+    targetPhase: "Ready",
+    targetStatus: "ok",
+  }];
+
+  const graph = buildWorkflowGraph(snapshot);
+
+  expect(graph.nodes.map((node) => node.id)).not.toContain(sourceId);
+  expect(graph.nodes.map((node) => node.id)).not.toContain(targetId);
+  expect(graph.edges).not.toContainEqual(expect.objectContaining({
+    sourceId,
+  }));
+});
+
+
+test("keeps source configuration nodes that own workflow steps", () => {
+  const snapshot = structuredClone(manageSnapshot);
+  const sourceId = "resource:sourceconfigs:source";
+  const stepId = "workflow-step:resource:sourceconfigs:source:prepare";
+  snapshot.nodes[sourceId] = {
+    ...snapshot.nodes["resource:captureproxies:capture"],
+    id: sourceId,
+    revision: "source-1",
+    parentId: "group:Sources:Sources",
+    childIds: [stepId],
+    label: "source",
+    resourceName: "source",
+    resourcePlural: "sourceconfigs",
+    relationships: [],
+  };
+  snapshot.nodes[stepId] = {
+    ...snapshot.nodes["workflow-step:resource:trafficreplays:replay:deploy"],
+    id: stepId,
+    revision: "prepare-1",
+    parentId: sourceId,
+    childIds: [],
+    label: "Prepare source",
+  };
+  snapshot.nodes["group:Sources:Sources"].childIds = [sourceId];
+
+  const graph = buildWorkflowGraph(snapshot);
+
+  expect(graph.nodes.map((node) => node.id)).toContain(sourceId);
+});
+
+
 test("shows unresolved prerequisites instead of hiding broken edges", () => {
   const snapshot = structuredClone(manageSnapshot);
   const replay = snapshot.nodes["resource:trafficreplays:replay"];

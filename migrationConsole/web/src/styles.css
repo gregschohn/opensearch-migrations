@@ -4936,8 +4936,15 @@ button.secondary-button:hover:not(:disabled) {
   width: 36%;
 }
 
-.config-state-column {
-  width: 84px;
+.config-actions-column {
+  width: 1%;
+}
+
+.config-actions-heading {
+  width: 1%;
+  padding-right: 8px;
+  padding-left: 2px;
+  white-space: nowrap;
 }
 
 .config-table thead {
@@ -4969,7 +4976,7 @@ button.secondary-button:hover:not(:disabled) {
   display: grid;
   width: 100%;
   min-height: 32px;
-  grid-template-columns: 36% minmax(0, 1fr) 84px;
+  grid-template-columns: 36% minmax(0, 1fr) max-content;
   align-items: center;
   padding: 0;
   border: 0;
@@ -5165,12 +5172,12 @@ button.secondary-button:hover:not(:disabled) {
 }
 
 .config-property-row.context-transition > th > *,
-.config-property-row.context-transition > .property-state-cell > * {
+.config-property-row.context-transition > .property-action-cell > * {
   opacity: var(--context-content-opacity);
 }
 
 .config-property-row.context-transition
-  > td:not(.property-state-cell) > * {
+  > td:not(.property-action-cell) > * {
   opacity: var(--context-detail-opacity);
   pointer-events: none;
 }
@@ -5324,6 +5331,25 @@ button.secondary-button:hover:not(:disabled) {
   padding: 8px 12px;
   border-top: 1px solid var(--border);
   background: var(--surface-subtle);
+}
+
+.config-scope-command-list {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.config-scope-command-list button.primary-button {
+  min-height: 36px;
+  padding: 0 14px;
+  font-weight: 700;
+}
+
+.config-scope-command-list button svg {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
 }
 
 .config-scope-blocker {
@@ -5543,11 +5569,15 @@ button.secondary-button:hover:not(:disabled) {
   width: 13px;
 }
 
-.property-state-cell {
+.property-action-cell {
+  width: 1%;
+  padding-right: 8px;
+  padding-left: 2px;
   text-align: right;
+  white-space: nowrap;
 }
 
-.property-state-content {
+.property-action-content {
   display: flex;
   min-height: 28px;
   align-items: center;
@@ -5555,7 +5585,7 @@ button.secondary-button:hover:not(:disabled) {
   gap: 3px;
 }
 
-.property-state-cell .field-status {
+.property-action-cell .field-status {
   display: inline-flex;
   flex: 0 0 auto;
   margin: 0;
@@ -6394,7 +6424,7 @@ button.secondary-button:hover:not(:disabled) {
   }
 
   .pinned-context-row {
-    grid-template-columns: 42% minmax(0, 1fr) 48px;
+    grid-template-columns: 42% minmax(0, 1fr) max-content;
   }
 
   .pinned-context-setting {
@@ -6412,10 +6442,6 @@ button.secondary-button:hover:not(:disabled) {
 
   .config-setting-column {
     width: 42%;
-  }
-
-  .config-state-column {
-    width: 48px;
   }
 
   .config-table thead th,
@@ -6438,7 +6464,7 @@ button.secondary-button:hover:not(:disabled) {
     font-size: 10px;
   }
 
-  .property-state-cell .field-status {
+  .property-action-cell .field-status {
     display: none;
   }
 

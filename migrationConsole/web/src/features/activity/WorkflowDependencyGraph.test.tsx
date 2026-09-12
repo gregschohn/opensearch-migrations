@@ -18,7 +18,7 @@ test("dims unrelated paths only while a graph node is hovered", async () => {
     parentId: "group:Sources:Sources",
     relationships: [],
     resourceName: "source",
-    resourcePlural: "sourceconfigs",
+    resourcePlural: "sourceclusters",
   };
   snapshot.nodes["group:Sources:Sources"].childIds = [sourceId];
   const { container } = render(

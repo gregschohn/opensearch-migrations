@@ -43,6 +43,19 @@ export interface WorkflowGraph {
 }
 
 
+const CONFIG_ONLY_CLUSTER_PLURALS = new Set([
+  "sourceconfigs",
+  "targetconfigs",
+]);
+
+
+function isConfigOnlyCluster(resourcePlural: string | null | undefined): boolean {
+  return Boolean(
+    resourcePlural && CONFIG_ONLY_CLUSTER_PLURALS.has(resourcePlural),
+  );
+}
+
+
 function resourceOrder(snapshot: ManageSnapshot): Map<string, number> {
   const order = new Map<string, number>();
   const visited = new Set<string>();
@@ -99,7 +112,7 @@ function workflowStepsFor(
 function relationshipTarget(
   relationship: ManageRelationship,
   resources: WorkflowGraphNode[],
-): WorkflowGraphNode {
+): WorkflowGraphNode | null {
   const target = resources.find((candidate) => (
     candidate.id === relationship.targetId
   )) ?? resources.find((candidate) => (
@@ -110,6 +123,7 @@ function relationshipTarget(
     )
   ));
   if (target) return target;
+  if (isConfigOnlyCluster(relationship.targetPlural)) return null;
   return {
     id: relationship.targetId ?? unresolvedId(relationship),
     activityAt: null,
@@ -153,7 +167,10 @@ function graphResources(
       status: node.status,
       steps: workflowStepsFor(snapshot, node),
       unresolved: false,
-    }));
+    }))
+    .filter((node) => (
+      node.steps.length > 0 || !isConfigOnlyCluster(node.resourcePlural)
+    ));
 }
 
 
@@ -168,6 +185,7 @@ function graphEdges(
     );
     for (const requirement of requirements) {
       const prerequisite = relationshipTarget(requirement, resources);
+      if (!prerequisite) continue;
       if (!nodes.has(prerequisite.id)) nodes.set(prerequisite.id, prerequisite);
       const key = `${prerequisite.id}\n${resource.id}`;
       edges.set(key, {

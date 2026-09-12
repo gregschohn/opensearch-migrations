@@ -1623,8 +1623,8 @@ function ConfigPropertyRow({
             ) : null}
           </div>
         </td>
-        <td className="property-state-cell">
-          <div className="property-state-content">
+        <td className="property-action-cell">
+          <div className="property-action-content">
             {node.status && node.status !== "ok" ? (
               <span className={`field-status status-${node.status}`}>
                 {node.status}
@@ -3517,13 +3517,15 @@ export function ConfigEditor({
             <colgroup>
               <col className="config-setting-column" />
               <col className="config-value-column" />
-              <col className="config-state-column" />
+              <col className="config-actions-column" />
             </colgroup>
             <thead>
               <tr>
                 <th scope="col">Setting</th>
                 <th scope="col">Value</th>
-                <th scope="col">State</th>
+                <th className="config-actions-heading" scope="col">
+                  <span className="sr-only">Row actions</span>
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -3583,12 +3585,13 @@ export function ConfigEditor({
           {scopeCommands.length > 0 || scopeActionMessages.length > 0 ? (
             <div className="config-scope-add-actions">
               {scopeCommands.length > 0 ? (
-                <div className="inline-add-actions">
+                <div className="config-scope-command-list">
                   {scopeCommands.map((command) => {
                     const commandName = fieldName(command);
                     return (
                       <button
                         aria-label={`Add ${commandName}`}
+                        className="primary-button"
                         disabled={
                           busy
                           || Boolean(command.command?.blockedMessage)
