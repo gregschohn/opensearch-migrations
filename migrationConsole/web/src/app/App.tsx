@@ -28,7 +28,6 @@ import {
   approveTarget,
   getApprovalGates,
   getApprovalReview,
-  getConfigDraft,
   getConfigurationDocument,
   getHealth,
   getManageState,
@@ -36,7 +35,6 @@ import {
   reconcileManageState,
   setGatePreapproval,
   type ApprovalGateSummary,
-  type ConfigDraft,
   type ManageNode,
   type ManageSnapshot,
 } from "../api/client";
@@ -59,7 +57,6 @@ import {
 } from "../features/configuration/editProjection";
 import {
   BROWSER_CONFIG_DRAFT_QUERY_KEY,
-  browserLocalEditingEnabled,
   createBrowserConfigDraft,
   markBrowserConfigDraftStale,
   type BrowserConfigDraft,
@@ -144,13 +141,6 @@ function workflowStepDescendants(
     pending.push(...child.childIds);
   }
   return result;
-}
-
-
-function draftNavigationNodes(
-  draft: ConfigDraft | undefined,
-): Record<string, ManageNode> {
-  return draft?.navigation?.nodes ?? {};
 }
 
 
@@ -251,7 +241,6 @@ function promptedApprovalKeys(): Set<string> {
 
 function ManageApp() {
   const queryClient = useQueryClient();
-  const useBrowserDraft = browserLocalEditingEnabled();
   const [savedConfigurationRevision, setSavedConfigurationRevision] =
     useState<string | null>(null);
   const health = useQuery({
@@ -344,23 +333,14 @@ function ManageApp() {
     || submitSignals.failedResourceCount > 0;
   const resubmissionOnly = !pendingConfiguration && submissionAvailable;
   const submitSignalText = submissionSignalText(submitSignals);
-  const configDraft = useQuery({
-    queryKey: ["config-draft"],
-    queryFn: getConfigDraft,
-    enabled: (!useBrowserDraft && editContext !== null) || submissionAvailable,
-    staleTime: Infinity,
-  });
   const browserConfigDraft = useQuery({
     queryKey: BROWSER_CONFIG_DRAFT_QUERY_KEY,
     queryFn: async () => createBrowserConfigDraft(
       await getConfigurationDocument(),
     ),
-    enabled: useBrowserDraft && editContext !== null,
+    enabled: editContext !== null || submissionAvailable,
     staleTime: Infinity,
   });
-  const editingConfigDraft = useBrowserDraft
-    ? browserConfigDraft
-    : configDraft;
   const resetTargetIds = useMemo(
     () => activeResetTargetIds(operations.data),
     [operations.data],
@@ -374,7 +354,7 @@ function ManageApp() {
   );
 
   useEffect(() => {
-    if (!useBrowserDraft || !savedConfigurationRevision) return;
+    if (!savedConfigurationRevision) return;
     const current = queryClient.getQueryData<BrowserConfigDraft>(
       BROWSER_CONFIG_DRAFT_QUERY_KEY,
     );
@@ -383,7 +363,6 @@ function ManageApp() {
         queryClient.removeQueries({
           queryKey: BROWSER_CONFIG_DRAFT_QUERY_KEY,
         });
-        queryClient.removeQueries({ queryKey: ["config-draft"] });
       }
       return;
     }
@@ -419,7 +398,6 @@ function ManageApp() {
     editContext,
     queryClient,
     savedConfigurationRevision,
-    useBrowserDraft,
   ]);
 
   useEffect(() => {
@@ -481,12 +459,12 @@ function ManageApp() {
       observedState && editContext
         ? projectEditSnapshot(
           (
-            useBrowserDraft && browserConfigDraft.data
+            browserConfigDraft.data
               ? projectConfigResourceGraph(
                 observedState,
                 browserConfigDraft.data,
               )
-              : configDraft.data?.navigation ?? observedState
+              : observedState
           ),
           pendingResourceAdditions,
           pendingResourceRenames,
@@ -495,13 +473,11 @@ function ManageApp() {
     ),
     [
       browserConfigDraft.data,
-      configDraft.data,
       editContext,
       overviewState,
       pendingResourceAdditions,
       pendingResourceRenames,
       observedState,
-      useBrowserDraft,
     ],
   );
   const displayedResourceCount = useMemo(
@@ -594,9 +570,7 @@ function ManageApp() {
       submitActive,
     ),
   ) ?? [];
-  const activeValidationQuery = editContext
-    ? editingConfigDraft
-    : configDraft;
+  const activeValidationQuery = browserConfigDraft;
   const submitValidation = activeValidationQuery.data?.editState.validation;
   const blockingDiagnosticCount = submitValidation?.diagnostics?.filter(
     (diagnostic) => (
@@ -719,13 +693,8 @@ function ManageApp() {
       }
       return;
     }
-    const currentDraft = queryClient.getQueryData<ConfigDraft>([
-      "config-draft",
-    ]);
     const resourceId = navigationResourceId(
-      useBrowserDraft
-        ? resourceNavigationState?.nodes ?? {}
-        : draftNavigationNodes(currentDraft),
+      resourceNavigationState?.nodes ?? {},
       addition.editTargetId,
     );
     setPendingResourceAdditions((current) => (
@@ -742,7 +711,7 @@ function ManageApp() {
       resourceId: resourceId ?? addition.id,
       targetId: addition.editTargetId,
     });
-  }, [queryClient, resourceNavigationState?.nodes, useBrowserDraft]);
+  }, [resourceNavigationState?.nodes]);
   const resourceRenameStarted = useCallback((
     rename: PendingResourceRename,
   ) => {
@@ -772,13 +741,8 @@ function ManageApp() {
       });
       return;
     }
-    const currentDraft = queryClient.getQueryData<ConfigDraft>([
-      "config-draft",
-    ]);
     const resourceId = settledRenameResourceId(
-      useBrowserDraft
-        ? resourceNavigationState?.nodes ?? {}
-        : draftNavigationNodes(currentDraft),
+      resourceNavigationState?.nodes ?? {},
       rename,
     );
     setPendingResourceRenames((current) => (
@@ -795,7 +759,7 @@ function ManageApp() {
       resourceId: resourceId ?? rename.id,
       targetId: rename.editTargetId,
     });
-  }, [queryClient, resourceNavigationState?.nodes, useBrowserDraft]);
+  }, [resourceNavigationState?.nodes]);
   const resourceDraftReverted = useCallback(() => {
     const addedIds = new Set(
       pendingResourceAdditions.map((addition) => addition.id),
@@ -827,10 +791,8 @@ function ManageApp() {
   }, [pendingResourceAdditions, pendingResourceRenames]);
 
   useEffect(() => {
-    if (!editingConfigDraft.data) return;
-    const nodes = useBrowserDraft
-      ? resourceNavigationState?.nodes ?? {}
-      : draftNavigationNodes(editingConfigDraft.data);
+    if (!browserConfigDraft.data) return;
+    const nodes = resourceNavigationState?.nodes ?? {};
     const settledAdditions = pendingResourceAdditions.flatMap((addition) => {
       const resourceId = navigationResourceId(nodes, addition.editTargetId);
       return resourceId ? [{ addition, resourceId }] : [];
@@ -885,11 +847,10 @@ function ManageApp() {
       return next.length === current.length ? current : next;
     });
   }, [
-    editingConfigDraft.data,
+    browserConfigDraft.data,
     pendingResourceAdditions,
     pendingResourceRenames,
     resourceNavigationState?.nodes,
-    useBrowserDraft,
   ]);
 
   useEffect(() => {
@@ -1270,13 +1231,13 @@ function ManageApp() {
             disabled={
               state.isFetching
               || operations.isFetching
-              || configDraft.isFetching
+              || browserConfigDraft.isFetching
             }
             onClick={() => {
               void state.refetch();
               void operations.refetch();
               if (editContext || submissionAvailable) {
-                void configDraft.refetch();
+                void browserConfigDraft.refetch();
               }
             }}
             title="Refresh state"
@@ -1286,7 +1247,7 @@ function ManageApp() {
               className={
                 state.isFetching
                 || operations.isFetching
-                || configDraft.isFetching
+                || browserConfigDraft.isFetching
                   ? "spin"
                   : ""
               }

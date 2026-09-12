@@ -445,26 +445,6 @@ def test_list_external_resources_accepts_unmanaged_matching_secret():
     }]
 
 
-def test_load_edit_session_does_not_block_on_external_secret_validation():
-    runner = MagicMock()
-    runner.run_config_processor_node_script.return_value = json.dumps(
-        edit_state_with_external_ref("target-creds", basic_auth_secret_external_ref())
-    )
-    core = MagicMock()
-    core.read_namespaced_secret.side_effect = ApiException(status=404, reason="Not Found")
-    service = ConfigEditService(
-        namespace="ma",
-        store=FakeStore(WorkflowConfig(raw_yaml="targetClusters: {}\n")),
-        runner=runner,
-    )
-
-    with patch.object(service, "_core_v1", return_value=core):
-        session = service.load_edit_session()
-
-    assert session.edit_state["validation"]["valid"] is True
-    core.read_namespaced_secret.assert_not_called()
-
-
 def test_external_diagnostics_mark_missing_secret_as_error():
     runner = MagicMock()
     runner.run_config_processor_node_script.return_value = json.dumps(
@@ -675,46 +655,6 @@ def test_load_latest_submitted_resolved_config_filters_by_workflow(_list_resourc
 
     assert service.load_latest_submitted_resolved_config("migration") == {"marker": "selected"}
     assert service.load_latest_submitted_resolved_config("missing") is None
-
-
-def test_apply_operation_reports_config_processor_stderr():
-    runner = MagicMock()
-    runner.run_config_processor_node_script.side_effect = subprocess.CalledProcessError(
-        2,
-        ["node-22", "/root/configProcessor/index.js"],
-        output="",
-        stderr="Usage: editConfig apply --pending-config <file|-> --operation <json-file|->",
-    )
-    service = ConfigEditService(namespace="test", store=FakeStore(), runner=runner)
-
-    with pytest.raises(RuntimeError) as error:
-        service.apply_operation(
-            "sourceClusters: {}\n",
-            {"op": "set", "path": ["snapshotMigrationConfigs", "0", "fromSource"], "value": "aux-source"},
-        )
-
-    assert "config processor failed with exit code 2" in str(error.value)
-    assert "Usage: editConfig apply --pending-config" in str(error.value)
-
-
-def test_snapshot_migration_edits_do_not_consult_cluster_resource_names():
-    custom_api = MagicMock()
-    service = ConfigEditService(
-        namespace="test",
-        store=FakeStore(),
-        custom_api=custom_api,
-    )
-    requested = {
-        "op": "set",
-        "path": ["snapshotMigrationConfigs", "0", "slice"],
-        "value": "slice-9",
-    }
-
-    operation, notices = service._prepare_operation(requested)
-
-    assert operation == requested
-    assert notices == ()
-    custom_api.list_namespaced_custom_object.assert_not_called()
 
 
 @patch("console_link.workflow.services.config_edit_service.load_k8s_config")

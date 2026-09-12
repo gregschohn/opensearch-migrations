@@ -12,13 +12,10 @@ from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from ..application.config_navigation import project_config_navigation
 from ..application.observations import ObservationCoordinator, ObservationEvent
 from ..application.config_documents import ConfigurationDocumentConflict
-from ..application.config_drafts import (
-    ConfigDraftConflict,
+from ..application.external_resources import (
     ExternalResourceSelectionWarning,
-    SavedConfigConflict,
 )
 from ..application.outputs import (
     OutputReadFailed,
@@ -43,22 +40,20 @@ from ..application.runtime_status import RuntimeStatusUnavailable
 from ..commands.autocomplete_workflows import DEFAULT_WORKFLOW_NAME
 from .contracts import (
     AdmissionPreflightV1,
-    ApplyEditOperationRequestV1,
     ApproveRequestV1,
     ApprovalGateInventoryV1,
     ApprovalReviewV1,
-    ConfigDraftV1,
     ConfigEnvironmentDiagnosticsRequestV1,
     ConfigEnvironmentDiagnosticsV1,
     ConfigurationDocumentV1,
-    ConfigRemovalImpactRequestV1,
-    ConfigRemovalImpactV1,
     ConfigReviewV1,
-    DraftRevisionRequestV1,
     ExecuteResetRequestV1,
+    ExternalResourceContextRequestV1,
+    ExternalResourceDetailsRequestV1,
     ExternalResourceDetailsV1,
     ExternalResourceInventoryV1,
     ExternalResourceMutationV1,
+    ExternalResourceSelectionV1,
     HealthV1,
     LogEventV1,
     LogPageV1,
@@ -71,7 +66,6 @@ from .contracts import (
     OperationListV1,
     OperationV1,
     PersistedRevisionRequestV1,
-    ReplaceRawConfigRequestV1,
     ResetPlanRequestV1,
     ResetPlanV1,
     RuntimeStatusV1,
@@ -93,7 +87,7 @@ logger = logging.getLogger(__name__)
 def create_app(
     static_dir: Optional[Path] = None,
     coordinator: Optional[ObservationCoordinator] = None,
-    config_drafts: Optional[Any] = None,
+    external_resources: Optional[Any] = None,
     config_documents: Optional[Any] = None,
     config_diagnostics: Optional[Any] = None,
     outputs: Optional[Any] = None,
@@ -206,13 +200,13 @@ def create_app(
             logger.exception("Failed to inspect runtime status")
             raise HTTPException(status_code=502, detail=str(error)) from error
 
-    def draft_service():
-        if config_drafts is None:
+    def external_resource_service():
+        if external_resources is None:
             raise HTTPException(
                 status_code=503,
-                detail="Configuration editing is not configured",
+                detail="External resource access is not configured",
             )
-        return config_drafts
+        return external_resources
 
     def document_service():
         if config_documents is None:
@@ -238,54 +232,6 @@ def create_app(
                 detail="Configuration submission is not configured",
             )
         return service
-
-    def draft_navigation(draft: Any) -> Optional[Any]:
-        observation = (
-            getattr(coordinator, "current_observation", None)
-            if coordinator is not None else None
-        )
-        if observation is None:
-            return None
-        try:
-            return project_config_navigation(observation.snapshot, draft)
-        except Exception:
-            logger.exception("Failed to project configuration navigation")
-            return None
-
-    def draft_contract(draft: Any) -> ConfigDraftV1:
-        return ConfigDraftV1.from_domain(
-            draft,
-            navigation=draft_navigation(draft),
-        )
-
-    def _draft_conflict(error: ConfigDraftConflict) -> HTTPException:
-        return HTTPException(
-            status_code=409,
-            detail={
-                "code": "draft_revision_conflict",
-                "message": str(error),
-                "current": draft_contract(error.current).model_dump(
-                    by_alias=True,
-                    exclude_none=True,
-                    mode="json",
-                ),
-            },
-        )
-
-    def _saved_config_conflict(error: SavedConfigConflict) -> HTTPException:
-        return HTTPException(
-            status_code=409,
-            detail={
-                "code": "saved_config_conflict",
-                "message": str(error),
-                "persistedRevision": error.persisted_revision,
-                "current": draft_contract(error.current).model_dump(
-                    by_alias=True,
-                    exclude_none=True,
-                    mode="json",
-                ),
-            },
-        )
 
     def _document_conflict(
         error: ConfigurationDocumentConflict,
@@ -771,130 +717,6 @@ def create_app(
             diagnostics=result.get("diagnostics") or [],
         )
 
-    @app.get(
-        "/api/v1/config",
-        response_model=ConfigDraftV1,
-        response_model_exclude_none=True,
-        tags=["configuration"],
-    )
-    def open_config() -> ConfigDraftV1:
-        try:
-            return draft_contract(draft_service().open())
-        except HTTPException:
-            raise
-        except Exception as error:
-            logger.exception("Failed to open the workflow configuration")
-            raise HTTPException(
-                status_code=503,
-                detail={
-                    "code": "configuration_unavailable",
-                    "message": str(error) or type(error).__name__,
-                },
-            ) from error
-
-    @app.post(
-        "/api/v1/config/operations",
-        response_model=ConfigDraftV1,
-        response_model_exclude_none=True,
-        tags=["configuration"],
-    )
-    def apply_config_operation(
-        request_body: ApplyEditOperationRequestV1,
-    ) -> ConfigDraftV1:
-        operation = request_body.operation.model_dump(
-            by_alias=True,
-            exclude_none=True,
-        )
-        try:
-            draft = draft_service().apply(
-                request_body.expected_draft_revision,
-                operation,
-            )
-        except ConfigDraftConflict as error:
-            raise _draft_conflict(error) from error
-        except ValueError as error:
-            raise HTTPException(status_code=400, detail=str(error)) from error
-        return draft_contract(draft)
-
-    @app.put(
-        "/api/v1/config/raw",
-        response_model=ConfigDraftV1,
-        response_model_exclude_none=True,
-        tags=["configuration"],
-    )
-    def replace_raw_config(
-        request_body: ReplaceRawConfigRequestV1,
-    ) -> ConfigDraftV1:
-        try:
-            draft = draft_service().replace_raw(
-                request_body.expected_draft_revision,
-                request_body.raw_yaml,
-            )
-        except ConfigDraftConflict as error:
-            raise _draft_conflict(error) from error
-        return draft_contract(draft)
-
-    @app.post(
-        "/api/v1/config/save",
-        response_model=ConfigDraftV1,
-        response_model_exclude_none=True,
-        tags=["configuration"],
-    )
-    def save_config(request_body: DraftRevisionRequestV1) -> ConfigDraftV1:
-        try:
-            draft = draft_service().save(request_body.expected_draft_revision)
-        except ConfigDraftConflict as error:
-            raise _draft_conflict(error) from error
-        except SavedConfigConflict as error:
-            raise _saved_config_conflict(error) from error
-        return draft_contract(draft)
-
-    @app.post(
-        "/api/v1/config/discard",
-        response_model=ConfigDraftV1,
-        response_model_exclude_none=True,
-        tags=["configuration"],
-    )
-    def discard_config(request_body: DraftRevisionRequestV1) -> ConfigDraftV1:
-        try:
-            draft = draft_service().discard(request_body.expected_draft_revision)
-        except ConfigDraftConflict as error:
-            raise _draft_conflict(error) from error
-        return draft_contract(draft)
-
-    @app.post(
-        "/api/v1/config/close",
-        status_code=204,
-        response_class=Response,
-        tags=["configuration"],
-    )
-    def close_config(request_body: DraftRevisionRequestV1) -> Response:
-        try:
-            draft_service().close(request_body.expected_draft_revision)
-        except ConfigDraftConflict as error:
-            raise _draft_conflict(error) from error
-        return Response(status_code=204)
-
-    @app.post(
-        "/api/v1/config/removal-impact",
-        response_model=ConfigRemovalImpactV1,
-        response_model_exclude_none=True,
-        tags=["configuration"],
-    )
-    def config_removal_impact(
-        request_body: ConfigRemovalImpactRequestV1,
-    ) -> ConfigRemovalImpactV1:
-        try:
-            impact = draft_service().removal_impact(
-                request_body.expected_draft_revision,
-                request_body.path,
-            )
-        except ConfigDraftConflict as error:
-            raise _draft_conflict(error) from error
-        except ValueError as error:
-            raise HTTPException(status_code=400, detail=str(error)) from error
-        return ConfigRemovalImpactV1.from_domain(impact)
-
     @app.post(
         "/api/v1/config/review",
         response_model=ConfigReviewV1,
@@ -1357,42 +1179,36 @@ def create_app(
             },
         )
 
-    @app.get(
+    @app.post(
         "/api/v1/external-resources",
         response_model=ExternalResourceInventoryV1,
         response_model_exclude_none=True,
         tags=["configuration"],
     )
-    def external_resources(
-        node_id: Annotated[str, Query(alias="nodeId")],
-        expected_revision: Annotated[
-            str,
-            Query(alias="expectedDraftRevision"),
-        ],
+    def list_external_resources(
+        request_body: ExternalResourceContextRequestV1,
     ) -> ExternalResourceInventoryV1:
         try:
-            inventory = draft_service().list_external_resources(
-                expected_revision,
-                node_id,
+            inventory = external_resource_service().list(
+                request_body.raw_yaml,
+                request_body.node_id,
             )
-        except ConfigDraftConflict as error:
-            raise _draft_conflict(error) from error
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
         return ExternalResourceInventoryV1.from_domain(inventory)
 
     @app.post(
         "/api/v1/external-resources/select",
-        response_model=ConfigDraftV1,
+        response_model=ExternalResourceSelectionV1,
         response_model_exclude_none=True,
         tags=["configuration"],
     )
     def select_external_resource(
         request_body: SelectExternalResourceRequestV1,
-    ) -> ConfigDraftV1:
+    ) -> ExternalResourceSelectionV1:
         try:
-            draft = draft_service().select_external_resource(
-                expected_revision=request_body.expected_draft_revision,
+            external_resource_service().validate_selection(
+                raw_yaml=request_body.raw_yaml,
                 node_id=request_body.node_id,
                 name=request_body.name,
                 kind=request_body.kind,
@@ -1401,8 +1217,6 @@ def create_app(
                 accept_warning=request_body.accept_warning,
                 manual=request_body.manual,
             )
-        except ConfigDraftConflict as error:
-            raise _draft_conflict(error) from error
         except ExternalResourceSelectionWarning as error:
             raise HTTPException(
                 status_code=409,
@@ -1413,30 +1227,23 @@ def create_app(
             ) from error
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
-        return draft_contract(draft)
+        return ExternalResourceSelectionV1()
 
-    @app.get(
+    @app.post(
         "/api/v1/external-resources/details",
         response_model=ExternalResourceDetailsV1,
         response_model_exclude_none=True,
         tags=["configuration"],
     )
     def external_resource_details(
-        node_id: Annotated[str, Query(alias="nodeId")],
-        expected_revision: Annotated[
-            str,
-            Query(alias="expectedDraftRevision"),
-        ],
-        name: str,
+        request_body: ExternalResourceDetailsRequestV1,
     ) -> ExternalResourceDetailsV1:
         try:
-            details = draft_service().read_external_resource(
-                expected_revision,
-                node_id,
-                name,
+            details = external_resource_service().read(
+                request_body.raw_yaml,
+                request_body.node_id,
+                request_body.name,
             )
-        except ConfigDraftConflict as error:
-            raise _draft_conflict(error) from error
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
         return ExternalResourceDetailsV1.from_domain(details)
@@ -1451,21 +1258,16 @@ def create_app(
         request_body: SaveExternalResourceRequestV1,
     ) -> ExternalResourceMutationV1:
         try:
-            mutation = draft_service().save_external_resource(
-                expected_revision=request_body.expected_draft_revision,
+            mutation = external_resource_service().save(
+                raw_yaml=request_body.raw_yaml,
                 node_id=request_body.node_id,
                 values=request_body.values,
                 confirmations=request_body.confirmations,
                 existing_name=request_body.existing_name,
             )
-        except ConfigDraftConflict as error:
-            raise _draft_conflict(error) from error
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
-        return ExternalResourceMutationV1.from_domain(
-            mutation,
-            navigation=draft_navigation(mutation.draft),
-        )
+        return ExternalResourceMutationV1.from_domain(mutation)
 
     @app.get(
         "/api/v1/manage/events",

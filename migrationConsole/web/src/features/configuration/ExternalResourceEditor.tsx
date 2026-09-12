@@ -8,7 +8,7 @@ import {
 import {
   createdExternalResourceOperations,
   externalResourceSelectionOperations,
-  type EditNode as CoreEditNode,
+  type EditNode,
   type EditOperation as CoreEditOperation,
 } from "@opensearch-migrations/config-edit-core";
 import {
@@ -26,14 +26,13 @@ import {
   getExternalResources,
   saveExternalResource,
   selectExternalResource,
-  type ConfigDraft,
-  type EditNode,
   type ExternalResourceDetails,
   type ExternalResourceInventory,
   type ExternalResourceSelection,
 } from "../../api/client";
 import { ModalDialog } from "../../components/ModalDialog";
 import { useEscapeCancel } from "../../hooks/useEscapeCancel";
+import type { BrowserConfigDraft } from "./browserDraft";
 
 
 interface ExternalField {
@@ -65,9 +64,9 @@ type Pane =
     };
 
 
-type ReplaceCompatibilityDraft = (
-  promise: Promise<ConfigDraft>,
-  localOperations?: CoreEditOperation[],
+type ApplyExternalOperations = (
+  operations: CoreEditOperation[],
+  notice?: string,
 ) => Promise<boolean>;
 
 
@@ -152,13 +151,15 @@ function ManualExternalResourceForm({
   node,
   onApplied,
   onBack,
-  replaceDraft,
+  applyOperations,
+  reportError,
 }: Readonly<{
-  draft: ConfigDraft;
+  draft: BrowserConfigDraft;
   node: EditNode;
   onApplied: () => void;
   onBack: () => void;
-  replaceDraft: ReplaceCompatibilityDraft;
+  applyOperations: ApplyExternalOperations;
+  reportError: (message: string) => void;
 }>) {
   const resourceTypes = kubernetesResourceTypes(node);
   const selection = record(record(node.externalRef).selection);
@@ -183,15 +184,17 @@ function ManualExternalResourceForm({
       acceptWarning: true,
       manual: true,
     };
-    const applied = await replaceDraft(
-      selectExternalResource(draft.draftRevision, selection),
-      externalResourceSelectionOperations(
-        node as CoreEditNode,
-        selection,
-      ),
-    );
-    setSubmitting(false);
-    if (applied) onApplied();
+    try {
+      await selectExternalResource(draft.rawDocument, selection);
+      const applied = await applyOperations(
+        externalResourceSelectionOperations(node, selection),
+      );
+      if (applied) onApplied();
+    } catch (error) {
+      reportError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -308,16 +311,16 @@ function ExternalResourceForm({
   node,
   onApplied,
   onBack,
-  replaceDraft,
+  applyOperations,
   reportError,
 }: Readonly<{
   descriptor: CreateDescriptor;
   details?: ExternalResourceDetails;
-  draft: ConfigDraft;
+  draft: BrowserConfigDraft;
   node: EditNode;
   onApplied: () => void;
   onBack: () => void;
-  replaceDraft: ReplaceCompatibilityDraft;
+  applyOperations: ApplyExternalOperations;
   reportError: (message: string) => void;
 }>) {
   const updating = Boolean(details && !details.missing);
@@ -355,19 +358,19 @@ function ExternalResourceForm({
     setFormProblem("");
     try {
       const result = await saveExternalResource(
-        draft.draftRevision,
+        draft.rawDocument,
         node.id,
         values,
         confirmations,
         updating ? details?.name : undefined,
       );
-      const applied = await replaceDraft(
-        Promise.resolve(result.draft),
+      const applied = await applyOperations(
         createdExternalResourceOperations(
-          node as CoreEditNode,
+          node,
           values,
           result.name,
         ),
+        result.message,
       );
       if (applied) onApplied();
     } catch (error) {
@@ -678,17 +681,17 @@ function ExternalResourceDialogContent({
   busy,
   onClose,
   registerPane,
-  replaceDraft,
+  applyOperations,
   reportError,
 }: Readonly<{
-  draft: ConfigDraft;
+  draft: BrowserConfigDraft;
   node: EditNode;
   busy: boolean;
   onClose: () => void;
   registerPane: (
     info: { title: string; back: () => void } | null,
   ) => void;
-  replaceDraft: ReplaceCompatibilityDraft;
+  applyOperations: ApplyExternalOperations;
   reportError: (message: string) => void;
 }>) {
   const [inventory, setInventory] = useState<ExternalResourceInventory | null>(
@@ -744,13 +747,13 @@ function ExternalResourceDialogContent({
     setLoading(true);
     setWarning(null);
     try {
-      setInventory(await getExternalResources(node.id, draft.draftRevision));
+      setInventory(await getExternalResources(node.id, draft.rawDocument));
     } catch (error) {
       reportError(error instanceof Error ? error.message : String(error));
     } finally {
       setLoading(false);
     }
-  }, [draft.draftRevision, node.id, reportError]);
+  }, [draft.rawDocument, node.id, reportError]);
 
   useEffect(() => {
     void load();
@@ -765,7 +768,7 @@ function ExternalResourceDialogContent({
     try {
       const details = await getExternalResourceDetails(
         node.id,
-        draft.draftRevision,
+        draft.rawDocument,
         row.name,
       );
       const nextPane = { mode, details, row } as const;
@@ -789,14 +792,13 @@ function ExternalResourceDialogContent({
     }
     setSelecting(true);
     try {
-      const applied = await replaceDraft(
-        selectExternalResource(draft.draftRevision, selection),
-        externalResourceSelectionOperations(
-          node as CoreEditNode,
-          selection,
-        ),
+      await selectExternalResource(draft.rawDocument, selection);
+      const applied = await applyOperations(
+        externalResourceSelectionOperations(node, selection),
       );
       if (applied) onClose();
+    } catch (error) {
+      reportError(error instanceof Error ? error.message : String(error));
     } finally {
       setSelecting(false);
     }
@@ -809,14 +811,13 @@ function ExternalResourceDialogContent({
     };
     setSelecting(true);
     try {
-      const applied = await replaceDraft(
-        selectExternalResource(draft.draftRevision, acceptedSelection),
-        externalResourceSelectionOperations(
-          node as CoreEditNode,
-          acceptedSelection,
-        ),
+      await selectExternalResource(draft.rawDocument, acceptedSelection);
+      const applied = await applyOperations(
+        externalResourceSelectionOperations(node, acceptedSelection),
       );
       if (applied) onClose();
+    } catch (error) {
+      reportError(error instanceof Error ? error.message : String(error));
     } finally {
       setSelecting(false);
     }
@@ -840,7 +841,7 @@ function ExternalResourceDialogContent({
         node={node}
         onApplied={onClose}
         onBack={() => setPane(null)}
-        replaceDraft={replaceDraft}
+        applyOperations={applyOperations}
         reportError={reportError}
       />
     );
@@ -852,7 +853,8 @@ function ExternalResourceDialogContent({
         node={node}
         onApplied={onClose}
         onBack={() => setPane(null)}
-        replaceDraft={replaceDraft}
+        applyOperations={applyOperations}
+        reportError={reportError}
       />
     );
   }
@@ -869,7 +871,7 @@ function ExternalResourceDialogContent({
           details: pane.details,
           row: pane.row,
         })}
-        replaceDraft={replaceDraft}
+        applyOperations={applyOperations}
         reportError={reportError}
       />
     );
@@ -1087,7 +1089,7 @@ function ExternalResourceDialogContent({
                         details: allResourcesPane.details,
                         row: allResourcesPane.row,
                       })}
-                      replaceDraft={replaceDraft}
+                      applyOperations={applyOperations}
                       reportError={reportError}
                     />
                     )
@@ -1145,14 +1147,14 @@ export function ExternalResourceEditor({
   node,
   busy,
   onClose,
-  replaceDraft,
+  applyOperations,
   reportError,
 }: Readonly<{
-  draft: ConfigDraft;
+  draft: BrowserConfigDraft;
   node: EditNode;
   busy: boolean;
   onClose: () => void;
-  replaceDraft: ReplaceCompatibilityDraft;
+  applyOperations: ApplyExternalOperations;
   reportError: (message: string) => void;
 }>) {
   const displayName = externalResourceDisplayName(node);
@@ -1186,7 +1188,7 @@ export function ExternalResourceEditor({
           node={node}
           onClose={onClose}
           registerPane={registerPane}
-          replaceDraft={replaceDraft}
+          applyOperations={applyOperations}
           reportError={reportError}
         />
       </div>

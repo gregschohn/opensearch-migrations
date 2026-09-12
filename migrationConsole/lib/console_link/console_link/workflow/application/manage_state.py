@@ -53,7 +53,7 @@ from .models import (
     ManageValueState,
     ManageWorkflow,
 )
-from .config_navigation import group_snapshot_migration_navigation
+from .snapshot_navigation import group_snapshot_migration_navigation
 
 
 logger = logging.getLogger(__name__)

@@ -1,4 +1,4 @@
-import type { EditNode } from "../../api/client";
+import type { EditNode } from "@opensearch-migrations/config-edit-core";
 
 
 export interface ResourceAddPlacement {

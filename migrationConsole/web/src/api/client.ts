@@ -7,14 +7,10 @@ export type ManageSnapshot = components["schemas"]["ManageSnapshotV1"];
 export type ManageNode = components["schemas"]["ManageNodeV1"];
 export type ManageRelationship = components["schemas"]["RelationshipV1"];
 export type RuntimeStatus = components["schemas"]["RuntimeStatusV1"];
-export type ConfigDraft = components["schemas"]["ConfigDraftV1"];
 export type ConfigurationDocument =
   components["schemas"]["ConfigurationDocumentV1"];
 export type ConfigEnvironmentDiagnostics =
   components["schemas"]["ConfigEnvironmentDiagnosticsV1"];
-export type ConfigRemovalImpact =
-  components["schemas"]["ConfigRemovalImpactV1"];
-export type ConfigSubmission = components["schemas"]["ConfigSubmissionV1"];
 export type ConfigReview = components["schemas"]["ConfigReviewV1"];
 export type AdmissionPreflight =
   components["schemas"]["AdmissionPreflightV1"];
@@ -36,9 +32,6 @@ export type LogStreamStatus =
   components["schemas"]["LogStreamStatusV1"];
 export type LogPage = components["schemas"]["LogPageV1"];
 export type LogEvent = components["schemas"]["LogEventV1"];
-export type EditNode = components["schemas"]["EditNodeV1"];
-export type EditOperation =
-  components["schemas"]["ApplyEditOperationRequestV1"]["operation"];
 export type ExternalResourceInventory =
   components["schemas"]["ExternalResourceInventoryV1"];
 export type ExternalResourceRow =
@@ -58,7 +51,7 @@ const client = createClient<paths>({
 interface ApiErrorDetail {
   code?: string;
   message?: string;
-  current?: ConfigDraft | ConfigurationDocument;
+  current?: ConfigurationDocument;
   persistedRevision?: string;
 }
 
@@ -66,7 +59,6 @@ interface ApiErrorDetail {
 export class ConfigApiError extends Error {
   readonly status: number;
   readonly code?: string;
-  readonly current?: ConfigDraft;
   readonly currentDocument?: ConfigurationDocument;
 
   constructor(status: number, fallback: string, error: unknown) {
@@ -84,9 +76,6 @@ export class ConfigApiError extends Error {
     this.code = detail && typeof detail === "object" ? detail.code : undefined;
     const current = detail && typeof detail === "object"
       ? detail.current
-      : undefined;
-    this.current = current && "draftRevision" in current
-      ? current
       : undefined;
     this.currentDocument = current && "persistedRevision" in current
       ? current
@@ -142,21 +131,6 @@ export async function getRuntimeStatus(
     throw new ConfigApiError(
       response.status,
       "Runtime status is unavailable",
-      error,
-    );
-  }
-  return data;
-}
-
-
-export async function getConfigDraft(): Promise<ConfigDraft> {
-  const { data, error, response } = await client.GET("/api/v1/config");
-  if (!response.ok || error || !data) {
-    throw new ConfigApiError(
-      response.status,
-      response.status === 404
-        ? "This Workflow Manage server does not provide configuration editing. Restart it with the current web application."
-        : "Configuration is unavailable",
       error,
     );
   }
@@ -222,131 +196,6 @@ export async function diagnoseConfigurationEnvironment(
     throw new ConfigApiError(
       response.status,
       "Configuration environment checks could not be completed",
-      error,
-    );
-  }
-  return data;
-}
-
-
-export async function applyEditOperation(
-  draftRevision: string,
-  operation: EditOperation,
-): Promise<ConfigDraft> {
-  const { data, error, response } = await client.POST(
-    "/api/v1/config/operations",
-    {
-      body: {
-        expectedDraftRevision: draftRevision,
-        operation,
-      },
-    },
-  );
-  if (!response.ok || error || !data) {
-    throw new ConfigApiError(
-      response.status,
-      "The configuration change could not be applied",
-      error,
-    );
-  }
-  return data;
-}
-
-
-export async function replaceRawConfig(
-  draftRevision: string,
-  rawYaml: string,
-): Promise<ConfigDraft> {
-  const { data, error, response } = await client.PUT(
-    "/api/v1/config/raw",
-    {
-      body: {
-        expectedDraftRevision: draftRevision,
-        rawYaml,
-      },
-    },
-  );
-  if (!response.ok || error || !data) {
-    throw new ConfigApiError(
-      response.status,
-      "The YAML could not be checked",
-      error,
-    );
-  }
-  return data;
-}
-
-
-export async function saveConfigDraft(
-  draftRevision: string,
-): Promise<ConfigDraft> {
-  const { data, error, response } = await client.POST(
-    "/api/v1/config/save",
-    { body: { expectedDraftRevision: draftRevision } },
-  );
-  if (!response.ok || error || !data) {
-    throw new ConfigApiError(
-      response.status,
-      "The configuration could not be saved",
-      error,
-    );
-  }
-  return data;
-}
-
-
-export async function discardConfigDraft(
-  draftRevision: string,
-): Promise<ConfigDraft> {
-  const { data, error, response } = await client.POST(
-    "/api/v1/config/discard",
-    { body: { expectedDraftRevision: draftRevision } },
-  );
-  if (!response.ok || error || !data) {
-    throw new ConfigApiError(
-      response.status,
-      "The configuration draft could not be discarded",
-      error,
-    );
-  }
-  return data;
-}
-
-
-export async function closeConfigDraft(
-  draftRevision: string,
-): Promise<void> {
-  const { error, response } = await client.POST(
-    "/api/v1/config/close",
-    { body: { expectedDraftRevision: draftRevision } },
-  );
-  if (!response.ok || error) {
-    throw new ConfigApiError(
-      response.status,
-      "The configuration edit session could not be closed",
-      error,
-    );
-  }
-}
-
-
-export async function getConfigRemovalImpact(
-  draftRevision: string,
-  path: string[],
-): Promise<ConfigRemovalImpact> {
-  const { data, error, response } = await client.POST(
-    "/api/v1/config/removal-impact",
-    {
-      body: {
-        expectedDraftRevision: draftRevision,
-        path,
-      },
-    },
-  );
-  if (!response.ok || error || !data) {
-    throw new ConfigApiError(
-      response.status,
-      "The effects of this removal could not be determined",
       error,
     );
   }
@@ -539,7 +388,13 @@ export async function executeReset(
 ): Promise<Operation> {
   const { data, error, response } = await client.POST(
     "/api/v1/resets",
-    { body: { planToken, ...options } },
+    {
+      body: {
+        planToken,
+        resubmit: options.resubmit ?? false,
+        expectedPersistedRevision: options.expectedPersistedRevision,
+      },
+    },
   );
   if (!response.ok || error || !data) {
     throw new ConfigApiError(
@@ -709,16 +564,14 @@ export function logEventsUrl(
 
 export async function getExternalResources(
   nodeId: string,
-  draftRevision: string,
+  rawYaml: string,
 ): Promise<ExternalResourceInventory> {
-  const { data, error, response } = await client.GET(
+  const { data, error, response } = await client.POST(
     "/api/v1/external-resources",
     {
-      params: {
-        query: {
-          nodeId,
-          expectedDraftRevision: draftRevision,
-        },
+      body: {
+        nodeId,
+        rawYaml,
       },
     },
   );
@@ -745,14 +598,14 @@ export interface ExternalResourceSelection {
 
 
 export async function selectExternalResource(
-  draftRevision: string,
+  rawYaml: string,
   selection: ExternalResourceSelection,
-): Promise<ConfigDraft> {
+): Promise<void> {
   const { data, error, response } = await client.POST(
     "/api/v1/external-resources/select",
     {
       body: {
-        expectedDraftRevision: draftRevision,
+        rawYaml,
         nodeId: selection.nodeId,
         name: selection.name,
         kind: selection.kind,
@@ -770,24 +623,22 @@ export async function selectExternalResource(
       error,
     );
   }
-  return data;
+  return;
 }
 
 
 export async function getExternalResourceDetails(
   nodeId: string,
-  draftRevision: string,
+  rawYaml: string,
   name: string,
 ): Promise<ExternalResourceDetails> {
-  const { data, error, response } = await client.GET(
+  const { data, error, response } = await client.POST(
     "/api/v1/external-resources/details",
     {
-      params: {
-        query: {
-          nodeId,
-          expectedDraftRevision: draftRevision,
-          name,
-        },
+      body: {
+        nodeId,
+        rawYaml,
+        name,
       },
     },
   );
@@ -803,7 +654,7 @@ export async function getExternalResourceDetails(
 
 
 export async function saveExternalResource(
-  draftRevision: string,
+  rawYaml: string,
   nodeId: string,
   values: Record<string, string>,
   confirmations: Record<string, string>,
@@ -813,7 +664,7 @@ export async function saveExternalResource(
     "/api/v1/external-resources/save",
     {
       body: {
-        expectedDraftRevision: draftRevision,
+        rawYaml,
         nodeId,
         values,
         confirmations,

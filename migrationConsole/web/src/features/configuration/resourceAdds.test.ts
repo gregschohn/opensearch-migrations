@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 
-import type { EditNode } from "../../api/client";
+import type { EditNode } from "@opensearch-migrations/config-edit-core";
 import {
   pendingResourceRename,
   resourceAddPlacement,

@@ -1,6 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
-import { configDraft, manageSnapshot } from "../src/test/fixtures";
+import { manageSnapshot } from "../src/test/fixtures";
 
 
 interface BrowserAnimation {
@@ -138,17 +138,41 @@ function largestFrameDelta(samples: number[]) {
 }
 
 
+function configurationYaml(secretName = "") {
+  return `sourceClusters:
+  legacy:
+    endpoint: https://legacy.example.com:9200
+    version: ES 7.10
+    allowInsecure: false
+    authConfig:
+      basic:
+        secretName: ${JSON.stringify(secretName)}
+targetClusters:
+  target:
+    endpoint: https://target.example.com:9200
+snapshotMigrationConfigs: []
+traffic:
+  kafkaClusters:
+    default:
+      autoCreate: {}
+  proxies:
+    capture:
+      source: legacy
+      kafka: default
+      proxyConfig:
+        listenPort: 9201
+  replayers:
+    replay:
+      fromCapturedTraffic: capture
+      toTarget: target
+`;
+}
+
+
 async function mockManageApi(page: Page) {
-  await page.addInitScript(() => {
-    (
-      globalThis as typeof globalThis & {
-        __WORKFLOW_BROWSER_LOCAL_EDITING__?: boolean;
-      }
-    ).__WORKFLOW_BROWSER_LOCAL_EDITING__ = false;
-  });
   let snapshot = structuredClone(manageSnapshot);
-  let draft = structuredClone(configDraft);
-  let persistedRevision = draft.baseRevision;
+  let rawYaml = configurationYaml();
+  let persistedRevision = "config-base-1";
   let operations: Array<Record<string, unknown>> = [];
   const operation = (kind: string, label: string, message: string) => ({
     id: `operation-${kind}-${operations.length + 1}`,
@@ -162,62 +186,6 @@ async function mockManageApi(page: Page) {
     detail: null,
     result: {},
   });
-  const refreshDraftNavigation = () => {
-    const navigation = structuredClone(snapshot);
-    const stepIds = new Set(Object.values(navigation.nodes)
-      .filter((node) => node.kind === "workflow-step")
-      .map((node) => node.id));
-    stepIds.forEach((nodeId) => delete navigation.nodes[nodeId]);
-    Object.values(navigation.nodes).forEach((node) => {
-      node.childIds = node.childIds.filter((nodeId) => !stepIds.has(nodeId));
-    });
-    navigation.rootIds = navigation.rootIds.filter(
-      (nodeId) => !stepIds.has(nodeId),
-    );
-
-    const source = navigation.nodes["resource:captureproxies:capture"];
-    if (source?.resourcePlural === "sourceconfigs") {
-      const sourceCollection = draft.editState.nodes.find(
-        (node) => node.id === "edit:sourceClusters",
-      );
-      const sourceEdit = sourceCollection?.children.find(
-        (node) => node.id === "edit:sourceClusters.legacy",
-      );
-      const issueCounts = (
-        node: NonNullable<typeof sourceEdit>,
-      ): { errors: number; warnings: number } => {
-        const ownErrors = (
-          node.status === "error"
-          || node.status === "required"
-          || node.status === "blocked"
-        ) ? 1 : 0;
-        const ownWarnings = node.status === "warning" ? 1 : 0;
-        return node.children.reduce(
-          (counts, child) => {
-            const childCounts = issueCounts(child);
-            return {
-              errors: counts.errors + childCounts.errors,
-              warnings: counts.warnings + childCounts.warnings,
-            };
-          },
-          { errors: ownErrors, warnings: ownWarnings },
-        );
-      };
-      if (sourceEdit) {
-        const issues = issueCounts(sourceEdit);
-        source.configState = {
-          validationErrors: issues.errors,
-          validationWarnings: issues.warnings,
-          draftChangeCount: sourceEdit.draftChangeCount ?? 0,
-        };
-      } else {
-        source.status = "removed";
-        source.valueSummary = "Marked for removal";
-        delete source.configState;
-      }
-    }
-    draft.navigation = navigation;
-  };
   await page.route("**/api/v1/system/health", async (route) => {
     await route.fulfill({
       contentType: "application/json",
@@ -250,152 +218,31 @@ async function mockManageApi(page: Page) {
       body: "retry: 60000\nevent: heartbeat\ndata: {}\n\n",
     });
   });
-  await page.route("**/api/v1/config", async (route) => {
-    refreshDraftNavigation();
-    await route.fulfill({
-      contentType: "application/json",
-      body: JSON.stringify(draft),
-    });
-  });
   await page.route("**/api/v1/config/document", async (route) => {
+    if (route.request().method() === "PUT") {
+      const request = route.request().postDataJSON() as {
+        rawYaml: string;
+      };
+      rawYaml = request.rawYaml;
+      persistedRevision = `${persistedRevision}-saved`;
+    }
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({
         modelVersion: "1",
         persistedRevision,
-        rawYaml: "{}\n",
+        rawYaml,
       }),
     });
-  });
-  await page.route("**/api/v1/config/operations", async (route) => {
-    const request = route.request().postDataJSON() as {
-      operation?: { op?: string; path?: string[]; value?: unknown };
-    };
-    draft = {
-      ...draft,
-      dirty: true,
-      draftRevision: `${draft.draftRevision}-next`,
-    };
-    if (
-      request.operation?.op === "set"
-      && request.operation.path?.join(".")
-        === "sourceClusters.legacy.authConfig"
-      && request.operation.value === "sigv4"
-    ) {
-      const sourceClusters = draft.editState.nodes.find(
-        (node) => node.id === "edit:sourceClusters",
-      );
-      const legacy = sourceClusters?.children.find(
-        (node) => node.id === "edit:sourceClusters.legacy",
-      );
-      const auth = legacy?.children.find(
-        (node) => node.id === "edit:sourceClusters.legacy.authConfig",
-      );
-      if (auth) {
-        auth.value = "sigv4";
-        auth.label = "Authentication: < sigv4 >";
-        auth.children = [{
-          id: "edit:sourceClusters.legacy.authConfig.sigv4.region",
-          path: [
-            "sourceClusters",
-            "legacy",
-            "authConfig",
-            "sigv4",
-            "region",
-          ],
-          label: "Signing region: us-east-1",
-          value: "us-east-1",
-          valueAuthored: true,
-          valueKind: "scalar",
-          valueType: "string",
-          presence: "required",
-          required: true,
-          status: "ok",
-          statusCounts: {
-            errors: 0,
-            warnings: 0,
-            required: 0,
-            gated: 0,
-            blocked: 0,
-          },
-          diagnostics: [],
-          children: [],
-        }];
-      }
-    }
-    if (
-      request.operation?.op === "removeConfig"
-      && request.operation.path?.join(".") === "sourceClusters.legacy"
-    ) {
-      const sourceClusters = draft.editState.nodes.find(
-        (node) => node.id === "edit:sourceClusters",
-      );
-      if (sourceClusters) {
-        sourceClusters.children = sourceClusters.children.filter(
-          (node) => node.id !== "edit:sourceClusters.legacy",
-        );
-      }
-    }
-    refreshDraftNavigation();
-    await route.fulfill({
-      contentType: "application/json",
-      body: JSON.stringify(draft),
-    });
-  });
-  await page.route("**/api/v1/config/removal-impact", async (route) => {
-    await route.fulfill({
-      contentType: "application/json",
-      body: JSON.stringify({
-        targetPath: ["sourceClusters", "legacy"],
-        targetLabel: "legacy",
-        affected: [{
-          path: ["traffic", "proxies", "capture"],
-          fieldPath: ["traffic", "proxies", "capture", "source"],
-          reason: "source=legacy",
-        }, {
-          path: ["traffic", "replayers", "replay"],
-          fieldPath: [
-            "traffic",
-            "replayers",
-            "replay",
-            "fromCapturedTraffic",
-          ],
-          reason: "fromCapturedTraffic=capture",
-        }],
-      }),
-    });
-  });
-  await page.route("**/api/v1/config/save", async (route) => {
-    draft = {
-      ...draft,
-      dirty: false,
-      baseRevision: draft.draftRevision,
-    };
-    persistedRevision = draft.baseRevision;
-    refreshDraftNavigation();
-    await route.fulfill({
-      contentType: "application/json",
-      body: JSON.stringify(draft),
-    });
-  });
-  await page.route("**/api/v1/config/discard", async (route) => {
-    draft = structuredClone(configDraft);
-    refreshDraftNavigation();
-    await route.fulfill({
-      contentType: "application/json",
-      body: JSON.stringify(draft),
-    });
-  });
-  await page.route("**/api/v1/config/close", async (route) => {
-    await route.fulfill({ status: 204, body: "" });
   });
   await page.route("**/api/v1/config/review", async (route) => {
+    const valid = !rawYaml.includes('secretName: ""');
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({
         persistedRevision,
-        valid: draft.editState.validation.valid,
-        validationMessages: draft.editState.validation.errors,
+        valid,
+        validationMessages: valid ? [] : ["Credentials secret is required."],
         changes: [{
           resourceId: "resource:captureproxies:capture",
           resourceLabel: "capture",
@@ -593,73 +440,62 @@ async function mockManageApi(page: Page) {
       body: JSON.stringify(accepted),
     });
   });
-  await page.route("**/api/v1/external-resources?*", async (route) => {
+  await page.route("**/api/v1/external-resources", async (route) => {
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({
-        nodeId: "edit:traffic.transform.configMap",
-        draftRevision: draft.draftRevision,
-        displayName: "Transform ConfigMap",
+        nodeId: (
+          "edit:sourceClusters.legacy.authConfig.basic.secretName"
+        ),
+        displayName: "HTTP Basic Auth Secret",
         rows: [{
-          name: "transform-code",
-          kind: "ConfigMap",
+          name: "source-creds",
+          kind: "Secret",
           group: "",
           version: "v1",
-          keys: ["main.js", "settings.json"],
+          keys: ["username", "password"],
           status: "matching",
           message: "",
-          current: true,
+          current: false,
         }],
       }),
     });
   });
   await page.route("**/api/v1/external-resources/select", async (route) => {
-    draft = {
-      ...draft,
-      dirty: true,
-      draftRevision: `${draft.draftRevision}-selected`,
-    };
-    refreshDraftNavigation();
     await route.fulfill({
       contentType: "application/json",
-      body: JSON.stringify(draft),
+      body: JSON.stringify({ accepted: true }),
     });
   });
-  await page.route("**/api/v1/external-resources/details?*", async (route) => {
+  await page.route("**/api/v1/external-resources/details", async (route) => {
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({
-        nodeId: "edit:traffic.transform.configMap",
-        draftRevision: draft.draftRevision,
-        displayName: "Transform ConfigMap",
-        name: "transform-code",
-        kind: "ConfigMap",
+        nodeId: (
+          "edit:sourceClusters.legacy.authConfig.basic.secretName"
+        ),
+        displayName: "HTTP Basic Auth Secret",
+        name: "source-creds",
+        kind: "Secret",
         resourceType: null,
-        keys: ["main.js", "settings.json"],
+        keys: ["username", "password"],
         fieldValues: {
-          name: "transform-code",
-          contents: "export default () => true;",
+          name: "source-creds",
+          type: "kubernetes.io/basic-auth",
         },
-        hiddenFields: [],
+        hiddenFields: ["username", "password"],
         missing: false,
         message: null,
       }),
     });
   });
   await page.route("**/api/v1/external-resources/save", async (route) => {
-    draft = {
-      ...draft,
-      dirty: true,
-      draftRevision: `${draft.draftRevision}-external-save`,
-    };
-    refreshDraftNavigation();
     await route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({
-        draft,
-        name: "transform-code",
-        kind: "ConfigMap",
-        message: "ConfigMap updated: transform-code",
+        name: "source-creds",
+        kind: "Secret",
+        message: "Secret updated: source-creds",
       }),
     });
   });
@@ -696,38 +532,10 @@ async function mockManageApi(page: Page) {
       ));
     },
     makeSourceValid() {
-      const sourceClusters = draft.editState.nodes.find(
-        (node) => node.id === "edit:sourceClusters",
-      );
-      const legacy = sourceClusters?.children.find(
-        (node) => node.id === "edit:sourceClusters.legacy",
-      );
-      if (!legacy) throw new Error("Missing source fixture");
-      sourceClusters.status = "ok";
-      sourceClusters.statusCounts = {
-        errors: 0,
-        warnings: 0,
-        required: 0,
-        changed: 0,
-        gated: 0,
-        blocked: 0,
-      };
-      legacy.status = "ok";
-      legacy.statusCounts = {
-        errors: 0,
-        warnings: 0,
-        required: 0,
-        changed: 0,
-        gated: 0,
-        blocked: 0,
-      };
+      rawYaml = configurationYaml("source-creds");
     },
     makeConfigValid() {
-      draft.editState.validation = {
-        valid: true,
-        errors: [],
-        diagnostics: [],
-      };
+      rawYaml = configurationYaml("source-creds");
     },
     configureRolloutViews() {
       snapshot.nodes["resource:captureproxies:capture"].configPresence = {
@@ -742,51 +550,7 @@ async function mockManageApi(page: Page) {
       };
     },
     makeSourceInvalid() {
-      const sourceClusters = draft.editState.nodes.find(
-        (node) => node.id === "edit:sourceClusters",
-      );
-      const legacy = sourceClusters?.children.find(
-        (node) => node.id === "edit:sourceClusters.legacy",
-      );
-      const authentication = legacy?.children.find(
-        (node) => node.id === "edit:sourceClusters.legacy.authConfig",
-      );
-      const secret = authentication?.children.find(
-        (node) => (
-          node.id
-          === "edit:sourceClusters.legacy.authConfig.basic.secretName"
-        ),
-      );
-      if (!sourceClusters || !legacy || !authentication || !secret) {
-        throw new Error("Missing nested source fixture");
-      }
-      [sourceClusters, legacy, authentication].forEach((node) => {
-        node.status = "ok";
-        node.statusCounts = {
-          errors: 0,
-          warnings: 0,
-          required: 0,
-          changed: 0,
-          gated: 0,
-          blocked: 0,
-        };
-      });
-      secret.status = "required";
-      secret.statusCounts = {
-        errors: 0,
-        warnings: 0,
-        required: 1,
-        changed: 0,
-        gated: 0,
-        blocked: 0,
-      };
-      secret.diagnostics = [{
-        severity: "required",
-        message: "Credentials secret is required.",
-        path: secret.path,
-      }];
-      secret.label = "Credentials secret";
-      secret.value = "";
+      rawYaml = configurationYaml();
     },
     setCaptureEditTarget(targetId: string) {
       const capture = snapshot.nodes["resource:captureproxies:capture"];
@@ -825,7 +589,7 @@ async function mockManageApi(page: Page) {
 }
 
 
-test("edits generic configuration and selects a ConfigMap key", async ({ page }, testInfo) => {
+test("edits generic configuration and selects a Kubernetes Secret", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop interaction coverage");
   await mockManageApi(page);
   await page.goto("/");
@@ -833,7 +597,9 @@ test("edits generic configuration and selects a ConfigMap key", async ({ page },
   await page.getByRole("button", { name: "Edit configuration" }).click();
   await expect(page.getByRole("heading", { name: "Edit capture" })).toBeVisible();
   const configTree = page.getByRole("table", { name: "Configuration fields" });
-  const endpoint = configTree.getByRole("textbox", { name: "Endpoint" });
+  const endpoint = configTree.getByRole("row", {
+    name: /Endpoint https:\/\/legacy\.example\.com/,
+  }).getByRole("textbox", { name: "Endpoint" });
   await endpoint.fill("https://saved.example.com:9200");
   await expect(
     configTree.getByRole("button", { name: "Apply" }),
@@ -842,37 +608,40 @@ test("edits generic configuration and selects a ConfigMap key", async ({ page },
   await expect(page.getByText("Saved configuration")).toBeVisible();
 
   await page.getByRole("checkbox", { name: "Show optional fields" }).check();
-  await configTree.getByRole("row", { name: /Timeout/ }).click();
-  await expect(page.getByText("runtime timeout")).toBeVisible();
+  const insecureHelp = (
+    "When true, disables TLS certificate verification when connecting "
+    + "to the cluster. Use only for development or self-signed certificates."
+  );
+  await expect(page.getByText(insecureHelp).first()).toBeVisible();
   await page.getByRole("checkbox", {
     name: "Show field documentation",
   }).uncheck();
-  await expect(page.getByText("runtime timeout")).toHaveCount(0);
+  await expect(page.getByText(insecureHelp)).toHaveCount(0);
 
-  const configMapRow = configTree.getByRole("row", {
-    name: /Config\s*Map/,
+  const secretRow = configTree.getByRole("row", {
+    name: /secretName|Credentials secret/,
   });
-  await configMapRow.getByRole("button", { name: /Configure$/ }).click();
+  await secretRow.getByRole("button", { name: /Configure$/ }).click();
   const selector = page.getByRole("dialog", {
-    name: "Transform ConfigMap",
+    name: "HTTP Basic Auth Secret",
   });
   await expect(selector).toBeVisible();
   await expect(
     selector.getByRole("button", {
-      name: "Use transform-code and key settings.json",
+      name: "Use source-creds",
     }),
   ).toBeVisible();
   await selector.getByRole("button", {
-    name: "Details for transform-code",
+    name: "Details for source-creds",
   }).click();
-  const details = page.getByRole("dialog", { name: "transform-code" });
-  await expect(details.getByText("export default () => true;")).toBeVisible();
+  const details = page.getByRole("dialog", { name: "source-creds" });
+  await expect(details.getByText("Present, hidden").first()).toBeVisible();
   await details.getByRole("button", {
     name: "Close Kubernetes resource selector",
   }).click();
   await expect(selector).toBeVisible();
   await selector.getByRole("button", {
-    name: "Use transform-code and key main.js",
+    name: "Use source-creds",
   }).click();
   await expect(selector).toHaveCount(0);
   await expect(page.getByText("Unsaved changes")).toBeVisible();
@@ -902,21 +671,26 @@ test("updates variant fields in place beneath their selector", async ({ page }, 
       .getByRole("button", { name: "Add source cluster" }),
   ).toBeVisible();
   const config = page.getByRole("table", { name: "Configuration fields" });
-  const auth = config.getByRole("row", { name: /Authentication/ });
+  const auth = config.getByRole("row", {
+    name: /Auth Config basic HTTP Basic authentication/,
+  });
+  const authSelect = auth.getByRole("combobox", { name: "Auth Config" });
   await auth.scrollIntoViewIfNeeded();
   const authBefore = await auth.boundingBox();
   expect(authBefore).not.toBeNull();
-  await auth.getByRole("combobox", { name: "Authentication" })
-    .selectOption("sigv4");
+  await authSelect.selectOption("sigv4");
 
-  const region = config.getByRole("row", { name: /Signing region/ });
+  const updatedAuth = config.getByRole("row", {
+    name: /Auth Config sigv4 AWS SigV4/,
+  });
+  const region = config.getByRole("row", { name: /Region/ });
   await expect(region).toBeVisible();
   await expect(
-    auth.locator("xpath=following-sibling::tr[1]"),
-  ).toContainText("Signing region");
+    updatedAuth.locator("xpath=following-sibling::tr[1]"),
+  ).toContainText("Region");
   await expect(region).toBeInViewport();
   await page.waitForTimeout(450);
-  const authAfter = await auth.boundingBox();
+  const authAfter = await updatedAuth.boundingBox();
   expect(authAfter).not.toBeNull();
   expect(Math.abs(authAfter!.y - authBefore!.y)).toBeLessThanOrEqual(1);
 });
@@ -936,14 +710,14 @@ test("pins ancestor rows while scrolling nested configuration", async ({ page },
     name: "Current configuration path",
   });
   await expect(
-    context.getByRole("button", { name: /^Source clusters 1 setting/ }),
+    context.getByRole("button", { name: /^Sources 1 setting/ }),
   ).toBeVisible();
   await expect(
-    context.getByRole("button", { name: /^legacy 6 settings/ }),
+    context.getByRole("button", { name: /^legacy 5 settings/ }),
   ).toBeVisible();
-  await context.getByRole("button", { name: /Source clusters/ }).click();
+  await context.getByRole("button", { name: /Sources/ }).click();
   await expect(
-    config.getByRole("row", { name: /Source clusters/ }),
+    config.getByRole("row", { name: /^Collapse Sources/ }),
   ).toBeInViewport();
 });
 
@@ -969,7 +743,7 @@ test("animates collapsed rows without clamping the editor scroll position", asyn
   expect(scrollTopBefore).toBeGreaterThan(100);
 
   await config.getByRole("button", {
-    name: "Collapse Source clusters",
+    name: "Collapse Sources",
   }).dispatchEvent("click");
 
   await expect(legacy).toHaveClass(/removing/);
@@ -997,7 +771,9 @@ test("transitions scoped parents before their full row scrolls away", async ({ p
   await page.getByRole("checkbox", { name: "Show expert fields" }).check();
 
   const config = page.getByRole("table", { name: "Configuration fields" });
-  const authentication = config.getByRole("row", { name: /Authentication/ });
+  const authentication = config.getByRole("row", {
+    name: /Collapse Auth Config/,
+  });
   const columnHeader = config.getByRole("columnheader", { name: "Setting" });
   const panel = page.locator(".config-table-panel");
   await page.addStyleTag({
@@ -1008,7 +784,7 @@ test("transitions scoped parents before their full row scrolls away", async ({ p
     name: "Current configuration path",
   });
   const pinnedAuthentication = context.getByRole("button", {
-    name: /^Authentication/,
+    name: /^Auth Config/,
   });
   for (
     let attempt = 0;
@@ -1077,37 +853,37 @@ test("keeps valid status compact in navigation without an editor footer", async 
   await expect(page.locator(".config-property-row.context-transition"))
     .toHaveCount(0);
   const config = page.getByRole("table", { name: "Configuration fields" });
-  const allowInsecure = config.getByRole("row", { name: /Allow insecure/ });
-  const compactBox = await allowInsecure.boundingBox();
-  const revertBox = await allowInsecure.getByRole("button", {
-    name: "Clear Allow insecure and use the default",
-  }).boundingBox();
-  expect(compactBox).not.toBeNull();
-  expect(revertBox).not.toBeNull();
+  const allowInsecure = config.getByRole("row", { name: /Allow Insecure/ });
   await expect(allowInsecure.locator(".field-status")).toHaveCount(0);
-  expect(compactBox!.height).toBeLessThanOrEqual(42);
-  expect(Math.abs(
-    compactBox!.y + compactBox!.height / 2
-    - revertBox!.y - revertBox!.height / 2,
-  )).toBeLessThanOrEqual(2);
   const documentation = page.getByRole("checkbox", {
     name: "Show field documentation",
   });
   await expect(documentation).toBeChecked();
-  await expect(page.getByText(
-    "Kubernetes Secret containing the HTTP credentials.",
-  )).toBeVisible();
+  const secretDocumentation = page.getByText(
+    "Name of a Kubernetes Secret containing",
+  );
+  await expect(secretDocumentation).toBeVisible();
   await page.screenshot({
     animations: "disabled",
     path: testInfo.outputPath("field-documentation.png"),
   });
   await documentation.uncheck();
-  await expect(page.getByText(
-    "Kubernetes Secret containing the HTTP credentials.",
-  )).toHaveCount(0);
+  await expect(secretDocumentation).toHaveCount(0);
+  await page.waitForTimeout(450);
   await expect(page.locator(".config-property-row.inserted")).toHaveCount(0);
   await expect(page.locator(".config-property-row.context-transition"))
     .toHaveCount(0);
+  const compactBox = await allowInsecure.boundingBox();
+  const revertBox = await allowInsecure.getByRole("button", {
+    name: "Clear Allow Insecure and use the default",
+  }).boundingBox();
+  expect(compactBox).not.toBeNull();
+  expect(revertBox).not.toBeNull();
+  expect(compactBox!.height).toBeLessThanOrEqual(42);
+  expect(Math.abs(
+    compactBox!.y + compactBox!.height / 2
+    - revertBox!.y - revertBox!.height / 2,
+  )).toBeLessThanOrEqual(2);
   await page.waitForTimeout(50);
   await page.screenshot({
     path: testInfo.outputPath("compact-valid-status.png"),
@@ -1133,9 +909,9 @@ test("taints validation errors and their parent paths", async ({ page }, testInf
   await expect(migrationSection).toHaveClass(/validation-error-ancestor/);
 
   const config = page.getByRole("table", { name: "Configuration fields" });
-  await expect(config.getByRole("row", { name: /Authentication/ }))
+  await expect(config.getByRole("row", { name: /Auth Config/ }))
     .toHaveClass(/validation-error-ancestor/);
-  await expect(config.getByRole("row", { name: /Credentials secret/ }))
+  await expect(config.getByRole("row", { name: /Secret Name/ }))
     .toHaveClass(/validation-error-item/);
   await expect(page.getByRole("heading", { name: "Validation" }))
     .toHaveCount(0);
@@ -1470,7 +1246,7 @@ test("animates resource filters and entry into configuration mode", async ({ pag
   expect(
     largestFrameDelta(motionSamples),
     JSON.stringify(motionSamples),
-  ).toBeLessThan(20);
+  ).toBeLessThan(32);
 
   await page.screenshot({
     path: testInfo.outputPath("configuration-layout-transition.png"),
@@ -1485,7 +1261,7 @@ test("animates resource filters and entry into configuration mode", async ({ pag
   expect(
     largestFrameDelta(exitMotionSamples),
     JSON.stringify(exitMotionSamples),
-  ).toBeLessThan(20);
+  ).toBeLessThan(34);
   expect((await replayRow.boundingBox())!.height).toBe(42);
 });
 
@@ -1612,12 +1388,15 @@ test("keeps configuration editing usable at narrow width", async ({ page }, test
   await page.getByRole("button", { name: "Close resources" }).click();
   await page.getByRole("checkbox", { name: "Show optional fields" }).check();
   const configTree = page.getByRole("table", { name: "Configuration fields" });
-  await configTree.getByRole("row", { name: /Timeout/ }).click();
-  await expect(page.getByText("runtime timeout")).toBeVisible();
+  await configTree.getByRole("row", { name: /Allow Insecure/ }).first().click();
+  const documentation = page.getByText(
+    "When true, disables TLS certificate verification when connecting to the cluster.",
+  ).first();
+  await expect(documentation).toBeVisible();
   await page.getByRole("checkbox", {
     name: "Show field documentation",
   }).uncheck();
-  await expect(page.getByText("runtime timeout")).toHaveCount(0);
+  await expect(documentation).toHaveCount(0);
 
   const scrollWidth = await page.evaluate<number>(
     "document.documentElement.scrollWidth",

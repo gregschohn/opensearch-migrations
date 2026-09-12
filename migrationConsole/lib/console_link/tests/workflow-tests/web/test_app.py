@@ -3,12 +3,7 @@ from datetime import datetime, timezone
 from fastapi.testclient import TestClient
 import pytest
 
-from console_link.workflow.application.config_drafts import (
-    ConfigDraft,
-    ConfigDraftConflict,
-    ConfigRemovalImpact,
-    ConfigRemovalImpactEntry,
-    ConfigSubmission,
+from console_link.workflow.application.external_resources import (
     ExternalResourceDetails,
     ExternalResourceInventory,
     ExternalResourceMutation,
@@ -185,47 +180,8 @@ def test_openapi_exposes_the_versioned_manage_snapshot_contract(tmp_path):
         "default": None,
         "title": "Activityat",
     }
-    assert schemas["EditInputHintV1"]["properties"][
-        "resourceCollection"
-    ]["anyOf"][0] == {
-        "$ref": "#/components/schemas/ResourceCollectionHintV1",
-    }
-    assert schemas["EditInputHintV1"]["properties"][
-        "definitionCollection"
-    ]["anyOf"][0] == {
-        "$ref": "#/components/schemas/DefinitionCollectionHintV1",
-    }
-    assert schemas["DefinitionNavigationHintV1"]["properties"][
-        "groupId"
-    ]["anyOf"][0] == {
-        "type": "string",
-    }
-    assert schemas["ResourceNavigationHintV1"]["properties"][
-        "parentGroupId"
-    ]["anyOf"][0] == {
-        "type": "string",
-    }
-    assert schemas["EditNodeV1"]["properties"]["referenceTargetId"] == {
-        "anyOf": [
-            {"type": "string"},
-            {"type": "null"},
-        ],
-        "title": "Referencetargetid",
-    }
-    assert schemas["EditNodeV1"]["properties"]["referenceLabel"] == {
-        "anyOf": [
-            {"type": "string"},
-            {"type": "null"},
-        ],
-        "title": "Referencelabel",
-    }
-    assert schemas["EditNodeV1"]["properties"]["implicit"] == {
-        "anyOf": [
-            {"type": "boolean"},
-            {"type": "null"},
-        ],
-        "title": "Implicit",
-    }
+    assert "ConfigDraftV1" not in schemas
+    assert "ApplyEditOperationRequestV1" not in schemas
 
 
 def test_openapi_generator_writes_current_application_contract(tmp_path):
@@ -1130,187 +1086,16 @@ def test_reset_worker_rechecks_saved_revision_before_deleting_resources(
     assert submissions.submitted is None
 
 
-def _edit_state():
-    return {
-        "formatVersion": 1,
-        "provenance": {
-            "source": "pending-yaml",
-            "lossy": False,
-            "warnings": [],
-        },
-        "nodes": [{
-            "id": "edit:traffic",
-            "path": ["traffic"],
-            "label": "Traffic",
-            "valueKind": "object",
-            "presence": "optional",
-            "expert": False,
-            "essential": True,
-            "status": "warning",
-            "statusCounts": {"warnings": 1},
-            "diagnostics": [{
-                "severity": "warning",
-                "message": "Check this branch",
-                "path": ["traffic"],
-            }],
-            "children": [{
-                "id": "edit:traffic.enabled",
-                "path": ["traffic", "enabled"],
-                "label": "enabled: true",
-                "value": True,
-                "valueAuthored": True,
-                "valueType": "boolean",
-                "valueKind": "boolean",
-                "status": "ok",
-                "children": [],
-            }],
-        }],
-        "validation": {
-            "valid": True,
-            "errors": [],
-            "diagnostics": [],
-        },
-    }
-
-
-class _Drafts:
+class _ExternalResources:
     def __init__(self):
-        self.current = ConfigDraft(
-            base_revision="base-1",
-            draft_revision="draft-1",
-            dirty=False,
-            edit_state=_edit_state(),
-        )
-        self.operation = None
-        self.expected_revision = None
-        self.saved = False
-        self.discarded = False
-        self.submitted = False
-        self.prepared = False
         self.selection = None
         self.external_read = None
         self.external_save = None
 
-    def open(self):
-        return self.current
-
-    def apply(self, expected_revision, operation):
-        self.expected_revision = expected_revision
-        self.operation = operation
-        return self.current
-
-    def replace_raw(self, expected_revision, raw_yaml):
-        self.expected_revision = expected_revision
+    def list(self, raw_yaml, node_id):
         self.raw_yaml = raw_yaml
-        return self.current
-
-    def save(self, expected_revision):
-        self.expected_revision = expected_revision
-        self.saved = True
-        return self.current
-
-    def discard(self, expected_revision):
-        self.expected_revision = expected_revision
-        self.discarded = True
-        return self.current
-
-    def close(self, expected_revision):
-        self.expected_revision = expected_revision
-        self.closed = True
-
-    def submit(self, expected_revision, workflow_name):
-        self.expected_revision = expected_revision
-        self.submitted = True
-        return ConfigSubmission(
-            draft=self.current,
-            workflow_name=workflow_name,
-            message=f"Workflow submitted: {workflow_name}",
-        )
-
-    def review(self, expected_revision, snapshot=None):
-        self.expected_revision = expected_revision
-        return {
-            "draft_revision": self.current.draft_revision,
-            "base_revision": self.current.base_revision,
-            "dirty": self.current.dirty,
-            "valid": True,
-            "validation_messages": (),
-            "changes": ({
-                "resource_id": "resource:trafficproxies:capture",
-                "resource_label": "capture",
-                "path": "traffic.proxies.capture.serviceType",
-                "label": "Service type",
-                "kind": "field",
-            },),
-        }
-
-    def prepare_submit(self, expected_revision):
-        self.expected_revision = expected_revision
-        self.prepared = True
-        return self.current
-
-    def preflight(self, expected_revision, workflow_name):
-        self.expected_revision = expected_revision
-        return AdmissionPreflightReport(
-            checked_resources=2,
-            deployment_actions=(
-                AdmissionDeploymentAction(
-                    kind="CaptureProxy",
-                    name="capture",
-                    plural="captureproxies",
-                    action="reconcile",
-                    reason="checksum-only",
-                    message=(
-                        "The generated checksum changed, although no "
-                        "projected fields changed."
-                    ),
-                    current_config_checksum="old",
-                    desired_config_checksum="new",
-                ),
-            ),
-            issues=(
-                AdmissionPreflightIssue(
-                    kind="CapturedTraffic",
-                    name="capture-topic",
-                    plural="capturedtraffics",
-                    classification="recreate-required",
-                    message="sourceLabel cannot be changed",
-                    source="kubernetes",
-                ),
-                AdmissionPreflightIssue(
-                    kind="TrafficReplay",
-                    name="replay",
-                    plural="trafficreplays",
-                    classification="approval-required",
-                    message="tupleMaxFileSizeMb requires approval",
-                    source="kubernetes",
-                ),
-            ),
-        )
-
-    def submit_saved(self, workflow_name):
-        self.submitted = True
-        return {"workflow_name": workflow_name}
-
-    def removal_impact(self, expected_revision, path):
-        self.expected_revision = expected_revision
-        return ConfigRemovalImpact(
-            target_path=tuple(path),
-            target_label=str(path[-1]),
-            affected=(
-                ConfigRemovalImpactEntry(
-                    path=("traffic", "proxies", "capture"),
-                    field_path=("traffic", "proxies", "capture", "source"),
-                    reason="source=source",
-                ),
-            ),
-        )
-
-    def list_external_resources(self, expected_revision, node_id):
-        self.expected_revision = expected_revision
         return ExternalResourceInventory(
             node_id=node_id,
-            draft_revision=self.current.draft_revision,
             display_name="Transform ConfigMap",
             rows=[{
                 "name": "transform",
@@ -1324,19 +1109,17 @@ class _Drafts:
             }],
         )
 
-    def select_external_resource(self, **selection):
+    def validate_selection(self, **selection):
         self.selection = selection
-        return self.current
 
-    def read_external_resource(self, expected_revision, node_id, name):
+    def read(self, raw_yaml, node_id, name):
         self.external_read = {
-            "expected_revision": expected_revision,
+            "raw_yaml": raw_yaml,
             "node_id": node_id,
             "name": name,
         }
         return ExternalResourceDetails(
             node_id=node_id,
-            draft_revision=self.current.draft_revision,
             display_name="HTTP Basic Auth Secret",
             name=name,
             kind="Secret",
@@ -1351,10 +1134,9 @@ class _Drafts:
             message=None,
         )
 
-    def save_external_resource(self, **request):
+    def save(self, **request):
         self.external_save = request
         return ExternalResourceMutation(
-            draft=self.current,
             name="next-creds",
             kind="Secret",
             message="Secret updated: next-creds",
@@ -1612,199 +1394,6 @@ def test_config_document_validation_failure_is_actionable(tmp_path):
     }
 
 
-def test_config_routes_expose_recursive_edit_state_without_raw_yaml(tmp_path):
-    drafts = _Drafts()
-    app = create_app(
-        static_dir=_static_bundle(tmp_path),
-        config_drafts=drafts,
-    )
-
-    with TestClient(app) as client:
-        response = client.get("/api/v1/config")
-
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["baseRevision"] == "base-1"
-    assert payload["draftRevision"] == "draft-1"
-    assert payload["dirty"] is False
-    assert payload["editState"]["nodes"][0]["children"][0]["value"] is True
-    assert payload["editState"]["nodes"][0]["essential"] is True
-    assert "rawYaml" not in payload
-
-
-def test_config_routes_include_server_projected_navigation(tmp_path):
-    drafts = _Drafts()
-    state = _edit_state()
-    state["nodes"] = [{
-        "id": "edit:sourceClusters",
-        "path": ["sourceClusters"],
-        "label": "Source clusters",
-        "valueKind": "record",
-        "status": "ok",
-        "inputHint": {
-            "kind": "record",
-            "resourceCollection": {
-                "navigation": {
-                    "sectionId": "section:Sources",
-                    "sectionLabel": "Sources",
-                    "sectionOrder": 0,
-                    "groupId": "group:Sources:Sources",
-                    "groupLabel": "Sources",
-                    "groupOrder": 0,
-                },
-                "resource": {
-                    "kind": "SourceConfig",
-                    "plural": "sourceconfigs",
-                    "typeLabel": "Source cluster",
-                    "identity": {"kind": "named"},
-                },
-            },
-        },
-        "diagnostics": [],
-        "children": [{
-            "id": "edit:sourceClusters.modern",
-            "path": ["sourceClusters", "modern"],
-            "label": "modern",
-            "valueKind": "object",
-            "status": "ok",
-            "diagnostics": [],
-            "children": [],
-        }],
-    }]
-    drafts.current = ConfigDraft(
-        base_revision="base-1",
-        draft_revision="draft-2",
-        dirty=True,
-        edit_state=state,
-    )
-    coordinator = _Coordinator(Observation(snapshot=_snapshot()))
-    app = create_app(
-        static_dir=_static_bundle(tmp_path),
-        config_drafts=drafts,
-        coordinator=coordinator,
-    )
-
-    with TestClient(app) as client:
-        response = client.get("/api/v1/config")
-
-    assert response.status_code == 200
-    navigation = response.json()["navigation"]
-    assert navigation["rootIds"][0] == "section:Sources"
-    assert navigation["nodes"]["resource:sourceconfigs:modern"][
-        "resourceType"
-    ] == "Source cluster"
-    assert navigation["nodes"]["resource:sourceconfigs:modern"][
-        "configState"
-    ] == {
-        "validationErrors": 0,
-        "validationWarnings": 0,
-        "draftChangeCount": 0,
-    }
-
-
-def test_config_open_returns_actionable_service_error(tmp_path):
-    drafts = _Drafts()
-
-    def fail_to_open():
-        raise RuntimeError("CONFIG_PROCESSOR_DIR is not configured")
-
-    drafts.open = fail_to_open
-    app = create_app(
-        static_dir=_static_bundle(tmp_path),
-        config_drafts=drafts,
-    )
-
-    with TestClient(app, raise_server_exceptions=False) as client:
-        response = client.get("/api/v1/config")
-
-    assert response.status_code == 503
-    assert response.json() == {
-        "detail": {
-            "code": "configuration_unavailable",
-            "message": "CONFIG_PROCESSOR_DIR is not configured",
-        }
-    }
-
-
-def test_config_operation_contract_is_discriminated_and_passed_to_the_service(tmp_path):
-    drafts = _Drafts()
-    app = create_app(
-        static_dir=_static_bundle(tmp_path),
-        config_drafts=drafts,
-    )
-
-    with TestClient(app) as client:
-        response = client.post(
-            "/api/v1/config/operations",
-            json={
-                "expectedDraftRevision": "draft-1",
-                "operation": {
-                    "op": "renameConfig",
-                    "path": ["traffic", "old"],
-                    "newName": "next",
-                },
-            },
-        )
-
-    assert response.status_code == 200
-    assert drafts.expected_revision == "draft-1"
-    assert drafts.operation == {
-        "op": "renameConfig",
-        "path": ["traffic", "old"],
-        "newName": "next",
-    }
-
-
-def test_raw_config_repair_is_revisioned_and_passed_to_the_service(tmp_path):
-    drafts = _Drafts()
-    app = create_app(
-        static_dir=_static_bundle(tmp_path),
-        config_drafts=drafts,
-    )
-
-    with TestClient(app) as client:
-        response = client.put(
-            "/api/v1/config/raw",
-            json={
-                "expectedDraftRevision": "draft-1",
-                "rawYaml": "sourceClusters: {}\n",
-            },
-        )
-
-    assert response.status_code == 200
-    assert drafts.expected_revision == "draft-1"
-    assert drafts.raw_yaml == "sourceClusters: {}\n"
-
-
-def test_config_save_discard_and_close_use_expected_revision(tmp_path):
-    drafts = _Drafts()
-    app = create_app(
-        static_dir=_static_bundle(tmp_path),
-        config_drafts=drafts,
-    )
-
-    with TestClient(app) as client:
-        saved = client.post(
-            "/api/v1/config/save",
-            json={"expectedDraftRevision": "draft-1"},
-        )
-        discarded = client.post(
-            "/api/v1/config/discard",
-            json={"expectedDraftRevision": "draft-1"},
-        )
-        closed = client.post(
-            "/api/v1/config/close",
-            json={"expectedDraftRevision": "draft-1"},
-        )
-
-    assert saved.status_code == 200
-    assert discarded.status_code == 200
-    assert closed.status_code == 204
-    assert drafts.saved is True
-    assert drafts.discarded is True
-    assert drafts.closed is True
-
-
 class _Operations:
     def __init__(self):
         self.started = None
@@ -2006,84 +1595,25 @@ def test_config_preflight_reports_preparation_failures_without_plain_500(
     }
 
 
-def test_config_removal_impact_returns_exact_dependent_paths(tmp_path):
-    drafts = _Drafts()
-    app = create_app(
-        static_dir=_static_bundle(tmp_path),
-        config_drafts=drafts,
-    )
-
-    with TestClient(app) as client:
-        response = client.post(
-            "/api/v1/config/removal-impact",
-            json={
-                "expectedDraftRevision": "draft-1",
-                "path": ["sourceClusters", "source"],
-            },
-        )
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "targetPath": ["sourceClusters", "source"],
-        "targetLabel": "source",
-        "affected": [{
-            "path": ["traffic", "proxies", "capture"],
-            "fieldPath": ["traffic", "proxies", "capture", "source"],
-            "reason": "source=source",
-        }],
-    }
-    assert drafts.expected_revision == "draft-1"
-
-
-def test_config_revision_conflict_returns_current_recoverable_draft(tmp_path):
-    drafts = _Drafts()
-
-    def conflict(_expected_revision, _operation):
-        raise ConfigDraftConflict(drafts.current)
-
-    drafts.apply = conflict
-    app = create_app(
-        static_dir=_static_bundle(tmp_path),
-        config_drafts=drafts,
-    )
-
-    with TestClient(app) as client:
-        response = client.post(
-            "/api/v1/config/operations",
-            json={
-                "expectedDraftRevision": "stale",
-                "operation": {
-                    "op": "set",
-                    "path": ["traffic", "enabled"],
-                    "value": False,
-                },
-            },
-        )
-
-    assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "draft_revision_conflict"
-    assert response.json()["detail"]["current"]["draftRevision"] == "draft-1"
-
-
 def test_external_routes_return_keys_and_submit_exact_selection(tmp_path):
-    drafts = _Drafts()
+    resources = _ExternalResources()
     app = create_app(
         static_dir=_static_bundle(tmp_path),
-        config_drafts=drafts,
+        external_resources=resources,
     )
 
     with TestClient(app) as client:
-        inventory = client.get(
+        inventory = client.post(
             "/api/v1/external-resources",
-            params={
+            json={
+                "rawYaml": "traffic: {}\n",
                 "nodeId": "edit:traffic.transform.configMap",
-                "expectedDraftRevision": "draft-1",
             },
         )
         selected = client.post(
             "/api/v1/external-resources/select",
             json={
-                "expectedDraftRevision": "draft-1",
+                "rawYaml": "traffic: {}\n",
                 "nodeId": "edit:traffic.transform.configMap",
                 "name": "transform",
                 "kind": "ConfigMap",
@@ -2098,8 +1628,9 @@ def test_external_routes_return_keys_and_submit_exact_selection(tmp_path):
     assert inventory.json()["rows"][0]["keys"] == ["main.js", "settings.json"]
     assert "values" not in inventory.json()["rows"][0]
     assert selected.status_code == 200
-    assert drafts.selection == {
-        "expected_revision": "draft-1",
+    assert selected.json() == {"accepted": True}
+    assert resources.selection == {
+        "raw_yaml": "traffic: {}\n",
         "node_id": "edit:traffic.transform.configMap",
         "name": "transform",
         "kind": "ConfigMap",
@@ -2111,25 +1642,25 @@ def test_external_routes_return_keys_and_submit_exact_selection(tmp_path):
 
 
 def test_external_detail_and_save_routes_never_return_secret_values(tmp_path):
-    drafts = _Drafts()
+    resources = _ExternalResources()
     app = create_app(
         static_dir=_static_bundle(tmp_path),
-        config_drafts=drafts,
+        external_resources=resources,
     )
 
     with TestClient(app) as client:
-        details = client.get(
+        details = client.post(
             "/api/v1/external-resources/details",
-            params={
+            json={
+                "rawYaml": "sourceClusters: {}\n",
                 "nodeId": "edit:source.auth.secretName",
-                "expectedDraftRevision": "draft-1",
                 "name": "source-creds",
             },
         )
         saved = client.post(
             "/api/v1/external-resources/save",
             json={
-                "expectedDraftRevision": "draft-1",
+                "rawYaml": "sourceClusters: {}\n",
                 "nodeId": "edit:source.auth.secretName",
                 "values": {
                     "secretName": "next-creds",
@@ -2149,8 +1680,8 @@ def test_external_detail_and_save_routes_never_return_secret_values(tmp_path):
     assert details.json()["hiddenFields"] == ["password"]
     assert "values" not in details.json()
     assert "password" not in json.dumps(details.json()["fieldValues"])
-    assert drafts.external_read == {
-        "expected_revision": "draft-1",
+    assert resources.external_read == {
+        "raw_yaml": "sourceClusters: {}\n",
         "node_id": "edit:source.auth.secretName",
         "name": "source-creds",
     }
@@ -2158,9 +1689,9 @@ def test_external_detail_and_save_routes_never_return_secret_values(tmp_path):
     assert saved.status_code == 200
     assert saved.json()["name"] == "next-creds"
     assert saved.json()["message"] == "Secret updated: next-creds"
-    assert saved.json()["draft"]["draftRevision"] == "draft-1"
-    assert drafts.external_save == {
-        "expected_revision": "draft-1",
+    assert "draft" not in saved.json()
+    assert resources.external_save == {
+        "raw_yaml": "sourceClusters: {}\n",
         "node_id": "edit:source.auth.secretName",
         "values": {
             "secretName": "next-creds",
@@ -2172,11 +1703,19 @@ def test_external_detail_and_save_routes_never_return_secret_values(tmp_path):
     }
 
 
-def test_config_routes_without_a_draft_service_are_unavailable(tmp_path):
+def test_external_routes_without_a_resource_service_are_unavailable(tmp_path):
     app = create_app(static_dir=_static_bundle(tmp_path))
 
     with TestClient(app) as client:
-        response = client.get("/api/v1/config")
+        response = client.post(
+            "/api/v1/external-resources",
+            json={
+                "rawYaml": "traffic: {}\n",
+                "nodeId": "edit:traffic.transform.configMap",
+            },
+        )
 
     assert response.status_code == 503
-    assert response.json()["detail"] == "Configuration editing is not configured"
+    assert response.json()["detail"] == (
+        "External resource access is not configured"
+    )

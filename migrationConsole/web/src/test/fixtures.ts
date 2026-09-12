@@ -1,8 +1,19 @@
 import type { components } from "../api/schema.generated";
+import type {
+  EditStateV1,
+} from "@opensearch-migrations/config-edit-core";
 
 
 export type ManageSnapshot = components["schemas"]["ManageSnapshotV1"];
-export type ConfigDraft = components["schemas"]["ConfigDraftV1"];
+export interface ConfigDraft {
+  baseRevision: string;
+  draftRevision: string;
+  dirty: boolean;
+  editState: EditStateV1;
+  navigation?: ManageSnapshot | null;
+  rawYaml?: string | null;
+  notices: string[];
+}
 
 
 export const manageSnapshot: ManageSnapshot = {

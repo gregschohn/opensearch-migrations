@@ -27,22 +27,13 @@ import {
 
 import {
   configRemovalImpact as localConfigRemovalImpact,
-} from "@opensearch-migrations/config-edit-core";
-import {
-  ConfigApiError,
-  applyEditOperation as applyServerEditOperation,
-  closeConfigDraft,
-  discardConfigDraft,
-  getConfigDraft,
-  getConfigurationDocument,
-  getConfigRemovalImpact,
-  replaceRawConfig,
-  saveConfigurationDocument,
-  saveConfigDraft,
-  type ConfigDraft,
-  type ConfigRemovalImpact,
+  type ConfigRemovalImpactEntry,
   type EditNode,
   type EditOperation,
+} from "@opensearch-migrations/config-edit-core";
+import {
+  getConfigurationDocument,
+  saveConfigurationDocument,
   type ManageSnapshot,
 } from "../../api/client";
 import { ModalDialog } from "../../components/ModalDialog";
@@ -53,7 +44,6 @@ import {
   BROWSER_CONFIG_DRAFT_QUERY_KEY,
   acknowledgeSavedBrowserConfigDraft,
   applyBrowserEditOperation,
-  browserLocalEditingEnabled,
   createBrowserConfigDraft,
   replaceBrowserConfigYaml,
   revertedBrowserConfigDraft,
@@ -119,10 +109,17 @@ interface CanonicalReference {
 }
 
 
-type ReplaceCompatibilityDraft = (
-  promise: Promise<ConfigDraft>,
-  localOperations?: EditOperation[],
+type ApplyExternalOperations = (
+  operations: EditOperation[],
+  notice?: string,
 ) => Promise<boolean>;
+
+
+interface ConfigRemovalImpact {
+  targetPath: string[];
+  targetLabel: string;
+  affected: ConfigRemovalImpactEntry[];
+}
 
 
 interface EditRow {
@@ -161,7 +158,7 @@ function EnvironmentDiagnostics({
   diagnostics,
   lifecycle,
 }: Readonly<{
-  diagnostics: ConfigDraft["editState"]["validation"]["diagnostics"];
+  diagnostics: BrowserConfigDraft["editState"]["validation"]["diagnostics"];
   lifecycle: EnvironmentDiagnosticLifecycle;
 }>) {
   const blocking = diagnostics.filter(
@@ -1293,7 +1290,6 @@ function StructuredEditor({
 
 function ConfigPropertyRow({
   draft,
-  compatibilityDraft,
   node,
   parent,
   depth,
@@ -1304,7 +1300,7 @@ function ConfigPropertyRow({
   showDocumentation,
   busy,
   commit,
-  replaceDraft,
+  applyExternalOperations,
   reportError,
   onLocalDirtyChange,
   onRequestRemoval,
@@ -1316,8 +1312,7 @@ function ConfigPropertyRow({
   rowRef,
   contextProgress,
 }: Readonly<{
-  draft: ConfigDraft;
-  compatibilityDraft: ConfigDraft;
+  draft: BrowserConfigDraft;
   node: EditNode;
   parent: EditNode | null;
   depth: number;
@@ -1328,7 +1323,7 @@ function ConfigPropertyRow({
   showDocumentation: boolean;
   busy: boolean;
   commit: (operation: EditOperation) => Promise<boolean>;
-  replaceDraft: ReplaceCompatibilityDraft;
+  applyExternalOperations: ApplyExternalOperations;
   reportError: (message: string) => void;
   onLocalDirtyChange: (nodeId: string, dirty: boolean) => void;
   onRequestRemoval: (node: EditNode) => void;
@@ -1788,11 +1783,11 @@ function ConfigPropertyRow({
       ) : null}
       {node.externalRef && externalEditorOpen ? (
         <ExternalResourceEditor
+          applyOperations={applyExternalOperations}
           busy={busy}
-          draft={compatibilityDraft}
+          draft={draft}
           node={node}
           onClose={closeExternalEditor}
-          replaceDraft={replaceDraft}
           reportError={reportError}
         />
       ) : null}
@@ -1825,18 +1820,11 @@ export function ConfigEditor({
   navigationSnapshot = null,
 }: Readonly<ConfigEditorProps>) {
   const queryClient = useQueryClient();
-  const useBrowserDraft = browserLocalEditingEnabled();
-  const compatibilityDraftQuery = useQuery({
-    queryKey: ["config-draft"],
-    queryFn: getConfigDraft,
-    staleTime: Infinity,
-  });
-  const browserDraftQuery = useQuery({
+  const draftQuery = useQuery({
     queryKey: BROWSER_CONFIG_DRAFT_QUERY_KEY,
     queryFn: async () => createBrowserConfigDraft(
       await getConfigurationDocument(),
     ),
-    enabled: useBrowserDraft,
     staleTime: Infinity,
   });
   const [selectedId, setSelectedId] = useState<string | null>(
@@ -1874,7 +1862,7 @@ export function ConfigEditor({
   );
   const [rawYamlText, setRawYamlText] = useState("");
   const [rawYamlDirty, setRawYamlDirty] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const busy = false;
   const [actionPending, setActionPending] = useState(false);
   const [problem, setProblem] = useState("");
   const [notice, setNotice] = useState("");
@@ -1927,15 +1915,11 @@ export function ConfigEditor({
     () => Promise.resolve(false),
   );
 
-  const draftQuery = useBrowserDraft
-    ? browserDraftQuery
-    : compatibilityDraftQuery;
   const draft = draftQuery.data;
   const editorBusy = busy || resourceSyncing;
-  const draftBaseStale = useBrowserDraft
-    && Boolean((draft as BrowserConfigDraft | undefined)?.baseStale);
+  const draftBaseStale = Boolean(draft?.baseStale);
   const environmentDiagnostics = useEnvironmentDiagnostics(
-    useBrowserDraft ? draft as BrowserConfigDraft | undefined : undefined,
+    draft,
   );
 
   useEffect(() => {
@@ -2686,38 +2670,27 @@ export function ConfigEditor({
     if (!element || !panel) return;
     panel.scrollTop += element.getBoundingClientRect().top - anchor.top;
   }, [draft, rows]);
-  const replaceDraft: ReplaceCompatibilityDraft = async (
-    promise,
-    localOperations = [],
+  const applyExternalOperations: ApplyExternalOperations = (
+    operations,
+    operationNotice,
   ) => {
-    const blocksEditor = !useBrowserDraft || localOperations.length === 0;
-    if (blocksEditor) setBusy(true);
     setProblem("");
     try {
-      const next = await promise;
-      queryClient.setQueryData(["config-draft"], next);
-      if (useBrowserDraft && localOperations.length > 0) {
-        const current = queryClient.getQueryData<BrowserConfigDraft>(
-          BROWSER_CONFIG_DRAFT_QUERY_KEY,
-        );
-        if (!current) return false;
-        const updated = localOperations.reduce(
-          (working, operation) =>
-            applyBrowserEditOperation(working, operation),
-          current,
-        );
-        queryClient.setQueryData(BROWSER_CONFIG_DRAFT_QUERY_KEY, updated);
-      }
-      setNotice(next.notices?.[0] ?? "");
-      return true;
+      const current = queryClient.getQueryData<BrowserConfigDraft>(
+        BROWSER_CONFIG_DRAFT_QUERY_KEY,
+      );
+      if (!current) return false;
+      const updated = operations.reduce(
+        (working, operation) =>
+          applyBrowserEditOperation(working, operation),
+        current,
+      );
+      queryClient.setQueryData(BROWSER_CONFIG_DRAFT_QUERY_KEY, updated);
+      setNotice(operationNotice ?? "");
+      return Promise.resolve(true);
     } catch (error) {
-      if (error instanceof ConfigApiError && error.current) {
-        queryClient.setQueryData(["config-draft"], error.current);
-      }
       setProblem(error instanceof Error ? error.message : String(error));
-      return false;
-    } finally {
-      if (blocksEditor) setBusy(false);
+      return Promise.resolve(false);
     }
   };
 
@@ -2734,29 +2707,21 @@ export function ConfigEditor({
     const previous = pendingCommit.current;
     const operationPromise = (async () => {
       if (previous && !await previous) return false;
-      if (useBrowserDraft) {
-        const current = queryClient.getQueryData<BrowserConfigDraft>(
-          BROWSER_CONFIG_DRAFT_QUERY_KEY,
-        );
-        if (!current) return false;
-        setProblem("");
-        try {
-          queryClient.setQueryData(
-            BROWSER_CONFIG_DRAFT_QUERY_KEY,
-            applyBrowserEditOperation(current, operation),
-          );
-          return true;
-        } catch (error) {
-          setProblem(error instanceof Error ? error.message : String(error));
-          return false;
-        }
-      }
-      const current = queryClient.getQueryData<ConfigDraft>(["config-draft"]);
+      const current = queryClient.getQueryData<BrowserConfigDraft>(
+        BROWSER_CONFIG_DRAFT_QUERY_KEY,
+      );
       if (!current) return false;
-      return replaceDraft(applyServerEditOperation(
-        current.draftRevision,
-        operation,
-      ));
+      setProblem("");
+      try {
+        queryClient.setQueryData(
+          BROWSER_CONFIG_DRAFT_QUERY_KEY,
+          applyBrowserEditOperation(current, operation),
+        );
+        return true;
+      } catch (error) {
+        setProblem(error instanceof Error ? error.message : String(error));
+        return false;
+      }
     })();
     pendingCommit.current = operationPromise;
     void operationPromise.finally(() => {
@@ -2772,53 +2737,22 @@ export function ConfigEditor({
     return pending ?? true;
   };
 
-  const checkRawYaml = async (): Promise<ConfigDraft | null> => {
-    const current = useBrowserDraft
-      ? queryClient.getQueryData<BrowserConfigDraft>(
-        BROWSER_CONFIG_DRAFT_QUERY_KEY,
-      )
-      : queryClient.getQueryData<ConfigDraft>(["config-draft"]);
+  const checkRawYaml = (): BrowserConfigDraft | null => {
+    const current = queryClient.getQueryData<BrowserConfigDraft>(
+      BROWSER_CONFIG_DRAFT_QUERY_KEY,
+    );
     if (!current) return null;
     if (!rawYamlDirty) return current;
-    if (useBrowserDraft) {
-      const next = replaceBrowserConfigYaml(
-        current as BrowserConfigDraft,
-        rawYamlText,
-      );
+    try {
+      const next = replaceBrowserConfigYaml(current, rawYamlText);
       queryClient.setQueryData(BROWSER_CONFIG_DRAFT_QUERY_KEY, next);
       setRawYamlDirty(false);
       setProblem("");
       return next;
-    }
-    setBusy(true);
-    setProblem("");
-    try {
-      const next = await replaceRawConfig(
-        current.draftRevision,
-        rawYamlText,
-      );
-      queryClient.setQueryData(["config-draft"], next);
-      setRawYamlDirty(false);
-      return next;
     } catch (error) {
-      if (error instanceof ConfigApiError && error.current) {
-        queryClient.setQueryData(["config-draft"], error.current);
-      }
       setProblem(error instanceof Error ? error.message : String(error));
       return null;
-    } finally {
-      setBusy(false);
     }
-  };
-
-  const refreshCompatibilityDraft = async () => {
-    queryClient.removeQueries({ queryKey: ["config-draft"] });
-    const compatibilityDraft = await queryClient.fetchQuery({
-      queryKey: ["config-draft"],
-      queryFn: getConfigDraft,
-      staleTime: Infinity,
-    });
-    return compatibilityDraft;
   };
 
   const persistBrowserDraft = async (
@@ -2844,7 +2778,6 @@ export function ConfigEditor({
       latest,
     );
     queryClient.setQueryData(BROWSER_CONFIG_DRAFT_QUERY_KEY, saved);
-    await refreshCompatibilityDraft();
     return saved;
   };
 
@@ -2859,27 +2792,16 @@ export function ConfigEditor({
     try {
       if (!await waitForPendingCommit()) return;
       const current = rawYamlDirty
-        ? await checkRawYaml()
-        : useBrowserDraft
-          ? queryClient.getQueryData<BrowserConfigDraft>(
-            BROWSER_CONFIG_DRAFT_QUERY_KEY,
-          )
-          : queryClient.getQueryData<ConfigDraft>(["config-draft"]);
+        ? checkRawYaml()
+        : queryClient.getQueryData<BrowserConfigDraft>(
+          BROWSER_CONFIG_DRAFT_QUERY_KEY,
+        );
       if (!current?.dirty) return;
-      if (useBrowserDraft) {
-        try {
-          const saved = await persistBrowserDraft(
-            current as BrowserConfigDraft,
-          );
-          if (!saved.dirty) setLocallyEditedIds(new Set());
-          return;
-        } catch (error) {
-          setProblem(error instanceof Error ? error.message : String(error));
-          return;
-        }
-      }
-      if (await replaceDraft(saveConfigDraft(current.draftRevision))) {
-        setLocallyEditedIds(new Set());
+      try {
+        const saved = await persistBrowserDraft(current);
+        if (!saved.dirty) setLocallyEditedIds(new Set());
+      } catch (error) {
+        setProblem(error instanceof Error ? error.message : String(error));
       }
     } finally {
       setActionPending(false);
@@ -2887,173 +2809,88 @@ export function ConfigEditor({
   };
 
   const revert = async () => {
-    if (useBrowserDraft) {
-      const current = queryClient.getQueryData<BrowserConfigDraft>(
-        BROWSER_CONFIG_DRAFT_QUERY_KEY,
-      );
-      if (!current) return false;
-      if (current.baseStale) {
-        setActionPending(true);
-        try {
-          const document = await getConfigurationDocument();
-          queryClient.setQueryData(
-            BROWSER_CONFIG_DRAFT_QUERY_KEY,
-            createBrowserConfigDraft(document),
-          );
-          setLocallyEditedIds(new Set());
-          setRawYamlText(document.rawYaml);
-          setRawYamlDirty(false);
-          setProblem("");
-          onDraftReverted();
-          return true;
-        } catch (error) {
-          setProblem(error instanceof Error ? error.message : String(error));
-          return false;
-        } finally {
-          setActionPending(false);
-        }
-      }
-      queryClient.setQueryData(
-        BROWSER_CONFIG_DRAFT_QUERY_KEY,
-        revertedBrowserConfigDraft(current),
-      );
-      setLocallyEditedIds(new Set());
-      setRawYamlText(current.savedRawDocument);
-      setRawYamlDirty(false);
-      setProblem("");
-      onDraftReverted();
-      return true;
-    }
-    setActionPending(true);
-    try {
-      if (!await waitForPendingCommit()) return false;
-      const current = queryClient.getQueryData<ConfigDraft>(["config-draft"]);
-      if (!current?.dirty) {
+    const current = queryClient.getQueryData<BrowserConfigDraft>(
+      BROWSER_CONFIG_DRAFT_QUERY_KEY,
+    );
+    if (!current) return false;
+    if (current.baseStale) {
+      setActionPending(true);
+      try {
+        const document = await getConfigurationDocument();
+        queryClient.setQueryData(
+          BROWSER_CONFIG_DRAFT_QUERY_KEY,
+          createBrowserConfigDraft(document),
+        );
         setLocallyEditedIds(new Set());
-        if (current?.rawYaml !== undefined && current.rawYaml !== null) {
-          setRawYamlText(current.rawYaml);
-          setRawYamlDirty(false);
-        }
-        return true;
-      }
-      const discarded = await replaceDraft(discardConfigDraft(
-        current.draftRevision,
-      ));
-      if (discarded) {
-        setLocallyEditedIds(new Set());
+        setRawYamlText(document.rawYaml);
         setRawYamlDirty(false);
+        setProblem("");
         onDraftReverted();
+        return true;
+      } catch (error) {
+        setProblem(error instanceof Error ? error.message : String(error));
+        return false;
+      } finally {
+        setActionPending(false);
       }
-      return discarded;
-    } finally {
-      setActionPending(false);
     }
+    queryClient.setQueryData(
+      BROWSER_CONFIG_DRAFT_QUERY_KEY,
+      revertedBrowserConfigDraft(current),
+    );
+    setLocallyEditedIds(new Set());
+    setRawYamlText(current.savedRawDocument);
+    setRawYamlDirty(false);
+    setProblem("");
+    onDraftReverted();
+    return true;
   };
 
   const openSubmitReview = async () => {
     if (!await waitForPendingCommit()) return;
     const current = rawYamlDirty
-      ? await checkRawYaml()
-      : useBrowserDraft
-        ? queryClient.getQueryData<BrowserConfigDraft>(
-          BROWSER_CONFIG_DRAFT_QUERY_KEY,
-        )
-        : queryClient.getQueryData<ConfigDraft>(["config-draft"]);
+      ? checkRawYaml()
+      : queryClient.getQueryData<BrowserConfigDraft>(
+        BROWSER_CONFIG_DRAFT_QUERY_KEY,
+      );
     if (!current) return;
-    if (useBrowserDraft) {
-      if ((current as BrowserConfigDraft).baseStale) {
-        setProblem(
-          "The saved configuration changed elsewhere. Revert to load it before submitting.",
-        );
-        return;
-      }
-      setActionPending(true);
-      try {
-        const saved = await persistBrowserDraft(
-          current as BrowserConfigDraft,
-        );
-        setLocallyEditedIds(new Set());
-        setRawYamlDirty(false);
-        setSubmitPersistedRevision(saved.persistedRevision);
-        queryClient.setQueryData(BROWSER_CONFIG_DRAFT_QUERY_KEY, saved);
-      } catch (error) {
-        setProblem(error instanceof Error ? error.message : String(error));
-        return;
-      } finally {
-        setActionPending(false);
-      }
-    } else {
-      setActionPending(true);
-      try {
-        if (current.dirty) {
-          const saved = await saveConfigDraft(current.draftRevision);
-          queryClient.setQueryData(["config-draft"], saved);
-          setLocallyEditedIds(new Set());
-          setRawYamlDirty(false);
-        }
-        const document = await getConfigurationDocument();
-        setSubmitPersistedRevision(document.persistedRevision);
-      } catch (error) {
-        if (error instanceof ConfigApiError && error.current) {
-          queryClient.setQueryData(["config-draft"], error.current);
-        }
-        setProblem(error instanceof Error ? error.message : String(error));
-        return;
-      } finally {
-        setActionPending(false);
-      }
+    if (current.baseStale) {
+      setProblem(
+        "The saved configuration changed elsewhere. Revert to load it before submitting.",
+      );
+      return;
+    }
+    setActionPending(true);
+    try {
+      const saved = await persistBrowserDraft(current);
+      setLocallyEditedIds(new Set());
+      setRawYamlDirty(false);
+      setSubmitPersistedRevision(saved.persistedRevision);
+      queryClient.setQueryData(BROWSER_CONFIG_DRAFT_QUERY_KEY, saved);
+    } catch (error) {
+      setProblem(error instanceof Error ? error.message : String(error));
+      return;
+    } finally {
+      setActionPending(false);
     }
     setConfirmSubmit(true);
   };
 
-  const requestRemoval = async (node: EditNode) => {
-    const current = useBrowserDraft
-      ? queryClient.getQueryData<BrowserConfigDraft>(
-        BROWSER_CONFIG_DRAFT_QUERY_KEY,
-      )
-      : queryClient.getQueryData<ConfigDraft>(["config-draft"]);
+  const requestRemoval = (node: EditNode) => {
+    const current = queryClient.getQueryData<BrowserConfigDraft>(
+      BROWSER_CONFIG_DRAFT_QUERY_KEY,
+    );
     if (!current) return;
-    if (useBrowserDraft) {
-      setPendingRemoval({
-        node,
-        impact: {
-          targetPath: node.path,
-          targetLabel: fieldName(node),
-          affected: localConfigRemovalImpact(
-            (current as BrowserConfigDraft).config,
-            node.path,
-          ),
-        },
-        loading: false,
-        error: "",
-      });
-      return;
-    }
     setPendingRemoval({
       node,
-      impact: null,
-      loading: true,
+      impact: {
+        targetPath: node.path,
+        targetLabel: fieldName(node),
+        affected: localConfigRemovalImpact(current.config, node.path),
+      },
+      loading: false,
       error: "",
     });
-    try {
-      const impact = await getConfigRemovalImpact(
-        current.draftRevision,
-        node.path,
-      );
-      setPendingRemoval({
-        node,
-        impact,
-        loading: false,
-        error: "",
-      });
-    } catch (error) {
-      setPendingRemoval({
-        node,
-        impact: null,
-        loading: false,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
   };
 
   const confirmRemoval = async () => {
@@ -3148,63 +2985,29 @@ export function ConfigEditor({
     setActionPending(true);
     try {
       if (!await waitForPendingCommit()) return;
-      if (useBrowserDraft) {
-        const current = rawYamlDirty
-          ? await checkRawYaml() as BrowserConfigDraft | null
-          : queryClient.getQueryData<BrowserConfigDraft>(
-            BROWSER_CONFIG_DRAFT_QUERY_KEY,
-          );
-        if (!current) return;
-        try {
-          if (saveChanges) {
-            if (current.baseStale) {
-              throw new Error(
-                "The saved configuration changed elsewhere. Revert to load it before saving.",
-              );
-            }
-            await persistBrowserDraft(current);
-          }
-          const compatibilityDraft = queryClient.getQueryData<ConfigDraft>([
-            "config-draft",
-          ]);
-          if (compatibilityDraft) {
-            await closeConfigDraft(compatibilityDraft.draftRevision);
-          }
-        } catch (error) {
-          setExitPromptOpen(false);
-          setProblem(error instanceof Error ? error.message : String(error));
-          return;
-        }
-        queryClient.removeQueries({
-          queryKey: BROWSER_CONFIG_DRAFT_QUERY_KEY,
-        });
-        queryClient.removeQueries({ queryKey: ["config-draft"] });
-        setLocallyEditedIds(new Set());
-        setExitPromptOpen(false);
-        onClose();
-        return;
-      }
-      let current = queryClient.getQueryData<ConfigDraft>(["config-draft"]);
+      const current = rawYamlDirty
+        ? checkRawYaml()
+        : queryClient.getQueryData<BrowserConfigDraft>(
+          BROWSER_CONFIG_DRAFT_QUERY_KEY,
+        );
       if (!current) return;
       try {
-        if (saveChanges && rawYamlDirty) {
-          current = await checkRawYaml();
-          if (!current) return;
+        if (saveChanges) {
+          if (current.baseStale) {
+            throw new Error(
+              "The saved configuration changed elsewhere. Revert to load it before saving.",
+            );
+          }
+          await persistBrowserDraft(current);
         }
-        if (saveChanges && current.dirty) {
-          current = await saveConfigDraft(current.draftRevision);
-          queryClient.setQueryData(["config-draft"], current);
-        }
-        await closeConfigDraft(current.draftRevision);
       } catch (error) {
-        if (error instanceof ConfigApiError && error.current) {
-          queryClient.setQueryData(["config-draft"], error.current);
-        }
         setExitPromptOpen(false);
         setProblem(error instanceof Error ? error.message : String(error));
         return;
       }
-      queryClient.removeQueries({ queryKey: ["config-draft"] });
+      queryClient.removeQueries({
+        queryKey: BROWSER_CONFIG_DRAFT_QUERY_KEY,
+      });
       setLocallyEditedIds(new Set());
       setExitPromptOpen(false);
       onClose();
@@ -3215,11 +3018,9 @@ export function ConfigEditor({
 
   const close = async () => {
     if (!await waitForPendingCommit()) return;
-    const current = useBrowserDraft
-      ? queryClient.getQueryData<BrowserConfigDraft>(
-        BROWSER_CONFIG_DRAFT_QUERY_KEY,
-      )
-      : queryClient.getQueryData<ConfigDraft>(["config-draft"]);
+    const current = queryClient.getQueryData<BrowserConfigDraft>(
+      BROWSER_CONFIG_DRAFT_QUERY_KEY,
+    );
     if (!current) return;
     if (current.dirty || hasLocalEdits) {
       setExitPromptOpen(true);
@@ -3732,10 +3533,8 @@ export function ConfigEditor({
                 );
                 return (
                   <ConfigPropertyRow
+                    applyExternalOperations={applyExternalOperations}
                     busy={busy}
-                    compatibilityDraft={
-                      compatibilityDraftQuery.data ?? draft
-                    }
                     commit={commit}
                     contextProgress={
                       pinnedContext.find(({ id }) => id === node.id)?.progress
@@ -3770,7 +3569,6 @@ export function ConfigEditor({
                     onSelectAdded={selectAdded}
                     onToggle={() => toggleExpanded(node)}
                     parent={findParent(nodes, node.id)}
-                    replaceDraft={replaceDraft}
                     reportError={setProblem}
                     rowRef={(element) => {
                       if (element) rowElements.current.set(node.id, element);

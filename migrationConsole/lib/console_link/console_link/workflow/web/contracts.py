@@ -13,10 +13,7 @@ from ..application.models import (
     ManageNode,
     ManageSnapshot,
 )
-from ..application.config_drafts import (
-    ConfigDraft,
-    ConfigRemovalImpact,
-    ConfigSubmission,
+from ..application.external_resources import (
     ExternalResourceDetails,
     ExternalResourceInventory,
     ExternalResourceMutation,
@@ -244,201 +241,6 @@ class EditDiagnosticV1(WebModel):
     path: List[str] = Field(default_factory=list)
 
 
-class EditStatusCountsV1(WebModel):
-    required: int = 0
-    errors: int = 0
-    warnings: int = 0
-    changed: int = 0
-    gated: int = 0
-    blocked: int = 0
-
-
-class EditCommandV1(WebModel):
-    requires_name: bool = True
-    edit_added: bool = False
-    auto_edit_added: bool = True
-    blocked_message: Optional[str] = None
-
-
-class EditVariantV1(WebModel):
-    label: str
-    value: Any
-    description: Optional[str] = None
-    child_schema: List["EditNodeV1"] = Field(default_factory=list)
-
-
-class EditDraftChangeV1(WebModel):
-    kind: Literal["added", "modified"]
-    previous_value: Any = None
-    previous_value_present: bool = False
-
-
-class ResourceNavigationHintV1(WebModel):
-    section_id: str
-    section_label: str
-    section_order: int
-    group_id: str
-    group_label: str
-    group_order: int
-    parent_group_id: Optional[str] = None
-    parent_group_label: Optional[str] = None
-    parent_group_order: Optional[int] = None
-    add_control_id: Optional[str] = None
-
-
-class NamedResourceIdentityHintV1(WebModel):
-    kind: Literal["named"]
-    prefix: Optional[str] = None
-    suffix: Optional[str] = None
-
-
-class IndexedResourceIdentityHintV1(WebModel):
-    kind: Literal["indexed-config"]
-    prefix: str
-    first_index: int
-
-
-ResourceIdentityHintV1 = Annotated[
-    Union[
-        NamedResourceIdentityHintV1,
-        IndexedResourceIdentityHintV1,
-    ],
-    Field(discriminator="kind"),
-]
-
-
-class ResourceDescriptorHintV1(WebModel):
-    kind: str
-    plural: str
-    type_label: str
-    identity: ResourceIdentityHintV1
-
-
-class ResourceCollectionHintV1(WebModel):
-    navigation: ResourceNavigationHintV1
-    resource: ResourceDescriptorHintV1
-
-
-class DefinitionNavigationHintV1(WebModel):
-    group_label: str
-    group_order: int
-    group_id: Optional[str] = None
-
-
-class DefinitionDescriptorHintV1(WebModel):
-    type_label: str
-
-
-class DefinitionCollectionHintV1(WebModel):
-    owner_ancestor_levels: int
-    navigation: DefinitionNavigationHintV1
-    definition: DefinitionDescriptorHintV1
-
-
-class EditInputHintV1(WebModel):
-    model_config = ConfigDict(
-        alias_generator=to_camel,
-        populate_by_name=True,
-        extra="allow",
-    )
-
-    resource_collection: Optional[ResourceCollectionHintV1] = None
-    definition_collection: Optional[DefinitionCollectionHintV1] = None
-
-
-class EditNodeV1(WebModel):
-    id: str
-    path: List[str]
-    label: str
-    value: Any = None
-    value_defaulted: Optional[bool] = None
-    value_authored: Optional[bool] = None
-    value_type: Optional[Literal["string", "number", "boolean"]] = None
-    value_kind: Literal[
-        "object",
-        "record",
-        "array",
-        "union",
-        "boolean",
-        "scalar",
-        "command",
-    ]
-    presence: Optional[Literal["required", "optional"]] = None
-    expert: Optional[bool] = None
-    essential: Optional[bool] = None
-    implicit: Optional[bool] = None
-    description: Optional[str] = None
-    required: Optional[bool] = None
-    removable: Optional[bool] = None
-    status: Optional[
-        Literal["ok", "required", "error", "warning", "changed", "gated", "blocked"]
-    ] = None
-    status_counts: Optional[EditStatusCountsV1] = None
-    draft_change: Optional[EditDraftChangeV1] = None
-    draft_change_count: Optional[int] = None
-    input_hint: Optional[EditInputHintV1] = None
-    external_ref: Optional[Dict[str, Any]] = None
-    effective_default: Optional[Dict[str, Any]] = None
-    validation: Optional[Dict[str, str]] = None
-    diagnostics: List[EditDiagnosticV1] = Field(default_factory=list)
-    collapsed: Optional[bool] = None
-    reference_target_id: Optional[str] = None
-    reference_label: Optional[str] = None
-    variants: List[EditVariantV1] = Field(default_factory=list)
-    command: Optional[EditCommandV1] = None
-    children: List["EditNodeV1"] = Field(default_factory=list)
-
-
-class EditProvenanceV1(WebModel):
-    source: Literal["pending-yaml"]
-    lossy: bool
-    mode: Literal["structured", "raw"] = "structured"
-    warnings: List[str] = Field(default_factory=list)
-
-
-class EditValidationV1(WebModel):
-    valid: bool
-    errors: List[str] = Field(default_factory=list)
-    diagnostics: List[EditDiagnosticV1] = Field(default_factory=list)
-
-
-class EditStateV1(WebModel):
-    format_version: Literal[1]
-    provenance: EditProvenanceV1
-    nodes: List[EditNodeV1]
-    validation: EditValidationV1
-
-
-class ConfigDraftV1(WebModel):
-    base_revision: str
-    draft_revision: str
-    dirty: bool
-    edit_state: EditStateV1
-    navigation: Optional[ManageSnapshotV1] = None
-    raw_yaml: Optional[str] = None
-    notices: List[str] = Field(default_factory=list)
-
-    @classmethod
-    def from_domain(
-        cls,
-        draft: ConfigDraft,
-        *,
-        navigation: Optional[ManageSnapshot] = None,
-    ) -> "ConfigDraftV1":
-        return cls.model_validate({
-            "baseRevision": draft.base_revision,
-            "draftRevision": draft.draft_revision,
-            "dirty": draft.dirty,
-            "editState": draft.edit_state,
-            "navigation": (
-                ManageSnapshotV1.from_domain(navigation)
-                if navigation is not None else None
-            ),
-            "rawYaml": draft.repair_yaml,
-            "notices": list(draft.notices),
-        })
-
-
 class ConfigurationDocumentV1(WebModel):
     raw_yaml: str
     persisted_revision: str
@@ -469,109 +271,8 @@ class ConfigEnvironmentDiagnosticsV1(WebModel):
     diagnostics: List[EditDiagnosticV1] = Field(default_factory=list)
 
 
-class SetEditOperationV1(WebModel):
-    op: Literal["set"]
-    path: List[str]
-    value: Any
-
-
-class UnsetEditOperationV1(WebModel):
-    op: Literal["unset"]
-    path: List[str]
-
-
-class RemoveConfigEditOperationV1(WebModel):
-    op: Literal["removeConfig"]
-    path: List[str]
-
-
-class RenameConfigEditOperationV1(WebModel):
-    op: Literal["renameConfig"]
-    path: List[str]
-    new_name: str
-
-
-class AddEditOperationV1(WebModel):
-    op: Literal["add"]
-    path: List[str]
-    value: Any
-
-
-EditOperationV1 = Annotated[
-    Union[
-        SetEditOperationV1,
-        UnsetEditOperationV1,
-        RemoveConfigEditOperationV1,
-        RenameConfigEditOperationV1,
-        AddEditOperationV1,
-    ],
-    Field(discriminator="op"),
-]
-
-
-class ApplyEditOperationRequestV1(WebModel):
-    expected_draft_revision: str
-    operation: EditOperationV1
-
-
-class DraftRevisionRequestV1(WebModel):
-    expected_draft_revision: str
-
-
 class PersistedRevisionRequestV1(WebModel):
     expected_persisted_revision: str
-
-
-class ReplaceRawConfigRequestV1(DraftRevisionRequestV1):
-    raw_yaml: str
-
-
-class ConfigRemovalImpactRequestV1(DraftRevisionRequestV1):
-    path: List[str]
-
-
-class ConfigRemovalImpactEntryV1(WebModel):
-    path: List[str]
-    field_path: List[str]
-    reason: str
-
-
-class ConfigRemovalImpactV1(WebModel):
-    target_path: List[str]
-    target_label: str
-    affected: List[ConfigRemovalImpactEntryV1]
-
-    @classmethod
-    def from_domain(
-        cls,
-        impact: ConfigRemovalImpact,
-    ) -> "ConfigRemovalImpactV1":
-        return cls.model_validate({
-            "targetPath": list(impact.target_path),
-            "targetLabel": impact.target_label,
-            "affected": [
-                {
-                    "path": list(entry.path),
-                    "fieldPath": list(entry.field_path),
-                    "reason": entry.reason,
-                }
-                for entry in impact.affected
-            ],
-        })
-
-
-class ConfigSubmissionV1(WebModel):
-    draft: ConfigDraftV1
-    workflow_name: str
-    message: str
-
-    @classmethod
-    def from_domain(cls, submission: ConfigSubmission) -> "ConfigSubmissionV1":
-        return cls(
-            draft=ConfigDraftV1.from_domain(submission.draft),
-            workflow_name=submission.workflow_name,
-            message=submission.message,
-        )
 
 
 class ConfigReviewChangeV1(WebModel):
@@ -1210,7 +911,6 @@ class ExternalResourceRowV1(WebModel):
 
 class ExternalResourceInventoryV1(WebModel):
     node_id: str
-    draft_revision: str
     display_name: str
     rows: List[ExternalResourceRowV1]
 
@@ -1221,15 +921,17 @@ class ExternalResourceInventoryV1(WebModel):
     ) -> "ExternalResourceInventoryV1":
         return cls.model_validate({
             "nodeId": inventory.node_id,
-            "draftRevision": inventory.draft_revision,
             "displayName": inventory.display_name,
             "rows": inventory.rows,
         })
 
 
-class SelectExternalResourceRequestV1(WebModel):
-    expected_draft_revision: str
+class ExternalResourceContextRequestV1(WebModel):
+    raw_yaml: str
     node_id: str
+
+
+class SelectExternalResourceRequestV1(ExternalResourceContextRequestV1):
     name: str
     kind: str
     group: str = ""
@@ -1238,9 +940,16 @@ class SelectExternalResourceRequestV1(WebModel):
     manual: bool = False
 
 
+class ExternalResourceSelectionV1(WebModel):
+    accepted: Literal[True] = True
+
+
+class ExternalResourceDetailsRequestV1(ExternalResourceContextRequestV1):
+    name: str
+
+
 class ExternalResourceDetailsV1(WebModel):
     node_id: str
-    draft_revision: str
     display_name: str
     name: str
     kind: str
@@ -1260,7 +969,7 @@ class ExternalResourceDetailsV1(WebModel):
 
 
 class SaveExternalResourceRequestV1(WebModel):
-    expected_draft_revision: str
+    raw_yaml: str
     node_id: str
     values: Dict[str, str]
     confirmations: Dict[str, str] = Field(default_factory=dict)
@@ -1268,7 +977,6 @@ class SaveExternalResourceRequestV1(WebModel):
 
 
 class ExternalResourceMutationV1(WebModel):
-    draft: ConfigDraftV1
     name: str
     kind: str
     message: str
@@ -1277,18 +985,8 @@ class ExternalResourceMutationV1(WebModel):
     def from_domain(
         cls,
         mutation: ExternalResourceMutation,
-        *,
-        navigation: Optional[ManageSnapshot] = None,
     ) -> "ExternalResourceMutationV1":
-        return cls.model_validate({
-            "draft": ConfigDraftV1.from_domain(
-                mutation.draft,
-                navigation=navigation,
-            ),
-            "name": mutation.name,
-            "kind": mutation.kind,
-            "message": mutation.message,
-        })
+        return cls.model_validate(mutation.__dict__)
 
 
 def _node_payload(node: ManageNode) -> Dict[str, Any]:
