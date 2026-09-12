@@ -220,6 +220,8 @@ class ManageNode:
             result["configPresence"] = dict(self.config_presence)
         if self.config_state is not None:
             result["configState"] = self.config_state.to_dict()
+        if self.navigation_key:
+            result["navigationKey"] = list(self.navigation_key)
         return result
 
 
