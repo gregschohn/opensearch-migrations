@@ -757,7 +757,10 @@ For every Critical Mutation Traffic request:
    observationLogAppendTime - lastAcceptedManifestLogAppendTime < E
    ```
 
-5. otherwise close the connection and irreversibly enter the compromised state.
+5. otherwise irreversibly enter the compromised state and apply `--capture-failure-policy`:
+   `fail-closed` does not forward the waiting request and closes the connection as the process
+   terminates; `fail-open` forwards the waiting request without authoritative capture and leaves the
+   connection open in permanent pass-through mode.
 
 The check and source-forwarding decision must share a one-way local capture gate. Once the gate
 closes, no thread may newly pass the check. This avoids a simple check-then-transition race inside
@@ -954,6 +957,8 @@ the termination as a crash and does not fabricate completion.
 After the gate closes:
 
 - Kafka capture submission remains permanently closed;
+- the Critical Mutation Traffic request waiting at the pre-forward check is forwarded without
+  authoritative capture;
 - existing TCP connections remain open and switch to uncaptured forwarding;
 - new TCP connections use uncaptured forwarding;
 - the process emits a loud, persistent capture-gap alarm; and

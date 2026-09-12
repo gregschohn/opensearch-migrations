@@ -319,7 +319,10 @@ For every Critical Mutation Traffic request, the proxy enforces the guarantee in
 5. Compare that time with `lastAcceptedManifestLogAppendTime`.
 6. Continue only when the difference is less than `E`.
 7. Only then submit the source traffic that permits the request to take effect.
-8. Otherwise, close the connection and irreversibly enter the compromised state.
+8. Otherwise, irreversibly enter the compromised state and apply `--capture-failure-policy`.
+   `fail-closed` does not forward the request and closes the connection as the process terminates.
+   `fail-open` forwards the waiting request without authoritative capture and leaves the connection
+   open in permanent pass-through mode.
 
 The comparison and forwarding decision share a one-way local state transition. Once the proxy is
 compromised, no request may newly pass this check and forward Critical Mutation Traffic as captured.
