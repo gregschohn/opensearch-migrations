@@ -57,7 +57,7 @@ current browser serve mode.
 | UI system | Do not use Cloudscape; own the application layout and styling, using focused accessible React libraries where they fit |
 | Config semantics | Continue to reside in the TypeScript config-processor |
 | Cluster semantics | Continue to reside in Python services using Kubernetes and Argo |
-| Save model | Explicit draft save with revision checks |
+| Save model | Browser-local unsaved draft with revision-checked document persistence |
 | Consequential work | Return tracked operations instead of blocking HTTP requests |
 | Logs | Implement late, after the state, edit, output, and action contracts are stable |
 
@@ -92,9 +92,9 @@ the TUI interaction used to reach it.
 | Resource-centered status | `workflow/resource_tree.py` and config overlays | Resource tree and selected-resource workspace |
 | Workflow-step status | `workflow/tree_utils.py` and Argo data | Activity/progress details and, if still useful, a secondary step view |
 | Deployed/submitted/pending values | `apply_config_overlays` and `ConfigEditService` | Explicit comparison in overview, configuration, and review |
-| Schema-guided editing | config-processor `EditStateV1` and `EditOperation` | Generic React form controls driven by the same DTO |
+| Schema-guided editing | shared `config-edit-core` projection and operations | Generic React form controls driven by the same DTO |
 | External resource selection | `ConfigEditService` external-resource methods | Searchable picker showing resource identity and available keys |
-| Draft save/discard | `WorkflowConfigStore` and TUI draft state | Revisioned server-side edit session with explicit save/discard |
+| Draft save/discard | `WorkflowConfigStore` and browser memory | Browser-local discard and revisioned document save |
 | Review and submit | `ConfigEditService.submit_saved_config` | Review surface and tracked submit operation |
 | Approval | approval-gate helpers and `approve_gate` | Exact-target confirmation and tracked operation |
 | Reset | reset dry-run plan and execution helpers | Plan, review, stale-plan protection, and tracked execution |
@@ -112,8 +112,8 @@ when it has a server contract, a frontend interaction, error behavior, and tests
 
 The following layers are product logic and should remain authoritative:
 
-- `orchestrationSpecs/packages/config-processor/src/editConfig.ts`
-- `orchestrationSpecs/packages/config-processor/src/schemaEditModel.ts`
+- `orchestrationSpecs/packages/config-edit-core`
+- the config-processor Node adapter for CLI and authoritative server checks
 - config-processor strict and loose resource projection
 - `workflow/services/config_edit_service.py`
 - `workflow/resource_tree.py`
@@ -145,7 +145,7 @@ presentation-neutral services when it is needed by the web application:
 - starting and tracking long-running actions;
 - approval target descriptions;
 - reset plan and execution orchestration;
-- configuration draft lifecycle;
+- configuration document persistence and saved-revision conflict handling;
 - state revision and invalidation.
 
 The middle layer must be callable from unit tests without FastAPI, Textual, Click, or a live
@@ -177,6 +177,8 @@ Browser
   React application
     normalized manage state
     interaction state
+    in-memory configuration draft
+    shared config-edit-core
     generated API client
     HTTP queries and mutations
     SSE subscribers
@@ -192,14 +194,16 @@ FastAPI
 Python application layer
   ManageStateService
   ObservationCoordinator
-  ConfigDraftService
+  ConfigurationDocumentService
+  SavedConfigSubmissionService
+  ExternalResourceService
   OutputService
   OperationManager
   ApprovalService
   ResetService
   LogStreamService
           |
-          +---- ConfigEditService -> config-processor one-shot Node process
+          +---- ConfigEditService -> authoritative config-processor checks
           +---- WorkflowService -> Argo
           +---- Kubernetes clients -> CRs, pods, logs, external resources
           `---- Artifact store -> managed output
@@ -228,7 +232,9 @@ migrationConsole/
   lib/console_link/console_link/workflow/
     application/
       actions.py
-      config_drafts.py
+      config_documents.py
+      config_submission.py
+      external_resources.py
       manage_state.py
       models.py
       observations.py
@@ -270,10 +276,11 @@ application introduces no database, local durable store, or authoritative FastAP
 | Durable and authoritative | Saved pending YAML in the ConfigMap-backed `WorkflowConfigStore` | Configuration that survives a manage-server restart |
 | Durable and authoritative | Managed artifacts in the configured artifact store | Workflow output |
 | Ephemeral FastAPI process state | Latest derived observation and stale/error metadata | Avoid repeating Kubernetes, Argo, and config-processor work for every request and SSE subscriber |
-| Ephemeral FastAPI process state | Unsaved config draft, draft revision, reset plans, and bounded operation registry | Coordinate one on-demand editing and action session |
+| Ephemeral FastAPI process state | Reset plans and bounded operation registry | Coordinate consequential actions |
 | Ephemeral FastAPI process state | Background task handles, SSE queues/event IDs, and bounded log buffers/cursors | Deliver responsive progress and streaming behavior |
 | Ephemeral browser state | TanStack Query cache and normalized snapshot | Render and reconcile remote observations efficiently |
-| Ephemeral browser state | Selection, focus, expansion, tabs, scroll anchors, open controls, and uncommitted field input | Preserve the user's interaction context |
+| Ephemeral browser state | Unsaved configuration draft and local edit sequence | Apply ordinary edits without a server round trip |
+| Ephemeral browser state | Selection, focus, expansion, tabs, scroll anchors, and open controls | Preserve the user's interaction context |
 
 The derived observation cache is useful even though Kubernetes is authoritative because a
 manage snapshot joins multiple Kubernetes and Argo reads with configuration projection and
@@ -281,12 +288,13 @@ augmentation. One process-level observation avoids recomputing that join indepen
 every HTTP request and connected browser event stream.
 
 After a FastAPI restart, the application reconstructs current state from Kubernetes, Argo,
-`WorkflowConfigStore`, and the artifact store. Unsaved drafts, recent operation history,
-and stream positions may be lost. Work already accepted by Kubernetes may continue and is
-reported from subsequent cluster observations. An in-memory operation status must never
-override contradictory observed cluster state. If operation history ever needs to survive
-server restarts, it should be represented through an appropriate Kubernetes resource or
-status contract rather than an application-local database.
+`WorkflowConfigStore`, and the artifact store. Browser-local unsaved edits are unaffected
+unless the page itself reloads; recent operation history and stream positions may be lost.
+Work already accepted by Kubernetes may continue and is reported from subsequent cluster
+observations. An in-memory operation status must never override contradictory observed
+cluster state. If operation history ever needs to survive server restarts, it should be
+represented through an appropriate Kubernetes resource or status contract rather than an
+application-local database.
 
 ## Contract Design
 
@@ -397,8 +405,8 @@ Use separate revision domains:
 | Revision | Protects |
 | --- | --- |
 | Manage state revision | Live workflow/resource observation |
-| Config base revision | Saved pending config in `WorkflowConfigStore` |
-| Config draft revision | In-memory edit operations within the current server process |
+| Persisted config revision | Saved pending config in `WorkflowConfigStore` |
+| Browser draft sequence | Ordering of unsaved edits and save acknowledgements in one page |
 | Reset plan token | Exact resources and resource versions reviewed by the user |
 | Operation revision | Latest known operation state |
 | Log cursor | Position in one identified pod/container/restart stream |
@@ -419,7 +427,7 @@ Use one problem-details shape for expected failures:
   "type": "config-revision-conflict",
   "title": "Configuration changed",
   "status": 409,
-  "detail": "Reload the saved configuration before saving this draft.",
+  "detail": "Reload the saved configuration before saving these edits.",
   "retryable": true,
   "context": {}
 }
@@ -458,13 +466,16 @@ Exact Pydantic names may change, but the resource boundaries should remain:
 | `GET` | `/api/v1/system/health` | Process and dependency readiness |
 | `GET` | `/api/v1/manage/state` | Normalized manage snapshot |
 | `GET` | `/api/v1/manage/events` | State invalidation and operation SSE |
-| `GET` | `/api/v1/config` | Open or return the current edit session |
-| `POST` | `/api/v1/config/operations` | Apply one typed edit operation to the draft |
-| `POST` | `/api/v1/config/save` | Persist the current draft with revision checks |
-| `POST` | `/api/v1/config/discard` | Reset the draft to saved pending config |
-| `GET` | `/api/v1/external-resources` | List candidates for one schema external reference |
-| `GET` | `/api/v1/external-resources/{id}` | Read safe metadata and ConfigMap content where allowed |
-| `PUT` | `/api/v1/external-resources/{id}` | Create or update an allowed external resource |
+| `GET` | `/api/v1/config/document` | Load saved YAML and its persisted revision |
+| `PUT` | `/api/v1/config/document` | Validate and persist exact YAML by expected revision |
+| `POST` | `/api/v1/config/diagnostics` | Check environment-dependent references asynchronously |
+| `POST` | `/api/v1/config/review` | Authoritatively validate and summarize a saved revision |
+| `POST` | `/api/v1/config/preflight` | Dry-run admission checks for the saved revision |
+| `POST` | `/api/v1/config/submit` | Start submission of the exact saved revision |
+| `POST` | `/api/v1/external-resources` | List candidates for one field against supplied YAML |
+| `POST` | `/api/v1/external-resources/details` | Read safe resource metadata for one supplied context |
+| `POST` | `/api/v1/external-resources/select` | Validate an external-resource selection |
+| `POST` | `/api/v1/external-resources/save` | Create or update an allowed external resource |
 | `GET` | `/api/v1/nodes/{node_id}/outputs` | List managed-output descriptors |
 | `GET` | `/api/v1/outputs/{output_id}` | Read or download one managed output |
 | `GET` | `/api/v1/submission-review` | Validate and summarize pending changes |
@@ -515,30 +526,21 @@ subscriber. The coordinator:
 when necessary. SSE subscribers consume the coordinator's bounded event stream; they do
 not start their own cluster polling.
 
-### ConfigDraftService
+### Browser Draft And Configuration Services
 
-One on-demand manage server initially has one edit session:
+The browser loads one revisioned YAML document, projects it through
+`config-edit-core`, and keeps unsaved edits in page memory. Ordinary set, unset, add,
+rename, remove, comparison, dependency, and navigation work does not call FastAPI.
 
-```text
-saved WorkflowConfigStore value
-  -> base revision
-  -> in-memory raw YAML draft
-  -> config-processor EditStateV1
-  -> draft revision
-```
+`ConfigurationDocumentService` owns atomic load and save against
+`WorkflowConfigStore`. Save verifies the expected persisted revision and authoritatively
+validates the exact YAML before writing it. `SavedConfigSubmissionService` reviews,
+preflights, and submits an exact saved revision. `ExternalResourceService` performs
+Kubernetes-dependent inventory, validation, and mutation from the YAML context supplied
+with each request; it does not retain an edit session.
 
-The browser receives edit state and revisions, not raw YAML. Each committed edit sends an
-`EditOperation` and expected draft revision. The service calls
-`ConfigEditService.apply_operation`, retains the returned YAML and edit state, and returns
-the next revision.
-
-Save verifies the config base revision before calling `save_raw_yaml`. Discard reloads the
-saved value. A server restart loses unsaved draft operations but never corrupts saved
-configuration.
-
-Continue using one-shot config-processor invocations at committed interaction boundaries.
-Do not run config-processor on every keystroke. A long-lived stdio helper remains an
-optional measured optimization.
+The config-processor Node adapter remains available to CLI commands and authoritative
+server checks. It is not invoked for each browser edit.
 
 ### OutputService
 
@@ -777,12 +779,13 @@ This phase intentionally excludes logs.
 
 ### Phase 4: Configuration Editing
 
-Implementation status: complete as of 2026-08-12.
+Implementation status: complete as of 2026-08-12; its server-draft transport was
+superseded by the browser-local editing stack completed on 2026-09-12.
 
 Work:
 
-- implement `ConfigDraftService`;
-- expose config open, operation, save, and discard endpoints;
+- expose schema-guided configuration editing;
+- provide explicit save and discard behavior;
 - render every generic `EditNode` kind currently emitted by config-processor;
 - support set, unset, add, remove, and rename operations;
 - support optional/expert visibility without changing the DTO;
@@ -796,7 +799,7 @@ Work:
 Acceptance:
 
 - representative workflow configs can be created and edited without raw YAML editing;
-- all edit mutations pass through config-processor;
+- all edit mutations pass through shared config semantics;
 - React contains no workflow-path-specific schema rules;
 - the incorrect ancestor rename interaction is impossible;
 - ConfigMap-plus-key choices show both map and key;
