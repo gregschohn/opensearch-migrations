@@ -57,10 +57,12 @@ the requirements above.
 Five minutes is the default operational target for orderly shutdown, not permission to stop
 retirement. After that target the proxy continues trying to acknowledge terminal observations,
 final empty manifests, and `NoMoreWrites`. Periodic manifests continue while existing connections
-retire. After the connection registry is empty, the proxy quiesces periodic manifests and keeps
-trying to publish the final empty manifest and `NoMoreWrites` until the most recently acknowledged
-complete manifest reaches the configured manifest expiration interval `E`. An acknowledged final
-empty manifest becomes that most recent manifest before the proxy attempts `NoMoreWrites`.
+retire. After the connection registry is empty, the proxy quiesces periodic manifests and submits
+the final empty manifest once. Kafka may continue its configured internal delivery attempts, but
+the proxy does not resubmit at the application layer. An application-visible Kafka failure or the
+current manifest acknowledgement deadline `E`, whichever occurs first, moves the process to its
+compromised state. If the final empty manifest is acknowledged in time, it renews that deadline
+before the proxy submits `NoMoreWrites` once.
 
 ## 2. System model
 
@@ -308,6 +310,14 @@ the proxy does not prepare or submit a later manifest until the current complete
 acknowledged and accepted. Therefore a proxy that observes a late manifest cannot publish a later
 manifest that appears to restore freshness. This is a proxy invariant; the replayer does not add a
 separate sticky-lapse state.
+
+Separately from broker timestamps, the proxy maintains one local monotonic acknowledgement
+deadline for each `(writerNodeId, partition)`. The initial deadline starts when the initial
+complete manifest is submitted. Every accepted complete manifest renews the deadline for another
+`E`. If the deadline expires before the required acknowledgement is processed, the process
+irreversibly enters its compromised state. A later acknowledgement is ignored for capture
+authority and cannot renew the deadline. This local deadline does not replace the `LogAppendTime`
+checks above.
 
 For every Critical Mutation Traffic request, the proxy enforces the guarantee in this order:
 
@@ -888,9 +898,11 @@ An orderly shutdown is a planned operation performed while capture and Kafka pub
 trustworthy, such as `SIGTERM`, a planned rollout, fleet-directed replacement, or another deliberate
 administrative shutdown. It follows the connection and writer-retirement ordering in §§6–7. The
 default target for completing that orderly retirement is five minutes. Missing the target emits a
-high-severity diagnostic but does not stop retirement or skip `NoMoreWrites`. The proxy gives up
-only when the most recently acknowledged complete manifest reaches the configured manifest
-expiration interval `E`.
+high-severity diagnostic but does not itself stop retirement or skip `NoMoreWrites`. Each terminal
+record is submitted once. Kafka may continue its internal delivery attempts, but the proxy does not
+resubmit. An application-visible Kafka failure or expiration of the current manifest
+acknowledgement deadline `E`, whichever occurs first, makes retirement unsuccessful. The proxy
+exits without claiming that writer retirement completed.
 
 The orderly-retirement timing policy is not a general failure response. Capture-compromise and unstable
 process failures follow §12.4 instead.
@@ -900,9 +912,17 @@ process failures follow §12.4 instead.
 An unexpected proxy event-loop death, an out-of-memory-like failure, or corrupted internal
 ownership always terminates the process immediately.
 
-Failure to publish a Kafka record required for authoritative capture, a manifest lapse, an
-ambiguous producer outcome, or another failure that compromises capture closes the proxy's one-way
-capture state and applies `--capture-failure-policy` to the whole process:
+The first of the following events closes the proxy's one-way capture state and applies
+`--capture-failure-policy` to the whole process:
+
+- any Kafka failure, timeout, or ambiguous result exposed to the application;
+- expiration of a manifest acknowledgement deadline `E`; or
+- any other event proving that capture can no longer be trusted.
+
+That transition atomically closes every capture-authoritative gate and notifies the acceptor,
+connections, manifest scheduler, and publisher lane. A later Kafka acknowledgement cannot restore
+capture. Previously acknowledged traffic remains valid; the transition does not retroactively
+invalidate it.
 
 - `fail-closed` emits high-severity diagnostics and terminates immediately. It does not attempt
   connection or writer retirement because Kafka acknowledgements are no longer trustworthy.
@@ -911,11 +931,11 @@ capture state and applies `--capture-failure-policy` to the whole process:
   capture. The process permanently stops authoritative capture, emits a persistent high-severity
   capture-gap alarm, and never returns to capture.
 
-The previous per-request behavior in which one request could forward after a capture failure and
-the process could then resume authoritative capture is not permitted.
-
-A definite transient failure proven not to have compromised capture may retry normally. Membership
-polling and rebalance events are not capture failures after startup and never invoke this policy.
+The Kafka client may retry internally before exposing an outcome. After a failure, timeout, or
+ambiguous result is exposed to the proxy, the proxy does not resubmit the record at the application
+layer. The previous per-request behavior in which one request could forward after a capture failure
+and the process could then resume authoritative capture is not permitted. Membership polling and
+rebalance events are not capture failures after startup and never invoke this policy.
 
 A suspended proxy that resumes after its acknowledged manifest has become stale cannot forward new
 Critical Mutation Traffic as captured; the capture-health check in §4 applies the configured
