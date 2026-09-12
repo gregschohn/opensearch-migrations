@@ -13,6 +13,7 @@ from ..application.manage_state import ManageStateService
 from ..application.observations import ObservationCoordinator
 from ..application.config_drafts import ConfigDraftService
 from ..application.config_documents import ConfigurationDocumentService
+from ..application.config_submission import SavedConfigSubmissionService
 from ..application.outputs import OutputService
 from ..application.logs import KubernetesLogSource, LogStreamService
 from ..application.operations import OperationManager
@@ -135,15 +136,20 @@ def run_server(
             )
 
         config_drafts = ConfigDraftService(config_service)
+        config_documents = ConfigurationDocumentService(
+            store=config_store,
+            validate=config_service.validate_raw_config_for_save,
+            on_saved=config_drafts.invalidate_saved_config,
+        )
         app = create_app(
             static_dir=static_dir,
             coordinator=coordinator,
             workflow_name=workflow_name,
             config_drafts=config_drafts,
-            config_documents=ConfigurationDocumentService(
-                store=config_store,
-                validate=config_service.validate_raw_config_for_save,
-                on_saved=config_drafts.invalidate_saved_config,
+            config_documents=config_documents,
+            config_submission=SavedConfigSubmissionService(
+                config_documents,
+                config_service,
             ),
             config_diagnostics=config_service,
             outputs=OutputService(

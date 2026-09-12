@@ -1,6 +1,7 @@
 import json
 from datetime import datetime, timezone
 from fastapi.testclient import TestClient
+import pytest
 
 from console_link.workflow.application.config_drafts import (
     ConfigDraft,
@@ -15,6 +16,11 @@ from console_link.workflow.application.config_drafts import (
 from console_link.workflow.application.config_documents import (
     ConfigurationDocument,
     ConfigurationDocumentConflict,
+)
+from console_link.workflow.application.config_review import ConfigReviewChange
+from console_link.workflow.application.config_submission import (
+    PreparedConfigSubmission,
+    SavedConfigReview,
 )
 from console_link.workflow.application.logs import (
     LogEvent,
@@ -1051,13 +1057,15 @@ def test_vap_reset_saves_then_submits_a_new_workflow_without_approving_old_gate(
     approvals = _Approvals()
     resets = _Resets()
     operations = _Operations()
-    drafts = _Drafts()
+    documents = _Documents()
+    submissions = _Submissions(documents)
     app = create_app(
         static_dir=_static_bundle(tmp_path),
         approvals=approvals,
         resets=resets,
         operations=operations,
-        config_drafts=drafts,
+        config_documents=documents,
+        config_submission=submissions,
         workflow_name="migration-test",
     )
 
@@ -1067,7 +1075,7 @@ def test_vap_reset_saves_then_submits_a_new_workflow_without_approving_old_gate(
             json={
                 "planToken": "reset-token",
                 "resubmit": True,
-                "expectedDraftRevision": "draft-1",
+                "expectedPersistedRevision": "11",
             },
         )
         worker = operations.started["worker"]
@@ -1076,15 +1084,52 @@ def test_vap_reset_saves_then_submits_a_new_workflow_without_approving_old_gate(
     assert operations.started["label"] == (
         "Reset and resubmit snapshotmigration.migration-0"
     )
-    assert drafts.prepared is True
-    assert drafts.expected_revision == "draft-1"
+    assert [item.persisted_revision for item in submissions.prepared] == ["11"]
     result = worker()
     assert resets.executed is True
     assert approvals.approved is False
-    assert drafts.submitted is True
+    assert [item.persisted_revision for item in submissions.prepared] == [
+        "11",
+        "11",
+    ]
+    assert submissions.submitted[1] == "migration-test"
     assert result.waiting is True
     assert result.result["workflowName"] == "migration-test"
     assert "replacement workflow" in result.message
+
+
+def test_reset_worker_rechecks_saved_revision_before_deleting_resources(
+    tmp_path,
+):
+    resets = _Resets()
+    operations = _Operations()
+    documents = _Documents()
+    submissions = _Submissions(documents)
+    submissions.fail_worker_revision = True
+    app = create_app(
+        static_dir=_static_bundle(tmp_path),
+        resets=resets,
+        operations=operations,
+        config_documents=documents,
+        config_submission=submissions,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/resets",
+            json={
+                "planToken": "reset-token",
+                "resubmit": True,
+                "expectedPersistedRevision": "11",
+            },
+        )
+        worker = operations.started["worker"]
+
+    assert response.status_code == 202
+    with pytest.raises(ConfigurationDocumentConflict):
+        worker()
+    assert resets.executed is False
+    assert submissions.submitted is None
 
 
 def _edit_state():
@@ -1336,6 +1381,96 @@ class _Documents:
             persisted_revision="12",
         )
         return self.current
+
+
+class _Submissions:
+    def __init__(self, documents):
+        self.documents = documents
+        self.prepared = []
+        self.preflight_revision = None
+        self.review_revision = None
+        self.submitted = None
+        self.fail_worker_revision = False
+
+    def review(self, expected_revision, snapshot=None):
+        self.review_revision = expected_revision
+        self._require_revision(expected_revision)
+        return SavedConfigReview(
+            persisted_revision=expected_revision,
+            valid=True,
+            validation_messages=(),
+            changes=(
+                ConfigReviewChange(
+                    resource_id="resource:trafficproxies:capture",
+                    resource_label="capture",
+                    path="traffic.proxies.capture.serviceType",
+                    label="Service type",
+                    kind="field",
+                ),
+            ),
+        )
+
+    def prepare(self, expected_revision):
+        if self.fail_worker_revision and self.prepared:
+            self.documents.current = ConfigurationDocument(
+                raw_yaml="targetClusters: {}\n",
+                persisted_revision="12",
+            )
+        self._require_revision(expected_revision)
+        prepared = PreparedConfigSubmission(
+            persisted_revision=expected_revision,
+            raw_yaml=self.documents.current.raw_yaml,
+        )
+        self.prepared.append(prepared)
+        return prepared
+
+    def preflight(self, expected_revision, workflow_name):
+        self._require_revision(expected_revision)
+        self.preflight_revision = expected_revision
+        return AdmissionPreflightReport(
+            checked_resources=2,
+            deployment_actions=(
+                AdmissionDeploymentAction(
+                    kind="CaptureProxy",
+                    name="capture",
+                    plural="captureproxies",
+                    action="reconcile",
+                    reason="checksum-only",
+                    message=(
+                        "The generated checksum changed, although no "
+                        "projected fields changed."
+                    ),
+                    current_config_checksum="old",
+                    desired_config_checksum="new",
+                ),
+            ),
+            issues=(
+                AdmissionPreflightIssue(
+                    kind="CapturedTraffic",
+                    name="capture-topic",
+                    plural="capturedtraffics",
+                    classification="recreate-required",
+                    message="sourceLabel cannot be changed",
+                    source="kubernetes",
+                ),
+                AdmissionPreflightIssue(
+                    kind="TrafficReplay",
+                    name="replay",
+                    plural="trafficreplays",
+                    classification="approval-required",
+                    message="tupleMaxFileSizeMb requires approval",
+                    source="kubernetes",
+                ),
+            ),
+        )
+
+    def submit(self, prepared, workflow_name):
+        self.submitted = (prepared, workflow_name)
+        return {"workflow_name": workflow_name}
+
+    def _require_revision(self, expected_revision):
+        if self.documents.current.persisted_revision != expected_revision:
+            raise ConfigurationDocumentConflict(self.documents.current)
 
 
 class _ConfigDiagnostics:
@@ -1707,11 +1842,13 @@ class _Operations:
 
 
 def test_config_review_and_submit_start_a_tracked_operation(tmp_path):
-    drafts = _Drafts()
+    documents = _Documents()
+    submissions = _Submissions(documents)
     operations = _Operations()
     app = create_app(
         static_dir=_static_bundle(tmp_path),
-        config_drafts=drafts,
+        config_documents=documents,
+        config_submission=submissions,
         operations=operations,
         workflow_name="migration-test",
     )
@@ -1719,42 +1856,75 @@ def test_config_review_and_submit_start_a_tracked_operation(tmp_path):
     with TestClient(app) as client:
         review = client.post(
             "/api/v1/config/review",
-            json={"expectedDraftRevision": "draft-1"},
+            json={"expectedPersistedRevision": "11"},
         )
         response = client.post(
             "/api/v1/config/submit",
-            json={"expectedDraftRevision": "draft-1"},
+            json={"expectedPersistedRevision": "11"},
         )
 
     assert review.status_code == 200
+    assert review.json()["persistedRevision"] == "11"
     assert review.json()["valid"] is True
     assert review.json()["changes"][0]["resourceLabel"] == "capture"
     assert response.status_code == 202
     assert response.json()["id"] == "operation-submit"
-    assert drafts.prepared is True
-    assert drafts.submitted is False
-    assert drafts.expected_revision == "draft-1"
+    assert [item.persisted_revision for item in submissions.prepared] == ["11"]
+    assert submissions.submitted is None
     assert operations.started["kind"] == "submit"
     result = operations.started["worker"]()
     assert result.waiting is True
     assert result.result["workflowName"] == "migration-test"
-    assert drafts.submitted is True
+    assert [item.persisted_revision for item in submissions.prepared] == [
+        "11",
+        "11",
+    ]
+    assert submissions.submitted[1] == "migration-test"
+
+
+def test_submit_worker_rejects_a_saved_configuration_changed_after_acceptance(
+    tmp_path,
+):
+    documents = _Documents()
+    submissions = _Submissions(documents)
+    submissions.fail_worker_revision = True
+    operations = _Operations()
+    app = create_app(
+        static_dir=_static_bundle(tmp_path),
+        config_documents=documents,
+        config_submission=submissions,
+        operations=operations,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/config/submit",
+            json={"expectedPersistedRevision": "11"},
+        )
+        worker = operations.started["worker"]
+
+    assert response.status_code == 202
+    with pytest.raises(ConfigurationDocumentConflict):
+        worker()
+    assert submissions.submitted is None
 
 
 def test_config_preflight_reports_blocking_and_nonblocking_admission_results(
     tmp_path,
 ):
-    drafts = _Drafts()
+    documents = _Documents()
+    submissions = _Submissions(documents)
     app = create_app(
         static_dir=_static_bundle(tmp_path),
-        config_drafts=drafts,
+        config_documents=documents,
+        config_submission=submissions,
         workflow_name="migration-test",
     )
 
     with TestClient(app) as client:
         response = client.post(
             "/api/v1/config/preflight",
-            json={"expectedDraftRevision": "draft-1"},
+            json={"expectedPersistedRevision": "11"},
         )
 
     assert response.status_code == 200
@@ -1806,7 +1976,8 @@ def test_config_preflight_reports_blocking_and_nonblocking_admission_results(
 def test_config_preflight_reports_preparation_failures_without_plain_500(
     tmp_path,
 ):
-    drafts = _Drafts()
+    documents = _Documents()
+    submissions = _Submissions(documents)
 
     def fail_preflight(expected_revision, workflow_name):
         raise RuntimeError(
@@ -1814,17 +1985,18 @@ def test_config_preflight_reports_preparation_failures_without_plain_500(
             "Error: getaddrinfo ENOTFOUND localstack"
         )
 
-    drafts.preflight = fail_preflight
+    submissions.preflight = fail_preflight
     app = create_app(
         static_dir=_static_bundle(tmp_path),
-        config_drafts=drafts,
+        config_documents=documents,
+        config_submission=submissions,
         workflow_name="migration-test",
     )
 
     with TestClient(app) as client:
         response = client.post(
             "/api/v1/config/preflight",
-            json={"expectedDraftRevision": "draft-1"},
+            json={"expectedPersistedRevision": "11"},
         )
 
     assert response.status_code == 502

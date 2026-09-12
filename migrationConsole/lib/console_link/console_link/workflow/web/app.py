@@ -70,6 +70,7 @@ from .contracts import (
     OutputInventoryV1,
     OperationListV1,
     OperationV1,
+    PersistedRevisionRequestV1,
     ReplaceRawConfigRequestV1,
     ResetPlanRequestV1,
     ResetPlanV1,
@@ -94,6 +95,7 @@ def create_app(
     coordinator: Optional[ObservationCoordinator] = None,
     config_drafts: Optional[Any] = None,
     config_documents: Optional[Any] = None,
+    config_submission: Optional[Any] = None,
     config_diagnostics: Optional[Any] = None,
     outputs: Optional[Any] = None,
     operations: Optional[Any] = None,
@@ -229,6 +231,14 @@ def create_app(
             )
         return config_diagnostics
 
+    def submission_service():
+        if config_submission is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Configuration submission is not configured",
+            )
+        return config_submission
+
     def draft_navigation(draft: Any) -> Optional[Any]:
         observation = (
             getattr(coordinator, "current_observation", None)
@@ -270,6 +280,24 @@ def create_app(
                 "message": str(error),
                 "persistedRevision": error.persisted_revision,
                 "current": draft_contract(error.current).model_dump(
+                    by_alias=True,
+                    exclude_none=True,
+                    mode="json",
+                ),
+            },
+        )
+
+    def _document_conflict(
+        error: ConfigurationDocumentConflict,
+    ) -> HTTPException:
+        return HTTPException(
+            status_code=409,
+            detail={
+                "code": "persisted_revision_conflict",
+                "message": str(error),
+                "current": ConfigurationDocumentV1.from_domain(
+                    error.current
+                ).model_dump(
                     by_alias=True,
                     exclude_none=True,
                     mode="json",
@@ -686,20 +714,7 @@ def create_app(
                 request_body.raw_yaml,
             )
         except ConfigurationDocumentConflict as error:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "code": "persisted_revision_conflict",
-                    "message": str(error),
-                    "current": ConfigurationDocumentV1.from_domain(
-                        error.current
-                    ).model_dump(
-                        by_alias=True,
-                        exclude_none=True,
-                        mode="json",
-                    ),
-                },
-            ) from error
+            raise _document_conflict(error) from error
         except ValueError as error:
             raise HTTPException(
                 status_code=422,
@@ -831,19 +846,7 @@ def create_app(
         except ConfigDraftConflict as error:
             raise _draft_conflict(error) from error
         except SavedConfigConflict as error:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "code": "saved_config_conflict",
-                    "message": str(error),
-                    "persistedRevision": error.persisted_revision,
-                    "current": draft_contract(error.current).model_dump(
-                        by_alias=True,
-                        exclude_none=True,
-                        mode="json",
-                    ),
-                },
-            ) from error
+            raise _saved_config_conflict(error) from error
         return draft_contract(draft)
 
     @app.post(
@@ -899,7 +902,7 @@ def create_app(
         tags=["configuration"],
     )
     async def review_config(
-        request_body: DraftRevisionRequestV1,
+        request_body: PersistedRevisionRequestV1,
     ) -> ConfigReviewV1:
         snapshot = None
         if coordinator is not None:
@@ -908,12 +911,12 @@ def create_app(
             except Exception:
                 snapshot = None
         try:
-            review = draft_service().review(
-                request_body.expected_draft_revision,
+            review = submission_service().review(
+                request_body.expected_persisted_revision,
                 snapshot,
             )
-        except ConfigDraftConflict as error:
-            raise _draft_conflict(error) from error
+        except ConfigurationDocumentConflict as error:
+            raise _document_conflict(error) from error
         return ConfigReviewV1.from_domain(review)
 
     @app.post(
@@ -924,7 +927,7 @@ def create_app(
         tags=["configuration", "operations"],
     )
     async def submit_config(
-        request_body: DraftRevisionRequestV1,
+        request_body: PersistedRevisionRequestV1,
     ) -> OperationV1:
         baseline_revision = ""
         snapshot = None
@@ -935,8 +938,8 @@ def create_app(
             except Exception:
                 snapshot = None
         try:
-            review = ConfigReviewV1.from_domain(draft_service().review(
-                request_body.expected_draft_revision,
+            review = ConfigReviewV1.from_domain(submission_service().review(
+                request_body.expected_persisted_revision,
                 snapshot,
             ))
             if not review.valid:
@@ -944,18 +947,19 @@ def create_app(
                     "Configuration cannot be submitted until validation "
                     "errors are resolved."
                 )
-            draft_service().prepare_submit(
-                request_body.expected_draft_revision
+            submission_service().prepare(
+                request_body.expected_persisted_revision
             )
-        except ConfigDraftConflict as error:
-            raise _draft_conflict(error) from error
-        except SavedConfigConflict as error:
-            raise _saved_config_conflict(error) from error
+        except ConfigurationDocumentConflict as error:
+            raise _document_conflict(error) from error
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
 
         def submit_worker() -> OperationWorkResult:
-            result = draft_service().submit_saved(workflow_name)
+            prepared = submission_service().prepare(
+                request_body.expected_persisted_revision
+            )
+            result = submission_service().submit(prepared, workflow_name)
             submitted_name = str(
                 (result or {}).get("workflow_name") or workflow_name
             )
@@ -991,15 +995,15 @@ def create_app(
         tags=["configuration"],
     )
     def preflight_config(
-        request_body: DraftRevisionRequestV1,
+        request_body: PersistedRevisionRequestV1,
     ) -> AdmissionPreflightV1:
         try:
-            report = draft_service().preflight(
-                request_body.expected_draft_revision,
+            report = submission_service().preflight(
+                request_body.expected_persisted_revision,
                 workflow_name,
             )
-        except ConfigDraftConflict as error:
-            raise _draft_conflict(error) from error
+        except ConfigurationDocumentConflict as error:
+            raise _document_conflict(error) from error
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
         except RuntimeError as error:
@@ -1217,33 +1221,40 @@ def create_app(
             raise _action_error(409, "reset_plan_stale", error) from error
 
         resubmit = request_body.resubmit or bool(request_body.approvals)
-        if resubmit and config_drafts is None:
+        if resubmit and config_submission is None:
             raise HTTPException(
                 status_code=503,
                 detail="Configuration submission is not configured",
             )
-        if request_body.expected_draft_revision:
+        if request_body.expected_persisted_revision:
             if not resubmit:
                 raise HTTPException(
                     status_code=400,
                     detail=(
-                        "A draft revision is only valid for reset and "
+                        "A saved configuration revision is only valid for "
+                        "reset and "
                         "resubmit."
                     ),
                 )
             try:
-                draft_service().prepare_submit(
-                    request_body.expected_draft_revision
+                submission_service().prepare(
+                    request_body.expected_persisted_revision
                 )
-            except ConfigDraftConflict as error:
-                raise _draft_conflict(error) from error
-            except SavedConfigConflict as error:
-                raise _saved_config_conflict(error) from error
+            except ConfigurationDocumentConflict as error:
+                raise _document_conflict(error) from error
             except ValueError as error:
                 raise HTTPException(
                     status_code=400,
                     detail=str(error),
                 ) from error
+        elif resubmit:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Reset and resubmit requires the saved configuration "
+                    "revision that was reviewed."
+                ),
+            )
 
         baseline_revision = ""
         if coordinator is not None and resubmit:
@@ -1255,6 +1266,11 @@ def create_app(
                 pass
 
         def reset_worker() -> OperationWorkResult:
+            prepared = None
+            if resubmit:
+                prepared = submission_service().prepare(
+                    request_body.expected_persisted_revision
+                )
             result = reset_service().execute(request_body.plan_token)
             operation_result = {
                 "planToken": result.plan.token,
@@ -1262,7 +1278,11 @@ def create_app(
             }
             submission = None
             if resubmit:
-                submission = draft_service().submit_saved(workflow_name)
+                assert prepared is not None
+                submission = submission_service().submit(
+                    prepared,
+                    workflow_name,
+                )
                 submitted_name = str(
                     (submission or {}).get("workflow_name")
                     or workflow_name
