@@ -48,6 +48,8 @@ from .contracts import (
     ApprovalGateInventoryV1,
     ApprovalReviewV1,
     ConfigDraftV1,
+    ConfigEnvironmentDiagnosticsRequestV1,
+    ConfigEnvironmentDiagnosticsV1,
     ConfigurationDocumentV1,
     ConfigRemovalImpactRequestV1,
     ConfigRemovalImpactV1,
@@ -92,6 +94,7 @@ def create_app(
     coordinator: Optional[ObservationCoordinator] = None,
     config_drafts: Optional[Any] = None,
     config_documents: Optional[Any] = None,
+    config_diagnostics: Optional[Any] = None,
     outputs: Optional[Any] = None,
     operations: Optional[Any] = None,
     approvals: Optional[Any] = None,
@@ -217,6 +220,14 @@ def create_app(
                 detail="Configuration documents are not configured",
             )
         return config_documents
+
+    def diagnostics_service():
+        if config_diagnostics is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Configuration diagnostics are not configured",
+            )
+        return config_diagnostics
 
     def draft_navigation(draft: Any) -> Optional[Any]:
         observation = (
@@ -713,6 +724,37 @@ def create_app(
                 document.persisted_revision
             )
         return ConfigurationDocumentV1.from_domain(document)
+
+    @app.post(
+        "/api/v1/config/diagnostics",
+        response_model=ConfigEnvironmentDiagnosticsV1,
+        response_model_exclude_none=True,
+        tags=["configuration"],
+    )
+    async def diagnose_config_environment(
+        request_body: ConfigEnvironmentDiagnosticsRequestV1,
+    ) -> ConfigEnvironmentDiagnosticsV1:
+        try:
+            result = await asyncio.to_thread(
+                diagnostics_service().diagnose_external_resources,
+                request_body.raw_yaml,
+            )
+        except HTTPException:
+            raise
+        except Exception as error:
+            logger.exception("Failed to diagnose configuration environment references")
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "configuration_diagnostics_unavailable",
+                    "message": str(error) or type(error).__name__,
+                },
+            ) from error
+        return ConfigEnvironmentDiagnosticsV1(
+            draft_fingerprint=request_body.draft_fingerprint,
+            status=result["status"],
+            diagnostics=result.get("diagnostics") or [],
+        )
 
     @app.get(
         "/api/v1/config",

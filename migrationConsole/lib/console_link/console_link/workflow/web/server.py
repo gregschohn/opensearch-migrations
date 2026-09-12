@@ -145,6 +145,7 @@ def run_server(
                 validate=config_service.validate_raw_config_for_save,
                 on_saved=config_drafts.invalidate_saved_config,
             ),
+            config_diagnostics=config_service,
             outputs=OutputService(
                 namespace=namespace,
                 custom_api=k8s.custom_api,

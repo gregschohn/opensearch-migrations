@@ -1338,6 +1338,51 @@ class _Documents:
         return self.current
 
 
+class _ConfigDiagnostics:
+    def __init__(self):
+        self.raw_yaml = None
+
+    def diagnose_external_resources(self, raw_yaml):
+        self.raw_yaml = raw_yaml
+        return {
+            "status": "error",
+            "diagnostics": [{
+                "severity": "error",
+                "message": "Secret 'missing' was not found.",
+                "path": ["sourceClusters", "source", "authConfig", "basic", "secretName"],
+            }],
+        }
+
+
+def test_config_diagnostics_echo_the_browser_fingerprint(tmp_path):
+    diagnostics = _ConfigDiagnostics()
+    app = create_app(
+        static_dir=_static_bundle(tmp_path),
+        config_diagnostics=diagnostics,
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/config/diagnostics",
+            json={
+                "rawYaml": "sourceClusters: {}\n",
+                "draftFingerprint": "browser:12:7",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "draftFingerprint": "browser:12:7",
+        "status": "error",
+        "diagnostics": [{
+            "severity": "error",
+            "message": "Secret 'missing' was not found.",
+            "path": ["sourceClusters", "source", "authConfig", "basic", "secretName"],
+        }],
+    }
+    assert diagnostics.raw_yaml == "sourceClusters: {}\n"
+
+
 def test_config_document_load_and_save_are_revisioned_and_invalidate_state(
     tmp_path,
 ):
