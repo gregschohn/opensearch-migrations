@@ -1,302 +1,593 @@
 package org.opensearch.migrations.trafficcapture.kafkaoffloader;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.apache.kafka.common.utils.Utils;
 
 /**
- * Single synchronization owner for Kafka assignment, immutable connection routing, liveness snapshots, and
- * partition self-release.
+ * Owns assignment-scoped writer identities, immutable connection routes, and the exact
+ * connection registry for every writer and partition.
  */
 public final class CaptureRoutingState {
-    private enum ReleaseStatus {
-        NONE,
-        PENDING,
-        SUBMITTED,
-        COMPLETE
+    enum WriterStatus {
+        INITIALIZING,
+        CURRENT,
+        DRAINING,
+        RETIRING,
+        RETIRED
     }
 
-    static final class SelfRelease {
+    static final class ConnectionRoute {
+        private final String writerNodeId;
+        private final String connectionId;
         private final int partition;
-        private final long assignmentRevision;
+        private final AtomicLong manifestCycle;
+        private boolean trafficSubmissionAccepted;
+        private boolean terminalSubmissionAccepted;
 
-        SelfRelease(int partition, long assignmentRevision) {
+        private ConnectionRoute(
+            String writerNodeId,
+            String connectionId,
+            int partition,
+            AtomicLong manifestCycle
+        ) {
+            this.writerNodeId = writerNodeId;
+            this.connectionId = connectionId;
             this.partition = partition;
-            this.assignmentRevision = assignmentRevision;
+            this.manifestCycle = manifestCycle;
+        }
+
+        String writerNodeId() {
+            return writerNodeId;
+        }
+
+        String connectionId() {
+            return connectionId;
         }
 
         int partition() {
             return partition;
         }
 
-        long assignmentRevision() {
-            return assignmentRevision;
-        }
-
-        @Override
-        public boolean equals(Object other) {
-            if (this == other) {
-                return true;
-            }
-            return other instanceof SelfRelease release
-                && partition == release.partition
-                && assignmentRevision == release.assignmentRevision;
-        }
-
-        @Override
-        public int hashCode() {
-            return Objects.hash(partition, assignmentRevision);
+        long manifestCycle() {
+            return manifestCycle.get();
         }
 
         @Override
         public String toString() {
-            return "SelfRelease[partition=" + partition + ", assignmentRevision=" + assignmentRevision + "]";
+            return "ConnectionRoute[writerNodeId="
+                + writerNodeId
+                + ", connectionId="
+                + connectionId
+                + ", partition="
+                + partition
+                + "]";
         }
     }
 
-    private static final class PartitionState {
-        private boolean assigned;
-        private long assignmentRevision;
-        private ReleaseStatus releaseStatus = ReleaseStatus.NONE;
+    static final class PendingAssignment {
+        private final long assignmentSequence;
+        private final String writerNodeId;
+        private final List<Integer> partitions;
 
-        private void transitionTo(boolean nextAssigned) {
-            if (assigned == nextAssigned) {
-                return;
-            }
-            assigned = nextAssigned;
-            assignmentRevision++;
-            releaseStatus = ReleaseStatus.NONE;
+        private PendingAssignment(
+            long assignmentSequence,
+            String writerNodeId,
+            List<Integer> partitions
+        ) {
+            this.assignmentSequence = assignmentSequence;
+            this.writerNodeId = writerNodeId;
+            this.partitions = partitions;
+        }
+
+        long assignmentSequence() {
+            return assignmentSequence;
+        }
+
+        String writerNodeId() {
+            return writerNodeId;
+        }
+
+        List<Integer> partitions() {
+            return partitions;
         }
     }
 
+    static final class PreparedManifest {
+        private final String writerNodeId;
+        private final int partition;
+        private final long manifestCycle;
+        private final List<String> connectionIds;
+
+        private PreparedManifest(
+            String writerNodeId,
+            int partition,
+            long manifestCycle,
+            List<String> connectionIds
+        ) {
+            this.writerNodeId = writerNodeId;
+            this.partition = partition;
+            this.manifestCycle = manifestCycle;
+            this.connectionIds = connectionIds;
+        }
+
+        String writerNodeId() {
+            return writerNodeId;
+        }
+
+        int partition() {
+            return partition;
+        }
+
+        long manifestCycle() {
+            return manifestCycle;
+        }
+
+        List<String> connectionIds() {
+            return connectionIds;
+        }
+    }
+
+    private record WriterPartitionKey(String writerNodeId, int partition) {}
+
+    private record ConnectionKey(String writerNodeId, String connectionId) {}
+
+    private static final class WriterPartitionState {
+        private final String writerNodeId;
+        private final int partition;
+        private final AtomicLong manifestCycle = new AtomicLong();
+        private final Set<String> connectionIds = new HashSet<>();
+        private WriterStatus status = WriterStatus.INITIALIZING;
+        private Long lastAcceptedManifestLogAppendTime;
+
+        private WriterPartitionState(String writerNodeId, int partition) {
+            this.writerNodeId = writerNodeId;
+            this.partition = partition;
+        }
+    }
+
+    private record CurrentAssignment(String writerNodeId, List<Integer> partitions) {}
+
+    private static final Comparator<WriterPartitionState> WRITER_PARTITION_ORDER =
+        Comparator.comparing((WriterPartitionState state) -> state.writerNodeId)
+            .thenComparingInt(state -> state.partition);
+
+    private final String captureActivationId;
     private final int topicPartitionCount;
-    private final int maximumAssignedPartitions;
-    private final Map<String, Integer> connectionPartitions = new HashMap<>();
-    private final Map<Integer, Integer> connectionCounts = new HashMap<>();
-    private final List<PartitionState> partitions;
-    private List<Integer> assignedPartitions;
+    private final Map<WriterPartitionKey, WriterPartitionState> writerPartitions = new HashMap<>();
+    private final Map<ConnectionKey, ConnectionRoute> connectionRoutes = new HashMap<>();
+    private CompletableFuture<Void> noConnections = CompletableFuture.completedFuture(null);
+    private CurrentAssignment currentAssignment;
+    private long assignmentSequence;
     private boolean shuttingDown;
 
-    public CaptureRoutingState(int topicPartitionCount, Collection<Integer> assignedPartitions) {
-        this(topicPartitionCount, topicPartitionCount, assignedPartitions);
-    }
-
-    public CaptureRoutingState(
-        int topicPartitionCount,
-        int maximumAssignedPartitions,
-        Collection<Integer> assignedPartitions
-    ) {
+    public CaptureRoutingState(String captureActivationId, int topicPartitionCount) {
+        this.captureActivationId = requireNonBlank(captureActivationId, "captureActivationId");
         if (topicPartitionCount <= 0) {
             throw new IllegalArgumentException("topicPartitionCount must be positive");
         }
-        if (maximumAssignedPartitions <= 0 || maximumAssignedPartitions > topicPartitionCount) {
-            throw new IllegalArgumentException(
-                "maximumAssignedPartitions must be between 1 and " + topicPartitionCount
-            );
-        }
         this.topicPartitionCount = topicPartitionCount;
-        this.maximumAssignedPartitions = maximumAssignedPartitions;
-        partitions = new ArrayList<>(topicPartitionCount);
-        for (int partition = 0; partition < topicPartitionCount; ++partition) {
-            partitions.add(new PartitionState());
-        }
-        var initial = validateAndCapAssignment(assignedPartitions);
-        initial.forEach(partition -> partitions.get(partition).assigned = true);
-        this.assignedPartitions = initial;
     }
 
-    public synchronized int admitConnection(String connectionId) {
-        Objects.requireNonNull(connectionId);
+    synchronized PendingAssignment prepareAssignment(Collection<Integer> partitions) {
         if (shuttingDown) {
             throw new IllegalStateException("Kafka capture routing is shutting down");
         }
-        if (assignedPartitions.isEmpty()) {
-            throw new IllegalStateException("No Kafka partitions are assigned for new capture connections");
+        var validatedPartitions = validateAssignment(partitions);
+        if (validatedPartitions.isEmpty()) {
+            throw new IllegalArgumentException("A usable Kafka assignment must contain at least one partition");
         }
-        int partition = assignedPartitions.get(positiveHash(connectionId) % assignedPartitions.size());
-        register(connectionId, partition);
-        return partition;
-    }
-
-    synchronized void register(String connectionId, int partition) {
-        Objects.requireNonNull(connectionId);
-        validatePartition(partition);
-        if (shuttingDown) {
-            throw new IllegalStateException("Kafka capture routing is shutting down");
-        }
-        var previous = connectionPartitions.putIfAbsent(connectionId, partition);
-        if (previous != null) {
-            throw new IllegalStateException(
-                "Connection " + connectionId + " is already registered for partition " + previous
+        assignmentSequence = Math.incrementExact(assignmentSequence);
+        var writerNodeId = captureActivationId + ":" + assignmentSequence;
+        for (var partition : validatedPartitions) {
+            var key = new WriterPartitionKey(writerNodeId, partition);
+            var previous = writerPartitions.putIfAbsent(
+                key,
+                new WriterPartitionState(writerNodeId, partition)
             );
+            if (previous != null) {
+                throw new CorruptedCaptureStateException("Writer partition was already prepared: " + key);
+            }
         }
-        connectionCounts.merge(partition, 1, Integer::sum);
+        return new PendingAssignment(assignmentSequence, writerNodeId, validatedPartitions);
     }
 
-    synchronized Optional<SelfRelease> remove(String connectionId, int expectedPartition) {
-        if (!connectionPartitions.remove(connectionId, expectedPartition)) {
-            throw new IllegalStateException(
+    synchronized void activateAssignment(PendingAssignment assignment) {
+        Objects.requireNonNull(assignment);
+        if (shuttingDown) {
+            throw new IllegalStateException("Kafka capture routing is shutting down");
+        }
+        for (var partition : assignment.partitions()) {
+            var state = requireWriterPartition(assignment.writerNodeId(), partition);
+            if (state.status != WriterStatus.INITIALIZING) {
+                throw new CorruptedCaptureStateException(
+                    "Writer partition is not initializing: "
+                        + assignment.writerNodeId()
+                        + "/"
+                        + partition
+                );
+            }
+        }
+        if (currentAssignment != null) {
+            for (var partition : currentAssignment.partitions()) {
+                requireWriterPartition(currentAssignment.writerNodeId(), partition).status =
+                    WriterStatus.DRAINING;
+            }
+        }
+        for (var partition : assignment.partitions()) {
+            requireWriterPartition(assignment.writerNodeId(), partition).status = WriterStatus.CURRENT;
+        }
+        currentAssignment = new CurrentAssignment(assignment.writerNodeId(), assignment.partitions());
+    }
+
+    public synchronized ConnectionRoute routeNewConnection(String connectionId) {
+        Objects.requireNonNull(connectionId);
+        if (shuttingDown) {
+            throw new IllegalStateException("Kafka capture routing is shutting down");
+        }
+        if (currentAssignment == null) {
+            throw new IllegalStateException("Kafka capture has no usable assignment for new connections");
+        }
+        int partition = currentAssignment.partitions().get(
+            positiveHash(connectionId) % currentAssignment.partitions().size()
+        );
+        var state = requireWriterPartition(currentAssignment.writerNodeId(), partition);
+        var key = new ConnectionKey(currentAssignment.writerNodeId(), connectionId);
+        if (connectionRoutes.containsKey(key)) {
+            throw new CorruptedCaptureStateException(
                 "Connection "
                     + connectionId
-                    + " was not registered for expected partition "
-                    + expectedPartition
+                    + " is already registered for writer "
+                    + currentAssignment.writerNodeId()
             );
         }
-        connectionCounts.compute(expectedPartition, (ignored, count) -> {
-            if (count == null || count <= 0) {
-                throw new IllegalStateException("Connection count is missing for partition " + expectedPartition);
+        if (!state.connectionIds.add(connectionId)) {
+            throw new CorruptedCaptureStateException(
+                "Connection "
+                    + connectionId
+                    + " is already present for writer "
+                    + state.writerNodeId
+                    + " and partition "
+                + partition
+            );
+        }
+        if (connectionRoutes.isEmpty()) {
+            noConnections = new CompletableFuture<>();
+        }
+        var route = new ConnectionRoute(
+            state.writerNodeId,
+            connectionId,
+            partition,
+            state.manifestCycle
+        );
+        connectionRoutes.put(key, route);
+        return route;
+    }
+
+    synchronized void acceptTrafficSubmission(ConnectionRoute route, boolean terminal) {
+        Objects.requireNonNull(route);
+        var key = new ConnectionKey(route.writerNodeId(), route.connectionId());
+        if (connectionRoutes.get(key) != route) {
+            throw new CorruptedCaptureStateException("Connection route is not active: " + route);
+        }
+        if (route.terminalSubmissionAccepted) {
+            throw new CorruptedCaptureStateException(
+                "Traffic submission followed the terminal record for " + route
+            );
+        }
+        route.trafficSubmissionAccepted = true;
+        route.terminalSubmissionAccepted = terminal;
+    }
+
+    synchronized void removeAfterTerminalAcknowledgement(ConnectionRoute route) {
+        Objects.requireNonNull(route);
+        if (!route.terminalSubmissionAccepted) {
+            throw new CorruptedCaptureStateException(
+                "Connection route has no accepted terminal record: " + route
+            );
+        }
+        removeRegisteredRoute(route);
+    }
+
+    synchronized void abandonUnpublishedConnection(ConnectionRoute route) {
+        Objects.requireNonNull(route);
+        if (route.trafficSubmissionAccepted) {
+            throw new CorruptedCaptureStateException(
+                "Cannot abandon a connection after accepting traffic publication: " + route
+            );
+        }
+        removeRegisteredRoute(route);
+    }
+
+    private void removeRegisteredRoute(ConnectionRoute route) {
+        var key = new ConnectionKey(route.writerNodeId(), route.connectionId());
+        if (connectionRoutes.remove(key, route)) {
+            var state = requireWriterPartition(route.writerNodeId(), route.partition());
+            if (!state.connectionIds.remove(route.connectionId())) {
+                throw new CorruptedCaptureStateException("Connection registry is inconsistent for " + route);
             }
-            return count == 1 ? null : count - 1;
-        });
-        return selfReleaseIfDrained(expectedPartition);
-    }
-
-    public synchronized int partitionFor(String connectionId) {
-        var partition = connectionPartitions.get(connectionId);
-        if (partition == null) {
-            throw new IllegalStateException("Connection " + connectionId + " is not registered");
-        }
-        return partition;
-    }
-
-    public synchronized List<String> snapshot(int partition) {
-        validatePartition(partition);
-        var result = new ArrayList<String>();
-        connectionPartitions.forEach((connectionId, registeredPartition) -> {
-            if (registeredPartition == partition) {
-                result.add(connectionId);
+            if (connectionRoutes.isEmpty()) {
+                noConnections.complete(null);
             }
-        });
-        result.sort(String::compareTo);
-        return List.copyOf(result);
-    }
-
-    public synchronized Set<Integer> partitionsWithConnections() {
-        return Set.copyOf(connectionCounts.keySet());
-    }
-
-    public synchronized List<Integer> partitionsForSnapshot() {
-        var result = new TreeSet<>(assignedPartitions);
-        result.addAll(connectionCounts.keySet());
-        return List.copyOf(result);
-    }
-
-    public synchronized int size() {
-        return connectionPartitions.size();
-    }
-
-    public synchronized List<SelfRelease> replaceAssignedPartitions(Collection<Integer> replacement) {
-        if (shuttingDown) {
-            return List.of();
+            return;
         }
-        return applyAssignment(validateAndCapAssignment(replacement));
+        throw new CorruptedCaptureStateException("Connection route was not registered: " + route);
     }
 
-    public synchronized List<SelfRelease> revokePartitions(Collection<Integer> revokedPartitions) {
-        Objects.requireNonNull(revokedPartitions);
-        if (shuttingDown) {
-            return List.of();
+    synchronized List<PreparedManifest> prepareInitialManifests(PendingAssignment assignment) {
+        Objects.requireNonNull(assignment);
+        var manifests = new ArrayList<PreparedManifest>(assignment.partitions().size());
+        for (var partition : assignment.partitions()) {
+            var state = requireWriterPartition(assignment.writerNodeId(), partition);
+            if (state.status != WriterStatus.INITIALIZING) {
+                throw new CorruptedCaptureStateException(
+                    "Initial manifest requested for a writer partition that is not initializing"
+                );
+            }
+            manifests.add(prepareManifest(state));
         }
-        var revoked = Set.copyOf(revokedPartitions);
-        revoked.forEach(this::validatePartition);
-        var replacement = assignedPartitions.stream()
-            .filter(partition -> !revoked.contains(partition))
+        return List.copyOf(manifests);
+    }
+
+    synchronized List<PreparedManifest> preparePeriodicManifests() {
+        var states = writerPartitions.values()
+            .stream()
+            .filter(state ->
+                state.status == WriterStatus.CURRENT || state.status == WriterStatus.DRAINING
+            )
+            .sorted(WRITER_PARTITION_ORDER)
             .toList();
-        return applyAssignment(replacement);
+        var manifests = new ArrayList<PreparedManifest>(states.size());
+        states.forEach(state -> manifests.add(prepareManifest(state)));
+        return List.copyOf(manifests);
     }
 
-    /**
-     * Linearizes a self-release submission against reassignment and new connection admission.
-     */
-    synchronized boolean submitSelfReleaseIfCurrent(SelfRelease release, Runnable submission) {
-        Objects.requireNonNull(release);
-        Objects.requireNonNull(submission);
-        validatePartition(release.partition());
-        var state = partitions.get(release.partition());
-        if (shuttingDown
-            || state.assignmentRevision != release.assignmentRevision()
-            || state.assigned
-            || state.releaseStatus != ReleaseStatus.PENDING
-            || hasConnections(release.partition())) {
-            return false;
+    synchronized List<PreparedManifest> prepareDrainedWriterRetirements() {
+        var states = writerPartitions.values()
+            .stream()
+            .filter(state ->
+                state.status == WriterStatus.DRAINING && state.connectionIds.isEmpty()
+            )
+            .sorted(WRITER_PARTITION_ORDER)
+            .toList();
+        var manifests = new ArrayList<PreparedManifest>(states.size());
+        for (var state : states) {
+            state.status = WriterStatus.RETIRING;
+            manifests.add(prepareManifest(state));
         }
-        state.releaseStatus = ReleaseStatus.SUBMITTED;
-        submission.run();
-        return true;
+        return List.copyOf(manifests);
     }
 
-    synchronized void completeSelfRelease(SelfRelease release) {
-        var state = partitions.get(release.partition());
-        if (state.assignmentRevision == release.assignmentRevision()
-            && state.releaseStatus == ReleaseStatus.SUBMITTED) {
-            state.releaseStatus = ReleaseStatus.COMPLETE;
+    synchronized void completeWriterRetirement(PreparedManifest finalManifest) {
+        Objects.requireNonNull(finalManifest);
+        var state = requireWriterPartition(
+            finalManifest.writerNodeId(),
+            finalManifest.partition()
+        );
+        if (state.status != WriterStatus.RETIRING) {
+            throw new CorruptedCaptureStateException(
+                "Writer partition is not retiring: "
+                    + finalManifest.writerNodeId()
+                    + "/"
+                    + finalManifest.partition()
+            );
         }
+        if (!state.connectionIds.isEmpty()) {
+            throw new CorruptedCaptureStateException(
+                "Writer partition still has connections: "
+                    + finalManifest.writerNodeId()
+                    + "/"
+                    + finalManifest.partition()
+            );
+        }
+        state.status = WriterStatus.RETIRED;
     }
 
-    synchronized List<Integer> beginGracefulShutdown() {
-        if (!connectionPartitions.isEmpty()) {
+    synchronized int size() {
+        return connectionRoutes.size();
+    }
+
+    synchronized List<Integer> assignedPartitions() {
+        return currentAssignment == null ? List.of() : currentAssignment.partitions();
+    }
+
+    synchronized String currentWriterNodeId() {
+        return currentAssignment == null ? null : currentAssignment.writerNodeId();
+    }
+
+    synchronized Set<String> writerNodeIds() {
+        return writerPartitions.keySet()
+            .stream()
+            .map(WriterPartitionKey::writerNodeId)
+            .collect(java.util.stream.Collectors.toUnmodifiableSet());
+    }
+
+    synchronized List<String> snapshot(String writerNodeId, int partition) {
+        return sortedConnections(requireWriterPartition(writerNodeId, partition));
+    }
+
+    synchronized WriterStatus writerStatus(String writerNodeId, int partition) {
+        return requireWriterPartition(writerNodeId, partition).status;
+    }
+
+    synchronized void acceptManifestLogAppendTime(
+        PreparedManifest manifest,
+        long manifestLogAppendTime,
+        Duration expirationInterval
+    ) {
+        Objects.requireNonNull(manifest);
+        Objects.requireNonNull(expirationInterval);
+        if (expirationInterval.isZero() || expirationInterval.isNegative()) {
+            throw new IllegalArgumentException("expirationInterval must be positive");
+        }
+        if (manifestLogAppendTime <= 0) {
             throw new IllegalStateException(
-                "Cannot gracefully release Kafka membership with "
-                    + connectionPartitions.size()
-                    + " capture connection(s) still open"
+                "Kafka did not assign a positive LogAppendTime to manifest "
+                    + manifest.writerNodeId()
+                    + "/"
+                    + manifest.partition()
+                    + "/"
+                    + manifest.manifestCycle()
+            );
+        }
+        var state = requireWriterPartition(manifest.writerNodeId(), manifest.partition());
+        var previous = state.lastAcceptedManifestLogAppendTime;
+        if (previous != null) {
+            var elapsed = Math.subtractExact(manifestLogAppendTime, previous);
+            if (elapsed >= expirationInterval.toMillis()) {
+                throw new IllegalStateException(
+                    "Manifest broker time exceeded the configured expiration interval for "
+                        + manifest.writerNodeId()
+                        + "/"
+                        + manifest.partition()
+                        + ": previous="
+                        + previous
+                        + ", candidate="
+                        + manifestLogAppendTime
+                        + ", expirationMillis="
+                        + expirationInterval.toMillis()
+                );
+            }
+        }
+        state.lastAcceptedManifestLogAppendTime = manifestLogAppendTime;
+    }
+
+    synchronized Long lastAcceptedManifestLogAppendTime(String writerNodeId, int partition) {
+        return requireWriterPartition(writerNodeId, partition).lastAcceptedManifestLogAppendTime;
+    }
+
+    synchronized void validateCriticalMutationTrafficAcknowledgement(
+        ConnectionRoute route,
+        long observationLogAppendTime,
+        Duration expirationInterval
+    ) {
+        Objects.requireNonNull(route);
+        Objects.requireNonNull(expirationInterval);
+        if (expirationInterval.isZero() || expirationInterval.isNegative()) {
+            throw new IllegalArgumentException("expirationInterval must be positive");
+        }
+        if (observationLogAppendTime <= 0) {
+            throw new IllegalStateException(
+                "Kafka did not assign a positive LogAppendTime to Critical Mutation Traffic for "
+                    + route.writerNodeId()
+                    + "/"
+                    + route.partition()
+                    + "/"
+                    + route.connectionId()
+            );
+        }
+        var state = requireWriterPartition(route.writerNodeId(), route.partition());
+        var baseline = state.lastAcceptedManifestLogAppendTime;
+        if (baseline == null) {
+            throw new CorruptedCaptureStateException(
+                "Critical Mutation Traffic was acknowledged before the writer partition established "
+                    + "its initial manifest broker-time baseline"
+            );
+        }
+        var elapsed = Math.subtractExact(observationLogAppendTime, baseline);
+        if (elapsed >= expirationInterval.toMillis()) {
+            throw new IllegalStateException(
+                "Critical Mutation Traffic acknowledgement exceeded the configured manifest expiration "
+                    + "interval for "
+                    + route.writerNodeId()
+                    + "/"
+                    + route.partition()
+                    + "/"
+                    + route.connectionId()
+                    + ": manifest="
+                    + baseline
+                    + ", observation="
+                    + observationLogAppendTime
+                    + ", expirationMillis="
+                    + expirationInterval.toMillis()
+            );
+        }
+    }
+
+    synchronized CompletableFuture<Void> whenNoConnections() {
+        return noConnections;
+    }
+
+    synchronized void beginOrderlyRetirement() {
+        if (!connectionRoutes.isEmpty()) {
+            throw new CorruptedCaptureStateException(
+                "Cannot retire proxy writers while captured connections remain"
             );
         }
         shuttingDown = true;
-        assignedPartitions = List.of();
-        return java.util.stream.IntStream.range(0, topicPartitionCount).boxed().toList();
+        if (currentAssignment != null) {
+            for (var partition : currentAssignment.partitions()) {
+                var state = requireWriterPartition(currentAssignment.writerNodeId(), partition);
+                if (state.status != WriterStatus.CURRENT) {
+                    throw new CorruptedCaptureStateException(
+                        "Current writer partition is not current: "
+                            + currentAssignment.writerNodeId()
+                            + "/"
+                            + partition
+                    );
+                }
+                state.status = WriterStatus.DRAINING;
+            }
+            currentAssignment = null;
+        }
     }
 
-    public synchronized List<Integer> assignedPartitions() {
-        return assignedPartitions;
+    synchronized boolean allWriterPartitionsRetired() {
+        return writerPartitions.values()
+            .stream()
+            .allMatch(state -> state.status == WriterStatus.RETIRED);
     }
 
-    public int topicPartitionCount() {
+    synchronized void beginShutdown() {
+        shuttingDown = true;
+        currentAssignment = null;
+    }
+
+    int topicPartitionCount() {
         return topicPartitionCount;
     }
 
-    private List<SelfRelease> applyAssignment(List<Integer> replacement) {
-        var next = new HashSet<>(replacement);
-        var releases = new ArrayList<SelfRelease>();
-        for (int partition = 0; partition < topicPartitionCount; ++partition) {
-            var state = partitions.get(partition);
-            boolean wasAssigned = state.assigned;
-            boolean willBeAssigned = next.contains(partition);
-            state.transitionTo(willBeAssigned);
-            if (wasAssigned && !willBeAssigned) {
-                selfReleaseIfDrained(partition).ifPresent(releases::add);
-            }
+    private PreparedManifest prepareManifest(WriterPartitionState state) {
+        var cycle = state.manifestCycle.getAndIncrement();
+        return new PreparedManifest(
+            state.writerNodeId,
+            state.partition,
+            cycle,
+            sortedConnections(state)
+        );
+    }
+
+    private List<String> sortedConnections(WriterPartitionState state) {
+        var connections = new ArrayList<>(state.connectionIds);
+        connections.sort(String::compareTo);
+        return List.copyOf(connections);
+    }
+
+    private WriterPartitionState requireWriterPartition(String writerNodeId, int partition) {
+        validatePartition(partition);
+        var state = writerPartitions.get(new WriterPartitionKey(writerNodeId, partition));
+        if (state == null) {
+            throw new CorruptedCaptureStateException(
+                "Unknown writer partition " + writerNodeId + "/" + partition
+            );
         }
-        assignedPartitions = replacement;
-        return List.copyOf(releases);
+        return state;
     }
 
-    private Optional<SelfRelease> selfReleaseIfDrained(int partition) {
-        var state = partitions.get(partition);
-        if (shuttingDown
-            || state.assigned
-            || state.releaseStatus != ReleaseStatus.NONE
-            || hasConnections(partition)) {
-            return Optional.empty();
-        }
-        state.releaseStatus = ReleaseStatus.PENDING;
-        return Optional.of(new SelfRelease(partition, state.assignmentRevision));
-    }
-
-    private boolean hasConnections(int partition) {
-        return connectionCounts.containsKey(partition);
-    }
-
-    private List<Integer> validateAndCapAssignment(Collection<Integer> assignment) {
+    private List<Integer> validateAssignment(Collection<Integer> assignment) {
         Objects.requireNonNull(assignment);
         var unique = new TreeSet<Integer>();
         for (var partition : assignment) {
@@ -305,13 +596,21 @@ public final class CaptureRoutingState {
                 throw new IllegalArgumentException("assignedPartitions must be unique");
             }
         }
-        return unique.stream().limit(maximumAssignedPartitions).toList();
+        return List.copyOf(unique);
     }
 
     private void validatePartition(int partition) {
         if (partition < 0 || partition >= topicPartitionCount) {
             throw new IllegalArgumentException("partition is outside the traffic topic");
         }
+    }
+
+    private static String requireNonBlank(String value, String name) {
+        Objects.requireNonNull(value);
+        if (value.isBlank()) {
+            throw new IllegalArgumentException(name + " must not be blank");
+        }
+        return value;
     }
 
     private static int positiveHash(String value) {

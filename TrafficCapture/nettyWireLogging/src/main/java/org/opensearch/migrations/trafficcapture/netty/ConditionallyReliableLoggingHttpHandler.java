@@ -17,7 +17,6 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 public class ConditionallyReliableLoggingHttpHandler<T> extends LoggingHttpHandler<T> {
     private final Predicate<HttpRequest> shouldBlockPredicate;
-    private final CaptureFailurePolicy captureFailurePolicy;
 
     public ConditionallyReliableLoggingHttpHandler(
         @NonNull IRootWireLoggingContext rootContext,
@@ -25,7 +24,8 @@ public class ConditionallyReliableLoggingHttpHandler<T> extends LoggingHttpHandl
         String connectionId,
         @NonNull IConnectionCaptureFactory<T> trafficOffloaderFactory,
         @NonNull RequestCapturePredicate requestCapturePredicate,
-        @NonNull Predicate<HttpRequest> headerPredicateForWhenToBlock
+        @NonNull Predicate<HttpRequest> headerPredicateForWhenToBlock,
+        @NonNull CaptureProcessState captureProcessState
     ) throws IOException {
         this(
             rootContext,
@@ -34,8 +34,9 @@ public class ConditionallyReliableLoggingHttpHandler<T> extends LoggingHttpHandl
             trafficOffloaderFactory,
             requestCapturePredicate,
             headerPredicateForWhenToBlock,
-            Duration.ZERO,
-            CaptureFailurePolicy.FAIL_OPEN
+            IncompleteRequestLimits.DEFAULT,
+            DEFAULT_MAXIMUM_CONNECTION_DURATION,
+            captureProcessState
         );
     }
 
@@ -46,7 +47,8 @@ public class ConditionallyReliableLoggingHttpHandler<T> extends LoggingHttpHandl
         @NonNull IConnectionCaptureFactory<T> trafficOffloaderFactory,
         @NonNull RequestCapturePredicate requestCapturePredicate,
         @NonNull Predicate<HttpRequest> headerPredicateForWhenToBlock,
-        @NonNull Duration maximumConnectionDuration
+        @NonNull Duration maximumRequestAssemblyDuration,
+        @NonNull CaptureProcessState captureProcessState
     ) throws IOException {
         this(
             rootContext,
@@ -55,8 +57,13 @@ public class ConditionallyReliableLoggingHttpHandler<T> extends LoggingHttpHandl
             trafficOffloaderFactory,
             requestCapturePredicate,
             headerPredicateForWhenToBlock,
-            maximumConnectionDuration,
-            CaptureFailurePolicy.FAIL_OPEN
+            new IncompleteRequestLimits(
+                maximumRequestAssemblyDuration,
+                IncompleteRequestLimits.DEFAULT_MAXIMUM_HEADER_BYTES,
+                IncompleteRequestLimits.DEFAULT_MAXIMUM_TOTAL_BYTES
+            ),
+            DEFAULT_MAXIMUM_CONNECTION_DURATION,
+            captureProcessState
         );
     }
 
@@ -67,8 +74,32 @@ public class ConditionallyReliableLoggingHttpHandler<T> extends LoggingHttpHandl
         @NonNull IConnectionCaptureFactory<T> trafficOffloaderFactory,
         @NonNull RequestCapturePredicate requestCapturePredicate,
         @NonNull Predicate<HttpRequest> headerPredicateForWhenToBlock,
+        @NonNull IncompleteRequestLimits incompleteRequestLimits,
+        @NonNull CaptureProcessState captureProcessState
+    ) throws IOException {
+        this(
+            rootContext,
+            nodeId,
+            connectionId,
+            trafficOffloaderFactory,
+            requestCapturePredicate,
+            headerPredicateForWhenToBlock,
+            incompleteRequestLimits,
+            DEFAULT_MAXIMUM_CONNECTION_DURATION,
+            captureProcessState
+        );
+    }
+
+    public ConditionallyReliableLoggingHttpHandler(
+        @NonNull IRootWireLoggingContext rootContext,
+        @NonNull String nodeId,
+        String connectionId,
+        @NonNull IConnectionCaptureFactory<T> trafficOffloaderFactory,
+        @NonNull RequestCapturePredicate requestCapturePredicate,
+        @NonNull Predicate<HttpRequest> headerPredicateForWhenToBlock,
+        @NonNull IncompleteRequestLimits incompleteRequestLimits,
         @NonNull Duration maximumConnectionDuration,
-        @NonNull CaptureFailurePolicy captureFailurePolicy
+        @NonNull CaptureProcessState captureProcessState
     ) throws IOException {
         super(
             rootContext,
@@ -76,10 +107,11 @@ public class ConditionallyReliableLoggingHttpHandler<T> extends LoggingHttpHandl
             connectionId,
             trafficOffloaderFactory,
             requestCapturePredicate,
-            maximumConnectionDuration
+            incompleteRequestLimits,
+            maximumConnectionDuration,
+            captureProcessState
         );
         this.shouldBlockPredicate = headerPredicateForWhenToBlock;
-        this.captureFailurePolicy = captureFailurePolicy;
     }
 
     @Override
@@ -95,7 +127,7 @@ public class ConditionallyReliableLoggingHttpHandler<T> extends LoggingHttpHandl
             trafficOffloader.flushCommitAndResetStream(false).whenComplete((result, failure) ->
                 runOnEventLoop(
                     ctx,
-                    () -> finishBlockedRequest(ctx, msg, shouldCapture, httpRequest, failure),
+                    () -> finishBlockedRequest(ctx, msg, shouldCapture, httpRequest, result, failure),
                     msg
                 )
             );
@@ -110,26 +142,42 @@ public class ConditionallyReliableLoggingHttpHandler<T> extends LoggingHttpHandl
         Object msg,
         boolean shouldCapture,
         HttpRequest httpRequest,
+        T acknowledgement,
         Throwable failure
     ) {
-        if (failure != null) {
-            messageContext.addCaughtException(failure);
-            if (captureFailurePolicy == CaptureFailurePolicy.FAIL_CLOSED) {
+        var captureFailure = failure;
+        if (captureFailure == null) {
+            try {
+                trafficOffloader.validateCriticalMutationTrafficAcknowledgement(acknowledgement);
+            } catch (Throwable validationFailure) {
+                captureFailure = validationFailure;
+            }
+        }
+        if (captureFailure != null) {
+            messageContext.addCaughtException(captureFailure);
+            var resultingState = captureFailure instanceof Error
+                ? captureProcessState.unstableProcessFailed(captureFailure)
+                : captureProcessState.requiredCaptureFailed(captureFailure);
+            if (resultingState == CaptureProcessState.State.TERMINATING) {
                 log.atError()
-                    .setCause(failure)
-                    .setMessage("Capture failed; refusing to forward the request")
+                    .setCause(captureFailure)
+                    .setMessage("Capture failed; refusing to forward the request before process termination")
                     .log();
                 ReferenceCountUtil.release(msg);
                 ctx.close();
                 return;
             }
-            log.atWarn()
-                .setCause(failure)
-                .setMessage("Capture failed; forwarding the request under fail-open policy")
+            log.atError()
+                .setCause(captureFailure)
+                .setMessage("Capture failed; forwarding in irreversible process-wide pass-through mode")
                 .log();
         }
         try {
             super.channelFinishedReadingAnHttpMessage(ctx, msg, shouldCapture, httpRequest);
+        } catch (Error e) {
+            captureProcessState.unstableProcessFailed(e);
+            ReferenceCountUtil.release(msg);
+            ctx.close();
         } catch (Exception e) {
             ReferenceCountUtil.release(msg);
             ctx.fireExceptionCaught(e);

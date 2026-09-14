@@ -8,8 +8,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.TreeSet;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.Consumer;
 
 import org.apache.kafka.clients.consumer.ConsumerGroupMetadata;
 import org.apache.kafka.clients.consumer.ConsumerPartitionAssignor;
@@ -23,11 +21,13 @@ import org.apache.kafka.common.Configurable;
 public final class CaptureCooperativeStickyAssignor extends CooperativeStickyAssignor implements Configurable {
     public static final String ASSIGNOR_NAME = "capture-cooperative-sticky";
     public static final String NODE_ID_CONFIG = "opensearch.migrations.capture.node.id";
+    public static final String ASSIGNMENT_TRACKER_CONFIG =
+        "opensearch.migrations.capture.assignment.tracker";
 
     private static final int SUBSCRIPTION_FOOTER_MAGIC = 0x43504e49;
-    private static final Map<String, Consumer<Set<String>>> MEMBERSHIP_OBSERVERS = new ConcurrentHashMap<>();
 
     private String nodeId;
+    private CaptureMembershipAssignmentTracker assignmentTracker;
 
     @Override
     public String name() {
@@ -41,6 +41,13 @@ public final class CaptureCooperativeStickyAssignor extends CooperativeStickyAss
             throw new IllegalArgumentException(NODE_ID_CONFIG + " must be a non-blank string");
         }
         nodeId = value;
+        var configuredTracker = configs.get(ASSIGNMENT_TRACKER_CONFIG);
+        if (!(configuredTracker instanceof CaptureMembershipAssignmentTracker tracker)) {
+            throw new IllegalArgumentException(
+                ASSIGNMENT_TRACKER_CONFIG + " must be a CaptureMembershipAssignmentTracker"
+            );
+        }
+        assignmentTracker = tracker;
     }
 
     @Override
@@ -92,20 +99,7 @@ public final class CaptureCooperativeStickyAssignor extends CooperativeStickyAss
         ConsumerGroupMetadata metadata
     ) {
         super.onAssignment(assignment, metadata);
-        var observer = MEMBERSHIP_OBSERVERS.get(configuredNodeId());
-        if (observer != null) {
-            observer.accept(decodeMembership(assignment.userData()));
-        }
-    }
-
-    static AutoCloseable registerMembershipObserver(String nodeId, Consumer<Set<String>> observer) {
-        Objects.requireNonNull(nodeId);
-        Objects.requireNonNull(observer);
-        var previous = MEMBERSHIP_OBSERVERS.putIfAbsent(nodeId, observer);
-        if (previous != null) {
-            throw new IllegalStateException("A membership observer is already registered for node " + nodeId);
-        }
-        return () -> MEMBERSHIP_OBSERVERS.remove(nodeId, observer);
+        configuredAssignmentTracker().replaceMembers(decodeMembership(assignment.userData()));
     }
 
     static String decodeNodeId(ByteBuffer subscriptionData) {
@@ -185,5 +179,12 @@ public final class CaptureCooperativeStickyAssignor extends CooperativeStickyAss
             throw new IllegalStateException("Capture membership assignor has not been configured");
         }
         return nodeId;
+    }
+
+    private CaptureMembershipAssignmentTracker configuredAssignmentTracker() {
+        if (assignmentTracker == null) {
+            throw new IllegalStateException("Capture membership assignor has no assignment tracker");
+        }
+        return assignmentTracker;
     }
 }

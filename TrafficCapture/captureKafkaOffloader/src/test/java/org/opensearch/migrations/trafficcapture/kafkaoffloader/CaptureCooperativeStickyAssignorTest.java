@@ -3,9 +3,7 @@ package org.opensearch.migrations.trafficcapture.kafkaoffloader;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.kafka.clients.consumer.ConsumerGroupMetadata;
 import org.apache.kafka.clients.consumer.ConsumerPartitionAssignor;
@@ -22,7 +20,7 @@ class CaptureCooperativeStickyAssignorTest {
     private static final String TOPIC = "traffic";
 
     @Test
-    void cooperativeAssignmentCarriesTheCompleteProxyMembershipToEveryMember() throws Exception {
+    void cooperativeAssignmentCarriesTheCompleteProxyMembershipToEveryMember() {
         var nodeA = assignor("node-a");
         var nodeB = assignor("node-b");
         var subscriptions = Map.of(
@@ -33,30 +31,19 @@ class CaptureCooperativeStickyAssignorTest {
         );
 
         var assignment = nodeA.assign(cluster(4), new ConsumerPartitionAssignor.GroupSubscription(subscriptions));
-        var seenByA = new AtomicReference<Set<String>>();
-        var seenByB = new AtomicReference<Set<String>>();
-        try (
-            var registrationA = CaptureCooperativeStickyAssignor.registerMembershipObserver(
-                "node-a",
-                seenByA::set
-            );
-            var registrationB = CaptureCooperativeStickyAssignor.registerMembershipObserver(
-                "node-b",
-                seenByB::set
-            )
-        ) {
-            nodeA.onAssignment(
-                assignment.groupAssignment().get("member-a"),
-                metadata("member-a")
-            );
-            nodeB.onAssignment(
-                assignment.groupAssignment().get("member-b"),
-                metadata("member-b")
-            );
-        }
 
-        assertEquals(Set.of("node-a", "node-b"), seenByA.get());
-        assertEquals(Set.of("node-a", "node-b"), seenByB.get());
+        assertEquals(
+            Set.of("node-a", "node-b"),
+            CaptureCooperativeStickyAssignor.decodeMembership(
+                assignment.groupAssignment().get("member-a").userData()
+            )
+        );
+        assertEquals(
+            Set.of("node-a", "node-b"),
+            CaptureCooperativeStickyAssignor.decodeMembership(
+                assignment.groupAssignment().get("member-b").userData()
+            )
+        );
         assertEquals(
             Set.of(
                 new TopicPartition(TOPIC, 0),
@@ -99,9 +86,37 @@ class CaptureCooperativeStickyAssignorTest {
         );
     }
 
+    @Test
+    void receivedAssignmentPublishesTheCompleteMembershipToTheLocalTracker() {
+        var tracker = new CaptureMembershipAssignmentTracker();
+        var assignor = assignor("node-a", tracker);
+
+        assignor.onAssignment(
+            new ConsumerPartitionAssignor.Assignment(
+                List.of(),
+                CaptureCooperativeStickyAssignor.encodeMembership(Set.of("node-a", "node-b"))
+            ),
+            new ConsumerGroupMetadata("capture-group")
+        );
+
+        assertEquals(Set.of("node-a", "node-b"), tracker.currentMembers());
+    }
+
     private static CaptureCooperativeStickyAssignor assignor(String nodeId) {
+        return assignor(nodeId, new CaptureMembershipAssignmentTracker());
+    }
+
+    private static CaptureCooperativeStickyAssignor assignor(
+        String nodeId,
+        CaptureMembershipAssignmentTracker tracker
+    ) {
         var assignor = new CaptureCooperativeStickyAssignor();
-        assignor.configure(Map.of(CaptureCooperativeStickyAssignor.NODE_ID_CONFIG, nodeId));
+        assignor.configure(Map.of(
+            CaptureCooperativeStickyAssignor.NODE_ID_CONFIG,
+            nodeId,
+            CaptureCooperativeStickyAssignor.ASSIGNMENT_TRACKER_CONFIG,
+            tracker
+        ));
         return assignor;
     }
 
@@ -113,10 +128,6 @@ class CaptureCooperativeStickyAssignorTest {
             assignor.subscriptionUserData(Set.of(TOPIC)),
             List.of()
         );
-    }
-
-    private static ConsumerGroupMetadata metadata(String memberId) {
-        return new ConsumerGroupMetadata("capture-proxy", 1, memberId, Optional.empty());
     }
 
     private static Cluster cluster(int partitionCount) {
