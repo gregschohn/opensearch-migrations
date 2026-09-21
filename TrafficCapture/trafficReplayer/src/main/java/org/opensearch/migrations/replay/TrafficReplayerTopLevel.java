@@ -28,7 +28,7 @@ import org.opensearch.migrations.replay.http.retries.BulkItemErrorClassifier;
 import org.opensearch.migrations.replay.http.retries.OpenSearchDefaultRetry;
 import org.opensearch.migrations.replay.http.retries.RetryCollectingVisitorFactory;
 import org.opensearch.migrations.replay.lifecycle.AsyncPermitPool;
-import org.opensearch.migrations.replay.lifecycle.RecordDispositionLedger;
+import org.opensearch.migrations.replay.lifecycle.RecordWorkTracker;
 import org.opensearch.migrations.replay.lifecycle.ReplayIntakeOwner;
 import org.opensearch.migrations.replay.lifecycle.ReplayProgressController;
 import org.opensearch.migrations.replay.lifecycle.ReplayReadGate;
@@ -344,7 +344,19 @@ public class TrafficReplayerTopLevel extends TrafficReplayerCore implements Auto
             progressController
         );
         this.currentReplayEngine.set(replayEngine);
-        var dispositionLedger = new RecordDispositionLedger(replayIntakeOwner::submitRequired);
+        var recordWorkTracker = new RecordWorkTracker(
+            replayIntakeOwner::submitRequired,
+            replayIntakeOwner::isOwnerThread,
+            recordId -> trafficSource.recordProcessingFinished(recordId)
+                .whenComplete((ignored, failure) -> {
+                    if (failure != null) {
+                        fatalHandler.onFatal(new Error(
+                            "Kafka source rejected required record-processing completion " + recordId,
+                            failure
+                        ));
+                    }
+                })
+        );
         var accumulationCallbacks = new TrafficReplayerAccumulationCallbacks(
             replayEngine,
             tupleWriter,
@@ -353,7 +365,7 @@ public class TrafficReplayerTopLevel extends TrafficReplayerCore implements Auto
             trafficSource,
             quiescentDuration,
             permitPool,
-            dispositionLedger
+            recordWorkTracker
         );
         trafficSource.setSourcePartitionLifecycleListener(
             SourcePartitionLifecycleListener.combine(
@@ -366,10 +378,16 @@ public class TrafficReplayerTopLevel extends TrafficReplayerCore implements Auto
                 observedPacketConnectionTimeout,
                 "(see command line option " + TrafficReplayer.PACKET_TIMEOUT_SECONDS_PARAMETER_NAME + ")",
                 accumulationCallbacks,
-                trafficSource.usesStructuralExpiration()
+                trafficSource.usesStructuralExpiration(),
+                recordWorkTracker,
+                trafficSource::recordIdFor
             );
         this.currentAccumulator.set(trafficToHttpTransactionAccumulator);
-        replayIntakeOwner.configureOwnedComponents(permitPool, progressController, dispositionLedger);
+        replayIntakeOwner.configureOwnedComponents(
+            permitPool,
+            progressController,
+            recordWorkTracker
+        );
         replayIntakeOwner.start();
         try {
             replayIntakeOwner.startReading(
@@ -389,7 +407,7 @@ public class TrafficReplayerTopLevel extends TrafficReplayerCore implements Auto
                 assert shutdownFutureRef.get() != null || requestWorkTracker.isEmpty()
                     : "expected to wait for all the in flight requests to fully flush and self destruct themselves";
             } finally {
-                finishIntakeLifecycle(replayIntakeOwner, dispositionLedger);
+                finishIntakeLifecycle(replayIntakeOwner);
             }
         }
     }
@@ -540,18 +558,10 @@ public class TrafficReplayerTopLevel extends TrafficReplayerCore implements Auto
         var replayQuiescenceFuture = replayEngine == null
             ? CompletableFuture.<Void>completedFuture(null)
             : replayEngine.whenQuiescent().toCompletableFuture();
-        var replayIntakeOwner = intakeOwner;
-        var ledger = replayIntakeOwner == null
-            ? null
-            : replayIntakeOwner.dispositionLedger();
-        var recordDispositionFuture = ledger == null
-            ? CompletableFuture.<Void>completedFuture(null)
-            : ledger.whenQuiescent().toCompletableFuture();
         var allWorkFuture = new TextTrackedFuture<>(
             combineReplayDrainGates(
                 requestWorkFuture.future,
-                replayQuiescenceFuture,
-                recordDispositionFuture
+                replayQuiescenceFuture
             ),
             () -> "TrafficReplayer.AllWorkFinished"
         );
@@ -576,13 +586,11 @@ public class TrafficReplayerTopLevel extends TrafficReplayerCore implements Auto
 
     static CompletableFuture<Void> combineReplayDrainGates(
         CompletionStage<Void> requestWork,
-        CompletionStage<Void> replayQuiescence,
-        CompletionStage<Void> recordDisposition
+        CompletionStage<Void> replayQuiescence
     ) {
         return CompletableFuture.allOf(
             requestWork.toCompletableFuture(),
-            replayQuiescence.toCompletableFuture(),
-            recordDisposition.toCompletableFuture()
+            replayQuiescence.toCompletableFuture()
         );
     }
 
@@ -752,30 +760,14 @@ public class TrafficReplayerTopLevel extends TrafficReplayerCore implements Auto
         ReplayEngine replayEngine,
         CancellationException cause
     ) {
-        var replayIntakeOwner = intakeOwner;
-        var dispositionLedger = replayIntakeOwner == null
-            ? null
-            : replayIntakeOwner.dispositionLedger();
         var completion = new CompletableFuture<Void>();
-        var stage = new AtomicReference<>(ShutdownStage.SEALING_RECORD_REGISTRATIONS);
+        var stage = new AtomicReference<>(ShutdownStage.TERMINATING_CONNECTION_ACTORS);
         Runnable beginShutdown = () -> {
             try {
-                var registrationFence = dispositionLedger == null
+                var actorShutdown = replayEngine == null
                     ? CompletableFuture.<Void>completedFuture(null)
-                    : dispositionLedger.sealRegistrations();
-                registrationFence
-                    .thenCompose(ignored -> {
-                        stage.set(ShutdownStage.TERMINATING_CONNECTION_ACTORS);
-                        return replayEngine == null
-                            ? CompletableFuture.<Void>completedFuture(null)
-                            : replayEngine.shutdownConnections(cause);
-                    })
-                    .thenCompose(ignored -> {
-                        stage.set(ShutdownStage.SETTLING_RECORD_DISPOSITIONS);
-                        return dispositionLedger == null
-                            ? CompletableFuture.<Void>completedFuture(null)
-                            : dispositionLedger.whenQuiescent();
-                    })
+                    : replayEngine.shutdownConnections(cause);
+                actorShutdown
                     .whenComplete((ignored, failure) -> {
                         stage.set(ShutdownStage.DONE);
                         if (failure == null) {
@@ -789,15 +781,13 @@ public class TrafficReplayerTopLevel extends TrafficReplayerCore implements Auto
                 completion.completeExceptionally(t);
             }
         };
-        reportShutdownProgressUntilComplete(stage, completion, replayEngine, dispositionLedger);
+        reportShutdownProgressUntilComplete(stage, completion, replayEngine);
         beginShutdown.run();
         return completion;
     }
 
     private enum ShutdownStage {
-        SEALING_RECORD_REGISTRATIONS,
         TERMINATING_CONNECTION_ACTORS,
-        SETTLING_RECORD_DISPOSITIONS,
         DONE
     }
 
@@ -808,8 +798,7 @@ public class TrafficReplayerTopLevel extends TrafficReplayerCore implements Auto
     private void reportShutdownProgressUntilComplete(
         AtomicReference<ShutdownStage> stage,
         CompletableFuture<Void> completion,
-        ReplayEngine replayEngine,
-        RecordDispositionLedger dispositionLedger
+        ReplayEngine replayEngine
     ) {
         if (completion.isDone()) {
             return;
@@ -826,24 +815,13 @@ public class TrafficReplayerTopLevel extends TrafficReplayerCore implements Auto
                 .addArgument(stage::get)
                 .addArgument(unterminatedSessions)
                 .log();
-            if (dispositionLedger != null) {
-                dispositionLedger.unresolvedObligations().whenComplete((obligations, failure) ->
-                    log.atWarn()
-                        .setCause(failure)
-                        .setMessage("Record obligations that shutdown is still waiting on: {}")
-                        .addArgument(obligations)
-                        .log()
-                );
-            }
-            reportShutdownProgressUntilComplete(stage, completion, replayEngine, dispositionLedger);
+            reportShutdownProgressUntilComplete(stage, completion, replayEngine);
         }, CompletableFuture.delayedExecutor(SHUTDOWN_PROGRESS_REPORT_INTERVAL.toSeconds(), TimeUnit.SECONDS));
     }
 
     void finishIntakeLifecycle(
-        ReplayIntakeOwner replayIntakeOwner,
-        RecordDispositionLedger dispositionLedger
+        ReplayIntakeOwner replayIntakeOwner
     ) throws ExecutionException, InterruptedException {
-        dispositionLedger.sealRegistrations().toCompletableFuture().get();
         var shutdown = shutdownFutureRef.get();
         if (shutdown != null && !shutdown.isDone()) {
             shutdown.get();
