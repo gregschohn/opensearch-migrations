@@ -136,7 +136,6 @@ public class KafkaConfig {
 
     public static Properties buildMembershipConsumerProperties(
         KafkaParameters params,
-        String nodeId,
         String topic
     ) throws IOException {
         var kafkaProps = loadKafkaProperties(params.kafkaPropertyFile);
@@ -160,11 +159,6 @@ public class KafkaConfig {
         kafkaProps.put(ConsumerConfig.GROUP_ID_CONFIG, "capture-proxy-membership-" + topic);
         kafkaProps.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
         kafkaProps.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "latest");
-        kafkaProps.put(
-            ConsumerConfig.PARTITION_ASSIGNMENT_STRATEGY_CONFIG,
-            CaptureCooperativeStickyAssignor.class.getName()
-        );
-        kafkaProps.put(CaptureCooperativeStickyAssignor.NODE_ID_CONFIG, nodeId);
         applySaslAuthProperties(
             kafkaProps,
             params.getEffectiveKafkaAuthType(),

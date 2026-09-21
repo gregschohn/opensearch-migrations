@@ -1,9 +1,9 @@
 package org.opensearch.migrations.trafficcapture.kafkaoffloader;
 
-import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
-import java.util.ArrayList;
+import java.util.ArrayDeque;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
@@ -16,434 +16,574 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
-import org.opensearch.migrations.trafficcapture.protos.CaptureRecordTypes;
-import org.opensearch.migrations.trafficcapture.protos.ProxyLivenessSnapshotChunk;
-import org.opensearch.migrations.trafficcapture.protos.ProxyNoMoreWrites;
+import org.opensearch.migrations.trafficcapture.protos.CaptureRecord;
+import org.opensearch.migrations.trafficcapture.protos.TrafficStream;
+import org.opensearch.migrations.trafficcapture.protos.WriterPartitionHeartbeat;
 
-import com.google.protobuf.ByteString;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.producer.Producer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
-import org.apache.kafka.common.header.internals.RecordHeader;
-import org.apache.kafka.common.header.internals.RecordHeaders;
 
 /**
- * Owns the ordered Kafka submission lane for traffic and authoritative liveness declarations.
+ * Owns the single Kafka producer lane, assignment heartbeats, connection traffic submissions,
+ * acknowledgement callbacks, and local writer-partition retirement.
  */
 @Slf4j
-public class CaptureKafkaPublisher implements AutoCloseable {
-    public static final String RECORD_TYPE_HEADER = CaptureRecordTypes.RECORD_TYPE_HEADER;
-    public static final String TRAFFIC_RECORD_TYPE = CaptureRecordTypes.TRAFFIC_RECORD_TYPE;
-    public static final String LIVENESS_RECORD_TYPE = CaptureRecordTypes.LIVENESS_RECORD_TYPE;
-    public static final String NO_MORE_WRITES_RECORD_TYPE =
-        CaptureRecordTypes.NO_MORE_WRITES_RECORD_TYPE;
-
+public class CaptureKafkaPublisher implements CaptureAssignmentPublisher, AutoCloseable {
     static final Duration CLOSE_TIMEOUT = Duration.ofSeconds(30);
+
+    private enum PublisherLaneStatus {
+        OPEN,
+        RETIRING,
+        RETIRED
+    }
+
+    private enum AcknowledgementDeadlineStatus {
+        PENDING,
+        ACKNOWLEDGED,
+        EXPIRED,
+        CANCELLED
+    }
+
+    private static final class AcknowledgementDeadline {
+        private final AtomicReference<AcknowledgementDeadlineStatus> status =
+            new AtomicReference<>(AcknowledgementDeadlineStatus.PENDING);
+        private volatile ScheduledFuture<?> expirationTask;
+
+        private boolean acknowledge() {
+            if (!status.compareAndSet(
+                AcknowledgementDeadlineStatus.PENDING,
+                AcknowledgementDeadlineStatus.ACKNOWLEDGED
+            )) {
+                return false;
+            }
+            cancelExpirationTask();
+            return true;
+        }
+
+        private boolean expire() {
+            return status.compareAndSet(
+                AcknowledgementDeadlineStatus.PENDING,
+                AcknowledgementDeadlineStatus.EXPIRED
+            );
+        }
+
+        private void cancel() {
+            status.compareAndSet(
+                AcknowledgementDeadlineStatus.PENDING,
+                AcknowledgementDeadlineStatus.CANCELLED
+            );
+            cancelExpirationTask();
+        }
+
+        private void setExpirationTask(ScheduledFuture<?> expirationTask) {
+            this.expirationTask = expirationTask;
+            if (status.get() != AcknowledgementDeadlineStatus.PENDING) {
+                expirationTask.cancel(false);
+            }
+        }
+
+        private AcknowledgementDeadlineStatus status() {
+            return status.get();
+        }
+
+        private void cancelExpirationTask() {
+            var task = expirationTask;
+            if (task != null) {
+                task.cancel(false);
+            }
+        }
+    }
+
+    private static final class PublisherLane {
+        private final CaptureRoutingState.WriterPartition writerPartition;
+        private final CompletableFuture<Void> retirement = new CompletableFuture<>();
+        private PublisherLaneStatus status = PublisherLaneStatus.OPEN;
+        private ScheduledFuture<?> nextHeartbeat;
+        private AcknowledgementDeadline acknowledgementDeadline;
+        private boolean heartbeatInFlight;
+        private int acceptedSends;
+
+        private PublisherLane(CaptureRoutingState.WriterPartition writerPartition) {
+            this.writerPartition = writerPartition;
+        }
+    }
+
+    private record AssignmentInstallation(
+        List<Integer> partitions,
+        CompletableFuture<String> result
+    ) {}
 
     private final Producer<String, byte[]> producer;
     private final String topic;
     @Getter
-    private final String nodeId;
-    @Getter
-    private final PartitionRoutingPlan routingPlan;
-    @Getter
     private final CaptureRoutingState routingState;
     private final CaptureKafkaWriteGate writeGate;
+    private final Consumer<Throwable> unstableProcessFailureCallback;
     private final int payloadSizeLimit;
+    private final Duration heartbeatInterval;
+    private final Duration heartbeatExpirationInterval;
     private final Clock clock;
     private final ScheduledThreadPoolExecutor executor;
-    private final Map<Integer, Long> nextSnapshotSequence = new HashMap<>();
-    private final Map<Integer, Long> lastControlTimestamp = new HashMap<>();
+    private final ScheduledThreadPoolExecutor acknowledgementDeadlineExecutor;
+    private final AtomicReference<Thread> publisherThread = new AtomicReference<>();
+    private final Map<CaptureRoutingState.WriterPartition, PublisherLane> publisherLanes =
+        new HashMap<>();
+    private final ArrayDeque<AssignmentInstallation> assignmentInstallations = new ArrayDeque<>();
     private final AtomicReference<Throwable> failure = new AtomicReference<>();
     private final AtomicBoolean closed = new AtomicBoolean();
+    private final AtomicBoolean unstableProcessFailureReported = new AtomicBoolean();
     private final Object inFlightLock = new Object();
     private final Set<CompletableFuture<RecordMetadata>> inFlightSends =
         Collections.newSetFromMap(new IdentityHashMap<>());
-    private final ScheduledFuture<?> scheduledSnapshots;
+    private CompletableFuture<Void> orderlyRetirement;
+    private boolean assignmentInstallationInProgress;
 
     public CaptureKafkaPublisher(
         Producer<String, byte[]> producer,
         String topic,
-        String nodeId,
-        PartitionRoutingPlan routingPlan,
         CaptureRoutingState routingState,
         int maximumKafkaMessageSize,
-        Duration snapshotInterval
+        Duration heartbeatInterval,
+        Duration heartbeatExpirationInterval,
+        Consumer<Throwable> unstableProcessFailureCallback
     ) {
         this(
             producer,
             topic,
-            nodeId,
-            routingPlan,
             routingState,
             maximumKafkaMessageSize,
-            snapshotInterval,
+            heartbeatInterval,
+            heartbeatExpirationInterval,
             Clock.systemUTC(),
-            CaptureKafkaWriteGate.unrestricted()
+            new CaptureKafkaWriteGate(),
+            unstableProcessFailureCallback
         );
     }
 
     CaptureKafkaPublisher(
         Producer<String, byte[]> producer,
         String topic,
-        String nodeId,
-        PartitionRoutingPlan routingPlan,
         CaptureRoutingState routingState,
         int maximumKafkaMessageSize,
-        Duration snapshotInterval,
-        Clock clock
-    ) {
-        this(
-            producer,
-            topic,
-            nodeId,
-            routingPlan,
-            routingState,
-            maximumKafkaMessageSize,
-            snapshotInterval,
-            clock,
-            CaptureKafkaWriteGate.unrestricted()
-        );
-    }
-
-    CaptureKafkaPublisher(
-        Producer<String, byte[]> producer,
-        String topic,
-        String nodeId,
-        PartitionRoutingPlan routingPlan,
-        CaptureRoutingState routingState,
-        int maximumKafkaMessageSize,
-        Duration snapshotInterval,
+        Duration heartbeatInterval,
+        Duration heartbeatExpirationInterval,
         Clock clock,
-        CaptureKafkaWriteGate writeGate
+        CaptureKafkaWriteGate writeGate,
+        Consumer<Throwable> unstableProcessFailureCallback
     ) {
         this.producer = Objects.requireNonNull(producer);
         this.topic = Objects.requireNonNull(topic);
-        this.nodeId = Objects.requireNonNull(nodeId);
-        this.routingPlan = Objects.requireNonNull(routingPlan);
         this.routingState = Objects.requireNonNull(routingState);
-        if (routingState.topicPartitionCount() != routingPlan.getTopicPartitionCount()) {
-            throw new IllegalArgumentException("Routing state and routing plan describe different topics");
-        }
         this.clock = Objects.requireNonNull(clock);
         this.writeGate = Objects.requireNonNull(writeGate);
+        this.unstableProcessFailureCallback = Objects.requireNonNull(unstableProcessFailureCallback);
         if (maximumKafkaMessageSize <= KafkaCaptureFactory.KAFKA_MESSAGE_OVERHEAD_BYTES) {
             throw new IllegalArgumentException("maximumKafkaMessageSize is too small for Kafka record overhead");
         }
         payloadSizeLimit = maximumKafkaMessageSize - KafkaCaptureFactory.KAFKA_MESSAGE_OVERHEAD_BYTES;
-        if (snapshotInterval.isZero() || snapshotInterval.isNegative()) {
-            throw new IllegalArgumentException("snapshotInterval must be positive");
+        this.heartbeatInterval = requirePositive(heartbeatInterval, "heartbeatInterval");
+        this.heartbeatExpirationInterval = requirePositive(
+            heartbeatExpirationInterval,
+            "heartbeatExpirationInterval"
+        );
+        if (heartbeatInterval.compareTo(heartbeatExpirationInterval) >= 0) {
+            throw new IllegalArgumentException(
+                "heartbeatInterval must be lower than heartbeatExpirationInterval"
+            );
         }
         executor = new ScheduledThreadPoolExecutor(1, runnable -> {
             var thread = new Thread(runnable, "capture-kafka-publisher");
             thread.setDaemon(true);
+            publisherThread.compareAndSet(null, thread);
             return thread;
         });
         executor.setRemoveOnCancelPolicy(true);
-        scheduledSnapshots = executor.scheduleWithFixedDelay(
-            this::publishScheduledSnapshot,
-            snapshotInterval.toMillis(),
-            snapshotInterval.toMillis(),
-            TimeUnit.MILLISECONDS
-        );
+        acknowledgementDeadlineExecutor = new ScheduledThreadPoolExecutor(1, runnable -> {
+            var thread = new Thread(runnable, "capture-kafka-heartbeat-deadline");
+            thread.setDaemon(true);
+            return thread;
+        });
+        acknowledgementDeadlineExecutor.setRemoveOnCancelPolicy(true);
         writeGate.addTerminalFailureListener(this::failPublisher);
     }
 
-    public CompletableFuture<RecordMetadata> publishTraffic(
-        String connectionId,
-        int partition,
-        byte[] payload,
-        boolean finalRecord
-    ) {
-        final int registeredPartition;
-        try {
-            registeredPartition = routingState.partitionFor(connectionId);
-        } catch (IllegalStateException e) {
-            return CompletableFuture.failedFuture(e);
+    @Override
+    public CompletableFuture<String> installAssignment(Collection<Integer> partitions) {
+        var result = new CompletableFuture<String>();
+        var partitionSnapshot = List.copyOf(Objects.requireNonNull(partitions));
+        executeOnPublisher(() -> {
+            assignmentInstallations.addLast(new AssignmentInstallation(partitionSnapshot, result));
+            startNextAssignmentInstallation();
+        }, result);
+        return result;
+    }
+
+    private void startNextAssignmentInstallation() {
+        if (assignmentInstallationInProgress || assignmentInstallations.isEmpty()) {
+            return;
         }
-        if (registeredPartition != partition) {
-            return CompletableFuture.failedFuture(
-                new IllegalArgumentException(
-                    "Connection "
-                        + connectionId
-                        + " is registered for partition "
-                        + registeredPartition
-                        + ", not "
-                        + partition
+        assignmentInstallationInProgress = true;
+        var installation = assignmentInstallations.removeFirst();
+        installAssignmentOnPublisher(installation.partitions(), installation.result());
+    }
+
+    private void installAssignmentOnPublisher(
+        Collection<Integer> partitions,
+        CompletableFuture<String> result
+    ) {
+        var pendingAssignment = routingState.prepareAssignment(partitions);
+        var initialHeartbeats = pendingAssignment.writerPartitions()
+            .stream()
+            .map(writerPartition -> {
+                var lane = new PublisherLane(writerPartition);
+                if (publisherLanes.putIfAbsent(writerPartition, lane) != null) {
+                    throw new CorruptedCaptureStateException(
+                        "Publisher lane already exists for " + writerPartition
+                    );
+                }
+                return publishHeartbeat(lane);
+            })
+            .toArray(CompletableFuture[]::new);
+        CompletableFuture.allOf(initialHeartbeats)
+            .whenComplete((ignored, assignmentFailure) ->
+                executeCompletionOnPublisher(
+                    () -> finishAssignmentInstallation(
+                        pendingAssignment,
+                        result,
+                        assignmentFailure
+                    ),
+                    result
                 )
             );
+    }
+
+    private void finishAssignmentInstallation(
+        CaptureRoutingState.PendingAssignment pendingAssignment,
+        CompletableFuture<String> result,
+        Throwable assignmentFailure
+    ) {
+        if (assignmentFailure != null) {
+            var cause = unwrapCompletionFailure(assignmentFailure);
+            result.completeExceptionally(cause);
+            failForThrowable(cause);
+            return;
+        }
+        try {
+            routingState.activateAssignment(pendingAssignment);
+            result.complete(pendingAssignment.writerNodeId());
+            beginDrainedWriterRetirements();
+            assignmentInstallationInProgress = false;
+            startNextAssignmentInstallation();
+        } catch (Throwable t) {
+            result.completeExceptionally(t);
+            failForThrowable(t);
+        }
+    }
+
+    public CompletableFuture<RecordMetadata> publishTraffic(
+        CaptureRoutingState.ConnectionRoute route,
+        TrafficStream trafficStream,
+        boolean finalRecord
+    ) {
+        Objects.requireNonNull(route);
+        Objects.requireNonNull(trafficStream);
+        if (!route.writerNodeId().equals(trafficStream.getNodeId())
+            || !route.connectionId().equals(trafficStream.getConnectionId())) {
+            var failure = new CorruptedCaptureStateException(
+                "TrafficStream identity does not match its immutable connection route"
+            );
+            failUnstableProcess(failure);
+            return CompletableFuture.failedFuture(failure);
+        }
+        var payload = CaptureRecord.newBuilder()
+            .setTrafficStream(trafficStream)
+            .build()
+            .toByteArray();
+        if (payload.length > payloadSizeLimit) {
+            var failure = new IllegalArgumentException(
+                "CaptureRecord exceeds the configured Kafka payload limit"
+            );
+            failPublisher(failure);
+            return CompletableFuture.failedFuture(failure);
         }
         var producerRecord = new ProducerRecord<>(
             topic,
-            partition,
+            route.partition(),
             null,
-            connectionId,
-            payload.clone(),
-            recordHeaders(TRAFFIC_RECORD_TYPE)
+            route.connectionId(),
+            payload
         );
-        return enqueueSend(
+        return enqueueTrafficSend(
+            route,
             producerRecord,
+            finalRecord,
             finalRecord
-                ? () -> routingState.remove(connectionId, partition).ifPresent(this::publishSelfNoMoreWrites)
-                : () -> {}
+                ? ignored -> {
+                    routingState.removeAfterTerminalAcknowledgement(route);
+                    beginDrainedWriterRetirements();
+                }
+                : ignored -> {}
         );
     }
 
-    public CompletableFuture<Void> publishLivenessSnapshotNow() {
-        var result = new CompletableFuture<Void>();
-        executeOnPublisher(() -> {
-            var sends = new ArrayList<CompletableFuture<RecordMetadata>>();
-            for (var partition : routingState.partitionsForSnapshot()) {
-                var sequence = nextSnapshotSequence.merge(partition, 1L, Long::sum) - 1;
-                var emittedAtMillis = allocateControlTimestamp(partition);
-                var chunks = buildSnapshotChunks(
-                    partition,
-                    sequence,
-                    emittedAtMillis,
-                    routingState.snapshot(partition)
-                );
-                for (var chunk : chunks) {
-                    var key = nodeId + ":liveness:" + partition;
-                    var producerRecord = new ProducerRecord<>(
-                        topic,
-                        partition,
-                        null,
-                        key,
-                        chunk.toByteArray(),
-                        recordHeaders(LIVENESS_RECORD_TYPE)
-                    );
-                    sends.add(sendFromPublisherThread(producerRecord, () -> {}));
-                }
-            }
-            CompletableFuture.allOf(sends.toArray(CompletableFuture[]::new))
-                .whenComplete((ignored, throwable) -> {
-                    if (throwable == null) {
-                        result.complete(null);
-                    } else {
-                        result.completeExceptionally(throwable);
-                    }
-                });
-        }, result);
-        return result;
-    }
-
-    public CompletableFuture<RecordMetadata> publishNoMoreWrites(
-        String finishedNodeId,
-        int partition,
-        String declaredBy
+    void validateCriticalMutationTrafficAcknowledgement(
+        CaptureRoutingState.ConnectionRoute route,
+        RecordMetadata acknowledgement
     ) {
-        if (finishedNodeId == null || finishedNodeId.isBlank()) {
-            return CompletableFuture.failedFuture(
-                new IllegalArgumentException("finishedNodeId must not be blank")
-            );
-        }
-        if (declaredBy == null || declaredBy.isBlank()) {
-            return CompletableFuture.failedFuture(
-                new IllegalArgumentException("declaredBy must not be blank")
-            );
-        }
-        if (partition < 0 || partition >= routingPlan.getTopicPartitionCount()) {
-            return CompletableFuture.failedFuture(
-                new IllegalArgumentException("partition is outside the traffic topic")
-            );
-        }
-        var result = new CompletableFuture<RecordMetadata>();
-        executeOnPublisher(() -> {
-            sendFromPublisherThread(noMoreWritesRecord(finishedNodeId, partition, declaredBy), () -> {})
-                .whenComplete((metadata, throwable) -> {
-                    completeFrom(metadata, throwable, result);
-                });
-        }, result);
-        return result;
-    }
-
-    CompletableFuture<RecordMetadata> publishSelfNoMoreWrites(CaptureRoutingState.SelfRelease release) {
-        var result = new CompletableFuture<RecordMetadata>();
-        executeOnPublisher(() -> {
-            boolean submitted = routingState.submitSelfReleaseIfCurrent(release, () ->
-                sendFromPublisherThread(
-                    noMoreWritesRecord(nodeId, release.partition(), nodeId),
-                    () -> routingState.completeSelfRelease(release)
-                ).whenComplete((metadata, throwable) -> completeFrom(metadata, throwable, result))
-            );
-            if (!submitted) {
-                result.complete(null);
-            }
-        }, result);
-        return result;
-    }
-
-    void removeConnectionRegistration(String connectionId, int partition) {
-        routingState.remove(connectionId, partition).ifPresent(this::publishSelfNoMoreWrites);
-    }
-
-    CompletableFuture<Void> prepareForGracefulShutdown() {
-        var result = new CompletableFuture<Void>();
-        executeOnPublisher(() -> {
-            producer.flush();
-            executeInternal(() -> publishShutdownDeclarations(result), result);
-        }, result);
-        return result;
-    }
-
-    private void publishShutdownDeclarations(CompletableFuture<Void> result) {
+        Objects.requireNonNull(route);
         try {
-            var sends = routingState.beginGracefulShutdown()
-                .stream()
-                .map(partition ->
-                    sendFromPublisherThread(noMoreWritesRecord(nodeId, partition, nodeId), () -> {})
-                )
-                .toArray(CompletableFuture[]::new);
-            CompletableFuture.allOf(sends)
-                .whenComplete((ignored, throwable) -> {
-                    if (throwable == null) {
-                        result.complete(null);
-                    } else {
-                        result.completeExceptionally(throwable);
-                    }
-                });
-        } catch (Throwable t) {
-            result.completeExceptionally(t);
+            if (acknowledgement == null
+                || acknowledgement.partition() != route.partition()
+                || !acknowledgement.hasTimestamp()) {
+                throw new IllegalStateException(
+                    "Kafka returned invalid acknowledgement metadata for Critical Mutation Traffic"
+                );
+            }
+            routingState.validateCriticalMutationTrafficAcknowledgement(
+                route,
+                acknowledgement.timestamp(),
+                heartbeatExpirationInterval
+            );
+        } catch (RuntimeException e) {
+            failForThrowable(e);
+            throw e;
         }
     }
 
-    private ProducerRecord<String, byte[]> noMoreWritesRecord(
-        String finishedNodeId,
-        int partition,
-        String declaredBy
+    CompletableFuture<Void> retireAllWriters() {
+        var result = new CompletableFuture<Void>();
+        executeOnPublisher(() -> beginOrderlyWriterRetirement(result), result);
+        return result;
+    }
+
+    private void beginOrderlyWriterRetirement(CompletableFuture<Void> result) {
+        if (orderlyRetirement != null) {
+            orderlyRetirement.whenComplete((ignored, failure) -> completeFrom(null, failure, result));
+            return;
+        }
+        orderlyRetirement = result;
+        routingState.beginOrderlyRetirement();
+        beginDrainedWriterRetirements();
+        var retirements = publisherLanes.values()
+            .stream()
+            .map(lane -> lane.retirement)
+            .toArray(CompletableFuture[]::new);
+        CompletableFuture.allOf(retirements)
+            .whenComplete((ignored, retirementFailure) ->
+                executeCompletionOnPublisher(
+                    () -> finishOrderlyWriterRetirement(result, retirementFailure),
+                    result
+                )
+            );
+    }
+
+    private void finishOrderlyWriterRetirement(
+        CompletableFuture<Void> result,
+        Throwable retirementFailure
     ) {
-        var declaration = ProxyNoMoreWrites.newBuilder()
-            .setNodeId(finishedNodeId)
-            .setPartition(partition)
-            .setDeclaredBy(declaredBy)
-            .setEmittedAtMillis(allocateControlTimestamp(partition))
+        if (retirementFailure != null) {
+            result.completeExceptionally(unwrapCompletionFailure(retirementFailure));
+        } else if (!routingState.allWriterPartitionsRetired()) {
+            var failure = new CorruptedCaptureStateException(
+                "Orderly proxy retirement completed without retiring every writer partition"
+            );
+            result.completeExceptionally(failure);
+            failUnstableProcess(failure);
+        } else {
+            result.complete(null);
+        }
+    }
+
+    void abandonUnpublishedConnection(CaptureRoutingState.ConnectionRoute route) {
+        routingState.abandonUnpublishedConnection(route);
+        var result = new CompletableFuture<Void>();
+        executeOnPublisher(() -> {
+            beginDrainedWriterRetirements();
+            result.complete(null);
+        }, result);
+    }
+
+    private CompletableFuture<RecordMetadata> publishHeartbeat(PublisherLane lane) {
+        if (lane.status != PublisherLaneStatus.OPEN || lane.heartbeatInFlight) {
+            throw new CorruptedCaptureStateException(
+                "Heartbeat submission is not permitted for " + lane.writerPartition
+            );
+        }
+        lane.heartbeatInFlight = true;
+        if (routingState.lastAcceptedHeartbeatLogAppendTime(lane.writerPartition) == null) {
+            renewAcknowledgementDeadline(lane);
+        } else if (lane.acknowledgementDeadline == null) {
+            throw new CorruptedCaptureStateException(
+                "An active heartbeat lane has no acknowledgement deadline for "
+                    + lane.writerPartition
+            );
+        }
+        var heartbeat = WriterPartitionHeartbeat.newBuilder()
+            .setWriterNodeId(lane.writerPartition.writerNodeId())
+            .setHeartbeatIntervalMillis(heartbeatInterval.toMillis())
+            .setEmittedAtMillis(clock.millis())
             .build();
-        return new ProducerRecord<>(
+        var payload = CaptureRecord.newBuilder()
+            .setWriterPartitionHeartbeat(heartbeat)
+            .build()
+            .toByteArray();
+        var producerRecord = new ProducerRecord<>(
             topic,
-            partition,
+            lane.writerPartition.partition(),
             null,
-            finishedNodeId + ":no-more-writes:" + partition,
-            declaration.toByteArray(),
-            recordHeaders(NO_MORE_WRITES_RECORD_TYPE)
+            lane.writerPartition.writerNodeId()
+                + ":heartbeat:"
+                + lane.writerPartition.partition(),
+            payload
+        );
+        return sendFromPublisherThread(
+            lane,
+            producerRecord,
+            lane.acknowledgementDeadline,
+            metadata -> acceptHeartbeatAcknowledgement(lane, metadata)
         );
     }
 
-    private static <T> void completeFrom(
-        T value,
-        Throwable throwable,
-        CompletableFuture<T> result
-    ) {
-        if (throwable == null) {
-            result.complete(value);
+    private void acceptHeartbeatAcknowledgement(PublisherLane lane, RecordMetadata metadata) {
+        if (!lane.heartbeatInFlight) {
+            throw new CorruptedCaptureStateException(
+                "Heartbeat acknowledgement arrived without an in-flight heartbeat for "
+                    + lane.writerPartition
+            );
+        }
+        routingState.acceptHeartbeatLogAppendTime(
+            lane.writerPartition,
+            requireBrokerTimestamp(metadata, "heartbeat"),
+            heartbeatExpirationInterval
+        );
+        lane.heartbeatInFlight = false;
+        if (lane.status == PublisherLaneStatus.OPEN) {
+            renewAcknowledgementDeadline(lane);
+            scheduleNextHeartbeat(lane);
         } else {
-            result.completeExceptionally(throwable);
+            cancelAcknowledgementDeadline(lane);
         }
     }
 
-    List<ProxyLivenessSnapshotChunk> buildSnapshotChunks(
-        int partition,
-        long sequence,
-        long emittedAtMillis,
-        List<String> openConnections
-    ) {
-        var chunkConnections = new ArrayList<List<ByteString>>();
-        var current = new ArrayList<ByteString>();
-        for (var connection : openConnections) {
-            var encoded = ByteString.copyFromUtf8(connection);
-            var candidate = new ArrayList<>(current);
-            candidate.add(encoded);
-            if (estimatedChunkSize(partition, sequence, emittedAtMillis, candidate) <= payloadSizeLimit) {
-                current.add(encoded);
-            } else {
-                if (current.isEmpty()) {
-                    throw new IllegalArgumentException(
-                        "Connection identity is too large for a liveness snapshot record"
-                    );
+    private void scheduleNextHeartbeat(PublisherLane lane) {
+        if (lane.nextHeartbeat != null) {
+            lane.nextHeartbeat.cancel(false);
+        }
+        lane.nextHeartbeat = executor.schedule(
+            () -> {
+                lane.nextHeartbeat = null;
+                if (lane.status == PublisherLaneStatus.OPEN && failure.get() == null && !closed.get()) {
+                    publishHeartbeat(lane);
                 }
-                chunkConnections.add(List.copyOf(current));
-                current.clear();
-                current.add(encoded);
-            }
-        }
-        if (!current.isEmpty() || chunkConnections.isEmpty()) {
-            chunkConnections.add(List.copyOf(current));
-        }
-
-        int chunkCount = chunkConnections.size();
-        var chunks = new ArrayList<ProxyLivenessSnapshotChunk>(chunkCount);
-        for (int i = 0; i < chunkCount; ++i) {
-            var chunk = baseSnapshotChunk(partition, sequence, emittedAtMillis)
-                .setChunkIndex(i)
-                .setChunkCount(chunkCount)
-                .addAllOpenConnections(chunkConnections.get(i))
-                .build();
-            if (chunk.getSerializedSize() > payloadSizeLimit) {
-                throw new IllegalStateException("Liveness snapshot chunk exceeds Kafka payload limit");
-            }
-            chunks.add(chunk);
-        }
-        return List.copyOf(chunks);
+            },
+            heartbeatInterval.toNanos(),
+            TimeUnit.NANOSECONDS
+        );
     }
 
-    private long allocateControlTimestamp(int partition) {
-        var observed = clock.millis();
-        var previous = lastControlTimestamp.get(partition);
-        var allocated = previous == null || observed > previous ? observed : Math.incrementExact(previous);
-        lastControlTimestamp.put(partition, allocated);
-        return allocated;
+    private void renewAcknowledgementDeadline(PublisherLane lane) {
+        cancelAcknowledgementDeadline(lane);
+        var deadline = new AcknowledgementDeadline();
+        lane.acknowledgementDeadline = deadline;
+        deadline.setExpirationTask(acknowledgementDeadlineExecutor.schedule(
+            () -> expireAcknowledgementDeadline(lane, deadline),
+            heartbeatExpirationInterval.toNanos(),
+            TimeUnit.NANOSECONDS
+        ));
     }
 
-    private int estimatedChunkSize(
-        int partition,
-        long sequence,
-        long emittedAtMillis,
-        List<ByteString> connections
+    private void expireAcknowledgementDeadline(
+        PublisherLane lane,
+        AcknowledgementDeadline deadline
     ) {
-        return baseSnapshotChunk(partition, sequence, emittedAtMillis)
-            .setChunkIndex(Integer.MAX_VALUE)
-            .setChunkCount(Integer.MAX_VALUE)
-            .addAllOpenConnections(connections)
-            .build()
-            .getSerializedSize();
+        if (failure.get() != null || closed.get() || !deadline.expire()) {
+            return;
+        }
+        failPublisher(new TimeoutException(
+            "Heartbeat acknowledgement deadline expired for " + lane.writerPartition
+        ));
     }
 
-    private ProxyLivenessSnapshotChunk.Builder baseSnapshotChunk(
-        int partition,
-        long sequence,
-        long emittedAtMillis
-    ) {
-        return ProxyLivenessSnapshotChunk.newBuilder()
-            .setNodeId(nodeId)
-            .setPartition(partition)
-            .setRoutingPlanId(routingPlan.getRoutingPlanId())
-            .setSnapshotSequence(sequence)
-            .setEmittedAtMillis(emittedAtMillis);
+    private void cancelAcknowledgementDeadline(PublisherLane lane) {
+        var deadline = lane.acknowledgementDeadline;
+        lane.acknowledgementDeadline = null;
+        if (deadline != null) {
+            deadline.cancel();
+        }
     }
 
-    private CompletableFuture<RecordMetadata> enqueueSend(
+    private void beginDrainedWriterRetirements() {
+        for (var writerPartition : routingState.prepareDrainedWriterRetirements()) {
+            var lane = requirePublisherLane(writerPartition);
+            if (lane.status != PublisherLaneStatus.OPEN) {
+                throw new CorruptedCaptureStateException(
+                    "Publisher lane is not open at retirement: " + writerPartition
+                );
+            }
+            lane.status = PublisherLaneStatus.RETIRING;
+            if (lane.nextHeartbeat != null) {
+                lane.nextHeartbeat.cancel(false);
+                lane.nextHeartbeat = null;
+            }
+            if (!lane.heartbeatInFlight) {
+                cancelAcknowledgementDeadline(lane);
+            }
+            completeLaneRetirementIfReady(lane);
+        }
+    }
+
+    private void completeLaneRetirementIfReady(PublisherLane lane) {
+        if (lane.status != PublisherLaneStatus.RETIRING
+            || lane.acceptedSends != 0
+            || lane.heartbeatInFlight
+            || routingState.hasConnections(lane.writerPartition)) {
+            return;
+        }
+        cancelAcknowledgementDeadline(lane);
+        routingState.completeWriterRetirement(lane.writerPartition);
+        lane.status = PublisherLaneStatus.RETIRED;
+        lane.retirement.complete(null);
+        log.atInfo()
+            .setMessage("Retired proxy writer {} for partition {}")
+            .addArgument(lane.writerPartition.writerNodeId())
+            .addArgument(lane.writerPartition.partition())
+            .log();
+    }
+
+    private CompletableFuture<RecordMetadata> enqueueTrafficSend(
+        CaptureRoutingState.ConnectionRoute route,
         ProducerRecord<String, byte[]> producerRecord,
-        Runnable acknowledgedAction
+        boolean finalRecord,
+        Consumer<RecordMetadata> acknowledgedAction
     ) {
         var result = new CompletableFuture<RecordMetadata>();
-        executeOnPublisher(() -> sendFromPublisherThread(producerRecord, acknowledgedAction)
-            .whenComplete((metadata, throwable) -> {
-                if (throwable == null) {
-                    result.complete(metadata);
-                } else {
-                    result.completeExceptionally(throwable);
-                }
-            }), result);
+        executeOnPublisher(() -> {
+            try {
+                routingState.acceptTrafficSubmission(route, finalRecord);
+                var lane = requirePublisherLane(route.writerPartition());
+                sendFromPublisherThread(lane, producerRecord, null, acknowledgedAction)
+                    .whenComplete((metadata, throwable) -> completeFrom(metadata, throwable, result));
+            } catch (RuntimeException e) {
+                result.completeExceptionally(e);
+                failForThrowable(e);
+            }
+        }, result);
         return result;
     }
 
     private CompletableFuture<RecordMetadata> sendFromPublisherThread(
+        PublisherLane lane,
         ProducerRecord<String, byte[]> producerRecord,
-        Runnable acknowledgedAction
+        AcknowledgementDeadline acknowledgementDeadline,
+        Consumer<RecordMetadata> acknowledgedAction
     ) {
         var result = new CompletableFuture<RecordMetadata>();
         var publisherRejection = new AtomicReference<Throwable>();
@@ -455,71 +595,124 @@ public class CaptureKafkaPublisher implements AutoCloseable {
                     publisherRejection.set(currentFailure);
                     return;
                 }
-                addInFlight(result);
+                addInFlight(lane, result);
                 producer.send(
                     producerRecord,
                     (metadata, exception) ->
-                        completeSend(result, metadata, exception, acknowledgedAction)
+                        completeSend(
+                            lane,
+                            result,
+                            metadata,
+                            exception,
+                            acknowledgementDeadline,
+                            acknowledgedAction
+                        )
                 );
             });
-        } catch (Exception t) {
-            removeInFlight(result);
-            failPublisher(t);
+        } catch (Throwable t) {
+            removeInFlight(lane, result);
+            failForThrowable(t);
             result.completeExceptionally(t);
             return result;
         }
         var rejection = gateRejection == null ? publisherRejection.get() : gateRejection;
         if (rejection != null) {
-            failPublisher(rejection);
+            failForThrowable(rejection);
             result.completeExceptionally(rejection);
         }
         return result;
     }
 
     private void completeSend(
+        PublisherLane lane,
         CompletableFuture<RecordMetadata> result,
         RecordMetadata metadata,
         Exception exception,
-        Runnable acknowledgedAction
+        AcknowledgementDeadline acknowledgementDeadline,
+        Consumer<RecordMetadata> acknowledgedAction
     ) {
         if (exception != null) {
-            removeInFlight(result);
             failPublisher(exception);
+            removeInFlight(lane, result);
             result.completeExceptionally(exception);
+            return;
+        }
+        if (acknowledgementDeadline != null && !acknowledgementDeadline.acknowledge()) {
+            var deadlineStatus = acknowledgementDeadline.status();
+            removeInFlight(lane, result);
+            if (deadlineStatus == AcknowledgementDeadlineStatus.EXPIRED
+                || deadlineStatus == AcknowledgementDeadlineStatus.CANCELLED) {
+                return;
+            }
+            failUnstableProcess(new CorruptedCaptureStateException(
+                "Kafka invoked the heartbeat acknowledgement callback more than once for "
+                    + lane.writerPartition
+            ));
             return;
         }
         try {
             executor.execute(() -> {
                 if (result.isDone()) {
-                    removeInFlight(result);
+                    removeInFlight(lane, result);
                     return;
                 }
                 try {
-                    acknowledgedAction.run();
-                    removeInFlight(result);
+                    acknowledgedAction.accept(metadata);
+                    removeInFlight(lane, result);
                     result.complete(metadata);
-                } catch (Exception t) {
-                    removeInFlight(result);
-                    failPublisher(t);
+                    completeLaneRetirementIfReady(lane);
+                } catch (Throwable t) {
+                    removeInFlight(lane, result);
+                    failForThrowable(t);
                     result.completeExceptionally(t);
                 }
             });
         } catch (RejectedExecutionException e) {
-            removeInFlight(result);
+            removeInFlight(lane, result);
             result.completeExceptionally(e);
+            if (!closed.get()) {
+                failUnstableProcess(e);
+            }
         }
     }
 
-    private void addInFlight(CompletableFuture<RecordMetadata> result) {
+    private void addInFlight(
+        PublisherLane lane,
+        CompletableFuture<RecordMetadata> result
+    ) {
+        lane.acceptedSends++;
         synchronized (inFlightLock) {
             inFlightSends.add(result);
         }
     }
 
-    private void removeInFlight(CompletableFuture<RecordMetadata> result) {
+    private void removeInFlight(
+        PublisherLane lane,
+        CompletableFuture<RecordMetadata> result
+    ) {
         synchronized (inFlightLock) {
-            inFlightSends.remove(result);
+            if (!inFlightSends.remove(result)) {
+                return;
+            }
         }
+        lane.acceptedSends--;
+        if (lane.acceptedSends < 0) {
+            throw new CorruptedCaptureStateException(
+                "Publisher accepted-send count became negative for " + lane.writerPartition
+            );
+        }
+    }
+
+    private PublisherLane requirePublisherLane(
+        CaptureRoutingState.WriterPartition writerPartition
+    ) {
+        var lane = publisherLanes.get(writerPartition);
+        if (lane == null) {
+            throw new CorruptedCaptureStateException(
+                "No publisher lane exists for " + writerPartition
+            );
+        }
+        return lane;
     }
 
     private void executeOnPublisher(Runnable action, CompletableFuture<?> result) {
@@ -528,7 +721,7 @@ public class CaptureKafkaPublisher implements AutoCloseable {
             currentFailure = writeGate.failureIfNotWritable();
         }
         if (currentFailure != null) {
-            failPublisher(currentFailure);
+            failForThrowable(currentFailure);
             result.completeExceptionally(currentFailure);
             return;
         }
@@ -537,45 +730,40 @@ public class CaptureKafkaPublisher implements AutoCloseable {
             return;
         }
         try {
-            executeInternal(() -> {
+            executor.execute(() -> {
                 var taskFailure = failure.get();
                 if (taskFailure == null) {
                     taskFailure = writeGate.failureIfNotWritable();
                 }
                 if (taskFailure != null) {
-                    failPublisher(taskFailure);
+                    failForThrowable(taskFailure);
                     result.completeExceptionally(taskFailure);
                 } else {
                     try {
                         action.run();
-                    } catch (Exception t) {
-                        failPublisher(t);
+                    } catch (Throwable t) {
+                        failForThrowable(t);
                         result.completeExceptionally(t);
                     }
                 }
-            }, result);
+            });
         } catch (RejectedExecutionException e) {
             result.completeExceptionally(e);
+            if (!closed.get()) {
+                failUnstableProcess(e);
+            }
         }
     }
 
-    private void executeInternal(Runnable action, CompletableFuture<?> result) {
+    private void executeCompletionOnPublisher(Runnable action, CompletableFuture<?> result) {
         try {
             executor.execute(action);
         } catch (RejectedExecutionException e) {
             result.completeExceptionally(e);
-        }
-    }
-
-    private void publishScheduledSnapshot() {
-        publishLivenessSnapshotNow().whenComplete((ignored, throwable) -> {
-            if (throwable != null) {
-                log.atError()
-                    .setCause(throwable)
-                    .setMessage("Authoritative proxy liveness publishing has stopped")
-                    .log();
+            if (!closed.get()) {
+                failUnstableProcess(e);
             }
-        });
+        }
     }
 
     private void failPublisher(Throwable throwable) {
@@ -589,32 +777,103 @@ public class CaptureKafkaPublisher implements AutoCloseable {
             inFlightSends.clear();
         }
         pending.forEach(send -> send.completeExceptionally(throwable));
-        scheduledSnapshots.cancel(false);
+        runFailureCleanupOnPublisherThread(throwable);
         log.atError()
             .setCause(throwable)
-            .setMessage("Capture Kafka publisher failed closed; no more liveness declarations will be sent")
+            .setMessage(
+                "Capture Kafka publisher stopped permanently after failure; "
+                    + "no more records will be submitted"
+            )
             .log();
     }
 
-    void failClosed(Throwable throwable) {
+    private void runFailureCleanupOnPublisherThread(Throwable throwable) {
+        Runnable cleanup = () -> {
+            publisherLanes.values().forEach(lane -> {
+                if (lane.nextHeartbeat != null) {
+                    lane.nextHeartbeat.cancel(false);
+                    lane.nextHeartbeat = null;
+                }
+                cancelAcknowledgementDeadline(lane);
+                if (!lane.retirement.isDone()) {
+                    lane.retirement.completeExceptionally(throwable);
+                }
+            });
+            assignmentInstallationInProgress = false;
+            AssignmentInstallation installation;
+            while ((installation = assignmentInstallations.pollFirst()) != null) {
+                installation.result().completeExceptionally(throwable);
+            }
+        };
+        if (Thread.currentThread() == publisherThread.get()) {
+            cleanup.run();
+            return;
+        }
+        try {
+            executor.execute(cleanup);
+        } catch (RejectedExecutionException e) {
+            log.atError()
+                .setCause(e)
+                .setMessage("Publisher executor rejected terminal failure cleanup")
+                .log();
+            failUnstableProcess(e);
+        }
+    }
+
+    @Override
+    public void stopAfterFailure(Throwable throwable) {
         failPublisher(Objects.requireNonNull(throwable));
     }
 
-    private static RecordHeaders recordHeaders(String recordType) {
-        return new RecordHeaders(List.of(new RecordHeader(
-            RECORD_TYPE_HEADER,
-            recordType.getBytes(StandardCharsets.UTF_8)
-        )));
+    private void failForThrowable(Throwable throwable) {
+        if (throwable instanceof Error || throwable instanceof CorruptedCaptureStateException) {
+            failUnstableProcess(throwable);
+        } else {
+            failPublisher(throwable);
+        }
     }
 
-    public static boolean isRecordType(Iterable<org.apache.kafka.common.header.Header> headers, String expected) {
-        for (var header : headers) {
-            if (RECORD_TYPE_HEADER.equals(header.key())
-                && expected.equals(new String(header.value(), StandardCharsets.UTF_8))) {
-                return true;
-            }
+    private void failUnstableProcess(Throwable throwable) {
+        if (unstableProcessFailureReported.compareAndSet(false, true)) {
+            unstableProcessFailureCallback.accept(throwable);
         }
-        return false;
+        failPublisher(throwable);
+    }
+
+    private static long requireBrokerTimestamp(RecordMetadata metadata, String recordKind) {
+        if (metadata == null || !metadata.hasTimestamp() || metadata.timestamp() <= 0) {
+            throw new IllegalStateException(
+                "Kafka did not report a positive LogAppendTime for an acknowledged " + recordKind
+            );
+        }
+        return metadata.timestamp();
+    }
+
+    private static Duration requirePositive(Duration value, String name) {
+        Objects.requireNonNull(value);
+        if (value.isZero() || value.isNegative()) {
+            throw new IllegalArgumentException(name + " must be positive");
+        }
+        return value;
+    }
+
+    private static Throwable unwrapCompletionFailure(Throwable failure) {
+        if (failure instanceof java.util.concurrent.CompletionException && failure.getCause() != null) {
+            return failure.getCause();
+        }
+        return failure;
+    }
+
+    private static <T> void completeFrom(
+        T value,
+        Throwable throwable,
+        CompletableFuture<T> result
+    ) {
+        if (throwable == null) {
+            result.complete(value);
+        } else {
+            result.completeExceptionally(unwrapCompletionFailure(throwable));
+        }
     }
 
     @Override
@@ -622,12 +881,18 @@ public class CaptureKafkaPublisher implements AutoCloseable {
         if (!closed.compareAndSet(false, true)) {
             return;
         }
-        scheduledSnapshots.cancel(false);
+        routingState.beginShutdown();
         try {
             var flush = new CompletableFuture<Void>();
             try {
                 executor.execute(() -> {
                     try {
+                        publisherLanes.values().forEach(lane -> {
+                            if (lane.nextHeartbeat != null) {
+                                lane.nextHeartbeat.cancel(false);
+                            }
+                            cancelAcknowledgementDeadline(lane);
+                        });
                         producer.flush();
                         flush.complete(null);
                     } catch (Exception t) {
@@ -640,16 +905,25 @@ public class CaptureKafkaPublisher implements AutoCloseable {
             }
         } finally {
             executor.shutdown();
+            acknowledgementDeadlineExecutor.shutdownNow();
             try {
                 if (!executor.awaitTermination(CLOSE_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)) {
                     executor.shutdownNow();
                 }
+                if (!acknowledgementDeadlineExecutor.awaitTermination(
+                    CLOSE_TIMEOUT.toMillis(),
+                    TimeUnit.MILLISECONDS
+                )) {
+                    acknowledgementDeadlineExecutor.shutdownNow();
+                }
             } catch (InterruptedException e) {
                 executor.shutdownNow();
+                acknowledgementDeadlineExecutor.shutdownNow();
                 Thread.currentThread().interrupt();
             } finally {
                 producer.close(CLOSE_TIMEOUT);
             }
         }
     }
+
 }

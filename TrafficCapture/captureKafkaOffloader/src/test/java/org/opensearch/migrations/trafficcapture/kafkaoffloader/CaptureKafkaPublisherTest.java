@@ -3,538 +3,677 @@ package org.opensearch.migrations.trafficcapture.kafkaoffloader;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
+import java.util.function.LongUnaryOperator;
 
-import org.opensearch.migrations.trafficcapture.protos.ProxyLivenessSnapshotChunk;
-import org.opensearch.migrations.trafficcapture.protos.ProxyNoMoreWrites;
+import org.opensearch.migrations.trafficcapture.protos.CaptureRecord;
+import org.opensearch.migrations.trafficcapture.protos.CloseObservation;
+import org.opensearch.migrations.trafficcapture.protos.TrafficObservation;
+import org.opensearch.migrations.trafficcapture.protos.TrafficStream;
 
+import com.google.protobuf.Timestamp;
+import org.apache.kafka.clients.producer.Callback;
 import org.apache.kafka.clients.producer.MockProducer;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.clients.producer.RecordMetadata;
+import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class CaptureKafkaPublisherTest {
     private static final String TOPIC = "traffic";
-    private static final String NODE_ID = "node";
-    private static final int MESSAGE_SIZE = 1024;
+    private static final String ACTIVATION_ID = "activation";
+    private static final int MESSAGE_SIZE = 1024 * 1024;
+    private static final Duration LONG_HEARTBEAT_INTERVAL = Duration.ofDays(1);
+    private static final Duration LONG_EXPIRATION_INTERVAL = Duration.ofDays(2);
 
     @Test
-    void finalRecordMustBeAcknowledgedBeforeACompleteManifestCanOmitConnection() throws Exception {
+    void initialHeartbeatsMustAllBeAcknowledgedBeforeAssignmentBecomesUsable() throws Exception {
         var producer = producer(false);
-        var plan = PartitionRoutingPlan.forTopic(1, 1, NODE_ID);
-        var registry = routingState(plan);
-        var publisher = publisher(producer, plan, registry);
-        registry.register("connection", 0);
+        var routingState = new CaptureRoutingState(ACTIVATION_ID, 3);
+        try (var publisher = publisher(producer, routingState)) {
+            var install = publisher.installAssignment(List.of(0, 2));
+            awaitHistorySize(producer, 2);
 
-        var finalSend = publisher.publishTraffic("connection", 0, new byte[] { 1 }, true);
-        awaitHistorySize(producer, 1);
-        var manifestBeforeAcknowledgement = publisher.publishLivenessSnapshotNow();
-        awaitHistorySize(producer, 2);
+            assertFalse(install.isDone());
+            assertEquals(List.of(), routingState.assignedPartitions());
+            assertHeartbeat(producer.history().get(0), "activation:1", 0, LONG_HEARTBEAT_INTERVAL);
+            assertHeartbeat(producer.history().get(1), "activation:1", 2, LONG_HEARTBEAT_INTERVAL);
 
-        assertEquals(List.of("connection"), registry.snapshot(0));
-        assertFalse(finalSend.isDone());
-        assertEquals(List.of("connection"), openConnections(producer.history().get(1)));
+            assertTrue(producer.completeNext());
+            assertFalse(install.isDone());
+            assertTrue(producer.completeNext());
 
-        assertTrue(producer.completeNext());
-        finalSend.get(1, TimeUnit.SECONDS);
-        assertEquals(List.of(), registry.snapshot(0));
-        assertTrue(producer.completeNext());
-        manifestBeforeAcknowledgement.get(1, TimeUnit.SECONDS);
-
-        var manifestAfterAcknowledgement = publisher.publishLivenessSnapshotNow();
-        awaitHistorySize(producer, 3);
-        assertEquals(List.of(), openConnections(producer.history().get(2)));
-        assertTrue(producer.completeNext());
-        manifestAfterAcknowledgement.get(1, TimeUnit.SECONDS);
-        publisher.close();
-    }
-
-    @Test
-    void registrationPrecedesBothFirstTrafficAndAnyLaterManifestCopy() throws Exception {
-        var producer = producer(true);
-        var plan = PartitionRoutingPlan.forTopic(1, 1, NODE_ID);
-        var registry = routingState(plan);
-        var publisher = publisher(producer, plan, registry);
-
-        registry.register("connection", 0);
-        publisher.publishLivenessSnapshotNow().get(1, TimeUnit.SECONDS);
-        publisher.publishTraffic("connection", 0, new byte[] { 1 }, false)
-            .get(1, TimeUnit.SECONDS);
-
-        assertEquals(List.of("connection"), openConnections(producer.history().get(0)));
-        assertTrue(CaptureKafkaPublisher.isRecordType(
-            producer.history().get(1).headers(),
-            CaptureKafkaPublisher.TRAFFIC_RECORD_TYPE
-        ));
-        publisher.close();
-    }
-
-    @Test
-    void snapshotsCoverEveryShardPartitionIncludingEmptySets() throws Exception {
-        var producer = producer(true);
-        var plan = PartitionRoutingPlan.forTopic(3, 3, NODE_ID);
-        var registry = routingState(plan);
-        var publisher = publisher(producer, plan, registry);
-        var connection = "connection";
-        int connectionPartition = plan.partitionFor(connection);
-        registry.register(connection, connectionPartition);
-
-        publisher.publishLivenessSnapshotNow().get(1, TimeUnit.SECONDS);
-
-        assertEquals(3, producer.history().size());
-        for (var record : producer.history()) {
-            assertTrue(CaptureKafkaPublisher.isRecordType(
-                record.headers(),
-                CaptureKafkaPublisher.LIVENESS_RECORD_TYPE
-            ));
-            var chunk = ProxyLivenessSnapshotChunk.parseFrom(record.value());
-            assertEquals(record.partition(), chunk.getPartition());
-            assertEquals(plan.getRoutingPlanId(), chunk.getRoutingPlanId());
-            assertEquals(0, chunk.getChunkIndex());
-            assertEquals(1, chunk.getChunkCount());
-            if (record.partition() == connectionPartition) {
-                assertEquals(List.of(connection), chunk.getOpenConnectionsList()
-                    .stream()
-                    .map(com.google.protobuf.ByteString::toStringUtf8)
-                    .toList());
-            } else {
-                assertEquals(0, chunk.getOpenConnectionsCount());
-            }
+            assertEquals("activation:1", install.get(1, TimeUnit.SECONDS));
+            assertEquals(List.of(0, 2), routingState.assignedPartitions());
         }
-        publisher.close();
     }
 
     @Test
-    void snapshotsCoverAssignedPartitionsAndRevokedPartitionsThatAreStillDraining() throws Exception {
-        var producer = producer(true);
-        var plan = PartitionRoutingPlan.forTopic(3, 3, NODE_ID);
-        var registry = routingState(plan);
-        var publisher = publisher(producer, plan, registry);
-        registry.register("draining", 2);
-        registry.replaceAssignedPartitions(List.of(0, 1));
-
-        publisher.publishLivenessSnapshotNow().get(1, TimeUnit.SECONDS);
-
-        assertEquals(List.of(0, 1, 2), producer.history().stream()
-            .map(ProducerRecord::partition)
-            .toList());
-        assertEquals(
-            List.of("draining"),
-            openConnections(producer.history().get(2))
-        );
-        publisher.close();
-    }
-
-    @Test
-    void snapshotChunksAreCompleteBoundedAndNonInterleaved() throws Exception {
-        var producer = producer(true);
-        var plan = PartitionRoutingPlan.forTopic(1, 1, NODE_ID);
-        var registry = routingState(plan);
-        var publisher = publisher(producer, plan, registry);
-        for (int i = 0; i < 40; ++i) {
-            registry.register("connection-" + i + "-" + "x".repeat(30), 0);
-        }
-
-        publisher.publishLivenessSnapshotNow().get(1, TimeUnit.SECONDS);
-
-        assertTrue(producer.history().size() > 1);
-        int expectedChunks = producer.history().size();
-        long expectedTimestamp = snapshotChunk(producer.history().get(0)).getEmittedAtMillis();
-        for (int i = 0; i < expectedChunks; ++i) {
-            var record = producer.history().get(i);
-            var chunk = snapshotChunk(record);
-            assertEquals(i, chunk.getChunkIndex());
-            assertEquals(expectedChunks, chunk.getChunkCount());
-            assertEquals(expectedTimestamp, chunk.getEmittedAtMillis());
-            assertTrue(record.value().length <= MESSAGE_SIZE - KafkaCaptureFactory.KAFKA_MESSAGE_OVERHEAD_BYTES);
-        }
-        publisher.close();
-    }
-
-    @Test
-    void snapshotTimestampsIncreaseWhenTheClockStallsOrMovesBackward() throws Exception {
-        var producer = producer(true);
-        var plan = PartitionRoutingPlan.forTopic(1, 1, NODE_ID);
-        var registry = routingState(plan);
-        var publisher = publisher(producer, plan, registry, new SequenceClock(1234, 1234, 1200));
-
-        publisher.publishLivenessSnapshotNow().get(1, TimeUnit.SECONDS);
-        publisher.publishLivenessSnapshotNow().get(1, TimeUnit.SECONDS);
-        publisher.publishLivenessSnapshotNow().get(1, TimeUnit.SECONDS);
-
-        assertEquals(1234, snapshotChunk(producer.history().get(0)).getEmittedAtMillis());
-        assertEquals(1235, snapshotChunk(producer.history().get(1)).getEmittedAtMillis());
-        assertEquals(1236, snapshotChunk(producer.history().get(2)).getEmittedAtMillis());
-        publisher.close();
-    }
-
-    @Test
-    void noMoreWritesUsesTheOrderedControlLaneAndStrictPartitionTimestamp() throws Exception {
-        var producer = producer(true);
-        var plan = PartitionRoutingPlan.forTopic(1, 1, NODE_ID);
-        var registry = routingState(plan);
-        var publisher = publisher(producer, plan, registry);
-
-        publisher.publishLivenessSnapshotNow().get(1, TimeUnit.SECONDS);
-        publisher.publishNoMoreWrites(NODE_ID, 0, "surviving-node")
-            .get(1, TimeUnit.SECONDS);
-
-        var record = producer.history().get(1);
-        assertEquals(0, record.partition());
-        assertTrue(CaptureKafkaPublisher.isRecordType(
-            record.headers(),
-            CaptureKafkaPublisher.NO_MORE_WRITES_RECORD_TYPE
-        ));
-        var declaration = ProxyNoMoreWrites.parseFrom(record.value());
-        assertEquals(NODE_ID, declaration.getNodeId());
-        assertEquals(0, declaration.getPartition());
-        assertEquals("surviving-node", declaration.getDeclaredBy());
-        assertEquals(1235, declaration.getEmittedAtMillis());
-        publisher.close();
-    }
-
-    @Test
-    void noMoreWritesRejectsInvalidIdentityAndPartition() {
-        var producer = producer(true);
-        var plan = PartitionRoutingPlan.forTopic(1, 1, NODE_ID);
-        var registry = routingState(plan);
-        var publisher = publisher(producer, plan, registry);
-
-        assertThrows(
-            ExecutionException.class,
-            () -> publisher.publishNoMoreWrites("", 0, NODE_ID).get(1, TimeUnit.SECONDS)
-        );
-        assertThrows(
-            ExecutionException.class,
-            () -> publisher.publishNoMoreWrites(NODE_ID, 1, NODE_ID).get(1, TimeUnit.SECONDS)
-        );
-        publisher.close();
-    }
-
-    @Test
-    void trafficFailureKeepsConnectionOpenAndStopsDeclarations() throws Exception {
+    void replacementAssignmentsAreInstalledInMembershipCallbackOrder() throws Exception {
         var producer = producer(false);
-        var plan = PartitionRoutingPlan.forTopic(1, 1, NODE_ID);
-        var registry = routingState(plan);
-        var publisher = publisher(producer, plan, registry);
-        registry.register("connection", 0);
+        var routingState = new CaptureRoutingState(ACTIVATION_ID, 2);
+        try (var publisher = publisher(producer, routingState)) {
+            var first = publisher.installAssignment(List.of(0));
+            var second = publisher.installAssignment(List.of(1));
+            awaitHistorySize(producer, 1);
 
-        var finalSend = publisher.publishTraffic("connection", 0, new byte[] { 1 }, true);
-        awaitHistorySize(producer, 1);
-        assertTrue(producer.errorNext(new IllegalStateException("send failed")));
+            assertFalse(first.isDone());
+            assertFalse(second.isDone());
+            assertHeartbeat(producer.history().get(0), "activation:1", 0, LONG_HEARTBEAT_INTERVAL);
 
-        assertThrows(ExecutionException.class, () -> finalSend.get(1, TimeUnit.SECONDS));
-        assertEquals(List.of("connection"), registry.snapshot(0));
-        var snapshot = publisher.publishLivenessSnapshotNow();
-        assertThrows(ExecutionException.class, () -> snapshot.get(1, TimeUnit.SECONDS));
-        assertEquals(1, producer.history().size());
-        publisher.close();
-    }
+            assertTrue(producer.completeNext());
+            assertEquals("activation:1", first.get(1, TimeUnit.SECONDS));
+            awaitHistorySize(producer, 2);
+            assertHeartbeat(producer.history().get(1), "activation:2", 1, LONG_HEARTBEAT_INTERVAL);
 
-    @Test
-    void terminalGateFailsInFlightTrafficWithoutRemovingTheConnection() throws Exception {
-        var producer = producer(false);
-        var plan = PartitionRoutingPlan.forTopic(1, 1, NODE_ID);
-        var registry = routingState(plan);
-        var gate = new CaptureKafkaWriteGate(Duration.ofSeconds(1), new AtomicLong()::get);
-        gate.recordSuccessfulPoll();
-        var publisher = publisher(producer, plan, registry, gate);
-        registry.register("connection", 0);
-
-        var finalSend = publisher.publishTraffic("connection", 0, new byte[] { 1 }, true);
-        awaitHistorySize(producer, 1);
-        var terminalFailure = new IllegalStateException("membership lost");
-        gate.trip(terminalFailure);
-
-        var failure = assertThrows(
-            ExecutionException.class,
-            () -> finalSend.get(1, TimeUnit.SECONDS)
-        );
-        assertEquals(terminalFailure, failure.getCause());
-        assertEquals(List.of("connection"), registry.snapshot(0));
-
-        assertTrue(producer.completeNext());
-        assertEquals(List.of("connection"), registry.snapshot(0));
-        publisher.close();
-    }
-
-    @Test
-    void aLaterSuccessfulPollCannotReopenAStalePublisher() throws Exception {
-        var producer = producer(true);
-        var plan = PartitionRoutingPlan.forTopic(1, 1, NODE_ID);
-        var registry = routingState(plan);
-        var ticker = new AtomicLong();
-        var gate = new CaptureKafkaWriteGate(Duration.ofSeconds(1), ticker::get);
-        gate.recordSuccessfulPoll();
-        var publisher = publisher(producer, plan, registry, gate);
-        registry.register("connection", 0);
-
-        publisher.publishTraffic("connection", 0, new byte[] { 1 }, false)
-            .get(1, TimeUnit.SECONDS);
-        ticker.set(Duration.ofSeconds(2).toNanos());
-        assertThrows(
-            ExecutionException.class,
-            () -> publisher.publishTraffic("connection", 0, new byte[] { 2 }, false)
-                .get(1, TimeUnit.SECONDS)
-        );
-        gate.recordSuccessfulPoll();
-        assertThrows(
-            ExecutionException.class,
-            () -> publisher.publishTraffic("connection", 0, new byte[] { 3 }, false)
-                .get(1, TimeUnit.SECONDS)
-        );
-
-        assertEquals(1, producer.history().size());
-        publisher.close();
-    }
-
-    @Test
-    void trafficRecordsUseExplicitPlanPartitionAndTypeHeader() throws Exception {
-        var producer = producer(true);
-        var plan = PartitionRoutingPlan.forTopic(8, 3, NODE_ID);
-        var registry = routingState(plan);
-        var publisher = publisher(producer, plan, registry);
-        var connection = "connection";
-        int partition = plan.partitionFor(connection);
-        registry.register(connection, partition);
-
-        publisher.publishTraffic(connection, partition, new byte[] { 1, 2 }, false)
-            .get(1, TimeUnit.SECONDS);
-
-        ProducerRecord<String, byte[]> record = producer.history().get(0);
-        assertEquals(partition, record.partition());
-        assertTrue(plan.getSelectedPartitions().contains(record.partition()));
-        assertTrue(CaptureKafkaPublisher.isRecordType(
-            record.headers(),
-            CaptureKafkaPublisher.TRAFFIC_RECORD_TYPE
-        ));
-        publisher.close();
-    }
-
-    @Test
-    void trafficUsesThePartitionStoredAtAdmissionInsteadOfRecomputingTheHashRoute() throws Exception {
-        var producer = producer(true);
-        var plan = PartitionRoutingPlan.forTopic(8, 3, NODE_ID);
-        var registry = routingState(plan);
-        var publisher = publisher(producer, plan, registry);
-        var connection = "connection";
-        int hashPartition = plan.partitionFor(connection);
-        int admittedPartition = plan.getSelectedPartitions()
-            .stream()
-            .filter(partition -> partition != hashPartition)
-            .findFirst()
-            .orElseThrow();
-        registry.register(connection, admittedPartition);
-
-        publisher.publishTraffic(connection, admittedPartition, new byte[] { 1, 2 }, false)
-            .get(1, TimeUnit.SECONDS);
-
-        assertEquals(admittedPartition, producer.history().get(0).partition());
-        assertThrows(
-            ExecutionException.class,
-            () -> publisher.publishTraffic(connection, hashPartition, new byte[] { 3 }, false)
-                .get(1, TimeUnit.SECONDS)
-        );
-        publisher.close();
-    }
-
-    @Test
-    void revokedPartitionSelfReleaseIsOrderedAfterTheFinalTrafficAcknowledgement() throws Exception {
-        var producer = producer(false);
-        var plan = PartitionRoutingPlan.forTopic(1, 1, NODE_ID);
-        var routingState = routingState(plan);
-        var publisher = publisher(producer, plan, routingState);
-        routingState.register("connection", 0);
-        assertEquals(List.of(), routingState.revokePartitions(List.of(0)));
-
-        var finalSend = publisher.publishTraffic("connection", 0, new byte[] { 1 }, true);
-        awaitHistorySize(producer, 1);
-        assertTrue(producer.completeNext());
-        finalSend.get(1, TimeUnit.SECONDS);
-        awaitHistorySize(producer, 2);
-
-        var releaseRecord = producer.history().get(1);
-        assertTrue(CaptureKafkaPublisher.isRecordType(
-            releaseRecord.headers(),
-            CaptureKafkaPublisher.NO_MORE_WRITES_RECORD_TYPE
-        ));
-        var release = ProxyNoMoreWrites.parseFrom(releaseRecord.value());
-        assertEquals(NODE_ID, release.getNodeId());
-        assertEquals(NODE_ID, release.getDeclaredBy());
-        assertEquals(0, release.getPartition());
-        assertTrue(producer.completeNext());
-        publisher.close();
-    }
-
-    @Test
-    void gracefulShutdownDeclaresEveryPartitionAfterAllConnectionsDrain() throws Exception {
-        var producer = producer(true);
-        var plan = PartitionRoutingPlan.forTopic(3, 3, NODE_ID);
-        var routingState = routingState(plan);
-        var publisher = publisher(producer, plan, routingState);
-        routingState.register("connection", 1);
-        publisher.publishTraffic("connection", 1, new byte[] { 1 }, true)
-            .get(1, TimeUnit.SECONDS);
-
-        publisher.prepareForGracefulShutdown().get(1, TimeUnit.SECONDS);
-
-        assertEquals(4, producer.history().size());
-        assertTrue(CaptureKafkaPublisher.isRecordType(
-            producer.history().get(0).headers(),
-            CaptureKafkaPublisher.TRAFFIC_RECORD_TYPE
-        ));
-        assertEquals(
-            List.of(0, 1, 2),
-            producer.history().subList(1, 4).stream().map(ProducerRecord::partition).toList()
-        );
-        for (var record : producer.history().subList(1, 4)) {
-            var release = ProxyNoMoreWrites.parseFrom(record.value());
-            assertEquals(NODE_ID, release.getNodeId());
-            assertEquals(NODE_ID, release.getDeclaredBy());
+            assertTrue(producer.completeNext());
+            assertEquals("activation:2", second.get(1, TimeUnit.SECONDS));
+            assertEquals("activation:2", routingState.currentWriterNodeId());
+            assertEquals(List.of(1), routingState.assignedPartitions());
         }
-        publisher.close();
     }
 
     @Test
-    void gracefulShutdownRefusesToDeclareWhileAConnectionIsStillOpen() {
+    void heartbeatAcknowledgementDeadlinePermanentlyFailsThePublisher() throws Exception {
+        var producer = producer(false);
+        var routingState = new CaptureRoutingState(ACTIVATION_ID, 1);
+        var writeGate = new CaptureKafkaWriteGate();
+        var terminalFailure = new AtomicReference<Throwable>();
+        writeGate.addTerminalFailureListener(terminalFailure::set);
+        try (var publisher = new CaptureKafkaPublisher(
+            producer,
+            TOPIC,
+            routingState,
+            MESSAGE_SIZE,
+            Duration.ofMillis(20),
+            Duration.ofMillis(75),
+            Clock.fixed(Instant.ofEpochMilli(1_234), ZoneOffset.UTC),
+            writeGate,
+            ignored -> {}
+        )) {
+            var install = publisher.installAssignment(List.of(0));
+            awaitHistorySize(producer, 1);
+
+            var failure = assertThrows(
+                ExecutionException.class,
+                () -> install.get(2, TimeUnit.SECONDS)
+            ).getCause();
+            assertInstanceOf(TimeoutException.class, failure);
+            assertSame(failure, terminalFailure.get());
+            assertEquals(List.of(), routingState.assignedPartitions());
+            assertEquals(1, producer.history().size(), "The application never resubmits a timed-out send");
+
+            assertTrue(producer.completeNext(), "Kafka may acknowledge after the application deadline");
+            Thread.sleep(25);
+            assertEquals(List.of(), routingState.assignedPartitions());
+            assertEquals(1, producer.history().size());
+        }
+    }
+
+    @Test
+    void acknowledgementThatArrivesBeforeDeadlineWinsEvenIfPublisherThreadProcessesItLater()
+        throws Exception {
+        var producer = new CallbackThenBlockProducer(Duration.ofMillis(100));
+        var routingState = new CaptureRoutingState(ACTIVATION_ID, 1);
+        try (var publisher = new CaptureKafkaPublisher(
+            producer,
+            TOPIC,
+            routingState,
+            MESSAGE_SIZE,
+            Duration.ofMillis(20),
+            Duration.ofMillis(75),
+            Clock.fixed(Instant.ofEpochMilli(1_234), ZoneOffset.UTC),
+            CaptureKafkaWriteGate.unrestricted(),
+            ignored -> {}
+        )) {
+            assertEquals(
+                "activation:1",
+                publisher.installAssignment(List.of(0)).get(1, TimeUnit.SECONDS)
+            );
+            assertEquals(List.of(0), routingState.assignedPartitions());
+        }
+    }
+
+    @Test
+    void heartbeatDeadlineExpiresWhileThePublisherLaneIsBlocked() throws Exception {
+        var producer = new BlockedSendProducer(Duration.ofMillis(200));
+        var routingState = new CaptureRoutingState(ACTIVATION_ID, 1);
+        var writeGate = new CaptureKafkaWriteGate();
+        var terminalFailure = new AtomicReference<Throwable>();
+        writeGate.addTerminalFailureListener(terminalFailure::set);
+        try (var publisher = new CaptureKafkaPublisher(
+            producer,
+            TOPIC,
+            routingState,
+            MESSAGE_SIZE,
+            Duration.ofMillis(20),
+            Duration.ofMillis(75),
+            Clock.fixed(Instant.ofEpochMilli(1_234), ZoneOffset.UTC),
+            writeGate,
+            ignored -> {}
+        )) {
+            var assignment = publisher.installAssignment(List.of(0));
+            awaitValue(terminalFailure, 150, TimeUnit.MILLISECONDS);
+
+            assertInstanceOf(TimeoutException.class, terminalFailure.get());
+            assertSame(terminalFailure.get(), writeGate.failureIfNotWritable());
+            assertEquals(List.of(), routingState.assignedPartitions());
+
+            var failure = assertThrows(
+                ExecutionException.class,
+                () -> assignment.get(1, TimeUnit.SECONDS)
+            ).getCause();
+            assertInstanceOf(TimeoutException.class, failure);
+        }
+    }
+
+    @Test
+    void periodicHeartbeatWaitsForThePreviousHeartbeatAcknowledgement() throws Exception {
+        var producer = producer(false);
+        var routingState = new CaptureRoutingState(ACTIVATION_ID, 1);
+        try (var publisher = new CaptureKafkaPublisher(
+            producer,
+            TOPIC,
+            routingState,
+            MESSAGE_SIZE,
+            Duration.ofMillis(20),
+            Duration.ofMillis(500),
+            Clock.fixed(Instant.ofEpochMilli(1_234), ZoneOffset.UTC),
+            CaptureKafkaWriteGate.unrestricted(),
+            ignored -> {}
+        )) {
+            var install = publisher.installAssignment(List.of(0));
+            awaitHistorySize(producer, 1);
+            assertTrue(producer.completeNext());
+            install.get(1, TimeUnit.SECONDS);
+
+            awaitHistorySize(producer, 2);
+            Thread.sleep(80);
+            assertEquals(2, producer.history().size());
+
+            assertTrue(producer.completeNext());
+            awaitHistorySize(producer, 3);
+            assertHeartbeat(producer.history().get(2), "activation:1", 0, Duration.ofMillis(20));
+        }
+    }
+
+    @Test
+    void heartbeatBrokerTimeAtExpirationBoundaryCompromisesCapture() throws Exception {
+        var producer = new TimestampingProducer(sendIndex -> sendIndex == 0 ? 1_000L : 1_030L);
+        var routingState = new CaptureRoutingState(ACTIVATION_ID, 1);
+        var writeGate = new CaptureKafkaWriteGate();
+        var terminalFailure = new AtomicReference<Throwable>();
+        writeGate.addTerminalFailureListener(terminalFailure::set);
+        try (var publisher = new CaptureKafkaPublisher(
+            producer,
+            TOPIC,
+            routingState,
+            MESSAGE_SIZE,
+            Duration.ofMillis(10),
+            Duration.ofMillis(30),
+            Clock.fixed(Instant.ofEpochMilli(1_234), ZoneOffset.UTC),
+            writeGate,
+            ignored -> {}
+        )) {
+            publisher.installAssignment(List.of(0)).get(1, TimeUnit.SECONDS);
+            awaitHistorySize(producer, 2);
+            awaitValue(terminalFailure, 1, TimeUnit.SECONDS);
+
+            assertInstanceOf(IllegalStateException.class, terminalFailure.get());
+            var writerPartition = new CaptureRoutingState.WriterPartition("activation:1", 0);
+            assertEquals(1_000L, routingState.lastAcceptedHeartbeatLogAppendTime(writerPartition));
+        }
+    }
+
+    @Test
+    void applicationVisibleKafkaFailureStopsAllFutureWritesWithoutResubmission() throws Exception {
+        var producer = producer(false);
+        var routingState = new CaptureRoutingState(ACTIVATION_ID, 1);
+        try (var publisher = publisher(producer, routingState)) {
+            installAndAcknowledge(producer, publisher, List.of(0));
+            var route = routingState.routeNewConnection("connection");
+            var first = publisher.publishTraffic(route, traffic(route, false), false);
+            awaitHistorySize(producer, 2);
+
+            var sendFailure = new IllegalStateException("send failed");
+            assertTrue(producer.errorNext(sendFailure));
+            assertSame(
+                sendFailure,
+                assertThrows(ExecutionException.class, () -> first.get(1, TimeUnit.SECONDS)).getCause()
+            );
+
+            var rejected = publisher.publishTraffic(route, traffic(route, false), false);
+            assertSame(
+                sendFailure,
+                assertThrows(ExecutionException.class, () -> rejected.get(1, TimeUnit.SECONDS)).getCause()
+            );
+            assertEquals(2, producer.history().size());
+        }
+    }
+
+    @Test
+    void trafficUsesCaptureRecordEnvelopeAndNoKafkaTypeHeaders() throws Exception {
+        var producer = producer(false);
+        var routingState = new CaptureRoutingState(ACTIVATION_ID, 1);
+        try (var publisher = publisher(producer, routingState)) {
+            installAndAcknowledge(producer, publisher, List.of(0));
+            var route = routingState.routeNewConnection("connection");
+            var expected = traffic(route, false);
+
+            var publication = publisher.publishTraffic(route, expected, false);
+            awaitHistorySize(producer, 2);
+            var record = producer.history().get(1);
+
+            assertEquals(TOPIC, record.topic());
+            assertEquals(route.partition(), record.partition());
+            assertEquals(route.connectionId(), record.key());
+            assertEquals(0, record.headers().toArray().length);
+            var captureRecord = CaptureRecord.parseFrom(record.value());
+            assertTrue(captureRecord.hasTrafficStream());
+            assertEquals(expected, captureRecord.getTrafficStream());
+
+            assertTrue(producer.completeNext());
+            publication.get(1, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    void finalTrafficAcknowledgementRemovesTheConnectionAndAllowsOldWriterRetirement() throws Exception {
+        var producer = producer(false);
+        var routingState = new CaptureRoutingState(ACTIVATION_ID, 1);
+        try (var publisher = publisher(producer, routingState)) {
+            installAndAcknowledge(producer, publisher, List.of(0));
+            var oldRoute = routingState.routeNewConnection("connection");
+
+            var replacement = publisher.installAssignment(List.of(0));
+            awaitHistorySize(producer, 2);
+            assertTrue(producer.completeNext());
+            assertEquals("activation:2", replacement.get(1, TimeUnit.SECONDS));
+            assertEquals(
+                CaptureRoutingState.WriterStatus.DRAINING,
+                routingState.writerStatus(oldRoute.writerNodeId(), oldRoute.partition())
+            );
+
+            var finalPublication = publisher.publishTraffic(oldRoute, traffic(oldRoute, true), true);
+            awaitHistorySize(producer, 3);
+            assertEquals(1, routingState.size());
+            assertTrue(producer.completeNext());
+            finalPublication.get(1, TimeUnit.SECONDS);
+
+            awaitWriterStatus(
+                routingState,
+                oldRoute.writerNodeId(),
+                CaptureRoutingState.WriterStatus.RETIRED
+            );
+            assertEquals(0, routingState.size());
+            assertEquals(3, producer.history().size(), "Retirement publishes no Kafka terminal record");
+        }
+    }
+
+    @Test
+    void orderlyRetirementIsEntirelyLocalAfterConnectionsAreGone() throws Exception {
+        var producer = producer(false);
+        var routingState = new CaptureRoutingState(ACTIVATION_ID, 2);
+        try (var publisher = publisher(producer, routingState)) {
+            installAndAcknowledge(producer, publisher, List.of(0, 1));
+            var recordCountBeforeRetirement = producer.history().size();
+
+            publisher.retireAllWriters().get(1, TimeUnit.SECONDS);
+
+            assertTrue(routingState.allWriterPartitionsRetired());
+            assertEquals(recordCountBeforeRetirement, producer.history().size());
+        }
+    }
+
+    @Test
+    void mismatchedTrafficIdentityIsAnUnstableProcessFailure() throws Exception {
+        var producer = producer(false);
+        var routingState = new CaptureRoutingState(ACTIVATION_ID, 1);
+        var unstableFailure = new AtomicReference<Throwable>();
+        try (var publisher = publisher(producer, routingState, unstableFailure::set)) {
+            installAndAcknowledge(producer, publisher, List.of(0));
+            var route = routingState.routeNewConnection("connection");
+            var mismatched = traffic(route, false).toBuilder().setConnectionId("other").build();
+
+            var publication = publisher.publishTraffic(route, mismatched, false);
+            var failure = assertThrows(
+                ExecutionException.class,
+                () -> publication.get(1, TimeUnit.SECONDS)
+            ).getCause();
+
+            assertInstanceOf(CorruptedCaptureStateException.class, failure);
+            assertSame(failure, unstableFailure.get());
+            assertEquals(1, producer.history().size());
+        }
+    }
+
+    @Test
+    void criticalMutationValidationRequiresMatchingPartitionAndPositiveFreshBrokerTime() throws Exception {
+        var producer = producer(false);
+        var routingState = new CaptureRoutingState(ACTIVATION_ID, 2);
+        try (var publisher = publisher(producer, routingState)) {
+            installAndAcknowledge(producer, publisher, List.of(0));
+            var route = routingState.routeNewConnection("connection");
+
+            publisher.validateCriticalMutationTrafficAcknowledgement(
+                route,
+                metadata(route.partition(), 1_001L)
+            );
+            assertThrows(
+                IllegalStateException.class,
+                () -> publisher.validateCriticalMutationTrafficAcknowledgement(
+                    route,
+                    metadata(route.partition() + 1, 1_001L)
+                )
+            );
+        }
+    }
+
+    @Test
+    void payloadLimitFailurePermanentlyStopsPublisher() throws Exception {
+        var producer = producer(false);
+        var routingState = new CaptureRoutingState(ACTIVATION_ID, 1);
+        try (var publisher = new CaptureKafkaPublisher(
+            producer,
+            TOPIC,
+            routingState,
+            KafkaCaptureFactory.KAFKA_MESSAGE_OVERHEAD_BYTES + 8,
+            LONG_HEARTBEAT_INTERVAL,
+            LONG_EXPIRATION_INTERVAL,
+            Clock.fixed(Instant.ofEpochMilli(1_234), ZoneOffset.UTC),
+            CaptureKafkaWriteGate.unrestricted(),
+            ignored -> {}
+        )) {
+            installAndAcknowledge(producer, publisher, List.of(0));
+            var route = routingState.routeNewConnection("connection");
+
+            var publication = publisher.publishTraffic(route, traffic(route, false), false);
+            assertInstanceOf(
+                IllegalArgumentException.class,
+                assertThrows(
+                    ExecutionException.class,
+                    () -> publication.get(1, TimeUnit.SECONDS)
+                ).getCause()
+            );
+            assertEquals(1, producer.history().size());
+        }
+    }
+
+    @Test
+    void constructorRejectsInvalidHeartbeatIntervals() {
         var producer = producer(true);
-        var plan = PartitionRoutingPlan.forTopic(1, 1, NODE_ID);
-        var routingState = routingState(plan);
-        var publisher = publisher(producer, plan, routingState);
-        routingState.register("connection", 0);
+        var routingState = new CaptureRoutingState(ACTIVATION_ID, 1);
 
         assertThrows(
-            ExecutionException.class,
-            () -> publisher.prepareForGracefulShutdown().get(1, TimeUnit.SECONDS)
+            IllegalArgumentException.class,
+            () -> new CaptureKafkaPublisher(
+                producer,
+                TOPIC,
+                routingState,
+                MESSAGE_SIZE,
+                Duration.ofSeconds(30),
+                Duration.ofSeconds(30),
+                ignored -> {}
+            )
         );
-        assertEquals(0, producer.history().size());
-        publisher.close();
     }
 
     private static CaptureKafkaPublisher publisher(
         MockProducer<String, byte[]> producer,
-        PartitionRoutingPlan plan,
         CaptureRoutingState routingState
     ) {
-        return publisher(
-            producer,
-            plan,
-            routingState,
-            Clock.fixed(Instant.ofEpochMilli(1234), ZoneOffset.UTC)
-        );
+        return publisher(producer, routingState, ignored -> {});
     }
 
     private static CaptureKafkaPublisher publisher(
         MockProducer<String, byte[]> producer,
-        PartitionRoutingPlan plan,
         CaptureRoutingState routingState,
-        Clock clock
+        Consumer<Throwable> unstableProcessFailureCallback
     ) {
         return new CaptureKafkaPublisher(
             producer,
             TOPIC,
-            NODE_ID,
-            plan,
             routingState,
             MESSAGE_SIZE,
-            Duration.ofDays(1),
-            clock
+            LONG_HEARTBEAT_INTERVAL,
+            LONG_EXPIRATION_INTERVAL,
+            Clock.fixed(Instant.ofEpochMilli(1_234), ZoneOffset.UTC),
+            CaptureKafkaWriteGate.unrestricted(),
+            unstableProcessFailureCallback
         );
     }
 
-    private static CaptureKafkaPublisher publisher(
+    private static TrafficStream traffic(
+        CaptureRoutingState.ConnectionRoute route,
+        boolean terminal
+    ) {
+        var builder = TrafficStream.newBuilder()
+            .setNodeId(route.writerNodeId())
+            .setConnectionId(route.connectionId())
+            .setNumberOfThisLastChunk(terminal ? 1 : 0)
+            .addSubStream(
+                TrafficObservation.newBuilder()
+                    .setTs(Timestamp.newBuilder().setSeconds(1))
+                    .setConnectionObservationSequence(1)
+            );
+        if (terminal) {
+            builder.setSubStream(
+                0,
+                builder.getSubStream(0).toBuilder()
+                    .setClose(CloseObservation.getDefaultInstance())
+                    .build()
+            );
+        }
+        return builder.build();
+    }
+
+    private static void assertHeartbeat(
+        ProducerRecord<String, byte[]> record,
+        String writerNodeId,
+        int partition,
+        Duration interval
+    ) throws Exception {
+        assertEquals(TOPIC, record.topic());
+        assertEquals(partition, record.partition());
+        assertEquals(writerNodeId + ":heartbeat:" + partition, record.key());
+        assertEquals(0, record.headers().toArray().length);
+        var captureRecord = CaptureRecord.parseFrom(record.value());
+        assertTrue(captureRecord.hasWriterPartitionHeartbeat());
+        var heartbeat = captureRecord.getWriterPartitionHeartbeat();
+        assertEquals(writerNodeId, heartbeat.getWriterNodeId());
+        assertEquals(interval.toMillis(), heartbeat.getHeartbeatIntervalMillis());
+        assertEquals(1_234L, heartbeat.getEmittedAtMillis());
+    }
+
+    private static void installAndAcknowledge(
         MockProducer<String, byte[]> producer,
-        PartitionRoutingPlan plan,
-        CaptureRoutingState routingState,
-        CaptureKafkaWriteGate writeGate
-    ) {
-        return new CaptureKafkaPublisher(
-            producer,
-            TOPIC,
-            NODE_ID,
-            plan,
-            routingState,
-            MESSAGE_SIZE,
-            Duration.ofDays(1),
-            Clock.fixed(Instant.ofEpochMilli(1234), ZoneOffset.UTC),
-            writeGate
-        );
+        CaptureKafkaPublisher publisher,
+        List<Integer> partitions
+    ) throws Exception {
+        var expectedHistory = producer.history().size() + partitions.size();
+        var install = publisher.installAssignment(partitions);
+        awaitHistorySize(producer, expectedHistory);
+        for (int ignored : partitions) {
+            assertTrue(producer.completeNext());
+        }
+        install.get(1, TimeUnit.SECONDS);
     }
 
-    private static CaptureRoutingState routingState(PartitionRoutingPlan plan) {
-        return new CaptureRoutingState(
-            plan.getTopicPartitionCount(),
-            plan.getSelectedPartitions()
+    private static RecordMetadata metadata(int partition, long timestamp) {
+        return new RecordMetadata(
+            new TopicPartition(TOPIC, partition),
+            0,
+            0,
+            timestamp,
+            0,
+            1
         );
     }
 
     private static MockProducer<String, byte[]> producer(boolean autoComplete) {
-        return new MockProducer<>(
+        return new LogAppendTimeMockProducer(
             autoComplete,
-            null,
             new StringSerializer(),
             new ByteArraySerializer()
         );
     }
 
-    private static List<String> openConnections(ProducerRecord<String, byte[]> record) throws Exception {
-        return snapshotChunk(record)
-            .getOpenConnectionsList()
-            .stream()
-            .map(com.google.protobuf.ByteString::toStringUtf8)
-            .toList();
-    }
-
-    private static ProxyLivenessSnapshotChunk snapshotChunk(ProducerRecord<String, byte[]> record)
-        throws Exception {
-        return ProxyLivenessSnapshotChunk.parseFrom(record.value());
-    }
-
     private static void awaitHistorySize(MockProducer<String, byte[]> producer, int expected)
         throws InterruptedException {
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1);
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
         while (producer.history().size() < expected && System.nanoTime() < deadline) {
             Thread.sleep(1);
         }
         assertEquals(expected, producer.history().size());
     }
 
-    private static final class SequenceClock extends Clock {
-        private final long[] timestamps;
-        private int index;
+    private static void awaitWriterStatus(
+        CaptureRoutingState state,
+        String writerNodeId,
+        CaptureRoutingState.WriterStatus expected
+    ) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1);
+        while (state.writerStatus(writerNodeId, 0) != expected && System.nanoTime() < deadline) {
+            Thread.sleep(1);
+        }
+        assertEquals(expected, state.writerStatus(writerNodeId, 0));
+    }
 
-        private SequenceClock(long... timestamps) {
-            this.timestamps = timestamps.clone();
+    private static void awaitValue(
+        AtomicReference<?> reference,
+        long timeout,
+        TimeUnit unit
+    ) throws InterruptedException {
+        long deadline = System.nanoTime() + unit.toNanos(timeout);
+        while (reference.get() == null && System.nanoTime() < deadline) {
+            Thread.sleep(1);
+        }
+        assertFalse(reference.get() == null);
+    }
+
+    private static final class TimestampingProducer extends MockProducer<String, byte[]> {
+        private final LongUnaryOperator timestampForSendIndex;
+        private long sendIndex;
+
+        private TimestampingProducer(LongUnaryOperator timestampForSendIndex) {
+            super(false, null, new StringSerializer(), new ByteArraySerializer());
+            this.timestampForSendIndex = timestampForSendIndex;
         }
 
         @Override
-        public ZoneId getZone() {
-            return ZoneOffset.UTC;
+        public synchronized Future<RecordMetadata> send(
+            ProducerRecord<String, byte[]> record,
+            Callback callback
+        ) {
+            super.send(record, (ignoredMetadata, ignoredFailure) -> {});
+            var metadata = metadata(
+                record.partition(),
+                timestampForSendIndex.applyAsLong(sendIndex++)
+            );
+            callback.onCompletion(metadata, null);
+            return CompletableFuture.completedFuture(metadata);
+        }
+    }
+
+    private static final class CallbackThenBlockProducer extends MockProducer<String, byte[]> {
+        private final Duration publisherThreadBlock;
+
+        private CallbackThenBlockProducer(Duration publisherThreadBlock) {
+            super(false, null, new StringSerializer(), new ByteArraySerializer());
+            this.publisherThreadBlock = publisherThreadBlock;
         }
 
         @Override
-        public Clock withZone(ZoneId zone) {
-            if (!ZoneOffset.UTC.equals(zone)) {
-                throw new IllegalArgumentException("Only UTC is supported");
+        public synchronized Future<RecordMetadata> send(
+            ProducerRecord<String, byte[]> record,
+            Callback callback
+        ) {
+            super.send(record, (ignoredMetadata, ignoredFailure) -> {});
+            var metadata = metadata(record.partition(), 1_000L);
+            callback.onCompletion(metadata, null);
+            try {
+                Thread.sleep(publisherThreadBlock.toMillis());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(e);
             }
-            return this;
+            return CompletableFuture.completedFuture(metadata);
+        }
+    }
+
+    private static final class BlockedSendProducer extends MockProducer<String, byte[]> {
+        private final Duration publisherThreadBlock;
+
+        private BlockedSendProducer(Duration publisherThreadBlock) {
+            super(false, null, new StringSerializer(), new ByteArraySerializer());
+            this.publisherThreadBlock = publisherThreadBlock;
         }
 
         @Override
-        public synchronized Instant instant() {
-            int current = Math.min(index++, timestamps.length - 1);
-            return Instant.ofEpochMilli(timestamps[current]);
+        public synchronized Future<RecordMetadata> send(
+            ProducerRecord<String, byte[]> record,
+            Callback callback
+        ) {
+            super.send(record, (ignoredMetadata, ignoredFailure) -> {});
+            try {
+                Thread.sleep(publisherThreadBlock.toMillis());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(e);
+            }
+            return new CompletableFuture<>();
+        }
+    }
+
+    private static final class LogAppendTimeMockProducer extends MockProducer<String, byte[]> {
+        private LogAppendTimeMockProducer(
+            boolean autoComplete,
+            StringSerializer keySerializer,
+            ByteArraySerializer valueSerializer
+        ) {
+            super(autoComplete, null, keySerializer, valueSerializer);
+        }
+
+        @Override
+        public synchronized Future<RecordMetadata> send(
+            ProducerRecord<String, byte[]> record,
+            Callback callback
+        ) {
+            return super.send(record, (metadata, failure) -> {
+                if (failure != null || metadata == null) {
+                    callback.onCompletion(metadata, failure);
+                    return;
+                }
+                callback.onCompletion(
+                    new RecordMetadata(
+                        new TopicPartition(metadata.topic(), metadata.partition()),
+                        metadata.offset(),
+                        0,
+                        1_000L + metadata.offset(),
+                        metadata.serializedKeySize(),
+                        metadata.serializedValueSize()
+                    ),
+                    null
+                );
+            });
         }
     }
 }

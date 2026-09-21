@@ -9,9 +9,9 @@ separately.
 
 The pipeline is the "live capture and replay" (change-data-capture) path used to mirror traffic
 from a source cluster onto a target cluster during a migration. The current design contracts are
-[`captureAndReplayArchitecture.md`](./captureAndReplayArchitecture.md),
-[`proxyCaptureProtocol.md`](./proxyCaptureProtocol.md), and
-[`replayerProcessingAndCommitArchitecture.md`](./replayerProcessingAndCommitArchitecture.md). This
+[`captureAndReplay/captureAndReplayArchitecture.md`](captureAndReplay/captureAndReplayArchitecture.md),
+[`captureAndReplay/proxyCaptureProtocol.md`](captureAndReplay/proxyCaptureProtocol.md), and
+[`captureAndReplay/replayerProcessingAndCommitArchitecture.md`](captureAndReplay/replayerProcessingAndCommitArchitecture.md). This
 document is concerned specifically with how to load-test that pipeline.
 
 ---
@@ -66,7 +66,7 @@ conflict with the current design contracts linked above, the design contracts ar
                   │  │ memory: LOW while Kafka     │                                 │
                   │  │ keeps up                    │                                 │
                   │  └─────────────┬───────────────┘                                 │
-                  │                │ TrafficRecord protobufs (observed HTTP bytes)  │
+                  │                │ TrafficStream protobufs (observed HTTP bytes)  │
                   └────────────────┼─────────────────────────────────────────────────┘
                                    │  KafkaCaptureFactory (captureKafkaOffloader)
                                    ▼
@@ -189,7 +189,7 @@ Specifically:
 | Failure | How to induce | What to assert |
 |---|---|---|
 | Slow Kafka writes | Underscale Kafka brokers / throttle broker network | Critical Mutation Traffic latency rises while awaiting acknowledgement; in-flight state stays bounded; no unbounded buffering |
-| Kafka outage | Stop / partition brokers mid-test | Proxy behavior follows its configured capture mode; recovery does not lose acknowledged `TrafficRecord` data |
+| Kafka outage | Stop / partition brokers mid-test | Proxy behavior follows its configured capture mode; recovery does not lose acknowledged `TrafficStream` data |
 
 ### Traffic Replayer ↔ Target cluster
 
@@ -458,11 +458,11 @@ and OpenSearch Benchmark tooling where it fits.
 
 ## Related Documents
 
-- [`captureAndReplayArchitecture.md`](./captureAndReplayArchitecture.md) — current top-level
+- [`captureAndReplay/captureAndReplayArchitecture.md`](captureAndReplay/captureAndReplayArchitecture.md) — current top-level
   capture-and-replay design contract.
-- [`proxyCaptureProtocol.md`](./proxyCaptureProtocol.md) — current proxy scaling, manifests, and
+- [`captureAndReplay/proxyCaptureProtocol.md`](captureAndReplay/proxyCaptureProtocol.md) — current proxy scaling, heartbeats, and
   failure protocol.
-- [`replayerProcessingAndCommitArchitecture.md`](./replayerProcessingAndCommitArchitecture.md) —
+- [`captureAndReplay/replayerProcessingAndCommitArchitecture.md`](captureAndReplay/replayerProcessingAndCommitArchitecture.md) —
   current replayer processing, reassignment, and commit design.
 - [`TrafficCaptureAndReplayDesign.md`](./TrafficCaptureAndReplayDesign.md) — retained product and
   component overview.
