@@ -889,3 +889,48 @@ S0-S15, PA1-PA3, and final acceptance are complete.
   retry cap (D9) or add temporary production behavior. The run was stopped after recording this
   disposition.
 - Spotless remains deferred. No broad test-preservation work or new Mockito surface was added.
+
+### Progress checkpoint — S6a explicit target-attempt retry sequence
+
+- Replaced the recursive `sendRequestWithRetries` production path with one
+  `sendSingleRequestAttempt` operation and an event-loop-confined `RetrySequence`. Retry delay,
+  shifted reference time, cancellation, terminal-result ownership, first-write one-shot behavior,
+  and failure propagation remain unchanged.
+- This is a production-only prerequisite for the permit-ownership cutover. Permit acquisition and
+  release remain unchanged in this checkpoint so the next slice can remove the old preparation-
+  owned path atomically instead of introducing a compatibility bridge.
+- `:TrafficCapture:trafficReplayer:compileTestJava -x spotlessJavaCheck -x spotlessJavaApply
+  --parallel --max-workers=8 --no-build-cache` passed in 3 seconds. The existing focused
+  orchestrator lifecycle, first-write retry, target-attempt outcome, and retry-visitor tests passed
+  with `--no-parallel --max-workers=1` in 54 seconds.
+- The required read-only Claude review verified the retry timing calculation, one-shot first-write
+  callback, cancellation precedence, result release/transfer, failure propagation, and event-loop
+  confinement. It returned `NO_ACTIONABLE_FINDINGS`.
+- Spotless remains deferred. No tests, mocks, compatibility APIs, or mutable static state were
+  added.
+
+### Progress checkpoint — S6b target-attempt permit ownership
+
+- Renamed `AsyncPermitPool` to `TargetAttemptPermitProvider` and moved provider injection to the
+  replay orchestrator and each `TargetConnectionOwner`. The preferred CLI names are now
+  `--max-concurrent-target-attempts` and `--maxConcurrentTargetAttempts`; the established request-
+  named aliases remain as required by plan section 7.
+- Removed permit acquisition, cancellation, and ownership from `PreparationCoordinator`,
+  `PreparedActorRequest`, `ReplayEngine`, `RequestTransformerAndSender`, and the accumulation
+  callback path. Queued requests and transformation now hold no target-attempt permit.
+- The connection owner reserves the execution head before requesting its first permit. A retry
+  requests a new permit through that same owner, and the request exchange releases each permit at
+  raw target-attempt outcome or failure, before retry-policy evaluation, source-response waits,
+  backoff, tuple output, or request-processing completion.
+- Pending acquisition is withdrawable during abort. Delivered and active permits are released on
+  cancellation, startup failure, attempt failure, and rejected event-loop continuation.
+- `rg` finds the only production `permitProvider.acquire` call in `TargetConnectionOwner`.
+  `:TrafficCapture:trafficReplayer:compileJava -x spotlessJavaCheck -x spotlessJavaApply
+  --parallel --max-workers=18 --no-build-cache` passed in 8 seconds, and `git diff --check` passed.
+- `compileTestJava` currently stops at four stale test-fixture API errors:
+  `ActorRequestTestUtils` still names the old provider, and `ReplayEngineFactory` has not yet
+  supplied the provider constructor argument. These callers are assigned to the next bounded
+  outside-in test migration; no compatibility production API was added.
+- At the user's explicit direction, the in-agent Claude review was waived because an independent
+  Claude review will start from the committed series. Spotless and broad test-suite work remain
+  deferred.
