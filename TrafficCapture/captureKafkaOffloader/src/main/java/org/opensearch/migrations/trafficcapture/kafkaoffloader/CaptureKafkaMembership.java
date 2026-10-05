@@ -18,10 +18,13 @@ import org.apache.kafka.common.errors.RetriableException;
 /**
  * Maintains Kafka group membership for load-balancing newly accepted source connections. The
  * consumer is deliberately paused and never processes traffic records; its partition set is input
- * to a new routing generation, not an ownership boundary for connections that already exist.
+ * to the latest desired routing generation, not an ownership boundary for connections that already
+ * exist.
  *
- * <p>A nonempty Kafka assignment is made usable only after its routing generation has persisted an
- * initial heartbeat on every writer-partition lane. Revocations, partition loss, and later
+ * <p>Every callback republishes the whole current assignment, so only the newest one can become
+ * usable, and it does so only after its routing generation has persisted an initial heartbeat on
+ * every writer-partition lane. An empty assignment therefore cancels an initializing replacement
+ * without invalidating the last usable generation. Revocations, partition loss, and later
  * membership failure do not invalidate immutable routes from an earlier generation, so existing
  * connections can drain without changing writer identity or partition.
  */
@@ -86,23 +89,25 @@ public final class CaptureKafkaMembership implements ConsumerRebalanceListener, 
         validateTopic(partitions);
         kafkaAssignment.addAll(partitionNumbers(partitions));
         consumer.pause(partitions);
-        if (kafkaAssignment.isEmpty()) {
-            return;
-        }
         var kafkaAssignmentSnapshot = List.copyOf(kafkaAssignment);
         routingGenerationPublisher.initializeRoutingGeneration(kafkaAssignmentSnapshot)
-            .whenComplete((writerNodeId, failure) -> {
+            .whenComplete((activatedWriterNodeId, failure) -> {
                 if (failure != null) {
                     routingGenerationPublisher.stopAfterFailure(failure);
-                    return;
-                }
-                log.atInfo()
-                    .setMessage("Initialized proxy routing writer {} for partitions {}")
-                    .addArgument(writerNodeId)
-                    .addArgument(routingState.activeRoutingPartitions())
-                    .log();
-                if (initialRoutingReadyReported.compareAndSet(false, true)) {
-                    initialRoutingReadyCallback.run();
+                } else if (activatedWriterNodeId.isEmpty()) {
+                    log.atDebug()
+                        .setMessage("Kafka assignment {} was superseded before routing activation")
+                        .addArgument(kafkaAssignmentSnapshot)
+                        .log();
+                } else {
+                    log.atInfo()
+                        .setMessage("Activated proxy routing writer {} for partitions {}")
+                        .addArgument(activatedWriterNodeId.get())
+                        .addArgument(routingState.activeRoutingPartitions())
+                        .log();
+                    if (initialRoutingReadyReported.compareAndSet(false, true)) {
+                        initialRoutingReadyCallback.run();
+                    }
                 }
             });
     }

@@ -5,6 +5,8 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
@@ -33,6 +35,7 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -62,34 +65,210 @@ class CaptureKafkaPublisherTest {
             assertFalse(install.isDone());
             assertTrue(producer.completeNext());
 
-            assertEquals("activation:1", install.get(1, TimeUnit.SECONDS));
+            assertEquals(Optional.of("activation:1"), install.get(1, TimeUnit.SECONDS));
             assertEquals(List.of(0, 2), routingState.activeRoutingPartitions());
         }
     }
 
     @Test
-    void replacementRoutingGenerationsAreInitializedInMembershipCallbackOrder()
-        throws Exception {
+    void onlyTheNewestRoutingGenerationCandidateActivates() throws Exception {
         var producer = producer(false);
         var routingState = new CaptureRoutingState(ACTIVATION_ID, 2);
         try (var publisher = publisher(producer, routingState)) {
-            var first = publisher.initializeRoutingGeneration(List.of(0));
-            var second = publisher.initializeRoutingGeneration(List.of(1));
+            installAndAcknowledge(producer, publisher, List.of(0));
+            var existing = routingState.routeNewConnection("existing");
+            var a = publisher.initializeRoutingGeneration(List.of(1));
+            awaitHistorySize(producer, 2);
+            var b = publisher.initializeRoutingGeneration(List.of(0));
+            awaitHistorySize(producer, 3);
+            var c = publisher.initializeRoutingGeneration(List.of(0, 1));
+            awaitHistorySize(producer, 5);
+
+            assertEquals(Optional.empty(), a.get(1, TimeUnit.SECONDS));
+            assertEquals(Optional.empty(), b.get(1, TimeUnit.SECONDS));
+            assertFalse(c.isDone());
+            assertHeartbeat(producer.history().get(1), "activation:2", 1, LONG_HEARTBEAT_INTERVAL);
+            assertHeartbeat(producer.history().get(2), "activation:3", 0, LONG_HEARTBEAT_INTERVAL);
+            assertHeartbeat(producer.history().get(3), "activation:4", 0, LONG_HEARTBEAT_INTERVAL);
+            assertHeartbeat(producer.history().get(4), "activation:4", 1, LONG_HEARTBEAT_INTERVAL);
+            assertEquals(
+                "activation:1",
+                routingState.routeNewConnection("during-c").writerNodeId(),
+                "The active generation keeps routing while a candidate initializes"
+            );
+
+            assertTrue(producer.completeNext());
+            assertTrue(producer.completeNext());
+            assertTrue(producer.completeNext());
+            assertFalse(c.isDone());
+            assertTrue(producer.completeNext());
+
+            assertEquals(Optional.of("activation:4"), c.get(1, TimeUnit.SECONDS));
+            assertEquals("activation:4", routingState.currentWriterNodeId());
+            assertEquals(List.of(0, 1), routingState.activeRoutingPartitions());
+            assertEquals("activation:4", routingState.routeNewConnection("after-c").writerNodeId());
+            assertEquals("activation:1", existing.writerNodeId());
+            assertEquals(0, existing.partition());
+            awaitWriterStatus(
+                routingState,
+                "activation:3",
+                CaptureRoutingState.WriterStatus.RETIRED
+            );
+        }
+    }
+
+    @Test
+    void supersededCandidateRetiresWithoutPeriodicHeartbeatsOrFailure() throws Exception {
+        var producer = producer(false);
+        var routingState = new CaptureRoutingState(ACTIVATION_ID, 1);
+        var writeGate = new CaptureKafkaWriteGate();
+        var terminalFailure = new AtomicReference<Throwable>();
+        writeGate.addTerminalFailureListener(terminalFailure::set);
+        try (var publisher = new CaptureKafkaPublisher(
+            producer,
+            TOPIC,
+            routingState,
+            MESSAGE_SIZE,
+            Duration.ofMillis(20),
+            Duration.ofMillis(500),
+            Clock.fixed(Instant.ofEpochMilli(1_234), ZoneOffset.UTC),
+            writeGate,
+            ignored -> {}
+        )) {
+            var superseded = publisher.initializeRoutingGeneration(List.of(0));
             awaitHistorySize(producer, 1);
 
-            assertFalse(first.isDone());
-            assertFalse(second.isDone());
-            assertHeartbeat(producer.history().get(0), "activation:1", 0, LONG_HEARTBEAT_INTERVAL);
+            var emptySnapshot = publisher.initializeRoutingGeneration(List.of());
+            assertEquals(Optional.empty(), emptySnapshot.get(1, TimeUnit.SECONDS));
+            assertEquals(Optional.empty(), superseded.get(1, TimeUnit.SECONDS));
 
             assertTrue(producer.completeNext());
-            assertEquals("activation:1", first.get(1, TimeUnit.SECONDS));
+            awaitWriterStatus(
+                routingState,
+                "activation:1",
+                CaptureRoutingState.WriterStatus.RETIRED
+            );
+
+            Thread.sleep(80);
+            assertEquals(1, producer.history().size());
+            assertEquals(List.of(), routingState.activeRoutingPartitions());
+            assertNull(terminalFailure.get());
+        }
+    }
+
+    @Test
+    void emptyAssignmentCancelsTheCandidateAndRetainsTheActiveGeneration() throws Exception {
+        var producer = producer(false);
+        var routingState = new CaptureRoutingState(ACTIVATION_ID, 2);
+        try (var publisher = publisher(producer, routingState)) {
+            installAndAcknowledge(producer, publisher, List.of(0));
+
+            var replacement = publisher.initializeRoutingGeneration(List.of(0, 1));
+            awaitHistorySize(producer, 3);
+            var emptySnapshot = publisher.initializeRoutingGeneration(List.of());
+
+            assertEquals(Optional.empty(), replacement.get(1, TimeUnit.SECONDS));
+            assertEquals(Optional.empty(), emptySnapshot.get(1, TimeUnit.SECONDS));
+            assertEquals(3, producer.history().size(), "An empty assignment publishes nothing");
+
+            assertTrue(producer.completeNext());
+            assertTrue(producer.completeNext());
+            assertEquals("activation:1", routingState.currentWriterNodeId());
+            assertEquals(List.of(0), routingState.activeRoutingPartitions());
+            assertEquals("activation:1", routingState.routeNewConnection("after-empty").writerNodeId());
+            assertEquals(Set.of("activation:1", "activation:2"), routingState.writerNodeIds());
+            awaitWriterStatus(
+                routingState,
+                "activation:2",
+                CaptureRoutingState.WriterStatus.RETIRED
+            );
+        }
+    }
+
+    @Test
+    void heartbeatFailureForSupersededCandidateStillTripsTheWriteGate() throws Exception {
+        var producer = producer(false);
+        var routingState = new CaptureRoutingState(ACTIVATION_ID, 2);
+        var writeGate = new CaptureKafkaWriteGate();
+        var terminalFailure = new AtomicReference<Throwable>();
+        writeGate.addTerminalFailureListener(terminalFailure::set);
+        try (var publisher = new CaptureKafkaPublisher(
+            producer,
+            TOPIC,
+            routingState,
+            MESSAGE_SIZE,
+            LONG_HEARTBEAT_INTERVAL,
+            LONG_EXPIRATION_INTERVAL,
+            Clock.fixed(Instant.ofEpochMilli(1_234), ZoneOffset.UTC),
+            writeGate,
+            ignored -> {}
+        )) {
+            var superseded = publisher.initializeRoutingGeneration(List.of(0));
+            awaitHistorySize(producer, 1);
+            var replacement = publisher.initializeRoutingGeneration(List.of(1));
             awaitHistorySize(producer, 2);
-            assertHeartbeat(producer.history().get(1), "activation:2", 1, LONG_HEARTBEAT_INTERVAL);
+            var heartbeatFailure = new IllegalStateException("initial heartbeat failed");
 
+            assertEquals(Optional.empty(), superseded.get(1, TimeUnit.SECONDS));
+            assertTrue(producer.errorNext(heartbeatFailure));
+
+            assertSame(
+                heartbeatFailure,
+                assertThrows(
+                    ExecutionException.class,
+                    () -> replacement.get(1, TimeUnit.SECONDS)
+                ).getCause()
+            );
+            assertSame(heartbeatFailure, terminalFailure.get());
+            assertSame(heartbeatFailure, writeGate.failureIfNotWritable());
+            assertEquals(List.of(), routingState.activeRoutingPartitions());
+        }
+    }
+
+    @Test
+    void closeSettlesTheInitializingRoutingGenerationResult() throws Exception {
+        var producer = producer(false);
+        var routingState = new CaptureRoutingState(ACTIVATION_ID, 2);
+        var publisher = publisher(producer, routingState);
+        var superseded = publisher.initializeRoutingGeneration(List.of(0));
+        awaitHistorySize(producer, 1);
+        var initializing = publisher.initializeRoutingGeneration(List.of(1));
+        awaitHistorySize(producer, 2);
+
+        publisher.close();
+
+        assertEquals(Optional.empty(), superseded.get(1, TimeUnit.SECONDS));
+        assertInstanceOf(
+            IllegalStateException.class,
+            assertThrows(
+                ExecutionException.class,
+                () -> initializing.get(1, TimeUnit.SECONDS)
+            ).getCause()
+        );
+        assertThrows(
+            IllegalStateException.class,
+            () -> routingState.routeNewConnection("after-close")
+        );
+    }
+
+    @Test
+    void orderlyRetirementSettlesTheInitializingRoutingGenerationResult() throws Exception {
+        var producer = producer(false);
+        var routingState = new CaptureRoutingState(ACTIVATION_ID, 2);
+        try (var publisher = publisher(producer, routingState)) {
+            var superseded = publisher.initializeRoutingGeneration(List.of(0));
+            awaitHistorySize(producer, 1);
+            var initializing = publisher.initializeRoutingGeneration(List.of(1));
+            awaitHistorySize(producer, 2);
+
+            var retirement = publisher.retireAllWriters();
+
+            assertEquals(Optional.empty(), superseded.get(1, TimeUnit.SECONDS));
+            assertEquals(Optional.empty(), initializing.get(1, TimeUnit.SECONDS));
             assertTrue(producer.completeNext());
-            assertEquals("activation:2", second.get(1, TimeUnit.SECONDS));
-            assertEquals("activation:2", routingState.currentWriterNodeId());
-            assertEquals(List.of(1), routingState.activeRoutingPartitions());
+            assertTrue(producer.completeNext());
+            retirement.get(1, TimeUnit.SECONDS);
+            assertTrue(routingState.allWriterPartitionsRetired());
         }
     }
 
@@ -147,7 +326,7 @@ class CaptureKafkaPublisherTest {
             ignored -> {}
         )) {
             assertEquals(
-                "activation:1",
+                Optional.of("activation:1"),
                 publisher.initializeRoutingGeneration(List.of(0)).get(1, TimeUnit.SECONDS)
             );
             assertEquals(List.of(0), routingState.activeRoutingPartitions());
@@ -323,7 +502,10 @@ class CaptureKafkaPublisherTest {
             var replacement = publisher.initializeRoutingGeneration(List.of(0));
             awaitHistorySize(producer, 2);
             assertTrue(producer.completeNext());
-            assertEquals("activation:2", replacement.get(1, TimeUnit.SECONDS));
+            assertEquals(
+                Optional.of("activation:2"),
+                replacement.get(1, TimeUnit.SECONDS)
+            );
             assertEquals(
                 CaptureRoutingState.WriterStatus.DRAINING,
                 routingState.writerStatus(oldRoute.writerNodeId(), oldRoute.partition())

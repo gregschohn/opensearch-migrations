@@ -5,10 +5,12 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.kafka.clients.consumer.MockConsumer;
@@ -79,9 +81,40 @@ class CaptureKafkaMembershipTest {
         assertTrue(Set.of(0, 1).contains(routed.partition()));
         assertEquals(List.of(0, 1), routingState.activeRoutingPartitions());
         assertEquals(
-            List.of(List.of(0, 1)),
+            List.of(List.of(0, 1), List.of()),
             publisher.initializedRoutingGenerations()
         );
+    }
+
+    @Test
+    void emptyAssignmentDoesNotReportReadinessOrPublisherFailure() {
+        var consumer = new MockConsumer<String, byte[]>(OffsetResetStrategy.EARLIEST);
+        var routingState = new CaptureRoutingState(ACTIVATION_ID, 2);
+        var publisher = new ControlledRoutingGenerationPublisher();
+        var readyCount = new AtomicInteger();
+        var partition1 = new TopicPartition(TOPIC, 1);
+        consumer.assign(List.of());
+        var membership = new CaptureKafkaMembership(
+            consumer,
+            TOPIC,
+            routingState,
+            publisher,
+            readyCount::incrementAndGet,
+            ignored -> {},
+            ignored -> {}
+        );
+
+        membership.onPartitionsAssigned(List.of());
+        consumer.assign(List.of(partition1));
+        membership.onPartitionsAssigned(List.of(partition1));
+
+        publisher.result(0).complete(Optional.empty());
+        assertEquals(0, readyCount.get());
+        assertNull(publisher.failure());
+
+        publisher.result(1).complete(Optional.of("activation:latest"));
+        assertEquals(1, readyCount.get());
+        assertNull(publisher.failure());
     }
 
     @Test
@@ -276,11 +309,14 @@ class CaptureKafkaMembershipTest {
         }
 
         @Override
-        public CompletableFuture<String> initializeRoutingGeneration(
+        public CompletableFuture<Optional<String>> initializeRoutingGeneration(
             Collection<Integer> partitions
         ) {
             var partitionSnapshot = List.copyOf(partitions);
             initializedRoutingGenerations.add(partitionSnapshot);
+            if (partitionSnapshot.isEmpty()) {
+                return CompletableFuture.completedFuture(Optional.<String>empty());
+            }
             var generation = routingState.prepareRoutingGeneration(partitionSnapshot);
             for (var writerPartition : generation.writerPartitions()) {
                 routingState.acceptHeartbeatLogAppendTime(
@@ -290,7 +326,9 @@ class CaptureKafkaMembershipTest {
                 );
             }
             routingState.activateRoutingGeneration(generation);
-            return CompletableFuture.completedFuture(generation.writerNodeId());
+            return CompletableFuture.completedFuture(
+                Optional.of(generation.writerNodeId())
+            );
         }
 
         @Override
@@ -300,6 +338,34 @@ class CaptureKafkaMembershipTest {
 
         private List<List<Integer>> initializedRoutingGenerations() {
             return List.copyOf(initializedRoutingGenerations);
+        }
+
+        private Throwable failure() {
+            return failure.get();
+        }
+    }
+
+    private static final class ControlledRoutingGenerationPublisher
+        implements CaptureRoutingGenerationPublisher {
+        private final List<CompletableFuture<Optional<String>>> results = new ArrayList<>();
+        private final AtomicReference<Throwable> failure = new AtomicReference<>();
+
+        @Override
+        public CompletableFuture<Optional<String>> initializeRoutingGeneration(
+            Collection<Integer> partitions
+        ) {
+            var result = new CompletableFuture<Optional<String>>();
+            results.add(result);
+            return result;
+        }
+
+        @Override
+        public void stopAfterFailure(Throwable failure) {
+            this.failure.compareAndSet(null, failure);
+        }
+
+        private CompletableFuture<Optional<String>> result(int index) {
+            return results.get(index);
         }
 
         private Throwable failure() {

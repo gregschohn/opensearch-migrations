@@ -26,9 +26,10 @@ import org.apache.kafka.common.utils.Utils;
  * <p>New connections receive an immutable writer identity and partition from the active
  * generation. When another generation becomes active, the old writer partitions move through
  * {@code DRAINING}, {@code RETIRING}, and {@code RETIRED} while their original connections finish.
- * The registries and heartbeat baselines are checked on every transition so duplicate connection
- * ownership, stale acknowledgements, or premature retirement is treated as corrupted process
- * state rather than recoverable Kafka failure.
+ * A candidate superseded before activation follows the same local retirement states without ever
+ * becoming current. The registries and heartbeat baselines are checked on every transition so
+ * duplicate connection ownership, stale acknowledgements, or premature retirement is treated as
+ * corrupted process state rather than recoverable Kafka failure.
  */
 public final class CaptureRoutingState {
     enum WriterStatus {
@@ -223,6 +224,12 @@ public final class CaptureRoutingState {
             return partitions;
         }
 
+        private List<WriterPartition> writerPartitions() {
+            return partitions.stream()
+                .map(partition -> new WriterPartition(writerNodeId, partition))
+                .toList();
+        }
+
         @Override
         public boolean equals(Object other) {
             if (this == other) {
@@ -318,18 +325,7 @@ public final class CaptureRoutingState {
             }
         }
         if (activeRoutingGeneration != null) {
-            for (var partition : activeRoutingGeneration.partitions()) {
-                var oldState = requireWriterPartition(
-                    new WriterPartition(activeRoutingGeneration.writerNodeId(), partition)
-                );
-                if (oldState.status != WriterStatus.CURRENT) {
-                    throw new CorruptedCaptureStateException(
-                        "Active routing generation contains a non-current writer partition: "
-                            + oldState.key()
-                    );
-                }
-                oldState.status = WriterStatus.DRAINING;
-            }
+            drainWriterPartitions(activeRoutingGeneration.writerPartitions(), WriterStatus.CURRENT);
         }
         for (var writerPartition : generation.writerPartitions()) {
             requireWriterPartition(writerPartition).status = WriterStatus.CURRENT;
@@ -338,6 +334,31 @@ public final class CaptureRoutingState {
             generation.writerNodeId(),
             generation.partitions()
         );
+    }
+
+    /** Lets a candidate that will never activate retire through the normal draining path. */
+    synchronized void supersedeRoutingGeneration(@NonNull PendingRoutingGeneration generation) {
+        drainWriterPartitions(generation.writerPartitions(), WriterStatus.INITIALIZING);
+    }
+
+    private void drainWriterPartitions(
+        Collection<WriterPartition> writerPartitions,
+        WriterStatus expected
+    ) {
+        for (var writerPartition : writerPartitions) {
+            var state = requireWriterPartition(writerPartition);
+            if (state.status != expected) {
+                throw new CorruptedCaptureStateException(
+                    "Writer partition must be "
+                        + expected
+                        + " to begin draining, but was "
+                        + state.status
+                        + ": "
+                        + writerPartition
+                );
+            }
+            state.status = WriterStatus.DRAINING;
+        }
     }
 
     public synchronized ConnectionRoute routeNewConnection(@NonNull String connectionId) {
@@ -544,17 +565,7 @@ public final class CaptureRoutingState {
         }
         shuttingDown = true;
         if (activeRoutingGeneration != null) {
-            for (var partition : activeRoutingGeneration.partitions()) {
-                var state = requireWriterPartition(
-                    new WriterPartition(activeRoutingGeneration.writerNodeId(), partition)
-                );
-                if (state.status != WriterStatus.CURRENT) {
-                    throw new CorruptedCaptureStateException(
-                        "Current writer partition is not current: " + state.key()
-                    );
-                }
-                state.status = WriterStatus.DRAINING;
-            }
+            drainWriterPartitions(activeRoutingGeneration.writerPartitions(), WriterStatus.CURRENT);
             activeRoutingGeneration = null;
         }
     }

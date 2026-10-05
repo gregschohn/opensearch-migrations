@@ -59,6 +59,30 @@ class CaptureRoutingStateTest {
     }
 
     @Test
+    void supersededRoutingGenerationRetiresWithoutBecomingActive() {
+        var state = new CaptureRoutingState(ACTIVATION_ID, 1);
+        var generation = state.prepareRoutingGeneration(List.of(0));
+        var writerPartition = only(generation.writerPartitions());
+
+        state.supersedeRoutingGeneration(generation);
+
+        assertEquals(
+            CaptureRoutingState.WriterStatus.DRAINING,
+            state.writerStatus(generation.writerNodeId(), 0)
+        );
+        assertEquals(writerPartition, only(state.prepareDrainedWriterRetirements()));
+
+        state.acceptHeartbeatLogAppendTime(writerPartition, 1_000L, EXPIRATION);
+        state.completeWriterRetirement(writerPartition);
+
+        assertEquals(
+            CaptureRoutingState.WriterStatus.RETIRED,
+            state.writerStatus(generation.writerNodeId(), 0)
+        );
+        assertEquals(List.of(), state.activeRoutingPartitions());
+    }
+
+    @Test
     void writerPartitionsMaintainIndependentContinuousHeartbeatBaselines() {
         var state = new CaptureRoutingState(ACTIVATION_ID, 2);
         var generation = state.prepareRoutingGeneration(List.of(0, 1));

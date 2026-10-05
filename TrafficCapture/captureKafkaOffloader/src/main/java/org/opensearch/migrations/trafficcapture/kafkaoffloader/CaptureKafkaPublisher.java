@@ -2,13 +2,13 @@ package org.opensearch.migrations.trafficcapture.kafkaoffloader;
 
 import java.time.Clock;
 import java.time.Duration;
-import java.util.ArrayDeque;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.RejectedExecutionException;
@@ -37,12 +37,15 @@ import org.apache.kafka.clients.producer.RecordMetadata;
  * heartbeats, acknowledgement deadlines, and final retirement without relying on producer
  * callbacks to arrive on that thread.
  *
- * <p>A routing generation becomes eligible for new connections only after every lane's initial
- * heartbeat is acknowledged with acceptable broker time. Replacing that generation stops new
- * routing through its lanes but does not stop their publication: superseded lanes continue traffic
- * and heartbeats while existing connections drain, then retire locally once no accepted send or
- * connection remains. Any failure that makes acknowledged ordering or heartbeat continuity
- * uncertain permanently closes the process-wide write gate.
+ * <p>Only the newest candidate routing generation can activate, so candidates are never ordered
+ * against each other. Requesting a new one supersedes the candidate still initializing: its
+ * already-submitted heartbeats keep their deadlines and failure authority, but its lanes retire
+ * locally without activation. Replacing an already-active generation stops new routing through its
+ * lanes but does not stop their publication: its lanes continue traffic and heartbeats while
+ * existing connections drain, then retire locally once no accepted send or connection remains. Any
+ * failure that makes acknowledged ordering or heartbeat continuity uncertain permanently closes the
+ * process-wide write gate.
+
  */
 @Slf4j
 public class CaptureKafkaPublisher implements CaptureRoutingGenerationPublisher, AutoCloseable {
@@ -125,27 +128,6 @@ public class CaptureKafkaPublisher implements CaptureRoutingGenerationPublisher,
         }
     }
 
-    private static final class RoutingGenerationInitialization {
-        private final List<Integer> partitions;
-        private final CompletableFuture<String> result;
-
-        private RoutingGenerationInitialization(
-            List<Integer> partitions,
-            CompletableFuture<String> result
-        ) {
-            this.partitions = partitions;
-            this.result = result;
-        }
-
-        private List<Integer> partitions() {
-            return partitions;
-        }
-
-        private CompletableFuture<String> result() {
-            return result;
-        }
-    }
-
     private final Producer<String, byte[]> producer;
     private final String topic;
     @Getter
@@ -156,13 +138,14 @@ public class CaptureKafkaPublisher implements CaptureRoutingGenerationPublisher,
     private final Duration heartbeatInterval;
     private final Duration heartbeatExpirationInterval;
     private final Clock clock;
+
     private final ScheduledThreadPoolExecutor executor;
     private final ScheduledThreadPoolExecutor acknowledgementDeadlineExecutor;
     private final AtomicReference<Thread> publisherThread = new AtomicReference<>();
+
     private final Map<CaptureRoutingState.WriterPartition, PublisherLane> publisherLanes =
         new HashMap<>();
-    private final ArrayDeque<RoutingGenerationInitialization> routingGenerationInitializations =
-        new ArrayDeque<>();
+
     private final AtomicReference<Throwable> failure = new AtomicReference<>();
     private final AtomicBoolean closed = new AtomicBoolean();
     private final AtomicBoolean unstableProcessFailureReported = new AtomicBoolean();
@@ -170,7 +153,11 @@ public class CaptureKafkaPublisher implements CaptureRoutingGenerationPublisher,
     private final Set<CompletableFuture<RecordMetadata>> inFlightSends =
         Collections.newSetFromMap(new IdentityHashMap<>());
     private CompletableFuture<Void> orderlyRetirement;
-    private boolean routingGenerationInitializationInProgress;
+
+    // The one candidate generation still able to activate, if any. Superseded candidates are
+    // forgotten here immediately; their lanes retire on their own as submitted heartbeats settle.
+    private CaptureRoutingState.PendingRoutingGeneration initializingGeneration;
+    private CompletableFuture<Optional<String>> initializingResult;
 
     public CaptureKafkaPublisher(
         Producer<String, byte[]> producer,
@@ -242,39 +229,34 @@ public class CaptureKafkaPublisher implements CaptureRoutingGenerationPublisher,
     }
 
     @Override
-    public CompletableFuture<String> initializeRoutingGeneration(
+    public CompletableFuture<Optional<String>> initializeRoutingGeneration(
         @NonNull Collection<Integer> partitions
     ) {
-        var result = new CompletableFuture<String>();
+        var result = new CompletableFuture<Optional<String>>();
         var partitionSnapshot = List.copyOf(partitions);
-        executeOnPublisher(() -> {
-            routingGenerationInitializations.addLast(
-                new RoutingGenerationInitialization(partitionSnapshot, result)
-            );
-            startNextRoutingGenerationInitialization();
-        }, result);
+        executeOnPublisher(() -> startRoutingGeneration(partitionSnapshot, result), result);
         return result;
     }
 
-    private void startNextRoutingGenerationInitialization() {
-        if (routingGenerationInitializationInProgress
-            || routingGenerationInitializations.isEmpty()) {
+    /**
+     * Supersedes the candidate still initializing, then starts this one in its place. Because only
+     * the newest candidate can activate, the two never need to be ordered against each other and
+     * their initial heartbeats may overlap. An empty assignment only supersedes, leaving the
+     * already-active generation to keep routing new connections.
+     */
+    private void startRoutingGeneration(
+        List<Integer> partitions,
+        CompletableFuture<Optional<String>> result
+    ) {
+        supersedeInitializingGeneration();
+        if (partitions.isEmpty()) {
+            result.complete(Optional.empty());
             return;
         }
-        routingGenerationInitializationInProgress = true;
-        var initialization = routingGenerationInitializations.removeFirst();
-        initializeRoutingGenerationOnPublisher(
-            initialization.partitions(),
-            initialization.result()
-        );
-    }
-
-    private void initializeRoutingGenerationOnPublisher(
-        Collection<Integer> partitions,
-        CompletableFuture<String> result
-    ) {
-        var pendingGeneration = routingState.prepareRoutingGeneration(partitions);
-        var initialHeartbeats = pendingGeneration.writerPartitions()
+        var generation = routingState.prepareRoutingGeneration(partitions);
+        initializingGeneration = generation;
+        initializingResult = result;
+        var initialHeartbeats = generation.writerPartitions()
             .stream()
             .map(writerPartition -> {
                 var lane = new PublisherLane(writerPartition);
@@ -287,21 +269,31 @@ public class CaptureKafkaPublisher implements CaptureRoutingGenerationPublisher,
             })
             .toArray(CompletableFuture[]::new);
         CompletableFuture.allOf(initialHeartbeats)
-            .whenComplete((ignored, generationFailure) ->
-                executeCompletionOnPublisher(
-                    () -> finishRoutingGenerationInitialization(
-                        pendingGeneration,
-                        result,
-                        generationFailure
-                    ),
-                    result
-                )
-            );
+            .whenComplete((ignored, generationFailure) -> executeCompletionOnPublisher(
+                () -> activateRoutingGeneration(generation, result, generationFailure),
+                result
+            ));
     }
 
-    private void finishRoutingGenerationInitialization(
-        CaptureRoutingState.PendingRoutingGeneration pendingGeneration,
-        CompletableFuture<String> result,
+    /**
+     * Drops the candidate generation so it can never activate and lets its lanes retire once their
+     * submitted heartbeats settle. The waiting caller is told it lost immediately; the heartbeats
+     * it already submitted keep their deadlines and their authority to fail the publisher.
+     */
+    private void supersedeInitializingGeneration() {
+        if (initializingGeneration == null) {
+            return;
+        }
+        routingState.supersedeRoutingGeneration(initializingGeneration);
+        initializingGeneration = null;
+        initializingResult.complete(Optional.empty());
+        initializingResult = null;
+        beginDrainedWriterRetirements();
+    }
+
+    private void activateRoutingGeneration(
+        CaptureRoutingState.PendingRoutingGeneration generation,
+        CompletableFuture<Optional<String>> result,
         Throwable generationFailure
     ) {
         if (generationFailure != null) {
@@ -310,12 +302,15 @@ public class CaptureKafkaPublisher implements CaptureRoutingGenerationPublisher,
             failForThrowable(cause);
             return;
         }
+        if (initializingGeneration != generation) {
+            return; // Superseded, closed, or failed while these heartbeats were in flight.
+        }
+        initializingGeneration = null;
+        initializingResult = null;
         try {
-            routingState.activateRoutingGeneration(pendingGeneration);
-            result.complete(pendingGeneration.writerNodeId());
+            routingState.activateRoutingGeneration(generation);
             beginDrainedWriterRetirements();
-            routingGenerationInitializationInProgress = false;
-            startNextRoutingGenerationInitialization();
+            result.complete(Optional.of(generation.writerNodeId()));
         } catch (Throwable t) {
             result.completeExceptionally(t);
             failForThrowable(t);
@@ -404,6 +399,7 @@ public class CaptureKafkaPublisher implements CaptureRoutingGenerationPublisher,
             return;
         }
         orderlyRetirement = result;
+        supersedeInitializingGeneration();
         routingState.beginOrderlyRetirement();
         beginDrainedWriterRetirements();
         var retirements = publisherLanes.values()
@@ -792,6 +788,10 @@ public class CaptureKafkaPublisher implements CaptureRoutingGenerationPublisher,
                 if (taskFailure != null) {
                     failForThrowable(taskFailure);
                     result.completeExceptionally(taskFailure);
+                } else if (closed.get()) {
+                    result.completeExceptionally(
+                        new IllegalStateException("Capture Kafka publisher is closed")
+                    );
                 } else {
                     try {
                         action.run();
@@ -825,12 +825,7 @@ public class CaptureKafkaPublisher implements CaptureRoutingGenerationPublisher,
             return;
         }
         writeGate.trip(throwable);
-        List<CompletableFuture<RecordMetadata>> pending;
-        synchronized (inFlightLock) {
-            pending = List.copyOf(inFlightSends);
-            inFlightSends.clear();
-        }
-        pending.forEach(send -> send.completeExceptionally(throwable));
+        settleInFlightSends(throwable);
         runFailureCleanupOnPublisherThread(throwable);
         log.atError()
             .setCause(throwable)
@@ -842,23 +837,7 @@ public class CaptureKafkaPublisher implements CaptureRoutingGenerationPublisher,
     }
 
     private void runFailureCleanupOnPublisherThread(Throwable throwable) {
-        Runnable cleanup = () -> {
-            publisherLanes.values().forEach(lane -> {
-                if (lane.nextHeartbeat != null) {
-                    lane.nextHeartbeat.cancel(false);
-                    lane.nextHeartbeat = null;
-                }
-                cancelAcknowledgementDeadline(lane);
-                if (!lane.retirement.isDone()) {
-                    lane.retirement.completeExceptionally(throwable);
-                }
-            });
-            routingGenerationInitializationInProgress = false;
-            RoutingGenerationInitialization initialization;
-            while ((initialization = routingGenerationInitializations.pollFirst()) != null) {
-                initialization.result().completeExceptionally(throwable);
-            }
-        };
+        Runnable cleanup = () -> settlePublisherState(throwable);
         if (Thread.currentThread() == publisherThread.get()) {
             cleanup.run();
             return;
@@ -871,6 +850,31 @@ public class CaptureKafkaPublisher implements CaptureRoutingGenerationPublisher,
                 .setMessage("Publisher executor rejected terminal failure cleanup")
                 .log();
             failUnstableProcess(e);
+        }
+    }
+
+    private void settleInFlightSends(Throwable throwable) {
+        List<CompletableFuture<RecordMetadata>> pending;
+        synchronized (inFlightLock) {
+            pending = List.copyOf(inFlightSends);
+            inFlightSends.clear();
+        }
+        pending.forEach(send -> send.completeExceptionally(throwable));
+    }
+
+    private void settlePublisherState(Throwable throwable) {
+        publisherLanes.values().forEach(lane -> {
+            if (lane.nextHeartbeat != null) {
+                lane.nextHeartbeat.cancel(false);
+                lane.nextHeartbeat = null;
+            }
+            cancelAcknowledgementDeadline(lane);
+            lane.retirement.completeExceptionally(throwable);
+        });
+        if (initializingGeneration != null) {
+            initializingGeneration = null;
+            initializingResult.completeExceptionally(throwable);
+            initializingResult = null;
         }
     }
 
@@ -934,18 +938,19 @@ public class CaptureKafkaPublisher implements CaptureRoutingGenerationPublisher,
         if (!closed.compareAndSet(false, true)) {
             return;
         }
-        routingState.beginShutdown();
+        var flush = new CompletableFuture<Void>();
         try {
-            var flush = new CompletableFuture<Void>();
             try {
                 executor.execute(() -> {
                     try {
-                        publisherLanes.values().forEach(lane -> {
-                            if (lane.nextHeartbeat != null) {
-                                lane.nextHeartbeat.cancel(false);
-                            }
-                            cancelAcknowledgementDeadline(lane);
-                        });
+                        var closeFailure = failure.get();
+                        if (closeFailure == null) {
+                            closeFailure =
+                                new IllegalStateException("Capture Kafka publisher is closed");
+                        }
+                        settleInFlightSends(closeFailure);
+                        settlePublisherState(closeFailure);
+                        routingState.beginShutdown();
                         producer.flush();
                         flush.complete(null);
                     } catch (Exception t) {
@@ -954,7 +959,10 @@ public class CaptureKafkaPublisher implements CaptureRoutingGenerationPublisher,
                 });
                 flush.get(CLOSE_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
             } catch (Exception e) {
-                log.atWarn().setCause(e).setMessage("Unable to flush capture Kafka publisher cleanly").log();
+                log.atWarn()
+                    .setCause(e)
+                    .setMessage("Unable to flush capture Kafka publisher cleanly")
+                    .log();
             }
         } finally {
             executor.shutdown();
