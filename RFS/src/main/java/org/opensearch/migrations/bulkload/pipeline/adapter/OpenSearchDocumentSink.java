@@ -15,9 +15,11 @@ import org.opensearch.migrations.bulkload.common.bulk.BulkOperationSpec;
 import org.opensearch.migrations.bulkload.pipeline.model.BatchResult;
 import org.opensearch.migrations.bulkload.pipeline.model.CollectionMetadata;
 import org.opensearch.migrations.bulkload.pipeline.model.Document;
+import org.opensearch.migrations.bulkload.pipeline.model.MigrationMetrics;
 import org.opensearch.migrations.bulkload.pipeline.sink.DocumentSink;
 import org.opensearch.migrations.bulkload.tracing.IRfsContexts;
 import org.opensearch.migrations.bulkload.transformers.BulkOperationTransformer;
+import org.opensearch.migrations.reindexer.faileddocumentstream.FailureClass;
 import org.opensearch.migrations.transform.IJsonTransformer;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -102,8 +104,10 @@ public class OpenSearchDocumentSink implements DocumentSink {
         // Documents over the size limit are recorded and dropped before any transformation runs on them, but
         // still count toward this batch so the cursor moves past them.
         var batch = withoutOversizedDocuments(collectionName, sourceBatch, requestContext);
+        var tooLarge = OpenSearchClient.failuresOf(FailureClass.NON_RETRYABLE, sourceBatch.size() - batch.size());
         if (batch.isEmpty()) {
-            return Mono.just(new BatchResult(sourceBatch.size(), bytesInBatch));
+            return Mono.just(new BatchResult(sourceBatch.size(), bytesInBatch, MigrationMetrics.Operations.ZERO,
+                MigrationMetrics.Requests.ZERO, tooLarge));
         }
 
         Mono<OpenSearchClient.BulkResponse> bulkMono;
@@ -129,8 +133,8 @@ public class OpenSearchDocumentSink implements DocumentSink {
                 requestContext, allowServerGeneratedIds, allowlist);
         }
 
-        return bulkMono.map(response ->
-            new BatchResult(sourceBatch.size(), bytesInBatch, response.target, response.requests));
+        return bulkMono.map(response -> new BatchResult(sourceBatch.size(), bytesInBatch, response.target,
+            response.requests, tooLarge.plus(response.failures)));
     }
 
     private List<Document> withoutOversizedDocuments(String collectionName, List<Document> batch,
