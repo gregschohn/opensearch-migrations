@@ -1,5 +1,6 @@
 package org.opensearch.migrations.bulkload.pipeline.adapter;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -93,11 +94,17 @@ public class OpenSearchDocumentSink implements DocumentSink {
     }
 
     @Override
-    public Mono<BatchResult> writeBatch(String collectionName, List<Document> batch) {
-        long bytesInBatch = batch.stream()
+    public Mono<BatchResult> writeBatch(String collectionName, List<Document> sourceBatch) {
+        long bytesInBatch = sourceBatch.stream()
             .mapToLong(Document::sourceLength)
             .sum();
         var requestContext = requestContextSupplier != null ? requestContextSupplier.get() : null;
+        // Documents over the size limit are recorded and dropped before any transformation runs on them, but
+        // still count toward this batch so the cursor moves past them.
+        var batch = withoutOversizedDocuments(collectionName, sourceBatch, requestContext);
+        if (batch.isEmpty()) {
+            return Mono.just(new BatchResult(sourceBatch.size(), bytesInBatch));
+        }
 
         Mono<OpenSearchClient.BulkResponse> bulkMono;
         if (nativeTransformers != null && nativeTransformers.isEmpty()) {
@@ -122,7 +129,26 @@ public class OpenSearchDocumentSink implements DocumentSink {
                 requestContext, allowServerGeneratedIds, allowlist);
         }
 
-        return bulkMono.map(response -> new BatchResult(batch.size(), bytesInBatch, response.target, response.requests));
+        return bulkMono.map(response ->
+            new BatchResult(sourceBatch.size(), bytesInBatch, response.target, response.requests));
+    }
+
+    private List<Document> withoutOversizedDocuments(String collectionName, List<Document> batch,
+                                                     IRfsContexts.IRequestContext requestContext) {
+        long limit = client.getMaxDocumentSizeBytes();
+        if (limit <= 0 || batch.stream().noneMatch(doc -> doc.sourceLength() > limit)) {
+            return batch;
+        }
+        var kept = new ArrayList<Document>(batch.size());
+        for (var doc : batch) {
+            if (doc.sourceLength() > limit) {
+                client.rejectOversizedDocument(collectionName, BulkOperationConverter.fromRawDocument(doc, collectionName),
+                    doc.sourceLength(), OpenSearchClient.MEASURED_SOURCE, requestContext);
+            } else {
+                kept.add(doc);
+            }
+        }
+        return kept;
     }
 
     @SuppressWarnings("unchecked")
