@@ -702,13 +702,24 @@ class OpenSearchClientTest {
     }
 
     @Test
-    void testIndexCheck_addsCollectionHeader_whenRouted() {
+    void testTemplateAndIndexChecks_addCollectionHeader_whenRouted() {
         var collectionHeaders = Map.of("x-amz-aoss-collection-name", List.of("c"));
         when(restClient.getAsync(any(), eq(collectionHeaders), any()))
             .thenReturn(Mono.just(new HttpResponse(200, "", null, "{}")));
 
         assertThat(openSearchClient.hasIndex("i", "c"), equalTo(true));
+        assertThat(openSearchClient.hasLegacyTemplate("t", "c"), equalTo(true));
+        assertThat(openSearchClient.hasIndexTemplate("t", "c"), equalTo(true));
+        assertThat(openSearchClient.hasComponentTemplate("t", "c"), equalTo(true));
+        var body = OBJECT_MAPPER.createObjectNode();
+        var context = mock(ICheckedIdempotentPutRequestContext.class);
+        assertThat(openSearchClient.createLegacyTemplate("t", body, context, "c"), equalTo(Optional.empty()));
+        assertThat(openSearchClient.createIndexTemplate("t", body, context, "c"), equalTo(Optional.empty()));
+        assertThat(openSearchClient.createComponentTemplate("t", body, context, "c"), equalTo(Optional.empty()));
 
         verify(restClient).getAsync(eq("i"), eq(collectionHeaders), any());
+        verify(restClient, times(2)).getAsync(eq("_template/t"), eq(collectionHeaders), any());
+        verify(restClient, times(2)).getAsync(eq("_index_template/t"), eq(collectionHeaders), any());
+        verify(restClient, times(2)).getAsync(eq("_component_template/t"), eq(collectionHeaders), any());
     }
 }

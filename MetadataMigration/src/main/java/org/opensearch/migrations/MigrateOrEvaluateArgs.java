@@ -57,7 +57,7 @@ public class MigrateOrEvaluateArgs {
             "{\"staticCollectionRouting\": [{\"sourceIndex\": \"shared-config\", \"collection\": \"common\"}], " +
             "\"regexCollectionRouting\": [{\"sourceIndex\": \"(.+)-\\\\d{4}\", \"collection\": \"$1\"}]}. " +
             "An exact static match wins, otherwise the first regex that matches the whole index name is used. " +
-            "Templates are skipped on a collection-routed target. " +
+            "Templates are created in every collection that a migrated index routes to. " +
             "Required when --target-collection-routed is set.")
     public String collectionRouting;
 

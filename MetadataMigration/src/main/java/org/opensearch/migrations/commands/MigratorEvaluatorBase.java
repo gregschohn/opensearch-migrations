@@ -137,8 +137,8 @@ public abstract class MigratorEvaluatorBase {
         items.dryRun(migrationMode.equals(MigrationMode.SIMULATE));
         items.succeedOnEmpty(arguments.succeedOnEmpty);
         items.allowExistingIndexes(arguments.allowExistingIndexes);
-        validateCollectionRouting(clusters);
-        var metadataResults = migrateGlobalMetadata(migrationMode, clusters, transformer, context);
+        var serverlessCollections = resolveServerlessCollections(clusters);
+        var metadataResults = migrateGlobalMetadata(migrationMode, clusters, transformer, context, serverlessCollections);
 
         var indexTemplates = new ArrayList<CreationResult>();
         indexTemplates.addAll(metadataResults.getLegacyTemplates());
@@ -164,14 +164,14 @@ public abstract class MigratorEvaluatorBase {
     }
 
     /**
-     * Checks that every selected source index routes to a collection before anything is written,
-     * so a routing table that misses an index fails fast. Does nothing when the target is not
-     * collection-routed.
+     * Resolves the collection of every selected source index before anything is written, so a
+     * routing table that misses an index fails fast. Returns the distinct collections, which also
+     * receive the templates, or an empty list when the target is not collection-routed.
      */
-    void validateCollectionRouting(Clusters clusters) {
+    List<String> resolveServerlessCollections(Clusters clusters) {
         var routing = getCollectionRouting();
         if (routing.isEmpty()) {
-            return;
+            return List.of();
         }
         var allowed = FilterScheme.filterByAllowList(arguments.dataFilterArgs.indexAllowlist, FilterScheme.FilterContext.INDEX);
         var sourceIndices = clusters.getSource().getIndexMetadata().getRepoDataProvider()
@@ -180,30 +180,26 @@ public abstract class MigratorEvaluatorBase {
             .filter(allowed)
             .toList();
         try {
-            var collections = routing.get().resolveAll(sourceIndices);
+            var collections = List.copyOf(routing.get().resolveAll(sourceIndices));
+            if (collections.isEmpty()) {
+                throw new ParameterException("No source indices were selected, so no collection can receive the templates");
+            }
             log.atInfo().setMessage("Collection routing sends {} source indices to collections {}")
                 .addArgument(sourceIndices.size()).addArgument(collections).log();
+            return collections;
         } catch (IllegalArgumentException e) {
             throw new ParameterException(e.getMessage(), e);
         }
     }
 
     private GlobalMetadataCreatorResults migrateGlobalMetadata(MigrationMode mode, Clusters clusters, Transformer transformer,
-                                                               RootMetadataMigrationContext context) {
-        if (getCollectionRouting().isPresent()) {
-            // Templates aren't tied to an index, so there's no collection to route them to yet
-            log.warn("Skipping templates because the target is collection-routed; only indices are migrated");
-            return GlobalMetadataCreatorResults.builder()
-                .legacyTemplates(List.of())
-                .indexTemplates(List.of())
-                .componentTemplates(List.of())
-                .build();
-        }
+                                                               RootMetadataMigrationContext context, List<String> serverlessCollections) {
         var metadataRunner = new MetadataRunner(
             arguments.snapshotName,
             clusters.getSource().getGlobalMetadata(),
             clusters.getTarget().getGlobalMetadataCreator(),
-            transformer
+            transformer,
+            serverlessCollections
         );
         var metadataResults = metadataRunner.migrateMetadata(mode, context.createMetadataMigrationContext());
         log.info("Metadata copy complete.");
