@@ -214,17 +214,8 @@ public abstract class OpenSearchClient {
         ObjectNode settings,
         IRfsContexts.ICheckedIdempotentPutRequestContext context
     ) {
-        return createLegacyTemplate(templateName, settings, context, null);
-    }
-
-    public Optional<ObjectNode> createLegacyTemplate(
-        String templateName,
-        ObjectNode settings,
-        IRfsContexts.ICheckedIdempotentPutRequestContext context,
-        String serverlessCollection
-    ) {
         String targetPath = "_template/" + templateName;
-        return createObjectIdempotent(targetPath, settings, context, serverlessCollection);
+        return createObjectIdempotent(targetPath, settings, context, null);
     }
 
     /*
@@ -236,17 +227,8 @@ public abstract class OpenSearchClient {
         ObjectNode settings,
         IRfsContexts.ICheckedIdempotentPutRequestContext context
     ) {
-        return createComponentTemplate(templateName, settings, context, null);
-    }
-
-    public Optional<ObjectNode> createComponentTemplate(
-        String templateName,
-        ObjectNode settings,
-        IRfsContexts.ICheckedIdempotentPutRequestContext context,
-        String serverlessCollection
-    ) {
         String targetPath = "_component_template/" + templateName;
-        return createObjectIdempotent(targetPath, settings, context, serverlessCollection);
+        return createObjectIdempotent(targetPath, settings, context, null);
     }
 
     /*
@@ -258,50 +240,26 @@ public abstract class OpenSearchClient {
         ObjectNode settings,
         IRfsContexts.ICheckedIdempotentPutRequestContext context
     ) {
-        return createIndexTemplate(templateName, settings, context, null);
-    }
-
-    public Optional<ObjectNode> createIndexTemplate(
-        String templateName,
-        ObjectNode settings,
-        IRfsContexts.ICheckedIdempotentPutRequestContext context,
-        String serverlessCollection
-    ) {
         String targetPath = "_index_template/" + templateName;
-        return createObjectIdempotent(targetPath, settings, context, serverlessCollection);
+        return createObjectIdempotent(targetPath, settings, context, null);
     }
 
     /** Returns true if this template already exists */
     public boolean hasLegacyTemplate(String templateName) {
-        return hasLegacyTemplate(templateName, null);
-    }
-
-    /** Returns true if this template already exists */
-    public boolean hasLegacyTemplate(String templateName, String serverlessCollection) {
         var targetPath = "_template/" + templateName;
-        return hasObjectCheck(targetPath, null, serverlessCollection);
+        return hasObjectCheck(targetPath, null, null);
     }
 
     /** Returns true if this template already exists */
     public boolean hasComponentTemplate(String templateName) {
-        return hasComponentTemplate(templateName, null);
-    }
-
-    /** Returns true if this template already exists */
-    public boolean hasComponentTemplate(String templateName, String serverlessCollection) {
         var targetPath = "_component_template/" + templateName;
-        return hasObjectCheck(targetPath, null, serverlessCollection);
+        return hasObjectCheck(targetPath, null, null);
     }
 
     /** Returns true if this template already exists */
     public boolean hasIndexTemplate(String templateName) {
-        return hasIndexTemplate(templateName, null);
-    }
-
-    /** Returns true if this template already exists */
-    public boolean hasIndexTemplate(String templateName, String serverlessCollection) {
         var targetPath = "_index_template/" + templateName;
-        return hasObjectCheck(targetPath, null, serverlessCollection);
+        return hasObjectCheck(targetPath, null, null);
     }
 
     /** Returns true if this index already exists */
