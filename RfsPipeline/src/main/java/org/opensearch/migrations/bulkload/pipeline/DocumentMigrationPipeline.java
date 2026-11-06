@@ -48,6 +48,7 @@ public class DocumentMigrationPipeline {
 
     private static final int MAX_PREPARATION_CHUNK_DOCUMENTS = 4 * 1024;
     private static final int PREPARED_CHUNKS_PER_PREPARATION_RAIL = 3;
+    private static final int MAX_PREPARATION_CONCURRENCY = 2;
 
     private final DocumentSource source;
     private final DocumentSink sink;
@@ -138,7 +139,7 @@ public class DocumentMigrationPipeline {
         this.partitionConcurrency = partitionConcurrency;
         this.batchConcurrency = batchConcurrency;
         this.preparationConcurrency = Math.min(
-            batchConcurrency,
+            Math.min(batchConcurrency, MAX_PREPARATION_CONCURRENCY),
             Math.max(1, Runtime.getRuntime().availableProcessors())
         );
         this.preparationChunkDocuments = Math.min(
