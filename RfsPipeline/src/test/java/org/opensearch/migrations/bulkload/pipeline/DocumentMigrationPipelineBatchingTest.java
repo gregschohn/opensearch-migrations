@@ -301,8 +301,9 @@ class DocumentMigrationPipelineBatchingTest {
                 Assertions.assertEquals(10, maxBatchBytes);
                 Assertions.assertEquals(8, batchConcurrency);
                 Assertions.assertTrue(preparationConcurrency >= 1);
-                Assertions.assertEquals(3, preparationChunkDocuments);
-                Assertions.assertEquals(preparationConcurrency * 3, preparationReservoirChunks);
+                Assertions.assertTrue(preparationConcurrency <= 2);
+                Assertions.assertEquals(5, preparationChunkDocuments);
+                Assertions.assertEquals(preparationConcurrency * 2, preparationReservoirChunks);
                 Assertions.assertEquals(8, sourceBatchGroupSize);
                 configured.incrementAndGet();
             }
