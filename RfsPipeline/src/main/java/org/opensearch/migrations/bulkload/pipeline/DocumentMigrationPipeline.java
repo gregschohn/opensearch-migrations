@@ -46,8 +46,8 @@ import reactor.core.scheduler.Schedulers;
 @Slf4j
 public class DocumentMigrationPipeline {
 
-    private static final int MAX_PREPARATION_CHUNK_DOCUMENTS = 4 * 1024;
-    private static final int PREPARED_CHUNKS_PER_PREPARATION_RAIL = 3;
+    private static final int MAX_PREPARATION_CHUNK_DOCUMENTS = 1024;
+    private static final int PREPARED_CHUNKS_PER_PREPARATION_RAIL = 12;
 
     private final DocumentSource source;
     private final DocumentSink sink;
