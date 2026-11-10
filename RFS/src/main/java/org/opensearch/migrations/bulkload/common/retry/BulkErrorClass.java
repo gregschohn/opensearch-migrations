@@ -92,7 +92,8 @@ public enum BulkErrorClass {
             return AUTH;
         }
         if ((status == 200 || status == 201) && response.body != null) {
-            var partition = BulkResponseParser.partitionItems(response.body, DocumentExceptionAllowlist.empty());
+            var partition = BulkResponseParser.partitionItems(
+                response.statusCode, response.body, DocumentExceptionAllowlist.empty());
             if (partition != null && !partition.getRetryableFailures().isEmpty() && partition.getRetryableFailures()
                 .stream().allMatch(f -> f.getKind() == BulkItemErrorKind.UNAVAILABLE)) {
                 return UNAVAILABLE;
@@ -162,7 +163,8 @@ public enum BulkErrorClass {
         if (response.body == null) {
             return false;
         }
-        var partition = BulkResponseParser.partitionItems(response.body, DocumentExceptionAllowlist.empty());
+        var partition = BulkResponseParser.partitionItems(
+            response.statusCode, response.body, DocumentExceptionAllowlist.empty());
         return partition != null && partition.getRetryableFailures().stream()
             .anyMatch(f -> f.getKind() == BulkItemErrorKind.THROTTLE);
     }
