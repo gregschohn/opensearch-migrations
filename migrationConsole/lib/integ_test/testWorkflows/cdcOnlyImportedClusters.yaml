@@ -224,12 +224,11 @@ spec:
                         "podReplicas": $replayerPodReplicas,
                         "useLocalStack": $useLocalStack
                       } + (if $tupleS3Bucket != "" then {
-                        "tupleS3Bucket": $tupleS3Bucket,
-                        "tupleS3Region": $tupleS3Region,
-                        "tupleS3Prefix": "tuples/"
-                      } else {} end)
-                      + (if $tupleS3Endpoint != "" then {
-                        "tupleS3Endpoint": $tupleS3Endpoint
+                        "tupleOutput": {
+                          "repoPathUri": ("s3://" + $tupleS3Bucket + "/tuples/"),
+                          "awsRegion": $tupleS3Region,
+                          "endpoint": $tupleS3Endpoint
+                        }
                       } else {} end)
                       + (if $otelTraceCollectorEndpoint != "" then {
                         "otelTraceCollectorEndpoint": $otelTraceCollectorEndpoint

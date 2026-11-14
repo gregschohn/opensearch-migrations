@@ -139,8 +139,7 @@ class Test0002SingleDocumentBackfillWithRfsCoordinatorCluster(MATestBase):
             # there is no default bucket, so name the deployment's. Region and endpoint are inherited
             # from the snapshot repo config.
             migration["documentBackfillConfig"]["failedDocumentStream"] = {
-                "type": "s3",
-                "bucket": bucket,
+                "repoPathUri": f"s3://{bucket}",
             }
 
     def _deployment_default_s3_bucket(self) -> str:

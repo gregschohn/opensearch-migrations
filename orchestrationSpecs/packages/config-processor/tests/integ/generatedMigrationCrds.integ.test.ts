@@ -679,8 +679,7 @@ describe("generated migration CRDs live compatibility", () => {
         const backfillWithBucket = configWithBucket.snapshotMigrationConfigs[0].perSnapshotConfig.snap1[0]
             .documentBackfillConfig;
         backfillWithBucket.failedDocumentStream = {
-            type: "s3",
-            bucket: "user-named-bucket",
+            repoPathUri: "s3://user-named-bucket",
         };
         const withBucket = await applyAndReadSpec(
             await generateSnapshotMigrationManifest(configWithBucket), "with-bucket");
