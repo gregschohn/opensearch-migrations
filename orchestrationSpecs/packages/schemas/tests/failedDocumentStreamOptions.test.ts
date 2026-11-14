@@ -2,7 +2,7 @@ import {USER_RFS_OPTIONS} from "../src/userSchemas";
 
 describe("failed document stream choice", () => {
     test.each([
-        ["an S3 destination", {failedDocumentStream: {type: "s3", bucket: "bucket"}}],
+        ["an S3 destination", {failedDocumentStream: {repoPathUri: "s3://bucket"}}],
         ["the explicit opt-out", {failedDocumentStream: {type: "disabled"}}],
     ])("accepts %s", (_name, data) => {
         expect(USER_RFS_OPTIONS.safeParse({maxShardSizeBytes: 1024, ...data}).success).toBe(true);
@@ -10,9 +10,13 @@ describe("failed document stream choice", () => {
 
     test.each([
         ["no choice", {}],
-        ["a blank S3 bucket", {failedDocumentStream: {type: "s3", bucket: "  "}}],
+        ["a blank S3 bucket", {failedDocumentStream: {repoPathUri: "s3://  "}}],
         ["an unsupported destination", {failedDocumentStream: {type: "other"}}],
-        ["S3 fields on the disabled choice", {failedDocumentStream: {type: "disabled", bucket: "bucket"}}],
+        ["S3 fields on the disabled choice", {failedDocumentStream: {type: "disabled", repoPathUri: "s3://bucket"}}],
+        ["a GCS output URI", {failedDocumentStream: {repoPathUri: "gs://bucket"}}],
+        ["an Azure output URI", {failedDocumentStream: {repoPathUri: "azure://account/container"}}],
+        ["the former typed bucket shape", {failedDocumentStream: {type: "s3", bucket: "bucket"}}],
+        ["an invalid endpoint", {failedDocumentStream: {repoPathUri: "s3://bucket", endpoint: "not-a-url"}}],
     ])("rejects %s", (_name, data) => {
         const result = USER_RFS_OPTIONS.safeParse({maxShardSizeBytes: 1024, ...data});
         expect(result.success).toBe(false);
@@ -21,12 +25,12 @@ describe("failed document stream choice", () => {
     it("applies S3 defaults inside the selected destination", () => {
         const parsed = USER_RFS_OPTIONS.parse({
             maxShardSizeBytes: 1024,
-            failedDocumentStream: {type: "s3", bucket: "bucket"},
+            failedDocumentStream: {repoPathUri: "s3://bucket"},
         });
         expect(parsed.failedDocumentStream).toEqual({
-            type: "s3",
-            bucket: "bucket",
-            prefix: "rfs-failed-document-stream/",
+            repoPathUri: "s3://bucket",
+            awsRegion: "",
+            endpoint: "",
             maxBufferBytes: 67108864,
         });
     });

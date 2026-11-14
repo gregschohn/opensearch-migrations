@@ -92,10 +92,8 @@ describe('MigrationConfigTransformer validation', () => {
         config.snapshotMigrationConfigs[0].perSnapshotConfig.snap1[0] = {
             documentBackfillConfig: {
                 failedDocumentStream: {
-                    type: "s3",
-                    bucket: "failed-documents",
-                    prefix: "migration-a/",
-                    region: "us-west-2",
+                    repoPathUri: "s3://failed-documents/migration-a/",
+                    awsRegion: "us-west-2",
                     endpoint: "https://s3.us-west-2.amazonaws.com",
                     maxBufferBytes: 123456,
                 },
@@ -114,6 +112,53 @@ describe('MigrationConfigTransformer validation', () => {
             disableFailedDocumentStream: false,
         }));
         expect(documentBackfillConfig).not.toHaveProperty("failedDocumentStream");
+    });
+
+    it('resolves a failure URI without a path using the existing prefix and repository defaults', async () => {
+        const config = cloneBaseConfig();
+        config.snapshotMigrationConfigs[0].perSnapshotConfig.snap1[0] = {
+            documentBackfillConfig: {
+                failedDocumentStream: {repoPathUri: "s3://failed-documents"},
+            },
+        };
+        const result = await transformer.processFromObject(config);
+        expect(result.snapshotMigrations![0].documentBackfillConfig).toMatchObject({
+            failedDocumentStreamS3Bucket: "failed-documents",
+            failedDocumentStreamS3Prefix: "rfs-failed-document-stream/",
+            failedDocumentStreamS3Region: "us-east-2",
+            failedDocumentStreamS3Endpoint: "http://localhost:4566",
+            failedDocumentStreamMaxBufferBytes: 67108864,
+        });
+    });
+
+    it.each([
+        ["localstack://127.0.0.1:4566", "http://127.0.0.1:4566"],
+        ["localstacks://127.0.0.1:4566", "https://127.0.0.1:4566"],
+    ])('resolves a failure endpoint %s and preserves an explicit bucket-root prefix', async (endpoint, expected) => {
+        const config = cloneBaseConfig();
+        config.snapshotMigrationConfigs[0].perSnapshotConfig.snap1[0] = {
+            documentBackfillConfig: {
+                failedDocumentStream: {repoPathUri: "s3://failed-documents/", endpoint},
+            },
+        };
+        const result = await transformer.processFromObject(config);
+        expect(result.snapshotMigrations![0].documentBackfillConfig).toMatchObject({
+            failedDocumentStreamS3Bucket: "failed-documents",
+            failedDocumentStreamS3Prefix: "",
+            failedDocumentStreamS3Endpoint: expected,
+        });
+    });
+
+    it.each([
+        {repoPathUri: "gs://failed-documents"},
+        {repoPathUri: "azure://account/failed-documents"},
+        {type: "s3", bucket: "failed-documents"},
+    ])('rejects unsupported failure destination shapes: %j', async failedDocumentStream => {
+        const config = cloneBaseConfig();
+        config.snapshotMigrationConfigs[0].perSnapshotConfig.snap1[0] = {
+            documentBackfillConfig: {failedDocumentStream},
+        };
+        await expect(transformer.processFromObject(config)).rejects.toThrow();
     });
 
     it('should reject rogue key at top level', () => {

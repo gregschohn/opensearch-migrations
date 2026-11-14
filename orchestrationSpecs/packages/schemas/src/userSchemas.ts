@@ -264,6 +264,24 @@ export const REPO_CONFIG = z.object({
     "keystore, while the migration tools' own Azure reader authenticates separately, from " +
     "azureCredentialsSecretName when set and otherwise from the ambient Azure identity.");
 
+// Output writers currently use S3. Share the repository field names and endpoint
+// behavior without accepting providers for which no output writer exists.
+export const S3_OUTPUT_REPO_CONFIG = REPO_CONFIG.pick({
+    repoPathUri: true,
+    awsRegion: true,
+    endpoint: true,
+}).extend({
+    repoPathUri: z.string().regex(
+        new RegExp(`^s3:\\/\\/${S3_BUCKET_PATTERN}${REPO_SUBPATH_PATTERN}$`),
+        "Output destinations currently support only s3://BUCKET_NAME/OPTIONAL_PATH URIs."
+    ).describe("S3 destination URI. The path is the object key prefix. Omit the path to use the " +
+        "output's default prefix, or use a trailing slash alone to write at the bucket root. " +
+        "GCS and Azure output writers are not implemented."),
+    endpoint: REPO_CONFIG.shape.endpoint.describe("Optional endpoint override for S3 uploads. Supports http://, " +
+        "https://, localstack://, and localstacks://. LocalStack endpoints are resolved to IP addresses " +
+        "during config transformation, as for snapshot repositories."),
+}).strict();
+
 export const PORT_NUMBER_PATTERN = "(?:[1-9]\\d{0,3}|[1-5]\\d{4}|6[0-4]\\d{3}|65[0-4]\\d{2}|655[0-2]\\d|6553[0-5])";
 export const OPTIONAL_PORT_PATTERN = `(?::${PORT_NUMBER_PATTERN})?`;
 export const HOSTNAME_PATTERN = "[^:\\/\\s]+";
@@ -807,6 +825,19 @@ export const USER_REPLAYER_WORKFLOW_OPTIONS = withScalableServiceValidation(z.ob
 }))
     .describe("Kubernetes deployment-level options for the traffic replayer.");
 
+export const TUPLE_OUTPUT_CONFIG = z.union([
+    S3_OUTPUT_REPO_CONFIG.extend({
+        awsRegion: z.string().trim().min(1)
+            .describe("AWS region of the tuple output bucket. Must be specified explicitly."),
+    }).strict(),
+    z.object({
+        type: z.literal("disabled")
+            .describe("Disable S3 tuple persistence. Tuples continue to use the configured tuple logger."),
+    }).strict(),
+]).describe("Destination for persisted replay result tuples, using the same repoPathUri, awsRegion, and " +
+    "endpoint fields as snapshot repositories. Only S3 output is supported. The default prefix is 'tuples/'. " +
+    "Omit tupleOutput or select type: disabled to retain the existing tuple logger.");
+
 export const USER_REPLAYER_PROCESS_OPTIONS = withOtelExportOptions(z.object({
     kafkaTrafficEnableMSKAuth: z.boolean().default(false).optional()
         .describe("Enable SASL/IAM authentication for the replayer's Kafka consumer when connecting to Amazon MSK. Uses the pod's IAM role via EKS Pod Identity.")
@@ -895,17 +926,7 @@ export const USER_REPLAYER_PROCESS_OPTIONS = withOtelExportOptions(z.object({
     tupleTransforms: TRANSFORM_PIPELINE.optional()
         .describe("Tuple transform pipeline. Generates the existing tupleTransformerConfig inline JSON option.")
         .changeRestriction('gated'),
-    tupleS3Bucket: z.string().optional()
-        .describe("S3 bucket for tuple output. When set, tuples are written directly to S3.")
-        .changeRestriction('gated'),
-    tupleS3Region: z.string().optional()
-        .describe("AWS region for the tuple S3 bucket. Required when tupleS3Bucket is set.")
-        .changeRestriction('gated'),
-    tupleS3Prefix: z.string().default("tuples/").optional()
-        .describe("S3 key prefix for tuple objects.")
-        .changeRestriction('gated'),
-    tupleS3Endpoint: z.string().regex(new RegExp(OPTIONAL_HTTP_ENDPOINT_PATTERN)).default("").optional()
-        .describe("Custom S3 endpoint URL for tuple output.")
+    tupleOutput: TUPLE_OUTPUT_CONFIG.optional()
         .changeRestriction('gated'),
     tupleMaxBufferSeconds: z.number().default(60).optional()
         .describe("Maximum seconds before rotating/uploading a tuple file to S3.")
@@ -938,14 +959,6 @@ export const USER_REPLAYER_OPTIONS = withOtelExportOptions(z.object({
         "tupleTransformerConfigBase64",
         "tupleTransformerConfigFile"
     ]);
-    if (hasConfiguredString(data.tupleS3Bucket) && !hasConfiguredString(data.tupleS3Region)) {
-        ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: "'tupleS3Region' is required when 'tupleS3Bucket' is configured.",
-            path: ["tupleS3Region"]
-        });
-    }
-
 }));
 
 // Internal (glue-layer) field: the config transformer folds the user-facing Solr
@@ -1155,21 +1168,11 @@ export const USER_RFS_WORKFLOW_OPTIONS = withScalableServiceValidation(z.object(
 }))
     .describe("Kubernetes deployment-level options for the Reindex From Snapshot (RFS) document backfill.");
 
-export const FAILED_DOCUMENT_STREAM_CONFIG = z.discriminatedUnion("type", [
-    z.object({
-        type: z.literal("s3")
-            .describe("Persist terminal document failures to S3."),
-        bucket: z.string().trim().min(1)
-            .describe("S3 bucket where documents that can't be written are recorded."),
-        prefix: z.string().default("rfs-failed-document-stream/").optional()
-            .describe("S3 key prefix. Each RFS run writes under <prefix>/session=<workflow-uid>/. " +
-                "Defaults to 'rfs-failed-document-stream/'."),
-        region: z.string().optional()
+export const FAILED_DOCUMENT_STREAM_CONFIG = z.union([
+    S3_OUTPUT_REPO_CONFIG.extend({
+        awsRegion: S3_OUTPUT_REPO_CONFIG.shape.awsRegion
             .describe("AWS region for the S3 bucket. Resolved before submission from this value, the snapshot " +
                 "repository, or the deployment default."),
-        endpoint: z.string().optional()
-            .describe("Optional S3 endpoint override (for example, LocalStack). Resolved before submission from " +
-                "this value, the snapshot repository, or the deployment default."),
         maxBufferBytes: z.number().default(67108864).optional()
             .describe("Maximum uncompressed bytes buffered in memory per target index before rotating to a new " +
                 "S3 object. Defaults to 67108864 (64 MiB)."),
@@ -1178,8 +1181,10 @@ export const FAILED_DOCUMENT_STREAM_CONFIG = z.discriminatedUnion("type", [
         type: z.literal("disabled")
             .describe("Run without recording terminal document failures."),
     }).strict(),
-]).describe("Required destination for terminal document failures. Select S3 storage or explicitly disable " +
-    "the failed document stream.");
+]).describe("Required destination for terminal document failures, using the same repoPathUri, awsRegion, and " +
+    "endpoint fields as snapshot repositories. Only S3 output is supported. The default prefix is " +
+    "'rfs-failed-document-stream/'; each run writes under <prefix>/session=<workflow-uid>/. " +
+    "Select type: disabled to explicitly disable the failed document stream.");
 
 export const USER_RFS_PROCESS_OPTIONS = withOtelExportOptions(z.object({
     indexAllowlist: z.array(z.string()).default([]).optional()

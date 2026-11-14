@@ -76,8 +76,7 @@ class Test0011RfsBackpressure(MATestBase):
                     # and the in-flight limit gets many rounds in a few minutes.
                     "documentsSizePerBulkRequest": BULK_BYTES,
                     "failedDocumentStream": {
-                        "type": "s3",
-                        "bucket": self._deployment_default_s3_bucket(),
+                        "repoPathUri": f"s3://{self._deployment_default_s3_bucket()}",
                     },
                     "resources": {
                         "requests": {"cpu": "500m", "memory": "1Gi", "ephemeral-storage": "5Gi"},

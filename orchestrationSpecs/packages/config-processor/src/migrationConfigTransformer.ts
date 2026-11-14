@@ -462,6 +462,22 @@ function trimToUndefined(value: unknown): string | undefined {
     return trimmed ? trimmed : undefined;
 }
 
+function parseS3OutputRepoUri(repoPathUri: string) {
+    // Do not use URL: it normalizes dot segments that are literal S3 key characters.
+    const match = /^s3:\/\/([^/]+)(?:\/(.*))?$/.exec(repoPathUri);
+    if (!match) {
+        throw new Error(`Unsupported output destination '${repoPathUri}'; expected an s3:// URI.`);
+    }
+    // No path uses the output's default prefix; a trailing slash alone selects the bucket root.
+    return {bucket: match[1], prefix: match[2]};
+}
+
+async function resolveOutputEndpointIfLocalStack(endpoint: string | undefined) {
+    return endpoint && /^localstacks?:\/\//i.test(endpoint)
+        ? rewriteLocalStackEndpointToIp(endpoint)
+        : endpoint;
+}
+
 /**
  * Resolve the failed-document-stream S3 region/endpoint before the workflow is created, so the
  * destination is recorded in run history rather than discovered from pod env at runtime.
@@ -473,8 +489,8 @@ export function resolveFailedDocumentStreamS3(
     config: z.infer<typeof FAILED_DOCUMENT_STREAM_CONFIG>,
     repoConfig: { awsRegion?: string; endpoint?: string } | undefined,
     deploymentDefaults: z.infer<typeof DEPLOYMENT_DEFAULTS_CONFIG>
-): Record<string, string | number | boolean | undefined> {
-    if (config.type === "disabled") {
+) {
+    if (!("repoPathUri" in config)) {
         return {
             failedDocumentStreamS3Bucket: undefined,
             disableFailedDocumentStream: true,
@@ -483,8 +499,8 @@ export function resolveFailedDocumentStreamS3(
         };
     }
 
-    const bucket = config.bucket.trim();
-    const userRegion = trimToUndefined(config.region);
+    const {bucket, prefix} = parseS3OutputRepoUri(config.repoPathUri);
+    const userRegion = trimToUndefined(config.awsRegion);
     const userEndpoint = trimToUndefined(config.endpoint);
     const region = userRegion
         ?? trimToUndefined(repoConfig?.awsRegion)
@@ -496,13 +512,13 @@ export function resolveFailedDocumentStreamS3(
     if (!region) {
         throw new Error(
             `failed document stream S3 bucket '${bucket}' was set but no region could be determined. ` +
-            `Set documentBackfillConfig.failedDocumentStream.region, the snapshot repo's awsRegion, ` +
+            `Set documentBackfillConfig.failedDocumentStream.awsRegion, the snapshot repo's awsRegion, ` +
             `or the deployment default region.`
         );
     }
 
     return {
-        failedDocumentStreamS3Prefix: config.prefix,
+        failedDocumentStreamS3Prefix: prefix,
         failedDocumentStreamS3Bucket: bucket,
         disableFailedDocumentStream: false,
         failedDocumentStreamS3Region: region,
@@ -511,7 +527,7 @@ export function resolveFailedDocumentStreamS3(
     };
 }
 
-function prepareDocumentBackfillConfig(
+async function prepareDocumentBackfillConfig(
     config: z.infer<typeof USER_PER_INDICES_SNAPSHOT_MIGRATION_CONFIG>["documentBackfillConfig"],
     repoConfig: { awsRegion?: string; endpoint?: string } | undefined,
     deploymentDefaults: z.infer<typeof DEPLOYMENT_DEFAULTS_CONFIG>,
@@ -525,6 +541,7 @@ function prepareDocumentBackfillConfig(
     const {documentTransforms, failedDocumentStream, ...rest} = config;
     const fileSourceRegistry = new FileSourceRegistry();
     const generatedConfig = lowerTransformPipeline(documentTransforms, fileSourceRegistry);
+    const streamConfig = resolveFailedDocumentStreamS3(failedDocumentStream, repoConfig, deploymentDefaults);
     return ARGO_RFS_OPTIONS.parse({
         ...rest,
         logLevels: {
@@ -532,7 +549,8 @@ function prepareDocumentBackfillConfig(
             bulkRequestTrace: rest.logLevels?.bulkRequestTrace ?? "off",
             failedRequests: rest.logLevels?.failedRequests ?? "warn",
         },
-        ...resolveFailedDocumentStreamS3(failedDocumentStream, repoConfig, deploymentDefaults),
+        ...streamConfig,
+        failedDocumentStreamS3Endpoint: await resolveOutputEndpointIfLocalStack(streamConfig.failedDocumentStreamS3Endpoint),
         skipApproval: rest.skipApproval ?? skipApprovals,
         ...fileSourceRegistry.resolvedFields,
         ...collectionRoutingFields(collectionRouting),
@@ -540,17 +558,28 @@ function prepareDocumentBackfillConfig(
     });
 }
 
-function prepareReplayerConfig(
+async function prepareReplayerConfig(
     config: NonNullable<NonNullable<z.infer<typeof OVERALL_MIGRATION_CONFIG>["traffic"]>["replayers"][string]["replayerConfig"]> | undefined
 ) {
     const configuredLogLevels = config && "logLevels" in config ? config.logLevels : undefined;
-    const {requestTransforms, tupleTransforms, ...rest} = config ?? {};
+    const {requestTransforms, tupleTransforms, tupleOutput, ...rest} = config ?? {};
     const fileSourceRegistry = new FileSourceRegistry();
     const generatedRequestConfig = lowerTransformPipeline(requestTransforms, fileSourceRegistry);
     const generatedTupleConfig = lowerTransformPipeline(tupleTransforms, fileSourceRegistry);
+    const s3Output = tupleOutput && "repoPathUri" in tupleOutput ? {
+        ...parseS3OutputRepoUri(tupleOutput.repoPathUri),
+        region: tupleOutput.awsRegion,
+        endpoint: await resolveOutputEndpointIfLocalStack(tupleOutput.endpoint),
+    } : undefined;
 
     return ARGO_REPLAYER_OPTIONS.parse({
         ...rest,
+        ...(s3Output ? {
+            tupleS3Bucket: s3Output.bucket,
+            tupleS3Region: s3Output.region,
+            tupleS3Prefix: s3Output.prefix,
+            tupleS3Endpoint: s3Output.endpoint,
+        } : {}),
         logLevels: {
             root: configuredLogLevels?.root ?? "info",
         },
@@ -970,7 +999,7 @@ export class MigrationConfigTransformer extends StreamSchemaTransformer<
         const s3TrafficLoaders = this.buildS3TrafficLoaders(userConfig);
         const snapshots = this.buildSnapshots(userConfig);
         const snapshotMigrations = await this.buildSnapshotMigrations(userConfig);
-        const trafficReplays = this.buildTrafficReplays(userConfig);
+        const trafficReplays = await this.buildTrafficReplays(userConfig);
 
         // Compute config checksums with dependency chaining
         const cs = MigrationConfigTransformer.configChecksum;
@@ -1447,7 +1476,7 @@ export class MigrationConfigTransformer extends StreamSchemaTransformer<
                         skipApprovals,
                         migration
                     );
-                    const documentBackfillConfig = prepareDocumentBackfillConfig(
+                    const documentBackfillConfig = await prepareDocumentBackfillConfig(
                         applySolrCollectionAllowlist(migration.documentBackfillConfig, solrCollectionAllowlist),
                         repoConfig,
                         this.deploymentDefaults,
@@ -1488,12 +1517,12 @@ export class MigrationConfigTransformer extends StreamSchemaTransformer<
     /** Build traffic replay configs by resolving captured-traffic source → kafka chain.
      * The source can be either a live capture proxy or a one-time S3 load — both
      * appear identical to the replayer (kafka cluster + topic). */
-    private buildTrafficReplays(userConfig: NormalizedUserConfig) {
+    private async buildTrafficReplays(userConfig: NormalizedUserConfig) {
         const kafkaClusters = resolveKafkaClusters(userConfig);
         const proxies = userConfig.traffic?.proxies ?? {};
         const s3Sources = userConfig.traffic?.s3Sources ?? {};
 
-        return Object.entries(userConfig.traffic?.replayers || {}).map(([name, replayer]) => {
+        return Promise.all(Object.entries(userConfig.traffic?.replayers || {}).map(async ([name, replayer]) => {
             const sourceName = replayer.fromCapturedTraffic;
             const proxy = proxies[sourceName];
             const s3Source = s3Sources[sourceName];
@@ -1514,7 +1543,7 @@ export class MigrationConfigTransformer extends StreamSchemaTransformer<
             const topic = topicOverride || sourceName;
             const sourceLabel = proxy?.source ?? s3Source!.sourceLabel;
 
-            const replayerConfig = prepareReplayerConfig(
+            const replayerConfig = await prepareReplayerConfig(
                 replayer.replayerConfig
             );
             const targetConnectionIdentity = MigrationConfigTransformer.clusterConnectionIdentity({
@@ -1534,7 +1563,7 @@ export class MigrationConfigTransformer extends StreamSchemaTransformer<
                 replayerConfig,
                 ...(replayer.dependsOnSnapshotMigrations ? { dependsOnSnapshotMigrations: replayer.dependsOnSnapshotMigrations } : {}),
             };
-        });
+        }));
     }
 
     /** Build one denormalized loader entry per traffic.s3Sources item. */

@@ -3405,7 +3405,7 @@ exports[`test schemas matches expected argo schema matches expected 1`] = `
                     },
                     "tupleS3Endpoint": {
                       "type": "string",
-                      "pattern": "^(?:https?:\\\\/\\\\/[^:\\\\/\\\\s]+(?::(?:[1-9]\\\\d{0,3}|[1-5]\\\\d{4}|6[0-4]\\\\d{3}|65[0-4]\\\\d{2}|655[0-2]\\\\d|6553[0-5]))?(?:\\\\/)?)?$",
+                      "pattern": "^(?:https?:\\\\/\\\\/[^/]+\\\\/?)?$",
                       "default": ""
                     },
                     "tupleMaxBufferSeconds": {
@@ -5710,34 +5710,25 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                         "changeRestriction": "impossible"
                       },
                       "failedDocumentStream": {
-                        "oneOf": [
+                        "anyOf": [
                           {
                             "type": "object",
                             "properties": {
-                              "type": {
+                              "repoPathUri": {
                                 "type": "string",
-                                "enum": [
-                                  "s3"
-                                ],
-                                "description": "Persist terminal document failures to S3."
+                                "pattern": "^s3:\\\\/\\\\/[a-z0-9][a-z0-9.-]{1,61}[a-z0-9](\\\\/[a-zA-Z0-9!\\\\-_.*'()/]*)?$",
+                                "description": "S3 destination URI. The path is the object key prefix. Omit the path to use the output's default prefix, or use a trailing slash alone to write at the bucket root. GCS and Azure output writers are not implemented."
                               },
-                              "bucket": {
+                              "awsRegion": {
                                 "type": "string",
-                                "minLength": 1,
-                                "description": "S3 bucket where documents that can't be written are recorded."
-                              },
-                              "prefix": {
-                                "type": "string",
-                                "default": "rfs-failed-document-stream/",
-                                "description": "S3 key prefix. Each RFS run writes under <prefix>/session=<workflow-uid>/. Defaults to 'rfs-failed-document-stream/'."
-                              },
-                              "region": {
-                                "type": "string",
+                                "default": "",
                                 "description": "AWS region for the S3 bucket. Resolved before submission from this value, the snapshot repository, or the deployment default."
                               },
                               "endpoint": {
                                 "type": "string",
-                                "description": "Optional S3 endpoint override (for example, LocalStack). Resolved before submission from this value, the snapshot repository, or the deployment default."
+                                "pattern": "^(?:(?:https?|localstacks?):\\\\/\\\\/[^/]+\\\\/?)?$",
+                                "default": "",
+                                "description": "Optional endpoint override for S3 uploads. Supports http://, https://, localstack://, and localstacks://. LocalStack endpoints are resolved to IP addresses during config transformation, as for snapshot repositories."
                               },
                               "maxBufferBytes": {
                                 "type": "number",
@@ -5746,8 +5737,7 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                               }
                             },
                             "required": [
-                              "type",
-                              "bucket"
+                              "repoPathUri"
                             ],
                             "additionalProperties": false
                           },
@@ -5768,7 +5758,7 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                             "additionalProperties": false
                           }
                         ],
-                        "description": "Required destination for terminal document failures. Select S3 storage or explicitly disable the failed document stream.",
+                        "description": "Required destination for terminal document failures, using the same repoPathUri, awsRegion, and endpoint fields as snapshot repositories. Only S3 output is supported. The default prefix is 'rfs-failed-document-stream/'; each run writes under <prefix>/session=<workflow-uid>/. Select type: disabled to explicitly disable the failed document stream.",
                         "changeRestriction": "gated"
                       },
                       "positionGapStopword": {
@@ -7408,27 +7398,52 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                     "description": "Tuple transform pipeline. Generates the existing tupleTransformerConfig inline JSON option.",
                     "changeRestriction": "gated"
                   },
-                  "tupleS3Bucket": {
-                    "type": "string",
-                    "description": "S3 bucket for tuple output. When set, tuples are written directly to S3.",
-                    "changeRestriction": "gated"
-                  },
-                  "tupleS3Region": {
-                    "type": "string",
-                    "description": "AWS region for the tuple S3 bucket. Required when tupleS3Bucket is set.",
-                    "changeRestriction": "gated"
-                  },
-                  "tupleS3Prefix": {
-                    "type": "string",
-                    "default": "tuples/",
-                    "description": "S3 key prefix for tuple objects.",
-                    "changeRestriction": "gated"
-                  },
-                  "tupleS3Endpoint": {
-                    "type": "string",
-                    "pattern": "^(?:https?:\\\\/\\\\/[^:\\\\/\\\\s]+(?::(?:[1-9]\\\\d{0,3}|[1-5]\\\\d{4}|6[0-4]\\\\d{3}|65[0-4]\\\\d{2}|655[0-2]\\\\d|6553[0-5]))?(?:\\\\/)?)?$",
-                    "default": "",
-                    "description": "Custom S3 endpoint URL for tuple output.",
+                  "tupleOutput": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "repoPathUri": {
+                            "type": "string",
+                            "pattern": "^s3:\\\\/\\\\/[a-z0-9][a-z0-9.-]{1,61}[a-z0-9](\\\\/[a-zA-Z0-9!\\\\-_.*'()/]*)?$",
+                            "description": "S3 destination URI. The path is the object key prefix. Omit the path to use the output's default prefix, or use a trailing slash alone to write at the bucket root. GCS and Azure output writers are not implemented."
+                          },
+                          "awsRegion": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "AWS region of the tuple output bucket. Must be specified explicitly."
+                          },
+                          "endpoint": {
+                            "type": "string",
+                            "pattern": "^(?:(?:https?|localstacks?):\\\\/\\\\/[^/]+\\\\/?)?$",
+                            "default": "",
+                            "description": "Optional endpoint override for S3 uploads. Supports http://, https://, localstack://, and localstacks://. LocalStack endpoints are resolved to IP addresses during config transformation, as for snapshot repositories."
+                          }
+                        },
+                        "required": [
+                          "repoPathUri",
+                          "awsRegion"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "disabled"
+                            ],
+                            "description": "Disable S3 tuple persistence. Tuples continue to use the configured tuple logger."
+                          }
+                        },
+                        "required": [
+                          "type"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ],
+                    "description": "Destination for persisted replay result tuples, using the same repoPathUri, awsRegion, and endpoint fields as snapshot repositories. Only S3 output is supported. The default prefix is 'tuples/'. Omit tupleOutput or select type: disabled to retain the existing tuple logger.",
                     "changeRestriction": "gated"
                   },
                   "tupleMaxBufferSeconds": {
