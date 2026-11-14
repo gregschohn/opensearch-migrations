@@ -7408,27 +7408,65 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                     "description": "Tuple transform pipeline. Generates the existing tupleTransformerConfig inline JSON option.",
                     "changeRestriction": "gated"
                   },
-                  "tupleS3Bucket": {
-                    "type": "string",
-                    "description": "S3 bucket for tuple output. When set, tuples are written directly to S3.",
-                    "changeRestriction": "gated"
-                  },
-                  "tupleS3Region": {
-                    "type": "string",
-                    "description": "AWS region for the tuple S3 bucket. Required when tupleS3Bucket is set.",
-                    "changeRestriction": "gated"
-                  },
-                  "tupleS3Prefix": {
-                    "type": "string",
-                    "default": "tuples/",
-                    "description": "S3 key prefix for tuple objects.",
-                    "changeRestriction": "gated"
-                  },
-                  "tupleS3Endpoint": {
-                    "type": "string",
-                    "pattern": "^(?:https?:\\\\/\\\\/[^:\\\\/\\\\s]+(?::(?:[1-9]\\\\d{0,3}|[1-5]\\\\d{4}|6[0-4]\\\\d{3}|65[0-4]\\\\d{2}|655[0-2]\\\\d|6553[0-5]))?(?:\\\\/)?)?$",
-                    "default": "",
-                    "description": "Custom S3 endpoint URL for tuple output.",
+                  "tupleOutput": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "s3"
+                            ],
+                            "description": "Persist replay result tuples to S3."
+                          },
+                          "bucket": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "S3 bucket where replay result tuples are recorded."
+                          },
+                          "prefix": {
+                            "type": "string",
+                            "default": "tuples/",
+                            "description": "S3 key prefix for tuple objects. Defaults to 'tuples/'."
+                          },
+                          "region": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "AWS region for the S3 bucket. Must be set explicitly for tuple output."
+                          },
+                          "endpoint": {
+                            "type": "string",
+                            "pattern": "^(?:https?:\\\\/\\\\/[^:\\\\/\\\\s]+(?::(?:[1-9]\\\\d{0,3}|[1-5]\\\\d{4}|6[0-4]\\\\d{3}|65[0-4]\\\\d{2}|655[0-2]\\\\d|6553[0-5]))?(?:\\\\/)?)?$",
+                            "default": "",
+                            "description": "Optional S3 endpoint override (for example, LocalStack). Must be an HTTP(S) URL."
+                          }
+                        },
+                        "required": [
+                          "type",
+                          "bucket",
+                          "region"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "disabled"
+                            ],
+                            "description": "Run without persisting replay result tuples to S3. Tuples continue to use the configured tuple logger."
+                          }
+                        },
+                        "required": [
+                          "type"
+                        ],
+                        "additionalProperties": false
+                      }
+                    ],
+                    "description": "Optional destination for replay result tuples. Select S3 storage or explicitly disable S3 persistence. Omit tupleOutput to use the configured tuple logger.",
                     "changeRestriction": "gated"
                   },
                   "tupleMaxBufferSeconds": {
