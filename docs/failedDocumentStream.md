@@ -145,19 +145,18 @@ bucket — a migration only writes failures to a bucket its own config names. Wi
 migration leaves no inventory of which documents did not land.
 
 > **Upgrading:** the failed-document configuration under `documentBackfillConfig` has changed. Replace the
-> flat `failedDocumentStreamS3*` fields with a `failedDocumentStream` object containing
-> `repoPathUri: s3://<bucket>/<prefix>`, `awsRegion`, and `endpoint`. These are the same field names as
-> snapshot repositories and replay `tupleOutput`. Replace
-> `disableFailedDocumentStream: true` with `failedDocumentStream: {type: disabled}`.
+> flat `failedDocumentStreamS3*` fields with a `failedDocumentStream` object. Combine the bucket and prefix
+> in `repoPathUri: s3://<bucket>/<prefix>`, and use `awsRegion` and `endpoint` for the region and endpoint.
+> Replace `disableFailedDocumentStream: true` with `failedDocumentStream: {type: disabled}`.
+> The former flat fields and the `type: s3` configuration with separate bucket and prefix fields are
+> no longer accepted.
 
 The destination is set under a migration's `documentBackfillConfig`:
 
 ```yaml
 documentBackfillConfig:
   failedDocumentStream:
-    repoPathUri: s3://my-failed-documents-bucket/failures/
-    awsRegion: us-east-1
-    # endpoint: localstack://localhost:4566
+    repoPathUri: s3://my-failed-documents-bucket
 ```
 
 or, to opt out:
@@ -171,28 +170,29 @@ documentBackfillConfig:
 The destination is gated: changing it on a running migration needs `workflow approve change`, because switching
 the stream mid-run leaves an inconsistent failure record.
 
-| Option                                       | Default                       | Description                                                    |
-|----------------------------------------------|-------------------------------|----------------------------------------------------------------|
-| `failedDocumentStream.repoPathUri`           | none                          | Required for an enabled stream; `s3://<bucket>/<prefix>`.      |
-| `failedDocumentStream.awsRegion`             | resolved by config processor  | Region for the bucket.                                         |
-| `failedDocumentStream.endpoint`              | resolved by config processor  | HTTP(S) or LocalStack endpoint override.                       |
-| `failedDocumentStream.maxBufferBytes`        | `67108864` (64 MiB)           | Max in-memory bytes per index before rotating to a new object. |
-| `failedDocumentStream.type`                  | none                          | Use `disabled` to opt out; cannot be combined with URI fields. |
+| Option                                | Default                      | Description                                                    |
+| ------------------------------------- | ---------------------------- | -------------------------------------------------------------- |
+| `failedDocumentStream.repoPathUri`    | none                         | Required for an enabled stream; `s3://<bucket>/<prefix>`.      |
+| `failedDocumentStream.awsRegion`      | resolved by config processor | Region for the bucket.                                         |
+| `failedDocumentStream.endpoint`       | resolved by config processor | HTTP(S) or LocalStack endpoint override.                       |
+| `failedDocumentStream.maxBufferBytes` | `67108864` (64 MiB)          | Max in-memory bytes per index before rotating to a new object. |
+| `failedDocumentStream.type`           | none                         | Use `disabled` to opt out; cannot be combined with URI fields. |
 
 The URI supplies the bucket and prefix. `s3://bucket` uses the default prefix
 `rfs-failed-document-stream/`; `s3://bucket/` uses an empty prefix (the bucket root).
 `s3://bucket/custom/` uses `custom/`. Each run writes under `<prefix>/session=<uid>/`.
-Paths use the same validation as S3 snapshot repository paths and are preserved literally.
-
-`repoPathUri`, `awsRegion`, and `endpoint` are shared configuration conventions, not a claim that all
-repository providers support output. The failure writer and console reader currently use S3, so
-`gs://` and `azure://` output URIs are rejected. Native GCS and Azure failure streams require those
-runtime implementations.
+The location uses the same `repoPathUri`, `awsRegion`, and `endpoint` fields as snapshot repositories
+and [replay tuple output](tupleOutput.md). Paths are preserved literally.
 
 Running RFS directly, pass `--failed-document-stream-s3-bucket <bucket>` or `--disable-failed-document-stream`;
 it refuses to start with neither or both.
 
 The region and endpoint are still resolved for you when the bucket is set: the config processor takes your
 value if given, else the snapshot repo's, else the deployment default, and records the result in run
-history rather than leaving RFS to discover it at runtime. As for snapshot repositories,
-`localstack://` and `localstacks://` endpoints are converted to HTTP(S) IP endpoints before submission.
+history rather than leaving RFS to discover it at runtime.
+
+LocalStack endpoints support `localstack://` and `localstacks://` and are resolved to HTTP(S) IP
+endpoints before submission.
+
+Failed-document stream persistence supports S3. Native GCS and Azure Blob Storage destinations are
+not accepted.

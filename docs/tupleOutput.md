@@ -1,49 +1,72 @@
-# Replay tuple output
+# Replay Tuple Output
 
-Configure persisted replay result tuples under `traffic.replayers.<name>.replayerConfig.tupleOutput`.
-The destination uses the same `repoPathUri`, `awsRegion`, and `endpoint` fields as snapshot repositories
-and the [failed-document stream](failedDocumentStream.md). The URI carries both the bucket and prefix.
+The traffic replayer writes one result tuple per replayed request, with the source request and response
+alongside the target's. Tuples can be persisted to S3 as gzip-compressed JSON lines and inspected from
+the Migration Console.
+
+## Inspecting from the Migration Console
+
+Run this from a Migration Console shell. When more than one replayer exists, add `--replayer <name>`
+to choose one.
+
+```
+console tuples show --limit 5 --pretty
+```
+
+## Configuration
+
+Set `tupleOutput.repoPathUri` to an S3 URI to persist replay result tuples, or select `type: disabled`
+to use the configured tuple logger without S3 persistence. Omitting `tupleOutput` also uses the
+configured tuple logger.
+
+> **Upgrading:** the tuple output configuration under `replayerConfig` has changed. Replace
+> `tupleS3Bucket`, `tupleS3Prefix`, `tupleS3Region`, and `tupleS3Endpoint` with a `tupleOutput` object.
+> Combine the bucket and prefix in `repoPathUri: s3://<bucket>/<prefix>`, and use `awsRegion` and
+> `endpoint` for the region and endpoint. The former flat fields are no longer accepted.
+
+The destination is set under a replayer's `traffic.replayers.<name>.replayerConfig`:
 
 ```yaml
 replayerConfig:
   tupleOutput:
-    repoPathUri: s3://my-tuple-results/tuples/
+    repoPathUri: s3://my-tuple-results-bucket/tuples/
     awsRegion: us-east-1
-    # endpoint: http://localhost:4566
-  tupleMaxBufferSeconds: 60
-  tupleMaxFileSizeMb: 256
-  tupleMaxPerFile: 0
 ```
 
-An enabled destination requires `repoPathUri` and an explicit `awsRegion`. Tuple rotation settings
-belong to `replayerConfig`.
+or, to opt out:
 
-| URI | Resolved bucket | Resolved prefix |
-|---|---|---|
-| `s3://my-tuple-results` | `my-tuple-results` | `tuples/` (default) |
-| `s3://my-tuple-results/` | `my-tuple-results` | empty (bucket root) |
-| `s3://my-tuple-results/custom/` | `my-tuple-results` | `custom/` |
+```yaml
+replayerConfig:
+  tupleOutput:
+    type: disabled
+```
 
-Paths use the same validation as S3 snapshot repository paths and are preserved literally.
-The optional endpoint accepts HTTP(S), `localstack://`, and `localstacks://` URLs. LocalStack hosts
-are resolved to IP addresses before submission, matching snapshot repository endpoint handling.
+Changing the tuple output bucket on a running replay needs `workflow approve change`.
 
-Omit `tupleOutput`, or select `tupleOutput: {type: disabled}`, to use the configured tuple logger
-without S3 persistence. This differs from `failedDocumentStream`, where an explicit choice is required.
+| Option                    | Default | Description                                                       |
+| ------------------------- | ------- | ----------------------------------------------------------------- |
+| `tupleOutput.repoPathUri` | none    | Required for S3 persistence; `s3://<bucket>/<prefix>`.            |
+| `tupleOutput.awsRegion`   | none    | Required for S3 persistence; region for the bucket.               |
+| `tupleOutput.endpoint`    | none    | HTTP(S) or LocalStack endpoint override.                          |
+| `tupleOutput.type`        | none    | Use `disabled` to opt out; cannot be combined with URI fields.    |
+| `tupleMaxBufferSeconds`   | `60`    | Max seconds before rotating and uploading a tuple file.           |
+| `tupleMaxFileSizeMb`      | `256`   | Max uncompressed file size in MB before rotating to a new object. |
+| `tupleMaxPerFile`         | `0`     | Max tuples per object. `0` disables the count limit.              |
 
-Only `s3://` output is implemented. Snapshot repositories also support GCS and Azure, but their
-readers do not provide tuple or failure writers; `gs://` and `azure://` output URIs are rejected.
-Snapshot-specific credentials such as `s3RoleArn` and `azureCredentialsSecretName` do not belong
-in output configuration.
+The rotation settings belong directly to `replayerConfig`, alongside `tupleOutput`.
+The region must be set explicitly for an S3 destination.
 
-Replace the former flat user fields as follows:
+The URI supplies the bucket and prefix:
 
-| Former field | Replacement |
-|---|---|
-| `tupleS3Bucket` and `tupleS3Prefix` | `tupleOutput.repoPathUri: s3://<bucket>/<prefix>` |
-| `tupleS3Region` | `tupleOutput.awsRegion` |
-| `tupleS3Endpoint` | `tupleOutput.endpoint` |
+| URI                                    | Key prefix          |
+| -------------------------------------- | ------------------- |
+| `s3://my-tuple-results-bucket`         | `tuples/` (default) |
+| `s3://my-tuple-results-bucket/`        | empty (bucket root) |
+| `s3://my-tuple-results-bucket/custom/` | `custom/`           |
 
-The config processor resolves the destination into the existing flat workflow, TrafficReplay CRD,
-and replayer options. Direct replayer CLI flags and console tuple inspection keep their existing
-interfaces. Destination changes retain the existing workflow approval requirements.
+The location uses the same `repoPathUri`, `awsRegion`, and `endpoint` fields as snapshot repositories
+and the [failed-document stream](failedDocumentStream.md). Paths are preserved literally.
+LocalStack endpoints support `localstack://` and `localstacks://` and are resolved to HTTP(S) IP
+endpoints before submission.
+
+Tuple persistence supports S3. Native GCS and Azure Blob Storage destinations are not accepted.
