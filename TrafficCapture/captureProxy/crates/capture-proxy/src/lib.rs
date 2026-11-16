@@ -3,9 +3,15 @@
 
 pub mod capture_process_state;
 pub mod process;
+pub mod shutdown;
 
 pub use capture_process_state::{CaptureFailure, CaptureProcessState, State};
 pub use process::{
     CAPTURE_FAILURE_EXIT_CODE, CAPTURE_FAILURE_LOG_FLUSH_TIMEOUT, CaptureFailureTerminator,
     install_panic_hook, node_instance_name,
+};
+pub use shutdown::{
+    CaptureRetirement, ConnectionSet, ORDERLY_NATURAL_DRAIN, ORDERLY_RETIREMENT_DEADLINE,
+    ORDERLY_SHUTDOWN_HARD_STOP, ORDERLY_SHUTDOWN_HOOK_COMPLETION, ShutdownOutcome, ShutdownTiming,
+    ShutdownTimingError, perform_orderly_shutdown,
 };
