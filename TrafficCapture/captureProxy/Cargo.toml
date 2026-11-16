@@ -1,0 +1,89 @@
+[workspace]
+members = [
+    "crates/capture-config",
+    "crates/capture-http-scan",
+    "crates/capture-kafka",
+    "crates/capture-observability",
+    "crates/capture-proxy",
+    "crates/capture-test-support",
+    "crates/capture-transport",
+    "crates/capture-wire",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+license = "Apache-2.0"
+repository = "https://github.com/opensearch-project/opensearch-migrations"
+
+[workspace.dependencies]
+# Internal crates
+capture-config = { path = "crates/capture-config" }
+capture-http-scan = { path = "crates/capture-http-scan" }
+capture-kafka = { path = "crates/capture-kafka" }
+capture-observability = { path = "crates/capture-observability" }
+capture-test-support = { path = "crates/capture-test-support" }
+capture-transport = { path = "crates/capture-transport" }
+capture-wire = { path = "crates/capture-wire" }
+
+# External
+anyhow = "1.0"
+async-trait = "0.1"
+base64 = "0.22"
+bytes = "1.10"
+clap = { version = "4.5", features = ["derive", "env"] }
+futures-util = "0.3"
+hdrhistogram = "7.5"
+httparse = "1.10"
+libc = "0.2"
+opentelemetry = "0.31"
+opentelemetry-otlp = { version = "0.31", features = ["grpc-tonic", "metrics"] }
+opentelemetry_sdk = { version = "0.31", features = ["metrics", "rt-tokio"] }
+proptest = "1.8"
+prost = "0.14"
+prost-build = "0.14"
+prost-types = "0.14"
+protoc-bin-vendored = "3.2"
+rand = "0.9"
+rdkafka = { version = "0.39", features = ["cmake-build", "ssl", "sasl", "zstd", "libz"] }
+regex = "1.12"
+rustls = "0.23"
+rustls-native-certs = "0.8"
+rustls-pemfile = "2.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+socket2 = "0.6"
+tempfile = "3.23"
+thiserror = "2.0"
+tokio = { version = "1.48", features = ["full", "test-util"] }
+tokio-rustls = "0.26"
+tracing = "0.1"
+tracing-opentelemetry = "0.32"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+uuid = { version = "1.18", features = ["v4"] }
+
+[workspace.lints.rust]
+# Internal ownership corruption must terminate the process (proxyCaptureProtocol.md 7.1), never be
+# papered over with unsafe tricks.
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+# A panic indicates internal ownership/invariant corruption, which the capture protocol requires to
+# terminate the process in BOTH fail-open and fail-closed modes.
+panic = "abort"
+strip = "symbols"
+
+# Release code generation with symbols retained, for CPU/allocation profiling. Performance gates are
+# measured with `--profile release`; this profile exists so profiles are attributable.
+[profile.profiling]
+inherits = "release"
+debug = 1
+strip = "none"

@@ -1,0 +1,28 @@
+[package]
+name = "capture-transport"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Tokio TCP/TLS listener, source acquisition, byte-exact forwarding pumps, and write-driven backpressure"
+
+[lints]
+workspace = true
+
+[dependencies]
+bytes.workspace = true
+capture-config.workspace = true
+capture-http-scan.workspace = true
+capture-observability.workspace = true
+rustls.workspace = true
+rustls-pemfile.workspace = true
+socket2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-rustls.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile.workspace = true

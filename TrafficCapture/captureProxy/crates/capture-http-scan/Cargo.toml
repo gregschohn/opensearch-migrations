@@ -1,0 +1,22 @@
+[package]
+name = "capture-http-scan"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Bounded incremental HTTP/1 framing scanner, capture suppression policy, and post-capture header rewriting"
+
+[lints]
+workspace = true
+
+[dependencies]
+bytes.workspace = true
+capture-config.workspace = true
+httparse.workspace = true
+regex.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

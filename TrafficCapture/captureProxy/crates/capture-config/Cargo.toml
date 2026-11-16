@@ -1,0 +1,22 @@
+[package]
+name = "capture-config"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Capture-proxy configuration contract: CLI, inline JSON, endpoints, TLS and Kafka inputs"
+
+[lints]
+workspace = true
+
+[dependencies]
+clap.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

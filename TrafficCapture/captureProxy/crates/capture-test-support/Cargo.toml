@@ -1,0 +1,20 @@
+[package]
+name = "capture-test-support"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared fixtures, fakes, byte corpora, and golden records for capture-proxy tests"
+
+[lints]
+workspace = true
+
+[dependencies]
+bytes.workspace = true
+capture-wire.workspace = true
+prost.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
