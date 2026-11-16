@@ -315,6 +315,29 @@ pub trait CaptureSink: Send {
         Ok(())
     }
 
+    /// Client bytes were read. Called for **every** read, captured or not.
+    ///
+    /// The `observe_*` hooks feed operational telemetry, which Java records for all traffic:
+    /// its capture handler is installed even under `--noCapture` (`ProxyChannelInitializer:159`)
+    /// and counts every byte regardless of suppression (`LHH:905-911`). They are deliberately not
+    /// gated on [`CaptureSink::should_capture`], unlike every capture method above.
+    fn observe_client_bytes(&mut self, _bytes: u64) {}
+
+    /// One request was completely framed. Called for every request, captured or not.
+    fn observe_request_complete(&mut self) {}
+
+    /// Capture was suppressed for a request by policy.
+    fn observe_capture_suppressed(&mut self) {}
+
+    /// Response bytes were handed to the client. Called for every write, captured or not.
+    fn observe_source_bytes(&mut self, _bytes: u64) {}
+
+    /// The connection is terminating with an exception-class reason.
+    fn observe_exception(&mut self) {}
+
+    /// The connection closed. Called exactly once, captured or not.
+    fn observe_closed(&mut self) {}
+
     /// Waits until the terminal record and every earlier record of this connection are durably
     /// acknowledged, or until capture for the connection has terminally failed.
     ///

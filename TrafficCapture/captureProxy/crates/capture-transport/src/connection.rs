@@ -358,6 +358,10 @@ where
         // ---- teardown, in the order the capture stream requires ----
         let at = SystemTime::now();
         let mut abort = termination.abort;
+        if termination.reason.emits_connection_exception() {
+            sink.observe_exception();
+        }
+        sink.observe_closed();
         if sink.should_capture() {
             // Held response bytes first: they are earlier on the wire than anything that follows.
             if let Err(failure) = response.flush_held(&mut sink, request.suppression(), at) {

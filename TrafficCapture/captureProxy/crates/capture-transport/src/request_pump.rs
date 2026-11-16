@@ -160,6 +160,9 @@ impl<P: CapturePredicate> RequestPump<P> {
                 if applied != SuppressionTransition::Unchanged {
                     transition = applied;
                 }
+                if head.directive != CaptureDirective::Capture {
+                    sink.observe_capture_suppressed();
+                }
                 self.pending.push_back(PendingMessage {
                     captured: head.directive == CaptureDirective::Capture,
                     critical_mutation: head.critical_mutation,
@@ -167,6 +170,7 @@ impl<P: CapturePredicate> RequestPump<P> {
             }
         }
 
+        sink.observe_client_bytes(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
         let capturing = sink.should_capture();
         if capturing && transition == SuppressionTransition::SuppressedAfterCommittedPrefix {
             // A prefix of this request is already in the capture stream, so the stream needs the
@@ -186,6 +190,7 @@ impl<P: CapturePredicate> RequestPump<P> {
                 continue;
             };
             step.messages_completed += 1;
+            sink.observe_request_complete();
 
             // Rewrite up to the boundary, then start a new request. Driven by the *request*
             // framing, never by a response: owner decision OD-3.

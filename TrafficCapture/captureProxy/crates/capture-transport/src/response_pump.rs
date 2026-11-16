@@ -80,6 +80,7 @@ impl ResponsePump {
         let mut step = ResponseStep::default();
         // Telemetry is not suppressed with capture (`LHH:905-911` counts every byte handed to the
         // client regardless); only the observations are.
+        sink.observe_source_bytes(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
         let capturing = sink.should_capture() && suppression.should_capture_response();
         for piece in &classification.pieces {
             match piece {

@@ -113,6 +113,144 @@ impl WireInstruments {
     }
 }
 
+/// The request/response phase a connection is in, for [`WirePhaseTracker`].
+#[derive(Debug, Clone, Copy)]
+enum WirePhase {
+    Idle,
+    GatheringRequest(Instant),
+    Blocked(Instant),
+    WaitingForResponse(Instant),
+    GatheringResponse(Instant),
+}
+
+/// An owned, callback-driven driver for the wire-phase instruments.
+///
+/// [`CapturingConnection`]'s phase handles borrow the connection, which suits code that owns a
+/// request's whole lifetime on one stack frame. The data plane instead observes a connection
+/// through callbacks on a long-lived per-connection object, which cannot hold a borrow of itself.
+/// This tracker drives the **same instruments** with the same phase semantics as Java's
+/// `WireCaptureContexts`: gathering the request from its first byte to its end; blocked while the
+/// capture-before-forward gate holds it; waiting for the response until the first response byte;
+/// gathering the response until the next request begins or the connection closes.
+///
+/// Every operation is O(1) on connection-local state; nothing here is shared or ordered, and the
+/// instruments are dimensionless, so each record lands on the SDK's no-attribute fast path.
+#[derive(Debug)]
+pub struct WirePhaseTracker {
+    instruments: Arc<WireInstruments>,
+    phase: WirePhase,
+}
+
+impl WirePhaseTracker {
+    /// Starts tracking one connection.
+    #[must_use]
+    pub fn new(instruments: Arc<WireInstruments>) -> Self {
+        Self {
+            instruments,
+            phase: WirePhase::Idle,
+        }
+    }
+
+    fn finish_current(&mut self) {
+        let instruments = &self.instruments;
+        match self.phase {
+            WirePhase::Idle => {}
+            WirePhase::GatheringRequest(started) => {
+                instruments
+                    .gathering_request
+                    .record_completed(started.elapsed());
+            }
+            WirePhase::Blocked(started) => {
+                instruments.blocked.record_completed(started.elapsed());
+            }
+            WirePhase::WaitingForResponse(started) => {
+                instruments
+                    .waiting_for_response
+                    .record_completed(started.elapsed());
+            }
+            WirePhase::GatheringResponse(started) => {
+                instruments
+                    .gathering_response
+                    .record_completed(started.elapsed());
+            }
+        }
+        self.phase = WirePhase::Idle;
+    }
+
+    /// Client bytes were read. Counted whether or not they are captured (`LHH` counts every read).
+    pub fn client_bytes(&mut self, bytes: u64) {
+        self.instruments.bytes_read.add(bytes, &[]);
+        match self.phase {
+            WirePhase::GatheringRequest(_) | WirePhase::Blocked(_) => {}
+            WirePhase::Idle
+            | WirePhase::WaitingForResponse(_)
+            | WirePhase::GatheringResponse(_) => {
+                self.finish_current();
+                self.phase = WirePhase::GatheringRequest(Instant::now());
+            }
+        }
+    }
+
+    /// One request was completely framed.
+    pub fn request_complete(&mut self) {
+        self.instruments.full_request.add(1, &[]);
+        if let WirePhase::GatheringRequest(_) = self.phase {
+            self.finish_current();
+            self.phase = WirePhase::WaitingForResponse(Instant::now());
+        }
+    }
+
+    /// The capture-before-forward gate began holding the request.
+    pub fn blocking_started(&mut self) {
+        self.instruments.blocking_request.add(1, &[]);
+        // The waiting phase opened at the end of the request has not really begun: the request
+        // is held. Java goes straight from gathering to blocked.
+        self.phase = WirePhase::Blocked(Instant::now());
+    }
+
+    /// The gate released (or refused) the request.
+    pub fn blocking_finished(&mut self) {
+        if let WirePhase::Blocked(_) = self.phase {
+            self.finish_current();
+            self.phase = WirePhase::WaitingForResponse(Instant::now());
+        }
+    }
+
+    /// Response bytes were handed to the client. Counted whether or not they are captured.
+    pub fn source_bytes(&mut self, bytes: u64) {
+        self.instruments.bytes_written.add(bytes, &[]);
+        if let WirePhase::WaitingForResponse(_) = self.phase {
+            self.finish_current();
+            self.phase = WirePhase::GatheringResponse(Instant::now());
+        }
+    }
+
+    /// Capture was suppressed for a request by policy.
+    pub fn capture_suppressed(&mut self) {
+        self.instruments.capture_suppressed.add(1, &[]);
+    }
+
+    /// An exception was observed in the current phase.
+    pub fn exception(&mut self) {
+        let instruments = &self.instruments;
+        match self.phase {
+            WirePhase::Idle => {}
+            WirePhase::GatheringRequest(_) => instruments.gathering_request.record_exception(),
+            WirePhase::Blocked(_) => instruments.blocked.record_exception(),
+            WirePhase::WaitingForResponse(_) => instruments.waiting_for_response.record_exception(),
+            WirePhase::GatheringResponse(_) => instruments.gathering_response.record_exception(),
+        }
+    }
+
+    /// The connection closed: completes the open phase and records the handler-lifecycle counters
+    /// Java records once per channel teardown.
+    pub fn closed(&mut self) {
+        self.finish_current();
+        self.instruments.unregistered.add(1, &[]);
+        self.instruments.removed.add(1, &[]);
+    }
+}
+
 /// Per-connection wire-capture handle.
 ///
 /// Replaces `ICapturingConnectionContext`: it owns the connection's identity for span correlation,
@@ -466,6 +604,64 @@ mod tests {
         snapshot
             .points_for(&contract::activity_duration_name(phase))
             .len()
+    }
+
+    #[test]
+    fn the_owned_tracker_records_a_blocked_mutation_lifecycle() {
+        // The data plane drives the instruments through WirePhaseTracker callbacks; this is the
+        // order the transport and the capture gate call them in for a Critical Mutation Traffic
+        // request.
+        let (provider, recorder, instruments) = wire();
+        let mut tracker = WirePhaseTracker::new(instruments);
+        tracker.client_bytes(64);
+        tracker.request_complete();
+        tracker.blocking_started();
+        tracker.blocking_finished();
+        tracker.source_bytes(256);
+        tracker.closed();
+
+        provider.force_flush().expect("flush");
+        let snapshot = recorder.take();
+        for phase in [
+            "gatheringRequest",
+            "blocked",
+            "waitingForResponse",
+            "gatheringResponse",
+        ] {
+            assert_eq!(durations(&snapshot, phase), 1, "{phase} must be recorded");
+        }
+        for counter in [
+            "fullRequest",
+            "blockingRequest",
+            "bytesRead",
+            "bytesWritten",
+            "unregistered",
+            "removed",
+        ] {
+            assert!(
+                snapshot.point_for(counter).is_some(),
+                "{counter} must be recorded"
+            );
+        }
+    }
+
+    #[test]
+    fn the_owned_tracker_records_no_blocked_phase_for_an_ordinary_request() {
+        let (provider, recorder, instruments) = wire();
+        let mut tracker = WirePhaseTracker::new(instruments);
+        tracker.client_bytes(32);
+        tracker.request_complete();
+        tracker.source_bytes(64);
+        // A second request on the same connection closes the first response phase.
+        tracker.client_bytes(32);
+        tracker.closed();
+
+        provider.force_flush().expect("flush");
+        let snapshot = recorder.take();
+        assert_eq!(durations(&snapshot, "blocked"), 0);
+        assert_eq!(durations(&snapshot, "gatheringRequest"), 1);
+        assert_eq!(durations(&snapshot, "gatheringResponse"), 1);
+        assert!(snapshot.point_for("blockingRequest").is_none());
     }
 
     #[test]

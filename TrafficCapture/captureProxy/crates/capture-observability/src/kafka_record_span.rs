@@ -58,6 +58,19 @@ impl KafkaRecordInstruments {
             family: ActivityInstruments::new(meter, activity),
         }
     }
+
+    /// Records one traffic-record publication timed outside a span: submission to delivery
+    /// report, matching Java's `KafkaRecordContext`, which opens at `send` and closes in the
+    /// producer callback.
+    pub fn record_publication(&self, elapsed: std::time::Duration) {
+        self.family.record_completed(elapsed);
+    }
+
+    /// Counts one failed traffic-record publication. Its latency is recorded separately through
+    /// [`Self::record_publication`], exactly as [`KafkaRecordSpan::failed`] does.
+    pub fn record_publication_failure(&self) {
+        self.family.record_exception();
+    }
 }
 
 /// The correlation keys one capture-record publication carries.

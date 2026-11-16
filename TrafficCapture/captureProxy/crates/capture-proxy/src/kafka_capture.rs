@@ -213,6 +213,22 @@ impl capture_kafka::CaptureMetrics for ContractedKafkaMetrics {
         self.0
             .kafka()
             .publication_completed(record_kind(kind), publish_outcome(outcome), bytes);
+        // kafkaCommitExceptionCount: traffic records only, like Java's KafkaRecordContext. The
+        // failed record's latency was already recorded by `submit_to_delivery`.
+        if matches!(kind, capture_kafka::RecordKind::Traffic)
+            && matches!(outcome, capture_kafka::PublishOutcome::Failed)
+        {
+            self.0.record_kafka_commit_failure();
+        }
+    }
+
+    fn submit_to_delivery(&self, kind: capture_kafka::RecordKind, elapsed: std::time::Duration) {
+        // kafkaCommitCount / kafkaCommitDuration: Java's KafkaRecordContext opens at `send` and
+        // closes in the producer callback, for traffic records. This is the Phase 1 Gate 5
+        // acknowledgement-latency instrument, bucketed by GATE_LATENCY_BUCKETS_MS.
+        if matches!(kind, capture_kafka::RecordKind::Traffic) {
+            self.0.record_kafka_commit(elapsed);
+        }
     }
 
     fn heartbeat_deadline_violated(&self) {

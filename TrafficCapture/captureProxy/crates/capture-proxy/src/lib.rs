@@ -27,6 +27,7 @@ pub mod capture_process_state;
 pub mod capture_sink;
 pub mod connection_factory;
 pub mod kafka_capture;
+pub mod metered_sink;
 pub mod policy;
 pub mod process;
 pub mod publication;

@@ -636,6 +636,8 @@ async fn serve_with_sink<K, P>(
         }
     };
 
+    // Wire-phase telemetry for every connection, captured or not, exactly as Java records it.
+    let sink = crate::metered_sink::MeteredSink::new(sink, telemetry.wire_phases());
     let outcome = Connection::new(client, source, sink, predicate, connection_config)
         .with_lifetime_origin(lifetime_origin)
         .run(Some(Arc::clone(guard.shutdown())))

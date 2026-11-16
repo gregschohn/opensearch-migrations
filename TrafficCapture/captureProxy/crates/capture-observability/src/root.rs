@@ -47,7 +47,7 @@ use crate::export::TelemetryExport;
 use crate::kafka_metrics::KafkaMetrics;
 use crate::kafka_record_span::{KafkaRecordInstruments, KafkaRecordSpan, RecordCorrelation};
 use crate::process_metrics::{CaptureProcessMetrics, ProcessIdentity};
-use crate::wire_activity::{CapturingConnection, WireInstruments};
+use crate::wire_activity::{CapturingConnection, WireInstruments, WirePhaseTracker};
 
 /// Every instrument and span factory the capture proxy has.
 ///
@@ -125,6 +125,22 @@ impl RootTelemetry {
     #[must_use]
     pub fn kafka(&self) -> &KafkaMetrics {
         &self.kafka
+    }
+
+    /// An owned wire-phase driver for one connection, for callback-driven data planes.
+    #[must_use]
+    pub fn wire_phases(&self) -> WirePhaseTracker {
+        WirePhaseTracker::new(Arc::clone(&self.wire))
+    }
+
+    /// Records one traffic-record publication's submit-to-delivery latency (`kafkaCommit*`).
+    pub fn record_kafka_commit(&self, elapsed: std::time::Duration) {
+        self.kafka_records.record_publication(elapsed);
+    }
+
+    /// Counts one failed traffic-record publication (`kafkaCommitExceptionCount`).
+    pub fn record_kafka_commit_failure(&self) {
+        self.kafka_records.record_publication_failure();
     }
 
     /// Begins observing one source connection's wire phases (HTTP-12, HTTP-14).

@@ -64,9 +64,15 @@ WORKDIR /build/captureProxy
 
 # `--locked` so the image build fails rather than silently resolving different dependency versions
 # than the ones the test suite and the SBOM were produced against.
-RUN cargo build --release --locked --bin capture-proxy \
- && strip target/release/capture-proxy \
- && target/release/capture-proxy --version
+#
+# CARGO_PROFILE=profiling builds the same code with release code generation but keeps symbols, for
+# CPU profiling only. Performance gates are measured on the default `release` profile.
+ARG CARGO_PROFILE=release
+RUN cargo build --profile "${CARGO_PROFILE}" --locked --bin capture-proxy \
+ && mkdir -p /build/out \
+ && cp "target/${CARGO_PROFILE}/capture-proxy" /build/out/capture-proxy \
+ && if [ "${CARGO_PROFILE}" = "release" ]; then strip /build/out/capture-proxy; fi \
+ && /build/out/capture-proxy --version
 
 # ---------------------------------------------------------------------------------------------
 # Runtime stage
@@ -99,7 +105,7 @@ RUN dnf -y install shadow-utils \
  && dnf clean all \
  && rm -rf /var/cache/dnf
 
-COPY --from=builder /build/captureProxy/target/release/capture-proxy /usr/local/bin/capture-proxy
+COPY --from=builder /build/out/capture-proxy /usr/local/bin/capture-proxy
 
 USER 10001:10001
 
