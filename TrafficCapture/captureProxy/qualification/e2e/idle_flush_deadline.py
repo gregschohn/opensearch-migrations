@@ -2,7 +2,7 @@
 import socket, subprocess, sys, time, signal, os, threading, http.server, socketserver
 
 topic = open('/tmp/rust-proxy-qual/gapb-topic.txt').read().strip()
-proxy_bin = '/Users/schohn/dev/rustifyProxy/TrafficCapture/captureProxy/target/release/capture-proxy'
+proxy_bin = __import__('os').environ.get('CAPTURE_PROXY_BIN', str(__import__('pathlib').Path(__file__).resolve().parents[2] / 'target/release/capture-proxy'))
 marker = b'X-GapB-Marker: idle-flush-%d' % int(time.time())
 
 class H(http.server.BaseHTTPRequestHandler):

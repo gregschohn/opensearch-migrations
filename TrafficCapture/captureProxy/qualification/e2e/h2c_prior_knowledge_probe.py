@@ -1,6 +1,6 @@
 """Does the proxy forward an HTTP/2 prior-knowledge (h2c) connection, as Java does?"""
 import socket, subprocess, sys, threading, time, signal
-BIN = '/Users/schohn/dev/rustifyProxy/TrafficCapture/captureProxy/target/release/capture-proxy'
+BIN = __import__('os').environ.get('CAPTURE_PROXY_BIN', str(__import__('pathlib').Path(__file__).resolve().parents[2] / 'target/release/capture-proxy'))
 PREFACE = b'PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n'
 SETTINGS = b'\x00\x00\x00\x04\x00\x00\x00\x00\x00'
 PING = b'\x00\x00\x08\x06\x00\x00\x00\x00\x00' + b'12345678'

@@ -3,7 +3,7 @@
 import os, re, socket, subprocess, sys, time, json, uuid, http.client
 
 D = "/tmp/rust-proxy-qual/kreal"
-BIN = "/Users/schohn/dev/rustifyProxy/TrafficCapture/captureProxy/target/release/capture-proxy"
+BIN = __import__('os').environ.get('CAPTURE_PROXY_BIN', str(__import__('pathlib').Path(__file__).resolve().parents[2] / 'target/release/capture-proxy'))
 POLICY, TOPIC = sys.argv[1], sys.argv[2]
 TAG = "s2c" if POLICY == "fail-closed" else "s2o"
 ORIG, PORT = (18731, 18732) if POLICY == "fail-closed" else (18741, 18742)

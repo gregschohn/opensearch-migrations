@@ -28,7 +28,7 @@ A row is only `PROVED` when a named command and its output exist in a report und
 | Phase | Exit gate | Status |
 |---|---|---|
 | 0 | Agreed correctness and performance scorecard | **MET** (Java scorecard measured; see `reports/`) |
-| 1 | Zero exercised WIRE/PROTOCOL divergence + reproducible Java/Rust perf report, owner-reviewed | TODO |
+| 1 | Zero exercised WIRE/PROTOCOL divergence + reproducible Java/Rust perf report, owner-reviewed | **AWAITING OWNER REVIEW** (`reports/phase1-owner-review.md`; recommendation: rework delivery path) |
 | 2 | Java replayer utilities decode Rust golden records with equivalent fields and exact bytes | TODO |
 | 3 | Kafka/rebalance/failure scenarios pass against a real broker with Rust as writer | TODO |
 | 4 | Black-box compatibility against recorded Java transcripts/goldens | TODO |
@@ -53,11 +53,11 @@ A row is only `PROVED` when a named command and its output exist in a report und
 | # | Gate | Status | Measured |
 |---|---|---|---|
 | 1 | Zero exercised WIRE or PROTOCOL divergence | **PASS** | Rust r1/r2/r3 vs Java j1: 0 differences; negative control validated; rebalance + failure-policy + auth proved on real brokers |
-| 2 | Plaintext scan-and-forward throughput/used core >= Java x 1.20 | TODO | |
-| 3 | Double TLS + churn: throughput/core and proxy-added p99 within 5% of Java | TODO | |
-| 4 | Thin capture slice: requests/core >= Java x 1.15 and steady RSS <= Java x 0.75 | TODO | |
-| 5 | Kafka records/core and MiB/core >= Java x 0.90; ack p99 <= Java x 1.10 | READY | Java ack p50/p99 = 0.808/4.876 ms with gate buckets; ~2 pairs for records/core, ~20 for ack p99 |
-| 6 | Delayed Kafka: bounded memory, lossless read backpressure, recovery to near baseline | READY | byte+record budgets implemented; Java baseline measured (319 MiB under 750ms delay, zero errors) |
+| 2 | Plaintext scan-and-forward throughput/used core >= Java x 1.20 | **PASS** | 2.93 [2.80–3.05], 9/9 pairs; confirmed 2.81 on `03ddf2ab2` |
+| 3 | Double TLS + churn: throughput/core and proxy-added p99 within 5% of Java | **PASS** | double TLS 1.54 / p99 0.54; churn+TLS 1.27 / p99 0.56; 10/10 pairs each |
+| 4 | Thin capture slice: requests/core >= Java x 1.15 and steady RSS <= Java x 0.75 | **PASS** as specified | 1.46 / anon 0.097 flat out; **0.93 [0.80–1.06] at 70% fixed load** (risk R2) |
+| 5 | Kafka records/core and MiB/core >= Java x 0.90; ack p99 <= Java x 1.10 | **FAIL** (ack p99) | records/MiB per core 1.37 PASS; ack p99 1.36 [1.20–1.53] saturating, 1.45 [1.21–1.68] rate-matched; root cause: librdkafka in-flight window (R1) |
+| 6 | Delayed Kafka: bounded memory, lossless read backpressure, recovery to near baseline | **PASS** on its clauses | peak 15.4 vs 347 MiB, lossless, recovers; but 2 RTT per ack vs Java's 1 (R1) |
 
 ## Final release gates
 
@@ -200,5 +200,5 @@ Tracked here so they are not silently resolved by implementation choice.
 | D1 | Production HTTP strictness | Plan "Design improvements" §4 | **RESOLVED** OD-2: strict default + explicit opt-in lenient mode |
 | D2 | Is bounded lossless Kafka backpressure mandatory in the parity release | Plan §2 | OPEN |
 | D3 | Qualified deployment targets: Kubernetes only, or + CDK/ECS | DEPLOY-08 | OPEN |
-| D4 | Publisher sharding deferral confirmed until single-owner is measured | Plan §3 | OPEN |
+| D4 | Publisher sharding deferral confirmed until single-owner is measured | Plan §3 | OPEN — now measured; the R1 fix (several producers, fixed partition mapping) needs this ruling |
 | D5 | MSK IAM proof infrastructure | Phase 1 risk | **RESOLVED**: proved against a real MSK Serverless cluster. SigV4 `kafka-cluster` token through librdkafka OAUTHBEARER. |

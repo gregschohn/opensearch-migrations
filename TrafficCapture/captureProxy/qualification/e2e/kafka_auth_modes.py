@@ -2,7 +2,7 @@
 client.properties shape (ssl.truststore.type=PEM / ssl.truststore.location)."""
 import os, socket, subprocess, sys, time, signal, threading, http.server, socketserver
 D = '/tmp/rust-proxy-qual/auth'
-BIN = '/Users/schohn/dev/rustifyProxy/TrafficCapture/captureProxy/target/release/capture-proxy'
+BIN = __import__('os').environ.get('CAPTURE_PROXY_BIN', str(__import__('pathlib').Path(__file__).resolve().parents[2] / 'target/release/capture-proxy'))
 class H(http.server.BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
     def _ok(self):

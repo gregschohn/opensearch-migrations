@@ -1,7 +1,7 @@
 """Gap A repro: a connection still open at SIGTERM is force-closed at the 60 s natural drain."""
 import socket, subprocess, sys, time, signal, os, threading, http.server, socketserver
 topic = open('/tmp/rust-proxy-qual/gapa/topic.txt').read().strip()
-binp = '/Users/schohn/dev/rustifyProxy/TrafficCapture/captureProxy/target/release/capture-proxy'
+binp = __import__('os').environ.get('CAPTURE_PROXY_BIN', str(__import__('pathlib').Path(__file__).resolve().parents[2] / 'target/release/capture-proxy'))
 mode = sys.argv[1] if len(sys.argv) > 1 else 'get'
 class H(http.server.BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'

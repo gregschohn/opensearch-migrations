@@ -1,0 +1,3 @@
+FROM alpine:3.20
+COPY qualgen /usr/local/bin/qualgen
+ENTRYPOINT ["/usr/local/bin/qualgen"]
