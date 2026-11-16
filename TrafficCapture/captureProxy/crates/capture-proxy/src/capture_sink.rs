@@ -221,6 +221,11 @@ pub struct RecordingCaptureSink<S: PublishingRecordSink> {
     /// practice this latches with the gate, and it is kept separate so the recorder is never
     /// touched after it has been aborted or closed.
     capturing: bool,
+    /// True between a successfully recorded close and the terminal acknowledgement.
+    ///
+    /// Only a close that actually recorded the `CloseObservation` has a terminal record to wait
+    /// for; after a fail-open abandonment the recorder was aborted and there is nothing to wait on.
+    awaiting_terminal_ack: bool,
     poll_interval: Duration,
 }
 
@@ -241,6 +246,7 @@ impl<S: PublishingRecordSink> RecordingCaptureSink<S> {
             recorder: ConnectionRecorder::new(config, sink)?,
             gate,
             capturing: true,
+            awaiting_terminal_ack: false,
             poll_interval: GATE_POLL_INTERVAL,
         })
     }
@@ -498,9 +504,45 @@ impl<S: PublishingRecordSink + Send> CaptureSink for RecordingCaptureSink<S> {
             "emitting the terminal close observation"
         );
         let result = self.record("close", |recorder| recorder.close(timestamp));
+        // `record` clears `capturing` when the operation failed, so this is true only when the
+        // CloseObservation was recorded and its terminal record handed to the chain.
+        self.awaiting_terminal_ack = self.capturing && result.is_ok();
         // Terminated either way: nothing may follow a CloseObservation.
         self.capturing = false;
         result
+    }
+
+    /// Pumps this connection's publication chain until it is quiet.
+    ///
+    /// The per-connection chain keeps exactly one record in flight and only advances when its
+    /// owner applies outcomes, so a terminal record that queued behind an unacknowledged one is
+    /// released here rather than stranded when the connection task exits (gap A). The wait ends
+    /// when every record is acknowledged, when publication fails (routed through the policy), or
+    /// when the process stops being capture-authoritative, after which nothing more is
+    /// trustworthy to wait for.
+    async fn await_terminal_acknowledgement(&mut self) -> Result<(), CaptureAbort> {
+        if !std::mem::take(&mut self.awaiting_terminal_ack) {
+            return Ok(());
+        }
+        loop {
+            if let Err(failure) = self.pump() {
+                return apply_capture_failure(&self.gate, &failure);
+            }
+            if self.publication_is_quiet() {
+                return Ok(());
+            }
+            match self.gate.state() {
+                State::Capture => {}
+                State::PassThrough => return Ok(()),
+                State::Terminating => {
+                    return Err(CaptureAbort::new(
+                        "the process is terminating before the terminal record was acknowledged"
+                            .to_owned(),
+                    ));
+                }
+            }
+            tokio::time::sleep(self.poll_interval).await;
+        }
     }
 
     async fn gate_critical_mutation(&mut self) -> GateOutcome {
@@ -964,5 +1006,82 @@ mod tests {
             before,
             "a callback after the terminal close must not create a record"
         );
+    }
+    /// Puts one record in flight (unacknowledged) and then closes, so the terminal record queues
+    /// behind it. This is the gap A precondition.
+    fn close_behind_an_in_flight_record(
+        policy_flush: Duration,
+    ) -> RecordingCaptureSink<TestRecordSink> {
+        let mut sink = recording_with_flush_interval(policy_flush);
+        sink.capture_read(SystemTime::now(), b"GET /big HTTP/1.1\r\nHost: x")
+            .expect("the read is captured");
+        std::thread::sleep(policy_flush + Duration::from_millis(20));
+        sink.run_scheduled_flush(SystemTime::now())
+            .expect("the scheduled flush succeeds");
+        assert_eq!(sink.recorder_mut().sink().submitted_record_count(), 1);
+        sink.close(SystemTime::now(), CloseReason::Normal)
+            .expect("the close is recorded");
+        assert_eq!(
+            sink.recorder_mut().sink().submitted_record_count(),
+            1,
+            "precondition: the terminal record queues behind the unacknowledged one"
+        );
+        sink
+    }
+
+    #[tokio::test]
+    async fn a_terminal_record_queued_behind_an_in_flight_one_is_released_and_acknowledged() {
+        // Gap A. The connection owner used to exit right after close(); the queued terminal record
+        // was never dispatched, so the CloseObservation never reached Kafka and the connection was
+        // never deregistered. Reproduced end-to-end by a 3 MiB response the source then closed.
+        let mut sink = close_behind_an_in_flight_record(Duration::from_millis(30));
+        sink.recorder_mut().sink_mut().acknowledge_next();
+        sink.recorder_mut().sink_mut().acknowledge_next();
+
+        sink.await_terminal_acknowledgement()
+            .await
+            .expect("both records are acknowledged");
+        assert_eq!(
+            sink.recorder_mut().sink().submitted_record_count(),
+            2,
+            "the terminal record must be dispatched once its predecessor is acknowledged"
+        );
+        assert!(sink.publication_is_quiet());
+    }
+
+    #[tokio::test]
+    async fn the_terminal_wait_does_not_end_before_the_acknowledgement() {
+        let mut sink = close_behind_an_in_flight_record(Duration::from_millis(30));
+        let waited = tokio::time::timeout(
+            Duration::from_millis(50),
+            sink.await_terminal_acknowledgement(),
+        )
+        .await;
+        assert!(
+            waited.is_err(),
+            "with nothing acknowledged the owner must keep waiting"
+        );
+        assert_eq!(sink.recorder_mut().sink().submitted_record_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_failed_terminal_publication_applies_the_policy() {
+        let mut sink = close_behind_an_in_flight_record(Duration::from_millis(30));
+        sink.recorder_mut()
+            .sink_mut()
+            .fail_next("broker unreachable");
+        let result = sink.await_terminal_acknowledgement().await;
+        assert!(
+            result.is_err(),
+            "under fail-closed a failed terminal publication is a capture abort"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_connection_that_recorded_no_close_does_not_wait() {
+        let mut sink = recording_with_flush_interval(Duration::from_mins(5));
+        sink.await_terminal_acknowledgement()
+            .await
+            .expect("nothing to wait for");
     }
 }

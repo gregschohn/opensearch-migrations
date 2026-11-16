@@ -315,6 +315,32 @@ pub trait CaptureSink: Send {
         Ok(())
     }
 
+    /// Waits until the terminal record and every earlier record of this connection are durably
+    /// acknowledged, or until capture for the connection has terminally failed.
+    ///
+    /// Called once, after [`CaptureSink::close`], by the connection owner. This is
+    /// `proxyCaptureProtocol.md` §5.1 step 4: "The connection's event-loop owner waits for Kafka to
+    /// acknowledge the terminal observation and every earlier `TrafficObservation` for the
+    /// connection" — and only then does the connection leave the registry (step 5). The connection
+    /// task, and with it the registry guard, therefore stays alive until this resolves.
+    ///
+    /// Without this wait, a terminal record that queued behind a still-unacknowledged earlier
+    /// record — for example after a size-triggered detach of a large response that the source
+    /// then closed — was stranded: the per-connection chain only advances when its owner pumps
+    /// outcomes, and the owner had already exited. The `CloseObservation` was never published and
+    /// the connection was never deregistered, so its writer lane could never retire.
+    ///
+    /// The default resolves immediately, which is correct for a sink that captures nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`CaptureAbort`] when publication failed terminally while waiting.
+    fn await_terminal_acknowledgement(
+        &mut self,
+    ) -> impl Future<Output = Result<(), CaptureAbort>> + Send {
+        std::future::ready(Ok(()))
+    }
+
     /// The capture-before-forward gate for Critical Mutation Traffic.
     ///
     /// Called after the end-of-message observation is committed and **before** the bytes that

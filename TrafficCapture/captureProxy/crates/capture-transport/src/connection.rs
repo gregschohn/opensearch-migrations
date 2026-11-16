@@ -390,6 +390,17 @@ where
         let _ = source_writer.shutdown().await;
         let _ = client_writer.shutdown().await;
 
+        // proxyCaptureProtocol.md 5.1 steps 4-5: the connection owner stays alive -- and the
+        // connection stays registered -- until the terminal record and every earlier record are
+        // acknowledged. The sockets are already shut down, so the client and source are not held
+        // open while Kafka acknowledges. Skipped after a capture abort: there is nothing
+        // trustworthy left to wait for.
+        if abort.is_none()
+            && let Err(failure) = sink.await_terminal_acknowledgement().await
+        {
+            abort = Some(failure);
+        }
+
         ConnectionOutcome {
             close_reason: termination.reason,
             client_bytes_read: counters.client_bytes_read,
@@ -2009,5 +2020,110 @@ pub(crate) mod tests {
         assert_eq!(sink.next_flush_deadline(), None);
         sink.run_scheduled_flush(SystemTime::UNIX_EPOCH)
             .expect("the default scheduled flush is an Ok no-op");
+    }
+    /// A capturing sink whose terminal acknowledgement arrives only when the test releases it.
+    struct TerminalAckGatedSink {
+        closed: Arc<std::sync::atomic::AtomicBool>,
+        release: Option<tokio::sync::oneshot::Receiver<()>>,
+    }
+
+    impl CaptureSink for TerminalAckGatedSink {
+        fn should_capture(&self) -> bool {
+            true
+        }
+        fn capture_read(&mut self, _at: SystemTime, _bytes: &[u8]) -> Result<(), CaptureAbort> {
+            Ok(())
+        }
+        fn request_dropped(&mut self, _at: SystemTime) -> Result<(), CaptureAbort> {
+            Ok(())
+        }
+        fn set_end_of_message_lengths(&mut self, _first_line: u32, _headers: u32) {}
+        fn commit_end_of_message(&mut self, _at: SystemTime) -> Result<(), CaptureAbort> {
+            Ok(())
+        }
+        fn request_forwarded(&mut self, _at: SystemTime) -> Result<(), CaptureAbort> {
+            Ok(())
+        }
+        fn capture_write(&mut self, _at: SystemTime, _bytes: &[u8]) -> Result<(), CaptureAbort> {
+            Ok(())
+        }
+        fn capture_interim_response(
+            &mut self,
+            _at: SystemTime,
+            _bytes: &[u8],
+        ) -> Result<(), CaptureAbort> {
+            Ok(())
+        }
+        fn connection_exception(
+            &mut self,
+            _at: SystemTime,
+            _message: &str,
+        ) -> Result<(), CaptureAbort> {
+            Ok(())
+        }
+        fn close(&mut self, _at: SystemTime, _reason: CloseReason) -> Result<(), CaptureAbort> {
+            self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+        fn gate_critical_mutation(&mut self) -> impl Future<Output = GateOutcome> + Send {
+            std::future::ready(GateOutcome::Forward)
+        }
+        fn await_terminal_acknowledgement(
+            &mut self,
+        ) -> impl Future<Output = Result<(), CaptureAbort>> + Send {
+            let release = self.release.take();
+            async move {
+                if let Some(release) = release {
+                    let _ = release.await;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn the_connection_owner_waits_for_the_terminal_acknowledgement() {
+        // proxyCaptureProtocol.md 5.1 steps 4-5. Gap A: the owner used to exit right after
+        // close(), stranding a terminal record queued behind an unacknowledged one, so the
+        // connection was never deregistered and its writer lane could never retire.
+        let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let (client_side, client_proxy) = tokio::io::duplex(1024);
+        let (source_proxy, source_side) = tokio::io::duplex(1024);
+        let connection = Connection::new(
+            client_proxy,
+            source_proxy,
+            TerminalAckGatedSink {
+                closed: Arc::clone(&closed),
+                release: Some(release_rx),
+            },
+            SuppressionPolicy::permit_everything(),
+            config(),
+        );
+        let proxy = tokio::spawn(connection.run(None));
+
+        // The client goes away; the connection closes normally.
+        drop(client_side);
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !closed.load(std::sync::atomic::Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the terminal close observation is recorded");
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(
+            !proxy.is_finished(),
+            "the connection owner must not exit before the terminal record is acknowledged"
+        );
+
+        release_tx.send(()).expect("the owner is still waiting");
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), proxy)
+            .await
+            .expect("the owner exits once the acknowledgement arrives")
+            .expect("no panic");
+        assert!(outcome.capture_abort.is_none());
+        drop(source_side);
     }
 }
