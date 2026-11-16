@@ -47,6 +47,9 @@ pub const DEFAULT_MAX_TRAFFIC_BUFFER_SIZE: u32 = 1024 * 1024;
 /// Default Kafka traffic topic (`KafkaCaptureFactory.java:53`).
 pub const DEFAULT_KAFKA_TOPIC: &str = "logging-traffic-topic";
 
+/// Default `--kafka-producer-count` (owner decision OD-12).
+pub const DEFAULT_KAFKA_PRODUCER_COUNT: u32 = 4;
+
 /// Default Kafka producer `client.id` (`KafkaConfig.java:16`).
 pub const DEFAULT_KAFKA_CLIENT_ID: &str = "HttpCaptureProxyProducer";
 
@@ -636,6 +639,11 @@ pub const PARAMETERS: &[ParamSpec] = &[
         kind: ParamKind::Value,
     },
     ParamSpec {
+        flag: "kafka-producer-count",
+        aliases: &[],
+        kind: ParamKind::Value,
+    },
+    ParamSpec {
         flag: "require-kafka-topic-partitions",
         aliases: &[
             "minimumKafkaTopicPartitions",
@@ -990,6 +998,20 @@ pub struct CliArgs {
         value_name = "TOPIC"
     )]
     pub kafka_topic: String,
+
+    /// Number of independent Kafka producers publishing captured traffic (owner decision OD-12).
+    ///
+    /// Partition `p` is always published by producer `p mod COUNT`, so each partition keeps exactly
+    /// one producer for the life of the process. More producers multiply the requests the proxy can
+    /// keep in flight (idempotence caps each producer at five per broker) at the cost of librdkafka
+    /// threads and broker connections.
+    #[arg(
+        long = "kafka-producer-count",
+        env = "CAPTURE_PROXY_KAFKA_PRODUCER_COUNT",
+        default_value_t = DEFAULT_KAFKA_PRODUCER_COUNT,
+        value_name = "COUNT"
+    )]
+    pub kafka_producer_count: u32,
 
     /// Partition count the traffic topic must already have. `0` disables the check.
     ///

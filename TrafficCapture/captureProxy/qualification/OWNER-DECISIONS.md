@@ -297,13 +297,63 @@ already tunnelled and is unchanged.
 
 ---
 
+## OD-12 — Several Kafka producers, one fixed producer per partition
+
+**Evidence.** Phase 1 review §5.5. A single librdkafka producer saturates its in-flight window.
+librdkafka sends one partition per ProduceRequest, and idempotence caps each broker connection at
+five requests in flight (`RD_KAFKA_IDEMP_MAX_INFLIGHT`, enforced at `rdkafka_conf.c:4325-4333`).
+
+* Under a 750 ms broker delay the producer ran 4.95 requests per round trip, and 202 of 204 sends
+  waited for a response to free a slot.
+* On a healthy broker at Gate 5 load `waitresp_cnt` was 5, and about half of every acknowledgement
+  was queueing.
+* Java packs every partition led by a broker into one request and stays inside the same window.
+
+Result: Gate 5's ack p99 fails (1.36–1.52×) and a slow broker costs two round trips per
+acknowledgement.
+
+**Ruling.** Use multiple producers, so there is less blocking on in-flight slots.
+`captureAndReplayArchitecture.md` §5.1 already anticipated this: *"If one producer becomes a
+measured throughput bottleneck, the proxy may add producer instances and assign each producer a
+mutually exclusive set of Kafka partitions."*
+
+Raising `max.in.flight` above 5 was considered and rejected:
+
+* librdkafka refuses it with idempotence on, and kafka-clients does too.
+* The broker de-duplicates only the last five batches per producer and partition.
+* `proxyCaptureProtocol.md` makes `max.in.flight.requests.per.connection <= 5` a correctness
+  setting.
+* Disabling idempotence to lift the cap would let a retry reorder or duplicate one connection's
+  observations.
+
+Several producers give the same extra capacity, 5 × N requests per broker, without weakening any
+of this.
+
+**Implementation.**
+
+* `--kafka-producer-count` (`CAPTURE_PROXY_KAFKA_PRODUCER_COUNT`) takes `1..=64`. The default is
+  set from rework measurements.
+* Partition `p` is always published by producer `p mod N`, a pure function fixed for the process.
+  So every `(writerNodeId, partition)` has exactly one producer and ownership never overlaps.
+* There is never a handoff. Every handoff obligation in `proxyCaptureProtocol.md` is discharged by
+  construction.
+* The single publisher actor remains the one lane owner and orders every submission.
+* Heartbeats, traffic and capability probes for a partition share its producer, so submission
+  order and librdkafka's per-partition delivery-report order are preserved.
+* Every producer keeps idempotence, `acks=all`, `max.in.flight=5` and `linger.ms=0`. The
+  effective-configuration read-back still gates startup.
+* All producers report into one delivery channel; reports for different partitions may
+  interleave, which the protocol permits.
+
+---
+
 ## Open items still awaiting a ruling
 
 | # | Item |
 |---|---|
 | D2 | Is bounded, lossless Kafka backpressure mandatory in the parity release? |
 | D3 | Qualified deployment targets: Kubernetes only, or Kubernetes plus the older CDK/ECS path? |
-| D4 | Confirm publisher sharding stays deferred until the single-owner implementation is measured. **Now measured** (Phase 1 review §5.5): a single librdkafka producer saturates its 5-request in-flight window because librdkafka sends one partition per request; the recommended fix is several producers with a fixed partition → producer mapping, keeping the single publisher actor. |
+| ~~D4~~ | **RESOLVED by OD-12** (producers; the publisher actor stays single). Confirm publisher sharding stays deferred until the single-owner implementation is measured. **Now measured** (Phase 1 review §5.5): a single librdkafka producer saturates its 5-request in-flight window because librdkafka sends one partition per request; the recommended fix is several producers with a fixed partition → producer mapping, keeping the single publisher actor. |
 | D5 | `proxyCaptureProtocol.md` §7.3 specifies a controller-managed `COMPROMISED_AWAITING_CONTROLLER_ACK` state that blocks uncaptured forwarding until a controller durably acknowledges. Whether Java implements it, and whether Rust must, is unresolved. |
 | D6 | Production Kubernetes sets no `terminationGracePeriodSeconds` (`setupCapture.ts:829-852`), so the default 30 s `SIGKILL` pre-empts the entire tested 60/240/270/300 s shutdown sequence. Does the orchestration get fixed, or does the Rust shutdown budget shrink to fit 30 s? |
 | ~~D7~~ | **RESOLVED by OD-11.** HTTP/2 prior knowledge (`h2c`). The plan lists "HTTP/2 traffic is forwarded but suppressed from capture" as current behaviour. Java achieves it only by accident: Netty parses `PRI * HTTP/2.0`, the hardcoded `HTTP/2.*` pattern suppresses its capture, and the following `SM` line drives the decoder into `BAD_MESSAGE`, which then tunnels every later byte raw and uncaptured — the same path OD-1 removed. Measured on Rust (`/tmp/rust-proxy-qual/h2c_probe.py`): the connection is closed as `malformed_framing` and the origin receives 0 bytes. Options: (a) recognise the exact 24-byte preface at connection start and tunnel that connection uncaptured, restoring Java's observable behaviour and adding no capture; (b) keep refusing, since uncaptured HTTP/2 mutations would bypass capture-before-forward. HTTP/1.1 `Upgrade` → `101` (WebSocket, `h2c` upgrade) is unaffected: Rust tunnels it byte-exact after the `101`, as Java does. |

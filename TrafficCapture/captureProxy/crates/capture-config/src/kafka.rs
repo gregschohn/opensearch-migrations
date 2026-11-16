@@ -131,6 +131,7 @@ pub struct KafkaConfig {
     secret_name: Option<String>,
     property_file: Option<PathBuf>,
     required_topic_partitions: u32,
+    producer_count: u32,
 }
 
 /// The Kafka parameters as configured, before validation.
@@ -158,6 +159,8 @@ pub struct KafkaInputs {
     pub property_file: Option<PathBuf>,
     /// `--require-kafka-topic-partitions` (Java: `--minimumKafkaTopicPartitions`).
     pub required_topic_partitions: u32,
+    /// `--kafka-producer-count` (OD-12).
+    pub producer_count: u32,
 }
 
 impl KafkaConfig {
@@ -194,6 +197,12 @@ impl KafkaConfig {
             return Err(KafkaConfigError::EmptyClientId);
         }
 
+        if !(1..=MAX_PRODUCER_COUNT).contains(&inputs.producer_count) {
+            return Err(KafkaConfigError::ProducerCount {
+                value: inputs.producer_count,
+            });
+        }
+
         let username = non_empty(inputs.username);
         let password = inputs.password.filter(|password| !password.is_empty());
 
@@ -225,7 +234,14 @@ impl KafkaConfig {
                 .property_file
                 .filter(|path| !path.as_os_str().is_empty()),
             required_topic_partitions: inputs.required_topic_partitions,
+            producer_count: inputs.producer_count,
         })
+    }
+
+    /// How many independent traffic producers to run (OD-12).
+    #[must_use]
+    pub fn producer_count(&self) -> u32 {
+        self.producer_count
     }
 
     /// `bootstrap.servers`.
@@ -427,7 +443,17 @@ pub enum KafkaConfigError {
     /// The `client.id` is blank.
     #[error("--kafka-client-id must not be empty")]
     EmptyClientId,
+    /// The producer count is outside `1..=MAX_PRODUCER_COUNT`.
+    #[error("--kafka-producer-count must be between 1 and {MAX_PRODUCER_COUNT}, got {value}")]
+    ProducerCount {
+        /// The rejected value.
+        value: u32,
+    },
 }
+
+/// Upper bound on `--kafka-producer-count`. Each producer owns librdkafka threads and a connection
+/// to every broker it publishes to.
+pub const MAX_PRODUCER_COUNT: u32 = 64;
 
 #[cfg(test)]
 mod tests {
@@ -438,7 +464,32 @@ mod tests {
             brokers: Some("b-1:9096,b-2:9096".to_owned()),
             topic: crate::cli::DEFAULT_KAFKA_TOPIC.to_owned(),
             client_id: crate::cli::DEFAULT_KAFKA_CLIENT_ID.to_owned(),
+            producer_count: crate::cli::DEFAULT_KAFKA_PRODUCER_COUNT,
             ..KafkaInputs::default()
+        }
+    }
+
+    #[test]
+    fn the_producer_count_is_bounded() {
+        for value in [0, MAX_PRODUCER_COUNT + 1] {
+            let error = KafkaConfig::new(KafkaInputs {
+                producer_count: value,
+                ..inputs()
+            })
+            .expect_err("out of range");
+            assert!(matches!(error, KafkaConfigError::ProducerCount { value: v } if v == value));
+        }
+        for value in [
+            1,
+            crate::cli::DEFAULT_KAFKA_PRODUCER_COUNT,
+            MAX_PRODUCER_COUNT,
+        ] {
+            let config = KafkaConfig::new(KafkaInputs {
+                producer_count: value,
+                ..inputs()
+            })
+            .expect("in range");
+            assert_eq!(config.producer_count(), value);
         }
     }
 

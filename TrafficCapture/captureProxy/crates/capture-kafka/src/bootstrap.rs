@@ -221,14 +221,58 @@ impl ProducerContext for CaptureProducerContext {
 /// promptly and without the actor. **Not** `FutureProducer`: its `DeliveryFuture` yields only
 /// `(partition, offset)` and **discards the timestamp**, which would make the entire broker-time
 /// protocol unimplementable.
+///
+/// # Several producers, one owner per partition (owner decision OD-12)
+///
+/// librdkafka sends one partition per `ProduceRequest`, and idempotence caps each broker connection
+/// at five requests in flight. One producer therefore saturates its window long before the Java
+/// client, which packs every partition led by a broker into one request (Phase 1 review §5.5).
+/// The sink holds [`KafkaClientSettings::producer_count`] independent producers, each with its own
+/// broker connections and window.
+///
+/// Every record for partition `p` goes to producer `p mod N`, a pure function of the partition
+/// fixed for the life of the process. That is exactly the ownership rule of
+/// `captureAndReplayArchitecture.md` §5.1 and `proxyCaptureProtocol.md`: for each
+/// `(writerNodeId, partition)` exactly one producer and one lane owner (the single publisher
+/// actor, which still orders every submission), ownership never overlaps, and because a
+/// partition's producer never changes there is never a handoff to drain. Heartbeats, traffic and
+/// capability probes for a partition all take the same producer, so their submission order — and
+/// librdkafka's per-partition delivery-report order — is preserved.
 pub struct KafkaProducerSink {
-    producer: ThreadedProducer<CaptureProducerContext>,
+    producers: Vec<ThreadedProducer<CaptureProducerContext>>,
 }
 
 impl std::fmt::Debug for KafkaProducerSink {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("KafkaProducerSink").finish_non_exhaustive()
+        f.debug_struct("KafkaProducerSink")
+            .field("producers", &self.producers.len())
+            .finish_non_exhaustive()
     }
+}
+
+impl KafkaProducerSink {
+    /// How many independent producers this sink owns.
+    #[must_use]
+    pub fn producer_count(&self) -> usize {
+        self.producers.len()
+    }
+
+    /// The producer that owns `partition` for the life of the process.
+    fn owner(&self, partition: i32) -> &ThreadedProducer<CaptureProducerContext> {
+        &self.producers[producer_index(partition, self.producers.len())]
+    }
+}
+
+/// The fixed partition → producer mapping: `partition mod count`.
+///
+/// Kafka partitions are non-negative; `rem_euclid` keeps the mapping total for any `i32` anyway.
+fn producer_index(partition: i32, count: usize) -> usize {
+    debug_assert!(
+        count > 0,
+        "a producer sink always owns at least one producer"
+    );
+    let count = i64::try_from(count).unwrap_or(i64::MAX).max(1);
+    usize::try_from(i64::from(partition).rem_euclid(count)).unwrap_or(0)
 }
 
 impl RecordProducer for KafkaProducerSink {
@@ -253,7 +297,7 @@ impl RecordProducer for KafkaProducerSink {
             .key(&record.key)
             .payload(&record.value);
 
-        match self.producer.send(base) {
+        match self.owner(record.partition).send(base) {
             Ok(()) => Ok(()),
             Err((KafkaError::MessageProduction(code), _)) if is_queue_full(code) => {
                 Err(ProduceError::QueueFull)
@@ -263,9 +307,15 @@ impl RecordProducer for KafkaProducerSink {
     }
 
     fn flush(&self, timeout: Duration) -> Result<(), String> {
-        self.producer
-            .flush(timeout)
-            .map_err(|error| error.to_string())
+        // One deadline across all producers, not `timeout` each: shutdown budgets are absolute.
+        let deadline = Instant::now() + timeout;
+        for (index, producer) in self.producers.iter().enumerate() {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            producer
+                .flush(remaining)
+                .map_err(|error| format!("producer {index}: {error}"))?;
+        }
+        Ok(())
     }
 }
 
@@ -416,7 +466,7 @@ fn is_retriable_consumption_error(error: &KafkaError) -> bool {
 
 /// The constructed clients.
 pub struct CaptureClients {
-    /// The traffic producer.
+    /// The traffic producers (one sink, several producers; see [`KafkaProducerSink`]).
     pub producer: Arc<KafkaProducerSink>,
     /// The paused membership consumer.
     pub consumer: Arc<KafkaMembershipConsumer>,
@@ -449,20 +499,34 @@ pub fn connect(
     // process can become capture-authoritative, which Java never does.
     KafkaClientSettings::assert_effective_ordering(&producer_config)?;
 
+    // Every producer reports into the same channel. Per-partition report order is preserved
+    // because a partition only ever has one producer.
     let (deliveries_tx, deliveries_rx) = mpsc::channel();
-    let producer_context = CaptureProducerContext {
-        base: CaptureClientContext::new("producer", oauth.clone()),
-        deliveries: deliveries_tx,
-        budget,
-        metrics,
-        reports: AtomicU64::new(0),
-    };
-    let producer: ThreadedProducer<CaptureProducerContext> = producer_config
-        .create_with_context(producer_context)
-        .map_err(|error| ClientConfigError::ClientCreation {
-            role: "producer",
-            detail: error.to_string(),
-        })?;
+    let count = settings.producer_count.max(1);
+    // One shared budget and metrics handle per producer; the last producer takes the originals.
+    let mut shared: Vec<_> = (1..count)
+        .map(|_| (Arc::clone(&budget), Arc::clone(&metrics)))
+        .collect();
+    shared.push((budget, metrics));
+    let mut producers = Vec::with_capacity(count);
+    for (budget, metrics) in shared {
+        let producer_context = CaptureProducerContext {
+            base: CaptureClientContext::new("producer", oauth.clone()),
+            deliveries: deliveries_tx.clone(),
+            budget,
+            metrics,
+            reports: AtomicU64::new(0),
+        };
+        let producer: ThreadedProducer<CaptureProducerContext> = producer_config
+            .create_with_context(producer_context)
+            .map_err(|error| ClientConfigError::ClientCreation {
+                role: "producer",
+                detail: error.to_string(),
+            })?;
+        producers.push(producer);
+    }
+    // The forwarder ends when the last producer is dropped, which closes the channel.
+    drop(deliveries_tx);
 
     let consumer_config = settings.build(ClientRole::MembershipConsumer)?;
     let consumer_context = CaptureConsumerContext {
@@ -477,7 +541,7 @@ pub fn connect(
         })?;
 
     Ok(CaptureClients {
-        producer: Arc::new(KafkaProducerSink { producer }),
+        producer: Arc::new(KafkaProducerSink { producers }),
         consumer: Arc::new(KafkaMembershipConsumer { consumer }),
         deliveries: deliveries_rx,
     })
@@ -532,9 +596,8 @@ impl MetadataSource for ProducerMetadataSource {
         topic: &str,
         timeout: Duration,
     ) -> Result<Vec<PartitionLayout>, String> {
-        let metadata = self
-            .0
-            .producer
+        // Any producer sees the same cluster metadata; the first always exists.
+        let metadata = self.0.producers[0]
             .client()
             .fetch_metadata(Some(topic), timeout)
             .map_err(|error| error.to_string())?;
@@ -1098,6 +1161,38 @@ mod tests {
             PublicationBudget::new(BudgetLimits::for_lanes(1024 * 1024, 128, 4))
                 .expect("valid budget"),
         )
+    }
+
+    #[test]
+    fn each_partition_has_exactly_one_producer_for_the_life_of_the_process() {
+        // OD-12 / architecture §5.1: one owner per (writer, partition), never overlapping. The
+        // mapping is a pure function of the partition, so asking twice — or after any rebalance —
+        // always names the same producer.
+        for count in 1..=8 {
+            for partition in 0..256 {
+                let owner = producer_index(partition, count);
+                assert!(owner < count);
+                assert_eq!(owner, producer_index(partition, count));
+            }
+        }
+        // Contiguous assignments (librdkafka's default `range` assignor) spread evenly.
+        let mut load = [0_usize; 4];
+        for partition in 4..12 {
+            load[producer_index(partition, 4)] += 1;
+        }
+        assert_eq!(load, [2, 2, 2, 2]);
+        // Total for any i32, though Kafka never produces a negative partition.
+        assert!(producer_index(-1, 4) < 4);
+        assert!(producer_index(i32::MIN, 3) < 3);
+    }
+
+    #[test]
+    fn the_sink_builds_the_configured_number_of_producers() {
+        let mut settings = KafkaClientSettings::new("localhost:9092");
+        settings.producer_count = 3;
+        let clients = connect(&settings, budget(), Arc::new(NoopMetrics), None)
+            .expect("clients construct without a reachable broker");
+        assert_eq!(clients.producer.producer_count(), 3);
     }
 
     #[test]

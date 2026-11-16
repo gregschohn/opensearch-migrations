@@ -437,6 +437,7 @@ fn resolve_sink(cli: &CliArgs, env: &dyn EnvLookup) -> Result<CaptureSink, Confi
                     secret_name: cli.kafka_secret_name.clone(),
                     property_file: cli.kafka_property_file.clone(),
                     required_topic_partitions: cli.require_kafka_topic_partitions,
+                    producer_count: cli.kafka_producer_count,
                 },
             )?)))
         }

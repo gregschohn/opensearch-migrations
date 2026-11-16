@@ -200,5 +200,5 @@ Tracked here so they are not silently resolved by implementation choice.
 | D1 | Production HTTP strictness | Plan "Design improvements" §4 | **RESOLVED** OD-2: strict default + explicit opt-in lenient mode |
 | D2 | Is bounded lossless Kafka backpressure mandatory in the parity release | Plan §2 | OPEN |
 | D3 | Qualified deployment targets: Kubernetes only, or + CDK/ECS | DEPLOY-08 | OPEN |
-| D4 | Publisher sharding deferral confirmed until single-owner is measured | Plan §3 | OPEN — now measured; the R1 fix (several producers, fixed partition mapping) needs this ruling |
+| D4 | Publisher sharding deferral confirmed until single-owner is measured | Plan §3 | **RESOLVED** OD-12: several producers, fixed `p mod N` partition mapping; single publisher actor kept |
 | D5 | MSK IAM proof infrastructure | Phase 1 risk | **RESOLVED**: proved against a real MSK Serverless cluster. SigV4 `kafka-cluster` token through librdkafka OAUTHBEARER. |
