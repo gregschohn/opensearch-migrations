@@ -48,7 +48,11 @@ pub const DEFAULT_MAX_TRAFFIC_BUFFER_SIZE: u32 = 1024 * 1024;
 pub const DEFAULT_KAFKA_TOPIC: &str = "logging-traffic-topic";
 
 /// Default `--kafka-producer-count` (owner decision OD-12).
-pub const DEFAULT_KAFKA_PRODUCER_COUNT: u32 = 4;
+///
+/// One until librdkafka's idempotent per-partition in-flight cap is resolved: with more than one
+/// producer that cap arms an immediate broker-thread wake-up it then refuses to act on, and the
+/// thread spins (measured: 2.4 proxy cores at 70 req/s with four producers under a slow broker).
+pub const DEFAULT_KAFKA_PRODUCER_COUNT: u32 = 1;
 
 /// Default Kafka producer `client.id` (`KafkaConfig.java:16`).
 pub const DEFAULT_KAFKA_CLIENT_ID: &str = "HttpCaptureProxyProducer";

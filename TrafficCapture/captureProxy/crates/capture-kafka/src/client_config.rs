@@ -81,9 +81,10 @@ pub const DEFAULT_CLIENT_ID: &str = "HttpCaptureProxyProducer";
 /// Default number of independent traffic producers (owner decision OD-12).
 ///
 /// Each producer brings its own five-request window per broker, so this multiplies the requests
-/// the proxy can keep in flight without weakening idempotence. Chosen from the Phase 1 rework
-/// measurements; see `qualification/reports/`.
-pub const DEFAULT_PRODUCER_COUNT: usize = 4;
+/// the proxy can keep in flight without weakening idempotence. One until librdkafka's per-partition
+/// in-flight cap stops busy-spinning its broker thread when more than one producer is configured
+/// (see `DEFAULT_KAFKA_PRODUCER_COUNT` in `capture-config`).
+pub const DEFAULT_PRODUCER_COUNT: usize = 1;
 
 /// Upper bound on [`KafkaClientSettings::producer_count`]. Every producer owns librdkafka threads
 /// and a connection to every broker it leads partitions on, so the count is bounded.
