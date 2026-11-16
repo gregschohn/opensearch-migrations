@@ -11,6 +11,7 @@ description = "Capture-proxy configuration contract: CLI, inline JSON, endpoints
 workspace = true
 
 [dependencies]
+base64.workspace = true
 clap.workspace = true
 regex.workspace = true
 serde.workspace = true

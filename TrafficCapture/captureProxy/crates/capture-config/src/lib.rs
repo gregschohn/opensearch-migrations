@@ -31,12 +31,28 @@
 //! these patterns to the empty string, so a search-based port would match every request and
 //! silently disable all capture.
 
+pub mod application;
+pub mod cli;
+pub mod endpoint;
+pub mod inline_json;
+pub mod kafka;
 pub mod limits;
 pub mod pattern;
 pub mod policy;
 pub mod timing;
+pub mod tls;
 
 pub use limits::{LimitsError, RequestLimits};
 pub use pattern::{CaptureDirective, PatternError, SuppressionPattern};
 pub use policy::{CaptureFailurePolicy, HttpStrictness, PolicyParseError, StrictnessParseError};
 pub use timing::{CaptureTiming, TimingError};
+
+pub use application::{
+    ApplicationConfig, CONFIG_ERROR_EXIT_CODE, CaptureSink, ConfigError, ConnectionPool,
+    DESTINATION_URI_EXIT_CODE, HeaderSuppression, SuppressionRules, TelemetryEndpoints,
+};
+pub use cli::{CliArgs, EnvLookup, HeaderPair, ProcessEnv, SecretString, redact_args};
+pub use endpoint::{DestinationEndpoint, EndpointError, Scheme};
+pub use inline_json::{ConfigSource, InlineJsonError, resolve_args};
+pub use kafka::{KafkaAuthType, KafkaConfig, KafkaConfigError, KafkaInputs};
+pub use tls::{ClientAuth, FrontsideTls, TlsConfigError, TlsInputs, TrustMaterial};
