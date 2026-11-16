@@ -170,6 +170,75 @@ Partition increase must always be out-of-band and intentional.
 
 ---
 
+## OD-8 — HTTP/1 pipelining is fully supported and specified
+
+**Evidence.** `proxyCaptureProtocol.md` §1.2 places pipelined requests outside the settled
+contract, and the rewrite plan says "Do not add HTTP/1 pipelining support incidentally". But OD-3
+requires header rewriting to be correct across pipelining, which is only achievable if framing
+reports every message boundary. Java holds a single `currentRequest`/`haveParsedFullRequest`, so a
+second request arriving in the same read clobbers the first's decoder result and only one
+end-of-message is emitted.
+
+**Ruling.** Keep full pipelining support.
+
+**Implementation.** The scanner reports every message boundary; the rewriter resets per request
+(tested at 1-byte, 5-byte, and whole-message fragmentations); each captured request gets its own
+`EndOfMessageIndication` with its own lengths and its own `requestForwarded`. This resolves the
+document's open exclusion toward "specify the behaviour" rather than "forbid it", and
+`proxyCaptureProtocol.md` §1.2 should be updated accordingly.
+
+One consequence to record: with a suppressed request and a captured request in the **same read**, the
+single `read` observation necessarily contains both requests' bytes. That is unavoidable at one
+observation per read and Java has the identical property. The suppressed request gets no indicator;
+the captured one does.
+
+---
+
+## OD-9 — Whitespace before a header's colon is rejected
+
+**Evidence.** Netty accepts it for requests and folds it into the header name
+(`HttpObjectDecoder.java:1036-1046`), so `Content-Length : 5` becomes a header named
+`"Content-Length "` that Netty's own framing ignores while some origin servers honour it. RFC 7230
+§3.2.4 mandates rejecting it. `httparse` rejects it natively.
+
+**Ruling.** Reject it.
+
+**Implementation.** A framing error, terminal under OD-1. The reasoning is capture-specific rather
+than merely standards-compliance: a header the proxy ignores but the source may honour is exactly
+the desync primitive that makes capture-before-forward meaningless, because Kafka would record a
+different request than the source executes.
+
+A second, smaller strictness comes free with `httparse`: control characters in a header *value* are
+rejected, where Netty validates only the handful of names `PassThruHttpHeaders` retains and forwards
+the rest unchecked.
+
+**Externally visible:** a client whose requests Java forwarded is now refused.
+
+---
+
+## OD-10 — The `internetFacing` / client-auth coupling is out of scope
+
+**Evidence.** The capture proxy's Kubernetes Service defaults to `serviceType=LoadBalancer` with
+`internetFacing=false`, which annotates the load balancer internal (AWS `scheme=internal`, GCP ILB,
+Azure internal). That default is private and compliant. But `internetFacing=true` makes the proxy
+reachable from outside the VPC, and nothing couples that to `--requireClientAuth`; the proxy
+terminates client TLS and would accept anonymous connections, forwarding them to the source cluster.
+
+**Ruling.** Out of scope for this rewrite. Recorded with remediation, not actioned.
+
+**Remediation for whoever picks it up.** In
+`orchestrationSpecs/packages/schemas/src/userSchemas.ts`, the `internetFacing` field (line 716) and
+the capture proxy's `requireClientAuth` input should be bound by a schema-level refinement requiring
+`requireClientAuth === true` whenever `internetFacing === true`, so an internet-facing capture proxy
+cannot be deployed without front mTLS.
+
+Note separately that `--insecureDestination` makes the destination TLS connector accept **any**
+certificate. That is deliberate parity with Java's `InsecureTrustManagerFactory` and is
+production-reachable; `capture-transport` exposes `certificate_validation_disabled()` so startup can
+alarm on it.
+
+---
+
 ## Open items still awaiting a ruling
 
 | # | Item |
