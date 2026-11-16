@@ -11,20 +11,9 @@ description = "The capture-proxy binary: process lifecycle, startup ordering, re
 workspace = true
 
 [dependencies]
-anyhow.workspace = true
-bytes.workspace = true
 capture-config.workspace = true
-capture-http-scan.workspace = true
-capture-kafka.workspace = true
-capture-observability.workspace = true
-capture-transport.workspace = true
 capture-wire.workspace = true
-clap.workspace = true
-libc.workspace = true
-thiserror.workspace = true
-tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-capture-test-support.workspace = true
 tempfile.workspace = true
