@@ -27,7 +27,7 @@ A row is only `PROVED` when a named command and its output exist in a report und
 
 | Phase | Exit gate | Status |
 |---|---|---|
-| 0 | Agreed correctness and performance scorecard | WIP |
+| 0 | Agreed correctness and performance scorecard | **MET** (Java scorecard measured; see `reports/`) |
 | 1 | Zero exercised WIRE/PROTOCOL divergence + reproducible Java/Rust perf report, owner-reviewed | TODO |
 | 2 | Java replayer utilities decode Rust golden records with equivalent fields and exact bytes | TODO |
 | 3 | Kafka/rebalance/failure scenarios pass against a real broker with Rust as writer | TODO |
@@ -42,11 +42,11 @@ A row is only `PROVED` when a named command and its output exist in a report und
 | Exact starting commit recorded | PROVED | `059d7b6483f29759b1ee108b87b87c61b0ce3432`; fresh clone, clean tree |
 | Java baseline test run | PROVED | 294 standard + 294 slow + 35 isolated tests, 0 failures/errors/skips. `reports/phase0-java-baseline.md` |
 | Cargo workspace + prost generation from unchanged `.proto` | PROVED | All field numbers/oneof tags preserved; see commit `a9188bce3` |
-| librdkafka (ssl/sasl/zstd) links on target toolchain | TODO | |
-| Normative contract read and frozen | WIP | `proxyCaptureProtocol.md` §§1–10 reviewed by integrator |
-| Contract-vs-code discrepancies resolved | TODO | `reports/phase0-discrepancies.md` |
-| Java CPU/allocation/memory profile matrix | TODO | |
-| Java baseline performance scorecard | TODO | |
+| librdkafka (ssl/sasl/zstd) links on target toolchain | PROVED | WITH_SSL/SASL/SASL_OAUTHBEARER/SASL_SCRAM/ZLIB/ZSTD all =1. AL2023 image build needs `libcurl-devel`. |
+| Normative contract read and frozen | PROVED | `proxyCaptureProtocol.md` §§1-10 reviewed by integrator; 4 subsystem specs produced with file:line citations |
+| Contract-vs-code discrepancies resolved | PROVED | 5 verified Java defects + 5 doc/code disagreements; rulings in `OWNER-DECISIONS.md` (OD-1..OD-7) |
+| Java CPU/allocation/memory profile matrix | PROVED | JFR attribution: 49.9% of Java-thread CPU is telemetry, 23.1% in ActiveContextTracker sorted-map work; 45% of allocation is protobuf byte[]. async-profiler NOT available for linux/arm64. |
+| Java baseline performance scorecard | PROVED | 38 valid runs across 8 profiles, >=5 reps each. Cross-validates production within ~1%: 3.512 cores at 23.01% churn vs 3.54/pod, 1.045x Kafka amplification vs ~1.05x. |
 
 ## Phase 1 continuation gates
 
@@ -85,15 +85,15 @@ Evidence suites: PROTO, WIRE, HTTP, KMODEL, KREAL, TRANSPORT, TLS, OPS, DEPLOY, 
 | ID | Treatment | Rust owner | Status | Evidence |
 |---|---|---|---|---|
 | PROTO-01 | Exact | `capture-wire` generated types | IMPL | Field numbers/oneof tags verified at generation |
-| WIRE-01 | Retired | `capture-wire::record_buffer` | TODO | |
-| WIRE-02 | Exact | `capture-wire::protobuf_size` | TODO | |
-| WIRE-03 | Semantic | `capture-wire::connection_recorder` | TODO | |
+| WIRE-01 | Retired | `capture-wire::record_buffer` | IMPL | RAII buffers; exactly-once release proved on 8 paths |
+| WIRE-02 | Exact | `capture-wire::protobuf_size` | IMPL | All 11 Java size vectors + full 38-row CsvSource + proptests vs prost |
+| WIRE-03 | Semantic | `capture-wire::connection_recorder` | IMPL | Observation catalogue, contiguous +1 sequence, counters, F deadline |
 | WIRE-04 | Semantic | `capture-kafka::connection_factory` | TODO | |
 | WIRE-05 | Semantic | `capture-kafka::readiness` | TODO | |
 | WIRE-06 | Semantic | `capture-kafka::shutdown` | TODO | |
-| WIRE-07 | Exact | `capture-wire::publish_chain` | TODO | |
-| WIRE-08 | Exact | `capture-wire` recorder/encoder/segmentation | TODO | |
-| WIRE-09 | Semantic | `capture-wire::record_sink` | TODO | |
+| WIRE-07 | Exact | `capture-wire::publish_chain` | IMPL | Per-connection ack ordering + failure poisoning; Java O1/O2 ported |
+| WIRE-08 | Exact | `capture-wire` recorder/encoder/segmentation | IMPL | Single-pass encoder, exact segment solver, J-1 envelope budget fix |
+| WIRE-09 | Semantic | `capture-wire::record_sink` | IMPL | Kafka-free RecordSink trait |
 | WIRE-10 | Operational | `capture-observability::connection_span` | TODO | |
 | WIRE-11 | Retired | `capture-observability::RootTelemetry` | TODO | |
 
@@ -106,7 +106,7 @@ Evidence suites: PROTO, WIRE, HTTP, KMODEL, KREAL, TRANSPORT, TLS, OPS, DEPLOY, 
 | KAFKA-03 | Exact | `capture-kafka` publisher/lane/heartbeat/ack_deadline/retirement | TODO | |
 | KAFKA-04 | Exact | `capture-kafka::write_gate` | TODO | |
 | KAFKA-05 | Semantic | `capture-kafka::RoutingGenerationController` | TODO | |
-| KAFKA-06 | Exact | `capture-kafka::routing_state` | TODO | |
+| KAFKA-06 | Exact | `capture-kafka::routing_state` | PROVED (hash) | 68 Java hashes + 544 routing decisions, 0 mismatches |
 | KAFKA-07 | Semantic | `capture-kafka::error::CorruptedCaptureState` | TODO | |
 | KAFKA-08 | Semantic | `capture-kafka::bootstrap` | TODO | |
 | KAFKA-09 | Semantic | `capture-config::kafka` + `capture-kafka::client_config` | TODO | |
@@ -119,11 +119,11 @@ Evidence suites: PROTO, WIRE, HTTP, KMODEL, KREAL, TRANSPORT, TLS, OPS, DEPLOY, 
 
 | ID | Treatment | Rust owner | Status | Evidence |
 |---|---|---|---|---|
-| HTTP-01 | Exact | `capture-config::CaptureFailurePolicy` | TODO | |
-| HTTP-02 | Exact | `capture-proxy::capture_process_state` | TODO | |
+| HTTP-01 | Exact | `capture-config::CaptureFailurePolicy` | IMPL | CaptureFailurePolicy, FailClosed default as Java |
+| HTTP-02 | Exact | `capture-proxy::capture_process_state` | IMPL | Irreversible gate; 32,768 concurrent admissions vs closure, 0 violations |
 | HTTP-03 | Exact | `capture-proxy::connection_capture` + `capture-transport::request_pump` | TODO | |
 | HTTP-04 | Exact | `capture-http-scan::suppression` | TODO | |
-| HTTP-05 | Exact | `capture-config::RequestLimits` | TODO | |
+| HTTP-05 | Exact | `capture-config::RequestLimits` | IMPL | Java defaults + validation, plus OD-1 request-line budget |
 | HTTP-06 | Exact | `capture-http-scan` scanner/classifier + `capture-proxy` capture/lifecycle | TODO | |
 | HTTP-07 | Semantic | `capture-http-scan::selected_headers` | TODO | |
 | HTTP-08 | Semantic | `capture-http-scan::CapturePredicate` | TODO | |
@@ -138,9 +138,9 @@ Evidence suites: PROTO, WIRE, HTTP, KMODEL, KREAL, TRANSPORT, TLS, OPS, DEPLOY, 
 
 | ID | Treatment | Rust owner | Status | Evidence |
 |---|---|---|---|---|
-| PROXY-01 | Exact | `capture-proxy::failure_terminator` | TODO | |
+| PROXY-01 | Exact | `capture-proxy::failure_terminator` | IMPL | One-shot terminate, bounded 5s flush, distinct exit 78, panic hook |
 | PROXY-02 | Operational | `capture-observability::process_metrics` | TODO | |
-| PROXY-03 | Semantic | `capture-proxy` main/app/shutdown | TODO | |
+| PROXY-03 | Semantic | `capture-proxy` main/app/shutdown | IMPL | 60/240/270/300 absolute deadlines under tokio virtual time |
 | PROXY-04 | Retired | `capture-observability::root` | TODO | |
 | PROXY-05 | Semantic | `capture-transport::preconnect_pool` | TODO | |
 | PROXY-06 | Exact | `capture-transport::response_pump` | TODO | |
@@ -160,7 +160,7 @@ Evidence suites: PROTO, WIRE, HTTP, KMODEL, KREAL, TRANSPORT, TLS, OPS, DEPLOY, 
 | ID | Status | Evidence |
 |---|---|---|
 | SHARED-01 | TODO | |
-| SHARED-02 | TODO | |
+| SHARED-02 | IMPL | node_instance_name + terminator + panic hook |
 | SHARED-03 | TODO | |
 | SHARED-04 | TODO | |
 | SHARED-05 | TODO | |
@@ -197,8 +197,8 @@ Tracked here so they are not silently resolved by implementation choice.
 
 | # | Decision | Raised by | Status |
 |---|---|---|---|
-| D1 | Production HTTP strictness: strict, or an explicit compatibility mode | Plan "Design improvements" §4 | OPEN |
+| D1 | Production HTTP strictness | Plan "Design improvements" §4 | **RESOLVED** OD-2: strict default + explicit opt-in lenient mode |
 | D2 | Is bounded lossless Kafka backpressure mandatory in the parity release | Plan §2 | OPEN |
 | D3 | Qualified deployment targets: Kubernetes only, or + CDK/ECS | DEPLOY-08 | OPEN |
 | D4 | Publisher sharding deferral confirmed until single-owner is measured | Plan §3 | OPEN |
-| D5 | MSK IAM proof infrastructure (no MSK cluster exists in the account/region) | Phase 1 risk | OPEN |
+| D5 | MSK IAM proof infrastructure | Phase 1 risk | **RESOLVED**: proved against a real MSK Serverless cluster. SigV4 `kafka-cluster` token through librdkafka OAUTHBEARER. |
