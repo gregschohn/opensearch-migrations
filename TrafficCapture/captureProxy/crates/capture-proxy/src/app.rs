@@ -180,16 +180,25 @@ fn install_observability(
     // Step 5. From here a panic flushes diagnostics and halts with the distinct capture-failure
     // status instead of aborting with SIGABRT and no explanation.
     let flush_telemetry = Arc::clone(&telemetry);
-    install_panic_hook(Arc::new(CaptureFailureTerminator::production(
+    let terminator = Arc::new(CaptureFailureTerminator::production(
         Arc::new(move || flush_telemetry.export().force_flush()),
         // `std::process::exit` rather than a direct `_exit`: `unsafe_code` is forbidden in this
         // workspace, and `libc::_exit` cannot be called without it. The difference that matters
         // here — not unwinding, not running other threads' destructors — holds for both.
         Arc::new(|code| std::process::exit(code)),
-    )));
+    ));
+    // One terminator for the whole process: the panic hook and the capture gate share it, so its
+    // one-shot guard means at most one termination sequence ever runs.
+    install_panic_hook(Arc::clone(&terminator));
+    TERMINATOR
+        .set(terminator)
+        .unwrap_or_else(|_| tracing::warn!("the capture-failure terminator was already installed"));
 
     Ok((telemetry, exports))
 }
+
+/// The process's capture-failure terminator, installed once by `install_observability`.
+static TERMINATOR: std::sync::OnceLock<Arc<CaptureFailureTerminator>> = std::sync::OnceLock::new();
 
 /// Says, at WARN, who can reach this listener and what stops them.
 ///
@@ -308,6 +317,21 @@ async fn serve(
     // The process-wide, one-way capture gate. One per process, shared by every connection: that
     // sharing is what makes the first required-capture failure close the gate for everyone.
     let gate = Arc::new(crate::CaptureProcessState::new(config.failure_policy()));
+    // proxyCaptureProtocol.md 7.2: under fail-closed, and for any unstable failure, the process
+    // terminates immediately with the distinct capture-failure status. The gate's termination
+    // listener is what turns the state transition into the exit; without it the process logged
+    // "will terminate" and then stayed alive with its listener open.
+    if let Some(terminator) = TERMINATOR.get() {
+        let terminator = Arc::clone(terminator);
+        gate.add_termination_listener(
+            &(Arc::new(move |failure: &crate::CaptureFailure| {
+                terminator.terminate(failure);
+            }) as crate::capture_process_state::TerminationListener),
+        );
+    }
+    if let CaptureTarget::Kafka(kafka) = &mode {
+        kafka.bridge_terminal_failure(&gate);
+    }
 
     // Step 8.
     events::log_startup_summary(&events::StartupSummary {
@@ -482,8 +506,24 @@ async fn serve_connection<P>(
             )
             .await;
         }
+        // proxyCaptureProtocol.md 7.3, unmanaged fail-open: after the irreversible transition,
+        // "existing and new TCP connections may continue forwarding without capture". Capture is
+        // abandoned for the process, so Kafka is not consulted at all.
+        CaptureTarget::Kafka(_) if gate.is_pass_through() => {
+            serve_with_sink(
+                accepted,
+                accepted_at,
+                NoCaptureSink::new(),
+                &connection_id,
+                &factory,
+                &telemetry,
+                connection_config,
+                predicate.as_ref(),
+            )
+            .await;
+        }
         CaptureTarget::Kafka(kafka) => {
-            match kafka.create_sink(&connection_id, gate) {
+            match kafka.create_sink(&connection_id, Arc::clone(&gate)) {
                 Ok(sink) => {
                     serve_with_sink(
                         accepted,
@@ -497,10 +537,32 @@ async fn serve_connection<P>(
                     )
                     .await;
                 }
+                Err(reason) if gate.is_pass_through() => {
+                    // The process went pass-through while this connection was being routed (the
+                    // refusal is usually that very failure). Under fail-open it is served
+                    // uncaptured, like every later connection.
+                    tracing::warn!(
+                        connection = %connection_id,
+                        reason = %reason,
+                        "serving a connection uncaptured: capture was abandoned for this process"
+                    );
+                    serve_with_sink(
+                        accepted,
+                        accepted_at,
+                        NoCaptureSink::new(),
+                        &connection_id,
+                        &factory,
+                        &telemetry,
+                        connection_config,
+                        predicate.as_ref(),
+                    )
+                    .await;
+                }
                 Err(reason) => {
-                    // Capture cannot be established for this connection, so it is closed rather
-                    // than served. Serving it would be the silent capture gap the protocol forbids,
-                    // and `accepted` is dropped here, which closes the socket.
+                    // Capture cannot be established while the process is still
+                    // capture-authoritative (or is terminating), so the connection is closed
+                    // rather than served. Serving it would be the silent capture gap the protocol
+                    // forbids, and `accepted` is dropped here, which closes the socket.
                     tracing::error!(
                         connection = %connection_id,
                         reason = %reason,

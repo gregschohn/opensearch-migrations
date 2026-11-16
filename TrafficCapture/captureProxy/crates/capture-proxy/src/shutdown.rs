@@ -210,6 +210,16 @@ pub trait CaptureRetirement: Send + Sync {
 
     /// Releases Kafka resources after retirement.
     fn close(&self) -> impl Future<Output = Result<(), String>> + Send;
+
+    /// True when capture was compromised in this process.
+    ///
+    /// `proxyCaptureProtocol.md` §7.3: a fail-open process "does not claim orderly connection or
+    /// publisher retirement for the compromised capture activation". Retirement is then skipped:
+    /// it could never complete, because a connection whose capture was abandoned never publishes
+    /// the terminal record that would release its route.
+    fn capture_compromised(&self) -> bool {
+        false
+    }
 }
 
 /// Runs the orderly shutdown sequence.
@@ -234,6 +244,10 @@ where
 
     // Step 1: close admission. Everything after this is draining.
     connections.stop_accepting();
+
+    if retirement.capture_compromised() {
+        return shut_down_compromised(connections, retirement, timing, deadline).await;
+    }
 
     let mut outcome = ShutdownOutcome::Completed;
 
@@ -312,6 +326,58 @@ where
             ShutdownOutcome::Incomplete
         }
     }
+}
+
+/// Shutdown for a process whose capture was compromised (fail-open pass-through).
+///
+/// Connections still get their natural drain and are force-closed at its end, exactly as in the
+/// orderly path, but no retirement is attempted and the outcome is always
+/// [`ShutdownOutcome::Incomplete`]: orderly retirement is not claimed for a compromised capture
+/// activation (`proxyCaptureProtocol.md` §7.3).
+async fn shut_down_compromised<C, R>(
+    connections: &C,
+    retirement: &R,
+    timing: ShutdownTiming,
+    deadline: impl Fn(Duration) -> Instant,
+) -> ShutdownOutcome
+where
+    C: ConnectionSet,
+    R: CaptureRetirement,
+{
+    tracing::warn!(
+        event = "capture_retirement_not_claimed",
+        "capture was compromised in this process; orderly writer retirement is not claimed for \
+         this capture activation"
+    );
+    if tokio::time::timeout_at(
+        deadline(timing.natural_drain),
+        connections.wait_until_idle(),
+    )
+    .await
+    .is_err()
+    {
+        tracing::warn!(
+            event = "capture_drain_expired",
+            active_connections = connections.active_connection_count(),
+            "Natural proxy connection drain expired; disconnecting remaining connections"
+        );
+        connections.disconnect_active().await;
+        let _ = tokio::time::timeout_at(
+            deadline(timing.retirement_deadline),
+            connections.wait_until_idle(),
+        )
+        .await;
+    }
+    if let Ok(Err(reason)) =
+        tokio::time::timeout_at(deadline(timing.hook_completion), retirement.close()).await
+    {
+        tracing::error!(
+            event = "capture_cleanup_failed",
+            reason = %reason,
+            "Proxy resource cleanup failed after a capture compromise"
+        );
+    }
+    ShutdownOutcome::Incomplete
 }
 
 #[cfg(test)]
@@ -631,6 +697,65 @@ mod tests {
             .await;
             assert_eq!(connections.stop_accepting_calls.load(Ordering::SeqCst), 1);
         }
+    }
+
+    struct CompromisedRetirement {
+        retire_called: AtomicBool,
+        closed: AtomicBool,
+    }
+
+    impl CaptureRetirement for CompromisedRetirement {
+        async fn retire(&self) -> Result<(), String> {
+            self.retire_called.store(true, Ordering::SeqCst);
+            Err("must not be called".to_owned())
+        }
+        async fn close(&self) -> Result<(), String> {
+            self.closed.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+        fn capture_compromised(&self) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_compromised_process_skips_retirement_and_reports_incomplete_promptly() {
+        // §7.3: orderly retirement is not claimed for a compromised activation. Before this, the
+        // impossible retirement wait cost the full drain plus the forced wait on every shutdown.
+        let connections = TestConnections::idle();
+        let retirement = CompromisedRetirement {
+            retire_called: AtomicBool::new(false),
+            closed: AtomicBool::new(false),
+        };
+        let started = Instant::now();
+        let outcome =
+            perform_orderly_shutdown(&connections, &retirement, ShutdownTiming::default(), |_| {
+                panic!("no retirement deadline applies to a compromised process")
+            })
+            .await;
+        assert_eq!(outcome, ShutdownOutcome::Incomplete);
+        assert!(!retirement.retire_called.load(Ordering::SeqCst));
+        assert!(retirement.closed.load(Ordering::SeqCst));
+        assert!(Instant::now().duration_since(started) < Duration::from_secs(1));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_compromised_process_still_gives_connections_their_natural_drain() {
+        let connections = TestConnections::hanging(2);
+        let retirement = CompromisedRetirement {
+            retire_called: AtomicBool::new(false),
+            closed: AtomicBool::new(false),
+        };
+        let started = Instant::now();
+        let outcome =
+            perform_orderly_shutdown(&connections, &retirement, ShutdownTiming::default(), |_| {})
+                .await;
+        assert_eq!(outcome, ShutdownOutcome::Incomplete);
+        let elapsed = Instant::now().duration_since(started);
+        assert!(elapsed >= Duration::from_secs(60), "{elapsed:?}");
+        assert!(elapsed < Duration::from_secs(240), "{elapsed:?}");
+        assert_eq!(connections.disconnect_calls.load(Ordering::SeqCst), 1);
+        assert!(!retirement.retire_called.load(Ordering::SeqCst));
     }
 
     #[test]

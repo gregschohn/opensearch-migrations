@@ -388,6 +388,9 @@ pub struct CaptureMode {
     /// Built from the runtime's shared routing state, publisher, and gate, so the accept path
     /// never takes the runtime lock.
     factory: ConnectionCaptureFactory,
+    /// capture-kafka's process-wide write gate, held so its terminal failure can be bridged onto
+    /// the proxy's capture gate without taking the runtime lock.
+    write_gate: Arc<capture_kafka::write_gate::WriteGate>,
     topic: String,
     node_id: Arc<str>,
     payload_limit: u32,
@@ -466,10 +469,12 @@ impl CaptureMode {
             config.timing(),
         );
         let node_id = Arc::clone(&runtime.first_writer_node_id);
+        let write_gate = Arc::clone(&runtime.gate);
 
         Ok(Self {
             runtime: Mutex::new(runtime),
             factory,
+            write_gate,
             topic: settings.topic,
             node_id,
             payload_limit,
@@ -482,6 +487,33 @@ impl CaptureMode {
     #[must_use]
     pub fn topic(&self) -> &str {
         &self.topic
+    }
+
+    /// Makes capture-kafka's process-wide terminal failure close the proxy's capture gate.
+    ///
+    /// `proxyCaptureProtocol.md` §7.1: the first Kafka failure, timeout, ambiguous result, or
+    /// heartbeat-deadline expiry "atomically closes every capture-authoritative gate and notifies
+    /// the acceptor, connections, heartbeat scheduler, and publisher lane". Without this bridge the
+    /// proxy's gate learned of a failure only when some connection happened to pump a failed
+    /// outcome, so a heartbeat-deadline expiry on an idle proxy left the process alive, listener
+    /// open, refusing every connection under both policies.
+    ///
+    /// Corruption maps to an unstable failure, which terminates under both policies; everything
+    /// else is a required-capture failure that obeys `--capture-failure-policy`. The listener fires
+    /// exactly once, immediately if the write gate has already tripped.
+    pub fn bridge_terminal_failure(&self, gate: &Arc<crate::CaptureProcessState>) {
+        let gate = Arc::clone(gate);
+        self.write_gate
+            .add_terminal_failure_listener(Box::new(move |failure| {
+                let reason = failure.reason();
+                let detail = format!("{} (reason={})", failure.message(), reason.as_str());
+                let failure = if reason == capture_kafka::error::FailureReason::CorruptedState {
+                    crate::CaptureFailure::unstable(detail)
+                } else {
+                    crate::CaptureFailure::required(detail)
+                };
+                gate.capture_failed(&failure);
+            }));
     }
 
     /// Routes `connection_id` and builds its capture sink.
@@ -682,6 +714,10 @@ impl CaptureRetirement for CaptureMode {
                 .len()
             ))
         }
+    }
+
+    fn capture_compromised(&self) -> bool {
+        self.write_gate.failure_if_not_writable().is_some()
     }
 
     async fn close(&self) -> Result<(), String> {
