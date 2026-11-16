@@ -25,4 +25,5 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+capture-test-support.workspace = true
 proptest.workspace = true

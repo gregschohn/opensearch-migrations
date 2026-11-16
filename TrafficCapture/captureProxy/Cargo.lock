@@ -221,6 +221,7 @@ dependencies = [
  "bytes",
  "capture-config",
  "capture-observability",
+ "capture-test-support",
  "capture-wire",
  "futures-util",
  "proptest",
