@@ -25,8 +25,8 @@ use std::time::{Duration, SystemTime};
 
 use capture_transport::{CaptureAbort, CaptureSink, CloseReason, GateOutcome};
 use capture_wire::{
-    CaptureTimestamp, ConnectionRecorder, ConnectionRecorderConfig, PublishFailure, SinkError,
-    WireError,
+    CaptureTimestamp, ConnectionRecorder, ConnectionRecorderConfig, PublishFailure, ScheduledFlush,
+    SinkError, WireError,
 };
 
 use crate::capture_process_state::{CaptureFailure, CaptureProcessState, State};
@@ -114,6 +114,15 @@ impl CaptureSink for NoCaptureSink {
         GateOutcome::Forward
     }
 }
+
+/// A scheduled flush that runs this much later than its deadline is reported as late.
+///
+/// `proxyCaptureProtocol.md` §4.2: "A callback that runs late records its lateness in a metric and
+/// warning log, then enqueues the record immediately. Lateness alone does not compromise capture."
+/// Every timer fires a few microseconds after its deadline, so warning on any nonzero lateness
+/// would be noise; this threshold separates scheduler jitter from a starved connection task.
+/// CHOSEN DEFAULT: no Java parameter carries it.
+pub const SCHEDULED_FLUSH_LATENESS_WARNING: Duration = Duration::from_secs(1);
 
 /// How long the capture gate waits between polls of the Kafka acknowledgement channel.
 ///
@@ -507,6 +516,54 @@ impl<S: PublishingRecordSink + Send> CaptureSink for RecordingCaptureSink<S> {
         }
         admit_forward(&self.gate)
     }
+
+    /// The fixed `F` deadline of the open record, as a monotonic instant.
+    ///
+    /// Derived from the recorder's own remaining-time reading rather than cached, because the
+    /// transport re-queries on every select iteration and the deadline only changes when a record
+    /// opens or detaches. The two monotonic reads involved differ by nanoseconds, which is far
+    /// below the scheduler's own resolution.
+    fn next_flush_deadline(&self) -> Option<std::time::Instant> {
+        if !self.capturing {
+            return None;
+        }
+        let remaining = self.recorder.time_until_flush_deadline()?;
+        // An unrepresentable instant cannot occur for any configured F; treat it as "fire now"
+        // rather than as "never", so a record is never stranded by an arithmetic edge.
+        Some(
+            std::time::Instant::now()
+                .checked_add(remaining)
+                .unwrap_or_else(std::time::Instant::now),
+        )
+    }
+
+    /// Publishes an otherwise-idle record once its fixed `F` deadline has passed.
+    ///
+    /// `proxyCaptureProtocol.md` §4.2 step 5: "the scheduled callback detaches and enqueues the
+    /// nonempty record when it runs." The generation is read at fire time, which is correct here
+    /// because the transport re-arms after every sink call that can open or detach a record, so the
+    /// record whose deadline was slept on is always the current one. The recorder still guards the
+    /// call: before the deadline it is a no-op (`Early`), with no open record it is a no-op, and
+    /// after the terminal close it can never create a record.
+    fn run_scheduled_flush(&mut self, _at: SystemTime) -> Result<(), CaptureAbort> {
+        let Some(deadline) = self.recorder.flush_deadline() else {
+            return Ok(());
+        };
+        self.record("scheduledFlush", |recorder| {
+            let outcome = recorder.run_scheduled_flush(deadline.generation)?;
+            if let ScheduledFlush::Detached { lateness, .. } = outcome
+                && lateness >= SCHEDULED_FLUSH_LATENESS_WARNING
+            {
+                tracing::warn!(
+                    event = "capture_flush_deadline_late",
+                    connection = recorder.connection_id(),
+                    lateness_ms = u64::try_from(lateness.as_millis()).unwrap_or(u64::MAX),
+                    "a scheduled record flush ran late; the record was enqueued immediately"
+                );
+            }
+            Ok(outcome)
+        })
+    }
 }
 
 #[cfg(test)]
@@ -822,5 +879,90 @@ mod tests {
             apply_capture_failure(&open, &CaptureFailure::unstable("ownership corrupted")).is_err()
         );
         assert!(open.is_terminating());
+    }
+    /// A sink whose recorder detaches records on a short, real-time `F`.
+    fn recording_with_flush_interval(
+        flush_interval: Duration,
+    ) -> RecordingCaptureSink<TestRecordSink> {
+        RecordingCaptureSink::new(
+            ConnectionRecorderConfig::new("connection-1", "writer-1")
+                .with_flush_interval(flush_interval),
+            TestRecordSink::new(),
+            Arc::new(CaptureProcessState::new(CaptureFailurePolicy::FailClosed)),
+        )
+        .expect("the recorder configuration is valid")
+        .with_poll_interval(Duration::from_micros(1))
+    }
+
+    #[test]
+    fn an_idle_record_is_published_once_its_flush_deadline_passes() {
+        // Gap B, capture-proxy half: the review-blocker state was a recorder whose F deadline had
+        // no driver, so an idle connection's partial request never reached Kafka until the next
+        // observation or the close.
+        let flush_interval = Duration::from_millis(40);
+        let mut sink = recording_with_flush_interval(flush_interval);
+        assert!(
+            sink.next_flush_deadline().is_none(),
+            "no record is open, so there is no deadline"
+        );
+
+        sink.capture_read(SystemTime::now(), b"POST /index/_doc HTTP/1.1\r\nHost: x")
+            .expect("the read is captured");
+        let deadline = sink
+            .next_flush_deadline()
+            .expect("the first observation arms the record's fixed deadline");
+        assert!(
+            deadline <= std::time::Instant::now() + flush_interval,
+            "the deadline must be no later than F after the first observation"
+        );
+
+        // Before the deadline the callback is a no-op.
+        sink.run_scheduled_flush(SystemTime::now())
+            .expect("an early callback is harmless");
+        assert_eq!(
+            sink.recorder_mut().sink().submitted_record_count(),
+            0,
+            "an early callback must not publish"
+        );
+
+        std::thread::sleep(flush_interval + Duration::from_millis(20));
+        sink.run_scheduled_flush(SystemTime::now())
+            .expect("the scheduled flush succeeds");
+        assert_eq!(
+            sink.recorder_mut().sink().submitted_record_count(),
+            1,
+            "the idle record must be published once its deadline has passed"
+        );
+        assert!(
+            sink.next_flush_deadline().is_none(),
+            "detaching clears the deadline until a later observation opens a successor record"
+        );
+
+        // A repeated, now-stale callback creates nothing.
+        sink.run_scheduled_flush(SystemTime::now())
+            .expect("a stale callback is harmless");
+        assert_eq!(sink.recorder_mut().sink().submitted_record_count(), 1);
+    }
+
+    #[test]
+    fn a_closed_connection_never_reports_a_flush_deadline() {
+        let mut sink = recording_with_flush_interval(Duration::from_mins(5));
+        sink.capture_read(SystemTime::now(), b"GET / HTTP/1.1\r\n")
+            .expect("the read is captured");
+        assert!(sink.next_flush_deadline().is_some());
+        sink.close(SystemTime::now(), CloseReason::Normal)
+            .expect("the close is captured");
+        assert!(
+            sink.next_flush_deadline().is_none(),
+            "nothing may follow a CloseObservation, so no flush may be scheduled"
+        );
+        let before = sink.recorder_mut().sink().submitted_record_count();
+        sink.run_scheduled_flush(SystemTime::now())
+            .expect("a callback after close is harmless");
+        assert_eq!(
+            sink.recorder_mut().sink().submitted_record_count(),
+            before,
+            "a callback after the terminal close must not create a record"
+        );
     }
 }
