@@ -493,6 +493,20 @@ pub enum ClientConfigError {
     /// `bootstrap.servers` was empty.
     #[error("capture Kafka requires a non-empty bootstrap server list")]
     MissingBootstrapServers,
+    /// A Java TLS store property has no librdkafka equivalent.
+    ///
+    /// librdkafka reads PEM trust material and PKCS#12 client keystores, but not Java key stores.
+    /// A JKS (or PKCS#12) *trust* store therefore cannot be honoured; refusing to start is safer
+    /// than silently connecting without the operator's trust anchor.
+    #[error("capture Kafka TLS property {key:?}={value:?} cannot be honoured: {remedy}")]
+    UnsupportedJavaTlsStore {
+        /// The Java property.
+        key: String,
+        /// Its configured value.
+        value: String,
+        /// What to configure instead.
+        remedy: &'static str,
+    },
     /// The property file could not be read.
     #[error("could not read the capture Kafka property file {path:?}: {detail}")]
     PropertyFileUnreadable {

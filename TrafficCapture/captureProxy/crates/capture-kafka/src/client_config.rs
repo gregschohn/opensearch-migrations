@@ -278,8 +278,9 @@ impl KafkaClientSettings {
             config.set(key, value);
         }
 
-        // 2. The property file, filtered.
-        for (key, value) in &self.properties {
+        // 2. The property file, filtered, after translating Java TLS store keys.
+        let properties = translate_java_tls_properties(&self.properties)?;
+        for (key, value) in &properties {
             let key = key.as_str();
             if let Some(forced) = forced_ordering_value(key) {
                 if !ordering_value_matches(key, value, forced) {
@@ -495,6 +496,90 @@ const ROLE_OWNED: &[&str] = &[
     "message.max.bytes",
     "group.instance.id",
 ];
+
+/// Translates Java client TLS store properties into their librdkafka equivalents.
+///
+/// The shipped orchestration mounts this exact property file for SCRAM
+/// (`setupCapture.ts:244-245`):
+///
+/// ```text
+/// ssl.truststore.type=PEM
+/// ssl.truststore.location=/.../ca.crt
+/// ```
+///
+/// librdkafka has no `ssl.truststore.*` properties at all and hard-fails on an unknown key, so
+/// passing these through made every SCRAM deployment refuse to start. The mapping is:
+///
+/// | Java | librdkafka |
+/// |---|---|
+/// | `ssl.truststore.location` with `ssl.truststore.type=PEM` | `ssl.ca.location` |
+/// | `ssl.truststore.certificates` (inline PEM) | `ssl.ca.pem` |
+/// | `ssl.truststore.type=JKS` or `PKCS12` | refused: librdkafka cannot read a Java trust store |
+/// | `ssl.truststore.password` | dropped: PEM trust material has no password |
+/// | `ssl.keystore.location` with `ssl.keystore.type=PKCS12` | `ssl.keystore.location` (PKCS#12) |
+/// | `ssl.keystore.type=JKS` | refused |
+/// | `ssl.keystore.type` / `ssl.truststore.type` | consumed by the mapping |
+///
+/// The Java default trust-store type is JKS, so a location with no type is treated as JKS and
+/// refused rather than guessed at. Keys librdkafka already understands (`ssl.ca.location`,
+/// `ssl.endpoint.identification.algorithm`, ...) pass through unchanged.
+///
+/// # Errors
+///
+/// [`ClientConfigError::UnsupportedJavaTlsStore`] for a store librdkafka cannot read.
+fn translate_java_tls_properties(
+    properties: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, String>, ClientConfigError> {
+    const PEM_ONLY: &str = "librdkafka reads PEM trust material only; mount the CA certificate \
+        as PEM and set ssl.truststore.type=PEM (or ssl.ca.location directly)";
+    const NO_JKS_KEYSTORE: &str = "librdkafka cannot read a Java key store; provide the client \
+        certificate as PKCS#12 (ssl.keystore.type=PKCS12) or as PEM via ssl.certificate.location \
+        and ssl.key.location";
+
+    let mut translated = properties.clone();
+    let truststore_type = translated
+        .remove("ssl.truststore.type")
+        .map(|value| value.trim().to_ascii_uppercase());
+    if let Some(location) = translated.remove("ssl.truststore.location") {
+        match truststore_type.as_deref() {
+            Some("PEM") => {
+                translated.insert("ssl.ca.location".to_owned(), location);
+            }
+            other => {
+                return Err(ClientConfigError::UnsupportedJavaTlsStore {
+                    key: "ssl.truststore.type".to_owned(),
+                    value: other.unwrap_or("JKS (the Java default)").to_owned(),
+                    remedy: PEM_ONLY,
+                });
+            }
+        }
+    }
+    if let Some(pem) = translated.remove("ssl.truststore.certificates") {
+        translated.insert("ssl.ca.pem".to_owned(), pem);
+    }
+    if translated.remove("ssl.truststore.password").is_some() {
+        tracing::debug!(
+            "event=capture_kafka_property_ignored property=ssl.truststore.password \
+             reason=pem_trust_has_no_password"
+        );
+    }
+    let keystore_type = translated
+        .remove("ssl.keystore.type")
+        .map(|value| value.trim().to_ascii_uppercase());
+    if translated.contains_key("ssl.keystore.location") {
+        match keystore_type.as_deref() {
+            Some("PKCS12") => {}
+            other => {
+                return Err(ClientConfigError::UnsupportedJavaTlsStore {
+                    key: "ssl.keystore.type".to_owned(),
+                    value: other.unwrap_or("JKS (the Java default)").to_owned(),
+                    remedy: NO_JKS_KEYSTORE,
+                });
+            }
+        }
+    }
+    Ok(translated)
+}
 
 /// Prefixes owned by the auth mode. An `ssl.*` key is still accepted from the property file,
 /// because the Java path supplies none of them and a deployment may legitimately keep its trust
@@ -1172,5 +1257,81 @@ mod tests {
         let second = new_capture_activation_id();
         assert_ne!(first, second);
         assert_eq!(first.len(), 36, "a hyphenated UUID");
+    }
+
+    #[test]
+    fn the_orchestration_scram_property_file_translates_to_a_librdkafka_ca_location() {
+        // Regression: setupCapture.ts:244-245 emits exactly these two keys for SCRAM. Passed
+        // through verbatim, librdkafka rejected them and every SCRAM deployment refused to start.
+        let mut file = BTreeMap::new();
+        file.insert("ssl.truststore.type".to_owned(), "PEM".to_owned());
+        file.insert(
+            "ssl.truststore.location".to_owned(),
+            "/etc/kafka-ca/ca.crt".to_owned(),
+        );
+        let translated = translate_java_tls_properties(&file).expect("PEM trust translates");
+        assert_eq!(
+            translated.get("ssl.ca.location").map(String::as_str),
+            Some("/etc/kafka-ca/ca.crt")
+        );
+        assert!(
+            !translated
+                .keys()
+                .any(|key| key.starts_with("ssl.truststore."))
+        );
+    }
+
+    #[test]
+    fn a_java_trust_store_librdkafka_cannot_read_is_refused_not_guessed() {
+        for store_type in [None, Some("JKS"), Some("PKCS12")] {
+            let mut file = BTreeMap::new();
+            file.insert(
+                "ssl.truststore.location".to_owned(),
+                "/etc/kafka/truststore".to_owned(),
+            );
+            if let Some(store_type) = store_type {
+                file.insert("ssl.truststore.type".to_owned(), store_type.to_owned());
+            }
+            assert!(
+                matches!(
+                    translate_java_tls_properties(&file),
+                    Err(ClientConfigError::UnsupportedJavaTlsStore { .. })
+                ),
+                "trust store type {store_type:?} must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pkcs12_client_keystore_passes_through_and_a_jks_one_is_refused() {
+        let mut file = BTreeMap::new();
+        file.insert(
+            "ssl.keystore.location".to_owned(),
+            "/etc/kafka/client.p12".to_owned(),
+        );
+        file.insert("ssl.keystore.type".to_owned(), "PKCS12".to_owned());
+        let translated = translate_java_tls_properties(&file).expect("PKCS#12 is supported");
+        assert_eq!(
+            translated.get("ssl.keystore.location").map(String::as_str),
+            Some("/etc/kafka/client.p12")
+        );
+        assert!(!translated.contains_key("ssl.keystore.type"));
+
+        file.insert("ssl.keystore.type".to_owned(), "JKS".to_owned());
+        assert!(matches!(
+            translate_java_tls_properties(&file),
+            Err(ClientConfigError::UnsupportedJavaTlsStore { .. })
+        ));
+    }
+
+    #[test]
+    fn librdkafka_native_tls_keys_pass_through_unchanged() {
+        let mut file = BTreeMap::new();
+        file.insert("ssl.ca.location".to_owned(), "/etc/ca.pem".to_owned());
+        file.insert(
+            "ssl.endpoint.identification.algorithm".to_owned(),
+            "https".to_owned(),
+        );
+        assert_eq!(translate_java_tls_properties(&file).expect("native"), file);
     }
 }
