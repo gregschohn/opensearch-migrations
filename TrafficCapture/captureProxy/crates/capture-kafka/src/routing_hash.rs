@@ -21,23 +21,30 @@
 
 /// Kafka's `Utils.murmur2`. Returns the same signed 32-bit value as the Java implementation.
 ///
-/// This is Kafka's own Murmur2 variant, not canonical MurmurHash2: note the seed, the `+`
+/// This is Kafka's own Murmur2 variant, not canonical `MurmurHash2`: note the seed, the `+`
 /// (not `|`) block assembly, and the switch fall-through that applies a single trailing multiply
 /// for any nonzero tail length.
+///
+/// # Panics
+///
+/// Panics if `data` is longer than [`i32::MAX`]. Java's `byte[] data` cannot exceed that length, so
+/// there is no Java behavior to match beyond it, and silently truncating the length would produce a
+/// hash that disagrees with Java.
 #[must_use]
 pub fn murmur2(data: &[u8]) -> i32 {
-    const M: i32 = 0x5bd1_e995_u32 as i32;
+    const M: i32 = 0x5bd1_e995_u32.cast_signed();
     const R: u32 = 24;
-    const SEED: i32 = 0x9747_b28c_u32 as i32;
+    const SEED: i32 = 0x9747_b28c_u32.cast_signed();
 
-    let length = data.len();
-    let mut h: i32 = SEED ^ (length as i32);
+    let length = i32::try_from(data.len())
+        .expect("murmur2 input must fit in a Java byte[] (i32::MAX bytes)");
+    let mut h: i32 = SEED ^ length;
 
     for chunk in data.chunks_exact(4) {
-        let mut k: i32 = (i32::from(chunk[0]) & 0xff)
-            .wrapping_add((i32::from(chunk[1]) & 0xff) << 8)
-            .wrapping_add((i32::from(chunk[2]) & 0xff) << 16)
-            .wrapping_add((i32::from(chunk[3]) & 0xff) << 24);
+        let mut k: i32 = i32::from(chunk[0])
+            .wrapping_add(i32::from(chunk[1]) << 8)
+            .wrapping_add(i32::from(chunk[2]) << 16)
+            .wrapping_add(i32::from(chunk[3]) << 24);
         k = k.wrapping_mul(M);
         k ^= ushr(k, R);
         k = k.wrapping_mul(M);
@@ -50,12 +57,12 @@ pub fn murmur2(data: &[u8]) -> i32 {
     let tail = data.chunks_exact(4).remainder();
     if !tail.is_empty() {
         if tail.len() == 3 {
-            h ^= (i32::from(tail[2]) & 0xff) << 16;
+            h ^= i32::from(tail[2]) << 16;
         }
         if tail.len() >= 2 {
-            h ^= (i32::from(tail[1]) & 0xff) << 8;
+            h ^= i32::from(tail[1]) << 8;
         }
-        h ^= i32::from(tail[0]) & 0xff;
+        h ^= i32::from(tail[0]);
         h = h.wrapping_mul(M);
     }
 
@@ -74,7 +81,7 @@ pub fn to_positive(value: i32) -> i32 {
 
 /// Java's `>>>` (logical shift right) on a 32-bit signed integer.
 fn ushr(value: i32, bits: u32) -> i32 {
-    ((value as u32) >> bits) as i32
+    value.cast_unsigned().wrapping_shr(bits).cast_signed()
 }
 
 /// Selects the partition for `connection_id` from `sorted_partitions`.
@@ -97,7 +104,10 @@ pub fn select_partition(connection_id: &str, sorted_partitions: &[i32]) -> i32 {
         sorted_partitions.windows(2).all(|w| w[0] < w[1]),
         "partitions must be unique and ascending to match Java TreeSet ordering"
     );
-    let index = to_positive(murmur2(connection_id.as_bytes())) as usize % sorted_partitions.len();
+    // `to_positive` clears the sign bit, so this is always a valid index magnitude.
+    let positive = to_positive(murmur2(connection_id.as_bytes()));
+    let index = usize::try_from(positive).expect("to_positive never returns a negative value")
+        % sorted_partitions.len();
     sorted_partitions[index]
 }
 

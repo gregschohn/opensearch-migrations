@@ -57,7 +57,7 @@ impl RoutingVector {
     #[must_use]
     pub fn utf8_bytes(&self) -> Vec<u8> {
         assert!(
-            self.utf8_hex.len() % 2 == 0,
+            self.utf8_hex.len().is_multiple_of(2),
             "fixture utf8Hex must have an even length"
         );
         (0..self.utf8_hex.len())
