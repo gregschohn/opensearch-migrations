@@ -279,6 +279,42 @@ pub trait CaptureSink: Send {
     /// As [`CaptureSink::capture_read`].
     fn close(&mut self, at: SystemTime, reason: CloseReason) -> Result<(), CaptureAbort>;
 
+    /// The fixed monotonic deadline of the **current nonempty record**, or `None` when no record
+    /// is open.
+    ///
+    /// `proxyCaptureProtocol.md` §4.2: the flush deadline is one fixed monotonic deadline, started
+    /// by the first observation of a new nonempty record, and **continuous traffic cannot postpone
+    /// it**. The value therefore changes only when a record opens (a new deadline) or detaches
+    /// (`None`, or the successor record's deadline), which is why the connection task re-queries it
+    /// after every sink call rather than caching it.
+    ///
+    /// The default is `None`: a sink with no record deadline — the no-capture sink, or any sink
+    /// that has not been wired to the record layer yet — is simply never scheduled.
+    fn next_flush_deadline(&self) -> Option<std::time::Instant> {
+        None
+    }
+
+    /// Runs the owner's scheduled record flush: detaches and submits the open record **iff** its
+    /// deadline generation is still current.
+    ///
+    /// This is the driver that makes `--traffic-stream-flush-interval-seconds` real for an
+    /// otherwise-idle connection: the record layer's append-side deadline check can only fire when
+    /// another observation arrives, so a buffered record on an idle connection would otherwise sit
+    /// unpublished forever. The generation guard lives in the record layer
+    /// (`ConnectionRecorder::run_scheduled_flush`), which makes a stale callback a no-op — this
+    /// method may be called spuriously without harm, and it never creates a record, so a stale
+    /// timer cannot resurrect a connection after its terminal close.
+    ///
+    /// The default is a no-op `Ok`, paired with the `None` default of
+    /// [`CaptureSink::next_flush_deadline`].
+    ///
+    /// # Errors
+    ///
+    /// As [`CaptureSink::capture_read`].
+    fn run_scheduled_flush(&mut self, _at: SystemTime) -> Result<(), CaptureAbort> {
+        Ok(())
+    }
+
     /// The capture-before-forward gate for Critical Mutation Traffic.
     ///
     /// Called after the end-of-message observation is committed and **before** the bytes that

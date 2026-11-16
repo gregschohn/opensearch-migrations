@@ -253,8 +253,27 @@ where
         let termination = loop {
             client_buf.reserve(config.read_buffer_bytes);
 
+            // Re-queried every iteration, i.e. after every sink call that can open or detach a
+            // record: reads, end-of-message commits, scheduled flushes. The deadline itself is
+            // FIXED — `proxyCaptureProtocol.md` §4.2's "continuous traffic cannot postpone it" —
+            // so re-creating the sleep each iteration re-arms at the same instant until the record
+            // detaches, at which point the sink reports the successor's deadline or `None`.
+            let flush_deadline = sink.next_flush_deadline().map(Instant::from_std);
+
             let termination = tokio::select! {
                 () = &mut connection_sleep => Some(Termination::reason(CloseReason::ConnectionDuration)),
+                // The F record-flush driver (`proxyCaptureProtocol.md` §4.2): the scheduled
+                // callback that detaches and enqueues an otherwise-idle nonempty record. This
+                // branch is selectable only while the connection is idle in this select — every
+                // read handler runs to completion before the select is polled again — so a flush
+                // can never split the capture sequence of a read. The generation guard in the
+                // record layer makes a lost race (a read firing at the same instant) harmless: the
+                // next iteration re-arms at the unchanged deadline.
+                () = flush_sleep_until(flush_deadline), if flush_deadline.is_some() => {
+                    sink.run_scheduled_flush(SystemTime::now())
+                        .map_err(Termination::capture)
+                        .err()
+                }
                 () = &mut assembly_sleep, if assembly_armed => {
                     Some(Termination::reason(CloseReason::AssemblyDuration))
                 }
@@ -381,6 +400,16 @@ where
             requests_forwarded: counters.requests_forwarded,
             capture_abort: abort,
         }
+    }
+}
+
+/// Sleeps until the record-flush deadline, or forever when no record is open.
+///
+/// The `None` arm is unreachable under the select guard but keeps the future total.
+async fn flush_sleep_until(deadline: Option<Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => std::future::pending().await,
     }
 }
 
@@ -547,6 +576,14 @@ pub(crate) mod tests {
         fail_write_capture: bool,
         gate: GateOutcome,
         gate_calls: u32,
+        /// `Some` enables the record-deadline model: the first observation after a detach opens a
+        /// record whose fixed deadline is now + the interval, exactly the §4.2 shape the wire
+        /// layer's `ConnectionRecorder` implements for real.
+        flush_interval: Option<std::time::Duration>,
+        /// The open record's fixed deadline. `None` means no record is open.
+        open_record_deadline: Option<std::time::Instant>,
+        /// When each scheduled flush ran, in virtual time under a paused clock.
+        flush_times: Vec<std::time::Instant>,
         /// Bytes the source had received when the gate was called, for the ordering assertion.
         source_bytes_at_gate: Option<Arc<Mutex<u64>>>,
     }
@@ -567,6 +604,9 @@ pub(crate) mod tests {
                 fail_write_capture: false,
                 gate: GateOutcome::Forward,
                 gate_calls: 0,
+                flush_interval: None,
+                open_record_deadline: None,
+                flush_times: Vec::new(),
                 source_bytes_at_gate: None,
             }
         }
@@ -587,6 +627,29 @@ pub(crate) mod tests {
 
         pub(crate) fn refuse_gate(&mut self) {
             self.gate = GateOutcome::Refuse;
+        }
+
+        /// Enables the record-deadline model with flush interval `F`.
+        ///
+        /// Must only be used inside a Tokio runtime: the deadline is taken from the Tokio clock so
+        /// paused-time tests measure exact virtual instants.
+        pub(crate) fn with_flush_interval(mut self, interval: std::time::Duration) -> Self {
+            self.flush_interval = Some(interval);
+            self
+        }
+
+        pub(crate) fn flush_times(&self) -> Vec<std::time::Instant> {
+            self.flush_times.clone()
+        }
+
+        /// Any observation on a detached record opens a new one with a FIXED deadline. Later
+        /// observations do not move it — that is the §4.2 invariant under test.
+        fn note_observation(&mut self) {
+            if let Some(interval) = self.flush_interval
+                && self.open_record_deadline.is_none()
+            {
+                self.open_record_deadline = Some(tokio::time::Instant::now().into_std() + interval);
+            }
         }
 
         pub(crate) fn events(&self) -> Vec<String> {
@@ -639,6 +702,7 @@ pub(crate) mod tests {
         fn capture_read(&mut self, _at: SystemTime, bytes: &[u8]) -> Result<(), CaptureAbort> {
             self.check("read")?;
             self.events.push("read".to_owned());
+            self.note_observation();
             self.reads.push(bytes.to_vec());
             Ok(())
         }
@@ -646,6 +710,7 @@ pub(crate) mod tests {
         fn request_dropped(&mut self, _at: SystemTime) -> Result<(), CaptureAbort> {
             self.check("dropped")?;
             self.events.push("dropped".to_owned());
+            self.note_observation();
             Ok(())
         }
 
@@ -656,6 +721,7 @@ pub(crate) mod tests {
         fn commit_end_of_message(&mut self, _at: SystemTime) -> Result<(), CaptureAbort> {
             self.check("eom")?;
             self.events.push("eom".to_owned());
+            self.note_observation();
             self.end_of_message_lengths.push(self.pending_lengths);
             Ok(())
         }
@@ -663,6 +729,7 @@ pub(crate) mod tests {
         fn request_forwarded(&mut self, _at: SystemTime) -> Result<(), CaptureAbort> {
             self.check("forwarded")?;
             self.events.push("forwarded".to_owned());
+            self.note_observation();
             Ok(())
         }
 
@@ -672,6 +739,7 @@ pub(crate) mod tests {
             }
             self.check("write")?;
             self.events.push("write".to_owned());
+            self.note_observation();
             self.writes.push(bytes.to_vec());
             Ok(())
         }
@@ -683,6 +751,7 @@ pub(crate) mod tests {
         ) -> Result<(), CaptureAbort> {
             self.check("interim")?;
             self.events.push("interim".to_owned());
+            self.note_observation();
             self.interim_responses.push(bytes.to_vec());
             Ok(())
         }
@@ -694,6 +763,7 @@ pub(crate) mod tests {
         ) -> Result<(), CaptureAbort> {
             self.check("exception")?;
             self.events.push("exception".to_owned());
+            self.note_observation();
             self.exceptions.push(message.to_owned());
             Ok(())
         }
@@ -701,6 +771,9 @@ pub(crate) mod tests {
         fn close(&mut self, _at: SystemTime, reason: CloseReason) -> Result<(), CaptureAbort> {
             self.check("close")?;
             self.events.push("close".to_owned());
+            // The terminal close detaches and publishes the final record, invalidating any pending
+            // scheduled flush — the wire layer's `ConnectionRecorder::close` does the same.
+            self.open_record_deadline = None;
             self.close_reason = Some(reason);
             Ok(())
         }
@@ -716,6 +789,24 @@ pub(crate) mod tests {
                 );
             }
             self.gate
+        }
+
+        fn next_flush_deadline(&self) -> Option<std::time::Instant> {
+            self.open_record_deadline
+        }
+
+        fn run_scheduled_flush(&mut self, _at: SystemTime) -> Result<(), CaptureAbort> {
+            if self.open_record_deadline.is_none() {
+                // Stale callback: the record already detached. The wire layer's generation guard
+                // makes this a no-op, and so does this model.
+                return Ok(());
+            }
+            self.check("flush")?;
+            self.events.push("flush".to_owned());
+            self.flush_times
+                .push(tokio::time::Instant::now().into_std());
+            self.open_record_deadline = None;
+            Ok(())
         }
     }
 
@@ -862,6 +953,19 @@ pub(crate) mod tests {
 
         fn close(&mut self, at: SystemTime, reason: CloseReason) -> Result<(), CaptureAbort> {
             self.with(|sink| sink.close(at, reason))
+        }
+
+        fn next_flush_deadline(&self) -> Option<std::time::Instant> {
+            self.0
+                .lock()
+                .expect("not poisoned")
+                .as_ref()
+                .expect("present")
+                .next_flush_deadline()
+        }
+
+        fn run_scheduled_flush(&mut self, at: SystemTime) -> Result<(), CaptureAbort> {
+            self.with(|sink| sink.run_scheduled_flush(at))
         }
 
         async fn gate_critical_mutation(&mut self) -> GateOutcome {
@@ -1648,5 +1752,262 @@ pub(crate) mod tests {
             "a limit violation is a bare close with no exception observation"
         );
         assert_eq!(sink.close_reason(), Some(CloseReason::TotalBytes));
+    }
+
+    // ---------------------------------------------------------------- the F flush driver (§4.2)
+
+    /// Yields enough times for the single-threaded paused runtime to run the proxy task to its
+    /// next await point without advancing the clock (a ready task prevents auto-advance).
+    async fn settle() {
+        for _ in 0..50 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    fn events_of(sink: &Arc<Mutex<Option<RecordingSink>>>) -> Vec<String> {
+        sink.lock()
+            .expect("not poisoned")
+            .as_ref()
+            .expect("present")
+            .events()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_idle_connection_flushes_its_buffered_record_at_exactly_the_interval() {
+        // proxyCaptureProtocol.md §4.2: the scheduled callback must detach and enqueue an
+        // otherwise-idle nonempty record. The append-side deadline check cannot do this — no
+        // further observation ever arrives — so this is the test that fails when the driver is
+        // missing, which is exactly the prior rewrite's owner-review blocker #3.
+        const F: std::time::Duration = std::time::Duration::from_secs(5);
+        let (client_side, client_proxy) = tokio::io::duplex(1024);
+        let (source_proxy, source_side) = tokio::io::duplex(1024);
+        let sink = Arc::new(Mutex::new(Some(
+            RecordingSink::new().with_flush_interval(F),
+        )));
+        let connection = Connection::new(
+            client_proxy,
+            source_proxy,
+            SinkHandle(Arc::clone(&sink)),
+            SuppressionPolicy::permit_everything(),
+            config(),
+        );
+        let proxy = tokio::spawn(connection.run(None));
+        let start = tokio::time::Instant::now().into_std();
+
+        // A partial head: one captured read, no end of message, then silence.
+        let (mut client_reader, mut client_writer) = tokio::io::split(client_side);
+        client_writer
+            .write_all(b"GET /incomplete HTT")
+            .await
+            .expect("partial head");
+        client_writer.flush().await.expect("flush");
+        settle().await;
+        assert_eq!(events_of(&sink), vec!["read".to_owned()]);
+
+        // One virtual millisecond before the deadline: nothing has flushed.
+        tokio::time::sleep(
+            F.checked_sub(std::time::Duration::from_millis(1))
+                .expect("F is seconds"),
+        )
+        .await;
+        settle().await;
+        assert_eq!(events_of(&sink), vec!["read".to_owned()]);
+
+        // Crossing the deadline publishes the idle record, at exactly F.
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        settle().await;
+        assert_eq!(
+            events_of(&sink),
+            vec!["read".to_owned(), "flush".to_owned()]
+        );
+        {
+            let guard = sink.lock().expect("not poisoned");
+            let recording = guard.as_ref().expect("present");
+            assert_eq!(
+                recording.flush_times(),
+                vec![start + F],
+                "the flush ran at the record's fixed deadline, not when traffic resumed"
+            );
+            assert_eq!(
+                recording.next_flush_deadline(),
+                None,
+                "the detached record leaves no pending deadline"
+            );
+        }
+
+        client_writer.shutdown().await.expect("client EOF");
+        let mut rest = Vec::new();
+        let _ = client_reader.read_to_end(&mut rest).await;
+        let outcome = proxy.await.expect("no panic");
+        assert_eq!(outcome.close_reason, CloseReason::Normal);
+        assert_eq!(
+            events_of(&sink),
+            vec!["read".to_owned(), "flush".to_owned(), "close".to_owned()]
+        );
+        drop(source_side);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn continuous_traffic_does_not_postpone_the_flush_deadline() {
+        // §4.2: the deadline is fixed by the record's first observation; a connection that never
+        // goes quiet still publishes at F. A last-activity-plus-F timer would fail this test.
+        const F: std::time::Duration = std::time::Duration::from_secs(5);
+        let (client_side, client_proxy) = tokio::io::duplex(4096);
+        let (source_proxy, source_side) = tokio::io::duplex(4096);
+        let sink = Arc::new(Mutex::new(Some(
+            RecordingSink::new().with_flush_interval(F),
+        )));
+        let connection = Connection::new(
+            client_proxy,
+            source_proxy,
+            SinkHandle(Arc::clone(&sink)),
+            SuppressionPolicy::permit_everything(),
+            config(),
+        );
+        let proxy = tokio::spawn(connection.run(None));
+        let start = tokio::time::Instant::now().into_std();
+
+        // One byte of an ever-growing request line every second, for eight seconds.
+        let (mut client_reader, mut client_writer) = tokio::io::split(client_side);
+        client_writer.write_all(b"GET /a").await.expect("write");
+        client_writer.flush().await.expect("flush");
+        settle().await;
+        for _ in 0..8 {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            settle().await;
+            client_writer.write_all(b"a").await.expect("write");
+            client_writer.flush().await.expect("flush");
+            settle().await;
+        }
+
+        {
+            let guard = sink.lock().expect("not poisoned");
+            let recording = guard.as_ref().expect("present");
+            let flush_times = recording.flush_times();
+            assert_eq!(
+                flush_times.first().copied(),
+                Some(start + F),
+                "the first flush ran at the FIRST observation's deadline despite continuous traffic"
+            );
+            let events = recording.events();
+            let flush_index = events
+                .iter()
+                .position(|event| event == "flush")
+                .expect("a flush happened");
+            let reads_before = events[..flush_index]
+                .iter()
+                .filter(|event| *event == "read")
+                .count();
+            let reads_after = events[flush_index..]
+                .iter()
+                .filter(|event| *event == "read")
+                .count();
+            assert!(
+                reads_before >= 4,
+                "traffic kept arriving before the flush: {events:?}"
+            );
+            assert!(
+                reads_after >= 1,
+                "traffic kept arriving after the flush, into the successor record: {events:?}"
+            );
+        }
+
+        client_writer.shutdown().await.expect("client EOF");
+        let mut rest = Vec::new();
+        let _ = client_reader.read_to_end(&mut rest).await;
+        let _ = proxy.await.expect("no panic");
+        drop(source_side);
+    }
+
+    #[tokio::test]
+    async fn a_stale_flush_callback_after_detach_is_a_no_op() {
+        let mut sink = RecordingSink::new().with_flush_interval(std::time::Duration::from_secs(5));
+        sink.capture_read(SystemTime::UNIX_EPOCH, b"x")
+            .expect("captured");
+        assert!(sink.next_flush_deadline().is_some());
+        sink.run_scheduled_flush(SystemTime::UNIX_EPOCH)
+            .expect("flush");
+        assert_eq!(sink.events(), vec!["read".to_owned(), "flush".to_owned()]);
+        // The record detached; a timer that lost the race fires anyway and must do nothing.
+        sink.run_scheduled_flush(SystemTime::UNIX_EPOCH)
+            .expect("a stale callback is a no-op");
+        assert_eq!(sink.events(), vec!["read".to_owned(), "flush".to_owned()]);
+        assert_eq!(sink.next_flush_deadline(), None);
+    }
+
+    #[tokio::test]
+    async fn a_close_before_the_flush_deadline_cancels_the_pending_flush() {
+        // The terminal close detaches and publishes the final record itself; a scheduled flush
+        // after it must have nothing to fire on. The wire layer invalidates the deadline in
+        // `ConnectionRecorder::close`; this asserts the transport side observes that.
+        let sink = RecordingSink::new().with_flush_interval(std::time::Duration::from_mins(5));
+        let (outcome, sink, _, _) =
+            run_connection(sink, config(), GET.as_bytes(), RESPONSE.as_bytes()).await;
+        assert!(
+            !sink.events().contains(&"flush".to_owned()),
+            "{:?}",
+            sink.events()
+        );
+        assert_eq!(
+            sink.next_flush_deadline(),
+            None,
+            "close invalidated the pending deadline"
+        );
+        assert_eq!(outcome.close_reason, CloseReason::Normal);
+    }
+
+    /// A sink that implements only the required methods, pinning the trait defaults: no deadline,
+    /// and a spurious scheduled flush is an `Ok` no-op. This is what keeps the no-capture sink and
+    /// every not-yet-wired implementation compiling and correct.
+    struct ReactiveOnlySink;
+
+    impl CaptureSink for ReactiveOnlySink {
+        fn should_capture(&self) -> bool {
+            false
+        }
+        fn capture_read(&mut self, _at: SystemTime, _bytes: &[u8]) -> Result<(), CaptureAbort> {
+            Ok(())
+        }
+        fn request_dropped(&mut self, _at: SystemTime) -> Result<(), CaptureAbort> {
+            Ok(())
+        }
+        fn set_end_of_message_lengths(&mut self, _first_line: u32, _headers: u32) {}
+        fn commit_end_of_message(&mut self, _at: SystemTime) -> Result<(), CaptureAbort> {
+            Ok(())
+        }
+        fn request_forwarded(&mut self, _at: SystemTime) -> Result<(), CaptureAbort> {
+            Ok(())
+        }
+        fn capture_write(&mut self, _at: SystemTime, _bytes: &[u8]) -> Result<(), CaptureAbort> {
+            Ok(())
+        }
+        fn capture_interim_response(
+            &mut self,
+            _at: SystemTime,
+            _bytes: &[u8],
+        ) -> Result<(), CaptureAbort> {
+            Ok(())
+        }
+        fn connection_exception(
+            &mut self,
+            _at: SystemTime,
+            _message: &str,
+        ) -> Result<(), CaptureAbort> {
+            Ok(())
+        }
+        fn close(&mut self, _at: SystemTime, _reason: CloseReason) -> Result<(), CaptureAbort> {
+            Ok(())
+        }
+        fn gate_critical_mutation(&mut self) -> impl Future<Output = GateOutcome> + Send {
+            std::future::ready(GateOutcome::Forward)
+        }
+    }
+
+    #[test]
+    fn a_sink_relying_on_the_defaults_never_produces_a_deadline() {
+        let mut sink = ReactiveOnlySink;
+        assert_eq!(sink.next_flush_deadline(), None);
+        sink.run_scheduled_flush(SystemTime::UNIX_EPOCH)
+            .expect("the default scheduled flush is an Ok no-op");
     }
 }
