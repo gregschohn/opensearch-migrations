@@ -45,7 +45,7 @@ use capture_wire::{
 };
 
 use crate::error::CaptureFailure;
-use crate::publisher_actor::{AcknowledgedRecord, PublisherHandle, TrafficOutcome};
+use crate::publisher_actor::{AcknowledgedRecord, OutcomeSender, PublisherHandle, TrafficOutcome};
 use crate::routing_state::{ConnectionRoute, RoutingError, RoutingState};
 use crate::write_gate::WriteGate;
 
@@ -179,16 +179,18 @@ impl ConnectionCaptureFactory {
         );
 
         let (outcomes_tx, outcomes_rx) = mpsc::channel();
+        let outcome_notify = Arc::new(tokio::sync::Notify::new());
         Ok(ConnectionCapture {
             chain: PublishChain::new(),
             sink: KafkaRecordSink {
                 route: route.clone(),
                 publisher: self.publisher.clone(),
-                outcomes: outcomes_tx,
+                outcomes: OutcomeSender::new(outcomes_tx, Arc::clone(&outcome_notify)),
                 next_ticket: 0,
                 recycler: Arc::clone(&self.recycler),
             },
             outcomes: outcomes_rx,
+            outcome_notify,
             route,
             routing: Arc::clone(&self.routing),
             gate: Arc::clone(&self.gate),
@@ -206,7 +208,7 @@ impl ConnectionCaptureFactory {
 struct KafkaRecordSink {
     route: ConnectionRoute,
     publisher: PublisherHandle,
-    outcomes: mpsc::Sender<TrafficOutcome>,
+    outcomes: OutcomeSender,
     next_ticket: u64,
     recycler: Arc<dyn BufferRecycler>,
 }
@@ -242,6 +244,8 @@ pub struct ConnectionCapture {
     chain: PublishChain,
     sink: KafkaRecordSink,
     outcomes: mpsc::Receiver<TrafficOutcome>,
+    /// Signalled after every outcome is sent, so an async waiter need not poll.
+    outcome_notify: Arc<tokio::sync::Notify>,
     route: ConnectionRoute,
     routing: Arc<Mutex<RoutingState>>,
     gate: Arc<WriteGate>,
@@ -266,6 +270,14 @@ impl ConnectionCapture {
     #[must_use]
     pub fn route(&self) -> &ConnectionRoute {
         &self.route
+    }
+
+    /// Woken after every publication outcome for this connection is delivered.
+    ///
+    /// Await it, then call [`Self::drain_outcomes`]; a wake-up with nothing to drain is harmless.
+    #[must_use]
+    pub fn outcome_notifier(&self) -> Arc<tokio::sync::Notify> {
+        Arc::clone(&self.outcome_notify)
     }
 
     /// Hands a detached record to the connection's chain.

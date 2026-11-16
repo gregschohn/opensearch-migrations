@@ -193,6 +193,54 @@ pub struct TrafficOutcome {
     pub result: Result<AcknowledgedRecord, CaptureFailure>,
 }
 
+/// Delivers one connection's publication outcomes and wakes its asynchronous waiter.
+///
+/// The outcome itself travels over a `std` channel so the delivery-report thread never touches a
+/// runtime; the optional [`tokio::sync::Notify`] is signalled *after* the send, so a waiter that
+/// re-drains on wake-up always finds the outcome. `notify_one` stores a permit when nobody is
+/// waiting yet, so an outcome that lands between a drain and the next wait is never lost.
+///
+/// This replaces a fixed-interval poll in the capture-before-forward gate: the poll added up to
+/// its interval to every Critical Mutation Traffic forward and woke every blocked connection
+/// repeatedly, both of which land directly on the Phase 1 latency and CPU gates.
+#[derive(Debug, Clone)]
+pub struct OutcomeSender {
+    tx: mpsc::Sender<TrafficOutcome>,
+    notify: Option<Arc<tokio::sync::Notify>>,
+}
+
+impl OutcomeSender {
+    /// An outcome channel whose sends also wake `notify`.
+    #[must_use]
+    pub fn new(tx: mpsc::Sender<TrafficOutcome>, notify: Arc<tokio::sync::Notify>) -> Self {
+        Self {
+            tx,
+            notify: Some(notify),
+        }
+    }
+
+    /// Sends `outcome`, then wakes the waiter.
+    ///
+    /// # Errors
+    ///
+    /// Returns the outcome when the receiving connection is gone, exactly like
+    /// [`mpsc::Sender::send`].
+    pub fn send(&self, outcome: TrafficOutcome) -> Result<(), mpsc::SendError<TrafficOutcome>> {
+        let sent = self.tx.send(outcome);
+        if let Some(notify) = &self.notify {
+            notify.notify_one();
+        }
+        sent
+    }
+}
+
+impl From<mpsc::Sender<TrafficOutcome>> for OutcomeSender {
+    /// A plain channel with nobody to wake, for callers that drain synchronously.
+    fn from(tx: mpsc::Sender<TrafficOutcome>) -> Self {
+        Self { tx, notify: None }
+    }
+}
+
 /// Commands accepted by the actor.
 enum PublisherCommand {
     InitializeGeneration {
@@ -218,7 +266,7 @@ struct TrafficSubmission {
     record: EncodedRecord,
     is_terminal: bool,
     ticket: u64,
-    outcomes: mpsc::Sender<TrafficOutcome>,
+    outcomes: OutcomeSender,
 }
 
 /// A cheap, cloneable handle to the publisher actor.
@@ -290,7 +338,7 @@ impl PublisherHandle {
         record: EncodedRecord,
         is_terminal: bool,
         ticket: u64,
-        outcomes: mpsc::Sender<TrafficOutcome>,
+        outcomes: impl Into<OutcomeSender>,
     ) -> Result<(), CaptureFailure> {
         self.send(PublisherCommand::PublishTraffic(Box::new(
             TrafficSubmission {
@@ -298,7 +346,7 @@ impl PublisherHandle {
                 record,
                 is_terminal,
                 ticket,
-                outcomes,
+                outcomes: outcomes.into(),
             },
         )))
     }
@@ -415,7 +463,7 @@ struct InFlightRecord {
     accepted_at: Instant,
     submitted_at: Instant,
     /// For traffic: who to tell and under which ticket.
-    traffic: Option<(ConnectionRoute, u64, mpsc::Sender<TrafficOutcome>, bool)>,
+    traffic: Option<(ConnectionRoute, u64, OutcomeSender, bool)>,
 }
 
 struct HeldTraffic {
@@ -1127,7 +1175,7 @@ impl PublisherActor {
         writer_partition: WriterPartition,
         bytes: u64,
         accepted_at: Instant,
-        traffic: Option<(ConnectionRoute, u64, mpsc::Sender<TrafficOutcome>, bool)>,
+        traffic: Option<(ConnectionRoute, u64, OutcomeSender, bool)>,
     ) -> Result<(), CaptureFailure> {
         let send_id = outbound.send_id;
         let producer = Arc::clone(&self.config.producer);

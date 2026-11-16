@@ -115,6 +115,26 @@ impl CaptureSink for NoCaptureSink {
     }
 }
 
+/// Upper bound on one event-driven wait for a publication outcome.
+///
+/// A liveness safety net only: outcomes normally wake the waiter immediately. CHOSEN DEFAULT.
+pub const OUTCOME_SAFETY_WAKE: Duration = Duration::from_millis(10);
+
+/// Waits until a publication outcome may have arrived.
+///
+/// Event-driven when the sink offers a wake-up, which replaces a fixed poll that added up to its
+/// interval to every gated forward. [`OUTCOME_SAFETY_WAKE`] bounds the wait regardless, so a missed
+/// wake-up can delay a connection by at most that much and can never stall it. Without a wake-up
+/// the poll interval is used.
+async fn wait_for_outcome(notifier: Option<Arc<tokio::sync::Notify>>, poll_interval: Duration) {
+    match notifier {
+        Some(notify) => {
+            let _ = tokio::time::timeout(OUTCOME_SAFETY_WAKE, notify.notified()).await;
+        }
+        None => tokio::time::sleep(poll_interval).await,
+    }
+}
+
 /// A scheduled flush that runs this much later than its deadline is reported as late.
 ///
 /// `proxyCaptureProtocol.md` §4.2: "A callback that runs late records its lateness in a metric and
@@ -385,7 +405,10 @@ impl<S: PublishingRecordSink> RecordingCaptureSink<S> {
             if self.publication_is_quiet() {
                 break;
             }
-            tokio::time::sleep(self.poll_interval).await;
+            // Bound first: the wait must not hold a borrow of the sink across the await, or the
+            // future would require the sink to be `Sync`.
+            let notifier = self.recorder.sink().outcome_notifier();
+            wait_for_outcome(notifier, self.poll_interval).await;
         }
 
         let Some(metadata) = acknowledged else {
@@ -541,7 +564,10 @@ impl<S: PublishingRecordSink + Send> CaptureSink for RecordingCaptureSink<S> {
                     ));
                 }
             }
-            tokio::time::sleep(self.poll_interval).await;
+            // Bound first: the wait must not hold a borrow of the sink across the await, or the
+            // future would require the sink to be `Sync`.
+            let notifier = self.recorder.sink().outcome_notifier();
+            wait_for_outcome(notifier, self.poll_interval).await;
         }
     }
 

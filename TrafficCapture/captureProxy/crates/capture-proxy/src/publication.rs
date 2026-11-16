@@ -64,7 +64,9 @@ pub trait PublishingRecordSink: RecordSink {
     ///
     /// Three checks, in the protocol's order: the capture write gate is still open, the
     /// acknowledged partition is the connection's own partition, and the broker `LogAppendTime` is
-    /// positive and within `[-S, E)` of the writer partition's heartbeat baseline.
+    /// positive and less than `E` after the writer partition's heartbeat baseline. There is no lower
+    /// bound here (owner decision OD-6 amendment): a record older than the baseline is the safe
+    /// direction, because capture authority is then fresher than the record being forwarded.
     ///
     /// # Errors
     ///
@@ -74,6 +76,13 @@ pub trait PublishingRecordSink: RecordSink {
 
     /// A description of this connection's route, for diagnostics.
     fn route_description(&self) -> String;
+
+    /// Woken after each publication outcome is delivered, so a waiter can await instead of poll.
+    ///
+    /// `None` means the sink offers no wake-up and the caller must poll.
+    fn outcome_notifier(&self) -> Option<std::sync::Arc<tokio::sync::Notify>> {
+        None
+    }
 }
 
 /// A [`PublishingRecordSink`] whose outcomes are supplied by the test, not by a broker.
@@ -88,6 +97,7 @@ pub struct TestRecordSink {
     /// the gate is reached without a broker that returns bad metadata.
     validation: Result<(), String>,
     partition: i32,
+    notify: std::sync::Arc<tokio::sync::Notify>,
 }
 
 impl Default for TestRecordSink {
@@ -105,6 +115,7 @@ impl TestRecordSink {
             pending: std::collections::VecDeque::new(),
             validation: Ok(()),
             partition: 7,
+            notify: std::sync::Arc::new(tokio::sync::Notify::new()),
         }
     }
 
@@ -122,12 +133,14 @@ impl TestRecordSink {
                 partition: self.partition,
                 log_append_time: 1_700_000_000_000,
             }));
+        self.notify.notify_one();
     }
 
     /// Queues a failure for the next record to complete.
     pub fn fail_next(&mut self, reason: &str) {
         self.pending
             .push_back(PublicationOutcome::Failed(reason.to_owned()));
+        self.notify.notify_one();
     }
 
     /// How many records have been handed to this sink.
@@ -150,6 +163,10 @@ impl RecordSink for TestRecordSink {
 impl PublishingRecordSink for TestRecordSink {
     fn take_outcomes(&mut self) -> Vec<PublicationOutcome> {
         self.pending.drain(..).collect()
+    }
+
+    fn outcome_notifier(&self) -> Option<std::sync::Arc<tokio::sync::Notify>> {
+        Some(std::sync::Arc::clone(&self.notify))
     }
 
     fn validate_critical_mutation(&self, acknowledged: Acknowledgement) -> Result<(), String> {

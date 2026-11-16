@@ -375,6 +375,10 @@ impl PublishingRecordSink for KafkaPublishingSink {
     fn route_description(&self) -> String {
         self.capture.route().to_string()
     }
+
+    fn outcome_notifier(&self) -> Option<Arc<tokio::sync::Notify>> {
+        Some(self.capture.outcome_notifier())
+    }
 }
 
 /// A ready capture subsystem, plus everything per-connection capture needs from it.
