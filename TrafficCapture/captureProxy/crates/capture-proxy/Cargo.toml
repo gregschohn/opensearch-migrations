@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 capture-config.workspace = true
+uuid.workspace = true
 capture-wire.workspace = true
 tracing.workspace = true
 
