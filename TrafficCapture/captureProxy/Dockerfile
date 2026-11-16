@@ -90,9 +90,14 @@ RUN dnf -y update \
  && rm -rf /var/cache/dnf
 
 # Run unprivileged. The proxy binds a port above 1024 and reads only mounted configuration and
-# certificates, so it needs no capability beyond that.
-RUN groupadd --gid 10001 captureproxy \
- && useradd --uid 10001 --gid 10001 --no-create-home --shell /sbin/nologin captureproxy
+# certificates, so it needs no capability beyond that. shadow-utils provides groupadd/useradd,
+# which the AL2023 base image does not ship.
+RUN dnf -y install shadow-utils \
+ && groupadd --gid 10001 captureproxy \
+ && useradd --uid 10001 --gid 10001 --no-create-home --shell /sbin/nologin captureproxy \
+ && dnf -y remove shadow-utils \
+ && dnf clean all \
+ && rm -rf /var/cache/dnf
 
 COPY --from=builder /build/captureProxy/target/release/capture-proxy /usr/local/bin/capture-proxy
 

@@ -1,0 +1,10 @@
+# Per-Dockerfile ignore (BuildKit). The build context is TrafficCapture/, which contains the whole
+# Java tree; without this the context transfer ships gigabytes of Gradle output and the Cargo
+# target directory into the daemon. Keep only what the image build reads.
+*
+!captureProtobufs/src/main/proto/
+!captureProxy/
+captureProxy/target/
+captureProxy/qualification/
+captureProxy/Dockerfile
+captureProxy/Dockerfile.dockerignore
