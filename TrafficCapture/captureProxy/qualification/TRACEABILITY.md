@@ -52,7 +52,7 @@ A row is only `PROVED` when a named command and its output exist in a report und
 
 | # | Gate | Status | Measured |
 |---|---|---|---|
-| 1 | Zero exercised WIRE or PROTOCOL divergence | WIP | Phase A (Java/Java) passed with a validated negative control; Phase B awaits the Rust image |
+| 1 | Zero exercised WIRE or PROTOCOL divergence | **PASS** | Rust r1/r2/r3 vs Java j1: 0 differences; negative control validated; rebalance + failure-policy + auth proved on real brokers |
 | 2 | Plaintext scan-and-forward throughput/used core >= Java x 1.20 | TODO | |
 | 3 | Double TLS + churn: throughput/core and proxy-added p99 within 5% of Java | TODO | |
 | 4 | Thin capture slice: requests/core >= Java x 1.15 and steady RSS <= Java x 0.75 | TODO | |
@@ -84,15 +84,15 @@ Evidence suites: PROTO, WIRE, HTTP, KMODEL, KREAL, TRANSPORT, TLS, OPS, DEPLOY, 
 
 | ID | Treatment | Rust owner | Status | Evidence |
 |---|---|---|---|---|
-| PROTO-01 | Exact | `capture-wire` generated types | IMPL | Field numbers/oneof tags verified at generation |
+| PROTO-01 | Exact | `capture-wire` generated types | PROVED | Java replayer decodes Rust records: 3 Rust passes, 0 differences vs calibrated Java (wire-proof) |
 | WIRE-01 | Retired | `capture-wire::record_buffer` | IMPL | RAII buffers; exactly-once release proved on 8 paths |
 | WIRE-02 | Exact | `capture-wire::protobuf_size` | IMPL | All 11 Java size vectors + full 38-row CsvSource + proptests vs prost |
 | WIRE-03 | Semantic | `capture-wire::connection_recorder` | IMPL | Observation catalogue, contiguous +1 sequence, counters, F deadline |
 | WIRE-04 | Semantic | `capture-kafka::connection_factory` | PROVED | route immutability across a replacement generation, real broker |
 | WIRE-05 | Semantic | `capture-kafka::readiness` | PROVED | listener admission blocked until capability + first generation usable; proved by construction in the binary (port never binds against a dead broker, exit 78) |
-| WIRE-06 | Semantic | `capture-kafka::shutdown` | IMPL | retirement works for normal closes; gap A (force-closed deregistration) fix in flight |
-| WIRE-07 | Exact | `capture-wire::publish_chain` | IMPL | Per-connection ack ordering + failure poisoning; Java O1/O2 ported |
-| WIRE-08 | Exact | `capture-wire` recorder/encoder/segmentation | IMPL | Single-pass encoder, exact segment solver, J-1 envelope budget fix |
+| WIRE-06 | Semantic | `capture-kafka::shutdown` | PROVED | retirement e2e: normal, force-close, large-response-then-close all outcome=completed; compromised path skips retirement per 7.3 |
+| WIRE-07 | Exact | `capture-wire::publish_chain` | PROVED | per-connection ack chain; terminal-record drain fixed (gap A) and re-proved 3/3 e2e |
+| WIRE-08 | Exact | `capture-wire` recorder/encoder/segmentation | PROVED | 0-difference replayer differential; 3 MiB segmented response reconstructs RSP[3145863]; F flush e2e 2003 ms at F=2000 ms |
 | WIRE-09 | Semantic | `capture-wire::record_sink` | IMPL | Kafka-free RecordSink trait |
 | WIRE-10 | Operational | `capture-observability::connection_span` | IMPL | connection span at debug; metrics unconditional |
 | WIRE-11 | Retired | `capture-observability::RootTelemetry` | N/A | retired: RootTelemetry explicit registry |
@@ -102,14 +102,14 @@ Evidence suites: PROTO, WIRE, HTTP, KMODEL, KREAL, TRANSPORT, TLS, OPS, DEPLOY, 
 | ID | Treatment | Rust owner | Status | Evidence |
 |---|---|---|---|---|
 | KAFKA-01 | Exact | `capture-kafka::capability_probe` | PROVED | OD-4/OD-5: LogAppendTime type accepted, CreateTime refused on a real broker (positive CreateTime value proves the zero-trick fails open) |
-| KAFKA-02 | Exact | `capture-kafka::membership` | IMPL+ | state machine + failure paths proved; real subscribe/assign/pause; multi-member rebalance and coordinator outage NOT yet proved |
+| KAFKA-02 | Exact | `capture-kafka::membership` | PROVED | real 2-replica rebalance: disjoint reassignment, old routes immutable, draining heartbeats, retire within 12 ms of last close; replayer 23/23/10 |
 | KAFKA-03 | Exact | `capture-kafka` publisher/lane/heartbeat/ack_deadline/retirement | PROVED | 29 deterministic model tests + real-broker generation activation with real heartbeats |
-| KAFKA-04 | Exact | `capture-kafka::write_gate` | PROVED | incl. trip-does-not-wait race and poisoned-mutex survival |
+| KAFKA-04 | Exact | `capture-kafka::write_gate` | PROVED | model tests + write-gate trip now bridged to the capture gate; proved by real broker-failure scenario |
 | KAFKA-05 | Semantic | `capture-kafka::RoutingGenerationController` | PROVED | initial-heartbeat activation gate on every assigned partition, real broker |
-| KAFKA-06 | Exact | `capture-kafka::routing_state` | PROVED (hash) | 68 Java hashes + 544 routing decisions, 0 mismatches |
+| KAFKA-06 | Exact | `capture-kafka::routing_state` | PROVED | 544 Java routing decisions 0 mismatches; real rebalance route immutability |
 | KAFKA-07 | Semantic | `capture-kafka::error::CorruptedCaptureState` | PROVED | closed reason set asserted exhaustively |
 | KAFKA-08 | Semantic | `capture-kafka::bootstrap` | PROVED | start_capture end-to-end on a real broker, ready in 135ms; binary proves listener binds only after readiness |
-| KAFKA-09 | Semantic | `capture-config::kafka` + `capture-kafka::client_config` | PROVED | effective config read back from librdkafka; linger.ms=0 and message.max.bytes forced (both measured defaults wrong) |
+| KAFKA-09 | Semantic | `capture-config::kafka` + `capture-kafka::client_config` | PROVED | effective config readback; TLS and SCRAM-SHA-512 against real SASL_SSL broker with the orchestration property file; MSK IAM against live MSK Serverless via IMDS |
 | KAFKA-10 | Exact | `capture-kafka::topic_metadata` | PROVED | OD-7: layout validated with ZERO admin calls, real broker |
 | KAFKA-11 | Operational | `capture-observability::kafka_metrics` | IMPL | 16 instruments bridged; 4 queue-depth/latency instruments pending observability counterpart |
 | KAFKA-12 | Retired | `capture-observability::RootTelemetry` | N/A | retired: same |
@@ -120,8 +120,8 @@ Evidence suites: PROTO, WIRE, HTTP, KMODEL, KREAL, TRANSPORT, TLS, OPS, DEPLOY, 
 | ID | Treatment | Rust owner | Status | Evidence |
 |---|---|---|---|---|
 | HTTP-01 | Exact | `capture-config::CaptureFailurePolicy` | IMPL | CaptureFailurePolicy, FailClosed default as Java |
-| HTTP-02 | Exact | `capture-proxy::capture_process_state` | IMPL | Irreversible gate; 32,768 concurrent admissions vs closure, 0 violations |
-| HTTP-03 | Exact | `capture-proxy::connection_capture` + `capture-transport::request_pump` | IMPL | gate wired end-to-end in the binary; mutation-tested (removing the wait fails exactly one named test) |
+| HTTP-02 | Exact | `capture-proxy::capture_process_state` | PROVED | fail-closed exit 78 at 4.89 s with waiting PUT never forwarded; fail-open pass-through for existing and new connections |
+| HTTP-03 | Exact | `capture-proxy::connection_capture` + `capture-transport::request_pump` | PROVED | gate mutation-tested; event-driven wake (1.47 -> 0.73 ms median); fail-closed refuses the waiting mutation on a real broker failure |
 | HTTP-04 | Exact | `capture-http-scan::suppression` | IMPL | three-way capture/ignore/drop; whole-string matching via SuppressionPattern everywhere |
 | HTTP-05 | Exact | `capture-config::RequestLimits` | IMPL | Java defaults + validation, plus OD-1 request-line budget |
 | HTTP-06 | Exact | `capture-http-scan` scanner/classifier + `capture-proxy` capture/lifecycle | IMPL | scanner + classifier; Java vectors ported (14/711 EOM lengths, interim responses); fragmentation proptests 400 cases each |
@@ -138,7 +138,7 @@ Evidence suites: PROTO, WIRE, HTTP, KMODEL, KREAL, TRANSPORT, TLS, OPS, DEPLOY, 
 
 | ID | Treatment | Rust owner | Status | Evidence |
 |---|---|---|---|---|
-| PROXY-01 | Exact | `capture-proxy::failure_terminator` | IMPL | One-shot terminate, bounded 5s flush, distinct exit 78, panic hook |
+| PROXY-01 | Exact | `capture-proxy::failure_terminator` | PROVED | terminator wired to the capture gate; real broker failure -> exit 78 within E |
 | PROXY-02 | Operational | `capture-observability::process_metrics` | IMPL | ported failOpen gap-remains-active test |
 | PROXY-03 | Semantic | `capture-proxy` main/app/shutdown | IMPL | 60/240/270/300 absolute deadlines under tokio virtual time |
 | PROXY-04 | Retired | `capture-observability::root` | N/A | retired: one explicit registry |
