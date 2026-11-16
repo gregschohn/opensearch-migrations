@@ -48,6 +48,23 @@
 //! so a deployment raising `--maxTrafficBufferSize` above 1 MiB gets runtime
 //! `RecordTooLargeException`s, which are terminal capture failures, from a producer still using the
 //! 1 MiB default.
+//!
+//! # Two librdkafka defaults that differ from the Java client, and what each costs
+//!
+//! Both were established by reading the values back out of librdkafka, not from documentation or
+//! memory. Both are the class of defect that reads in a benchmark as "Rust is slower" or "Rust is
+//! broken" and gets attributed to the language rather than to a default.
+//!
+//! | Property | librdkafka default | Java client default | Forced here | Consequence of inheriting librdkafka's |
+//! |---|---|---|---|---|
+//! | `linger.ms` (alias `queue.buffering.max.ms`) | **5 ms** | **0** | **0**, overridable | Up to 5 ms added to *every* acknowledgement. Under the default fail-closed policy each critical mutation blocks on its own acknowledgement, and measured on the Java baseline over 38 valid runs with only acknowledgement latency varying — 0.70 ms → 32,245 req/s, 2.73 ms → 7,396, 5.54 ms → 3,595, 808 ms → 95 — that is a **4-9x throughput regression** against the Java baseline, for no protocol benefit. |
+//! | `message.max.bytes` | **1,000,000** | 1,048,576 | the configured maximum message size | The default payload limit is `1 MiB - 500 = 1,048,076`, which **exceeds** librdkafka's default. A maximum-size record is then rejected *locally by the producer*, before reaching any broker, and that rejection is a **terminal capture failure** — out of the box, with no misconfiguration. |
+//!
+//! Both are asserted in both directions: that librdkafka's bare default really is what is claimed
+//! (so a librdkafka change is caught rather than silently absorbed), and that the effective value
+//! after this module runs is the intended one. `socket.nagle.disable` was checked the same way and
+//! already defaults to `true`, matching the Java client's `TCP_NODELAY`, so it needs no override —
+//! and that is asserted too.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -326,6 +343,11 @@ impl KafkaClientSettings {
                 for (key, value) in FORCED_PRODUCER_ORDERING {
                     config.set(*key, *value);
                 }
+                // Measured librdkafka default: 1,000,000. Default payload limit:
+                // 1 MiB - 500 = 1,048,076, which exceeds it. Leaving the default in place makes a
+                // maximum-size record fail locally in the producer, before any broker sees it, and
+                // that is a terminal capture failure with no misconfiguration anywhere. Java never
+                // sets this at all (spec discrepancy D-7).
                 config.set("message.max.bytes", self.max_message_bytes.to_string());
             }
             ClientRole::MembershipConsumer => {

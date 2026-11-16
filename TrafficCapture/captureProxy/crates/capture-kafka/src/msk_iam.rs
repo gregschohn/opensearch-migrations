@@ -207,6 +207,122 @@ impl AwsCredentialsProvider for EnvCredentialsProvider {
     }
 }
 
+/// Resolves credentials through `aws-config`'s **default provider chain**.
+///
+/// This is the provider production uses, and it is what makes IRSA and `IMDSv2` work with **no proxy
+/// code change**: the chain already contains the web-identity provider (`AWS_ROLE_ARN` plus
+/// `AWS_WEB_IDENTITY_TOKEN_FILE`, projected by the kubelet) and the `IMDSv2` provider, and it picks
+/// whichever the ambient environment supplies.
+///
+/// # Thread discipline, which is the whole point
+///
+/// Resolution is async, so this provider owns a current-thread tokio runtime and blocks on it. That
+/// is **only** safe off a tokio worker thread, which is exactly why [`CredentialResolver`] exists:
+/// librdkafka invokes the token-refresh callback from a thread that is already a tokio worker on
+/// the consumer path, and `block_on` there panics with *"Cannot start a runtime from within a
+/// runtime"*. Use this provider **only** through [`MskIamTokenSource`], which routes every call
+/// through the resolver thread.
+///
+/// Calling it from inside a runtime returns an error rather than panicking, so the misuse is
+/// diagnosable instead of fatal.
+///
+/// # Required `aws-config` feature
+///
+/// The chain's web-identity (IRSA) and `IMDSv2` providers both make HTTP calls, so `aws-config`
+/// **must** be built with an HTTP client. Without one, resolution does not return an error — it
+/// **panics** inside `aws-smithy-runtime`:
+///
+/// ```text
+/// a http_client is required. Enable the `default-https-client` crate feature or configure an
+/// HTTP client to fix this.
+/// ```
+///
+/// Observed, not inferred: with `aws-config = { default-features = false, features =
+/// ["behavior-version-latest", "rt-tokio"] }` this is exactly what happens. Under the release
+/// profile's `panic = "abort"` that is a process abort rather than a capture failure, so the
+/// workspace entry needs `"default-https-client"` (or an explicitly configured client) before the
+/// MSK IAM path can work at all. [`MskIamTokenSource::start`] performs a preflight resolution so
+/// the problem surfaces at startup, before the listener opens, rather than at the first token
+/// refresh fifteen minutes into a run.
+pub struct AwsConfigCredentialsProvider {
+    runtime: tokio::runtime::Runtime,
+    provider: std::sync::OnceLock<aws_credential_types::provider::SharedCredentialsProvider>,
+}
+
+impl std::fmt::Debug for AwsConfigCredentialsProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AwsConfigCredentialsProvider")
+            .field("chain_loaded", &self.provider.get().is_some())
+            .finish_non_exhaustive()
+    }
+}
+
+impl AwsConfigCredentialsProvider {
+    /// Builds the provider, deferring the chain load until the first resolution.
+    ///
+    /// The chain is loaded lazily and then cached, because loading it performs discovery (IMDS
+    /// probing, token-file reads) that must not happen once per token mint — librdkafka re-mints
+    /// roughly every 15 minutes for the life of the process.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message if the single-threaded runtime cannot be created.
+    pub fn new() -> Result<Self, String> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| format!("could not build the AWS credential runtime: {error}"))?;
+        Ok(Self {
+            runtime,
+            provider: std::sync::OnceLock::new(),
+        })
+    }
+}
+
+impl AwsCredentialsProvider for AwsConfigCredentialsProvider {
+    fn credentials(&self) -> Result<AwsCredentials, String> {
+        use aws_credential_types::provider::ProvideCredentials as _;
+
+        if tokio::runtime::Handle::try_current().is_ok() {
+            return Err(
+                "the MSK IAM credential provider was called from inside a tokio runtime; it must \
+                 only be used through MskIamTokenSource, which resolves on a dedicated OS thread"
+                    .to_owned(),
+            );
+        }
+
+        let provider = if let Some(provider) = self.provider.get() {
+            provider.clone()
+        } else {
+            let loaded = self.runtime.block_on(async {
+                aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await
+            });
+            let provider = loaded
+                .credentials_provider()
+                .ok_or_else(|| {
+                    "the AWS default provider chain resolved no credentials provider; set \
+                     credentials in the environment, attach an instance profile, or configure IRSA"
+                        .to_owned()
+                })?
+                .clone();
+            // A concurrent initialiser having won is fine: both values are equivalent.
+            let _ = self.provider.set(provider.clone());
+            provider
+        };
+
+        let resolved = self
+            .runtime
+            .block_on(provider.provide_credentials())
+            .map_err(|error| format!("the AWS default provider chain failed: {error}"))?;
+
+        Ok(AwsCredentials {
+            access_key_id: resolved.access_key_id().to_owned(),
+            secret_access_key: resolved.secret_access_key().to_owned(),
+            session_token: resolved.session_token().map(ToOwned::to_owned),
+        })
+    }
+}
+
 /// Fixed credentials, for tests and for an explicitly configured deployment.
 #[derive(Debug, Clone)]
 pub struct StaticCredentialsProvider(pub AwsCredentials);
@@ -347,7 +463,27 @@ impl MskIamTokenSource {
                 detail: format!("could not start the credential resolver thread: {error}"),
             }
         })?;
-        Ok(Self { settings, resolver })
+
+        // Preflight: resolve once, and sign once, here at startup.
+        //
+        // Without this, an unusable credential chain or an unsignable credential is not discovered
+        // until librdkafka first asks for a token — which is after the listener has opened, and
+        // then again roughly every fifteen minutes for the life of the process. Failing here
+        // instead means an MSK IAM misconfiguration refuses startup, before any traffic can be
+        // accepted, which is what the capture protocol requires of a configuration fault.
+        let source = Self { settings, resolver };
+        source
+            .token()
+            .map_err(|error| ClientConfigError::AuthUnavailable {
+                mode: "msk-iam",
+                detail: format!(
+                    "could not mint an MSK IAM token at startup: {error}. Check that credentials \
+                     are reachable (environment, instance profile, or IRSA) and that aws-config is \
+                     built with an HTTP client feature such as \"default-https-client\", which its \
+                     web-identity and IMDSv2 providers both require."
+                ),
+            })?;
+        Ok(source)
     }
 
     /// Mints a token for librdkafka's `generate_oauth_token` callback.
@@ -366,6 +502,25 @@ impl MskIamTokenSource {
             principal_name: String::new(),
             lifetime_ms: signed.lifetime_ms,
         })
+    }
+
+    /// Starts a token source over `aws-config`'s default provider chain.
+    ///
+    /// The production constructor: the chain supplies IRSA and `IMDSv2` without code changes, and
+    /// resolution is confined to the dedicated resolver thread.
+    ///
+    /// # Errors
+    ///
+    /// Returns a configuration error for invalid settings, or if the runtime or the resolver thread
+    /// cannot start.
+    pub fn from_default_chain(settings: MskIamSettings) -> Result<Self, ClientConfigError> {
+        let provider = AwsConfigCredentialsProvider::new().map_err(|detail| {
+            ClientConfigError::AuthUnavailable {
+                mode: "msk-iam",
+                detail,
+            }
+        })?;
+        Self::start(settings, Box::new(provider))
     }
 
     /// The configured region.
@@ -1098,6 +1253,60 @@ mod tests {
             "librdkafka takes the token as a C string"
         );
         assert_eq!(source.region(), "us-east-2");
+    }
+
+    #[test]
+    fn an_unusable_credential_chain_refuses_startup_rather_than_failing_later() {
+        // The preflight: without it, an MSK IAM misconfiguration is not discovered until
+        // librdkafka first asks for a token, which is after the listener has opened.
+        struct Failing;
+        impl AwsCredentialsProvider for Failing {
+            fn credentials(&self) -> Result<AwsCredentials, String> {
+                Err("no instance profile is attached".to_owned())
+            }
+        }
+
+        let error = MskIamTokenSource::start(MskIamSettings::new("us-east-2"), Box::new(Failing))
+            .expect_err("an unusable chain must refuse startup");
+        let text = error.to_string();
+        assert!(text.contains("no instance profile is attached"), "{text}");
+        assert!(
+            text.contains("default-https-client"),
+            "the refusal must name the feature its web-identity and IMDSv2 providers need: {text}"
+        );
+    }
+
+    #[test]
+    fn an_unsignable_credential_refuses_startup() {
+        // A credential that resolves but cannot be signed with is caught at startup too.
+        let error = MskIamTokenSource::start(
+            MskIamSettings::new("us-east-2"),
+            Box::new(StaticCredentialsProvider(AwsCredentials {
+                access_key_id: String::new(),
+                secret_access_key: String::new(),
+                session_token: None,
+            })),
+        )
+        .expect_err("empty credentials cannot sign");
+        assert!(error.to_string().contains("non-empty access key id"));
+    }
+
+    #[test]
+    fn the_default_chain_provider_refuses_to_run_inside_a_runtime() {
+        // librdkafka calls the refresh callback from a thread that is already a tokio worker on
+        // the consumer path. Blocking an async chain there panics, so the misuse returns an error
+        // instead — and production routes through the resolver thread, where it is safe.
+        let provider = AwsConfigCredentialsProvider::new().expect("the runtime builds");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("a test runtime");
+        let error = runtime.block_on(async {
+            provider
+                .credentials()
+                .expect_err("resolution inside a runtime must not panic")
+        });
+        assert!(error.contains("inside a tokio runtime"), "{error}");
+        assert!(error.contains("MskIamTokenSource"), "{error}");
     }
 
     #[test]

@@ -46,7 +46,7 @@ use capture_kafka::client_config::{AuthMode, ClientRole, KafkaClientSettings};
 use capture_kafka::error::StartupRefusal;
 use capture_kafka::membership::{MembershipConsumer, MembershipEvent, PollOutcome};
 use capture_kafka::metrics::NoopMetrics;
-use capture_kafka::msk_iam::{EnvCredentialsProvider, MskIamSettings, MskIamTokenSource};
+use capture_kafka::msk_iam::{MskIamSettings, MskIamTokenSource};
 use capture_kafka::publisher_actor::{self, PublisherConfig};
 use capture_kafka::routing_state::RoutingState;
 use capture_kafka::topic_metadata::TrafficTopicMetadata;
@@ -98,7 +98,7 @@ fn settings(topic: &str) -> KafkaClientSettings {
 fn oauth(settings: &KafkaClientSettings) -> Option<Arc<MskIamTokenSource>> {
     match &settings.auth {
         AuthMode::MskIam(msk) => Some(Arc::new(
-            MskIamTokenSource::start(msk.clone(), Box::new(EnvCredentialsProvider))
+            MskIamTokenSource::from_default_chain(msk.clone())
                 .expect("the MSK IAM token source starts"),
         )),
         _ => None,
@@ -550,15 +550,15 @@ fn msk_iam_authenticates_and_assigns_broker_time() {
     settings.client_id = format!("capture-rust-{}", run_id());
     settings.auth = AuthMode::MskIam(MskIamSettings::new(region));
 
+    // The production constructor: aws-config's default provider chain, so IRSA and IMDSv2 both
+    // work with no code change. `start` preflights a resolution and a signature, so a chain that
+    // cannot produce a usable token refuses here rather than fifteen minutes into a run.
     let token_source = Arc::new(
-        MskIamTokenSource::start(
-            match &settings.auth {
-                AuthMode::MskIam(msk) => msk.clone(),
-                _ => unreachable!("just constructed"),
-            },
-            Box::new(EnvCredentialsProvider),
-        )
-        .expect("the token source starts"),
+        MskIamTokenSource::from_default_chain(match &settings.auth {
+            AuthMode::MskIam(msk) => msk.clone(),
+            _ => unreachable!("just constructed"),
+        })
+        .expect("the default credential chain yields a signable credential"),
     );
     // Minting a token must work before any broker is contacted, so an auth failure is
     // distinguishable from a signing failure.

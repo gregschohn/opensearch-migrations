@@ -927,7 +927,6 @@ fn a_traffic_acknowledgement_reports_the_broker_time_the_pre_forward_check_needs
             &route,
             acknowledged.log_append_time,
             Duration::from_secs(30),
-            Duration::from_secs(5),
         )
         .expect("500 ms after the baseline is fresh");
 }

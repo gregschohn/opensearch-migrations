@@ -32,14 +32,21 @@
 //! The registry key is `(writerNodeId, connectionId)`, so the same local connection id may legally
 //! appear under two writer identities.
 //!
-//! # Owner decision OD-6
+//! # Owner decision OD-6, as amended
 //!
-//! A heartbeat acknowledgement is accepted only when `-S <= elapsed < E`. Java has **no** lower
+//! A **heartbeat** acknowledgement is accepted only when `-S <= elapsed < E`. Java has **no** lower
 //! bound (`CaptureRoutingState.java:465-479`, deliberately asserted at
-//! `CaptureRoutingStateTest.java:73`) and overwrites the baseline on backward movement, which
-//! widens the pre-forward window without bound: a regressed baseline makes
-//! `observation - baseline < E` easier to satisfy, so a stale observation can release a source
-//! write. The same lower bound applies to the pre-forward critical-mutation check.
+//! `CaptureRoutingStateTest.java:73`) and overwrites the baseline on backward movement, so the
+//! baseline stops reliably tracking broker time and the continuity chain can be satisfied by a
+//! clock that jumps around — at which point "capture is live" is no longer actually proven.
+//!
+//! The **pre-forward** critical-mutation check keeps `elapsed < E` with **no lower bound**,
+//! matching Java. The two checks compare different quantities, and a negative pre-forward result is
+//! the safe direction — the liveness proof is newer than the record being forwarded. Bounding the
+//! heartbeat update already prevents a regressed baseline, so a second bound would only reject
+//! valid mutations; at the default `H = 10 s`, `S = 5 s` it would do so routinely. The reasoning is
+//! spelled out on
+//! [`RoutingState::validate_critical_mutation_traffic_acknowledgement`].
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
@@ -886,12 +893,21 @@ impl RoutingState {
                 )));
             }
             // DEVIATION: owner decision OD-6. Java has no lower bound here and overwrites the
-            // baseline with the smaller value (`CaptureRoutingState.java:465-479`, asserted at
-            // `CaptureRoutingStateTest.java:73`). A regressed baseline widens the pre-forward
-            // window, because `observation - baseline < E` becomes easier to satisfy, so a stale
-            // observation can release a source write. Backward movement is tolerated only within
-            // the configured clock-skew allowance `S`, which is the bound the replayer already
-            // enforces fatally.
+            // baseline with the smaller value (`CaptureRoutingState.java:465-479`, deliberately
+            // asserted at `CaptureRoutingStateTest.java:73`).
+            //
+            // Why it matters: this baseline is the proof that capture is live, and the continuity
+            // chain is "each accepted heartbeat is within E of the previous". If the baseline may
+            // regress without limit, that chain can be satisfied by a clock that jumps around, so
+            // "capture is live" stops being proven by it. Backward movement is tolerated only
+            // within the configured clock-skew allowance `S`, which is the bound the replayer
+            // already enforces fatally.
+            //
+            // This is the ONLY place the lower bound belongs. The pre-forward check deliberately
+            // has none — see
+            // `validate_critical_mutation_traffic_acknowledgement`. Bounding the baseline here is
+            // also what makes a bound there unnecessary: a baseline that cannot regress cannot
+            // widen the window it anchors.
             if elapsed < -skew_millis {
                 return Err(RoutingError::BrokerTime(format!(
                     "Heartbeat broker time moved backward beyond the configured clock-skew \
@@ -933,15 +949,38 @@ impl RoutingState {
     ///
     /// Both operands are broker `LogAppendTime` milliseconds; no local clock is involved.
     ///
-    /// # Owner decision OD-6
+    /// # Owner decision OD-6, as amended: **no lower bound here**
     ///
-    /// Accepts only when `-S <= observation - baseline < E`, applying the same lower bound as the
-    /// heartbeat check.
+    /// Accepts when `observation - baseline < E`, with no lower bound — matching Java.
+    ///
+    /// The lower bound belongs on the heartbeat update
+    /// ([`RoutingState::accept_heartbeat_log_append_time`]) and **only** there. The two checks
+    /// compare different quantities:
+    ///
+    /// * the heartbeat check compares two heartbeat timestamps on the same partition, published `H`
+    ///   apart, so a negative result there means broker time moved backward — exactly what `S`
+    ///   bounds;
+    /// * this check compares a *traffic* record's `LogAppendTime` against the last accepted
+    ///   heartbeat. Those are different records, and the baseline can legitimately advance between
+    ///   the traffic record's acknowledgement and the moment this validation runs. So the result
+    ///   can be legitimately negative by roughly `H` plus handler delay **with zero clock skew**.
+    ///
+    /// A negative result is also the **safe** direction: it means capture authority is *fresher*
+    /// than the record being forwarded, which is strictly stronger evidence. The danger is the
+    /// opposite — a record appended long after the last proven-live heartbeat — and `< E` already
+    /// catches that.
+    ///
+    /// The protection actually wanted was that a regressed baseline must not widen this window.
+    /// Bounding the heartbeat update achieves that completely: once the baseline cannot regress
+    /// below its skew-adjusted floor, this check needs no lower bound of its own. Adding one here
+    /// double-applies the bound and buys nothing except spurious terminal capture failures at the
+    /// default `H = 10 s`, `S = 5 s`, where a perfectly valid mutation is rejected whenever a later
+    /// heartbeat is accepted before its validation runs.
     ///
     /// # Errors
     ///
-    /// * [`RoutingError::BrokerTime`] for a non-positive observation, for an observation at or
-    ///   beyond `E` past the baseline, and for one more than `S` before it.
+    /// * [`RoutingError::BrokerTime`] for a non-positive observation and for an observation at or
+    ///   beyond `E` past the baseline.
     /// * [`RoutingError::Corrupted`] when the writer partition has no baseline at all: forwarding a
     ///   mutation with no broker-time proof is exactly what this gate exists to prevent.
     pub fn validate_critical_mutation_traffic_acknowledgement(
@@ -949,10 +988,8 @@ impl RoutingState {
         route: &ConnectionRoute,
         observation_log_append_time: i64,
         expiration: Duration,
-        clock_skew_allowance: Duration,
     ) -> Result<(), RoutingError> {
         let expiration_millis = duration_millis(expiration, "E")?;
-        let skew_millis = duration_millis(clock_skew_allowance, "S")?;
         if observation_log_append_time <= 0 {
             return Err(RoutingError::BrokerTime(format!(
                 "Kafka did not assign a positive LogAppendTime to Critical Mutation Traffic for \
@@ -984,16 +1021,12 @@ impl RoutingState {
                  observation={observation_log_append_time}, expirationMillis={expiration_millis}"
             )));
         }
-        // DEVIATION: owner decision OD-6 applies the same lower bound here. Java has none
-        // (`CaptureRoutingState.java:486-518`), so an observation arbitrarily far before the
-        // baseline passes.
-        if elapsed < -skew_millis {
-            return Err(RoutingError::BrokerTime(format!(
-                "Critical Mutation Traffic acknowledgement preceded the heartbeat baseline by more \
-                 than the configured clock-skew allowance for {route}: heartbeat={baseline}, \
-                 observation={observation_log_append_time}, skewAllowanceMillis={skew_millis}"
-            )));
-        }
+        // There is deliberately NO lower bound here, and adding one is a regression. An
+        // observation that precedes the baseline means the heartbeat proving capture was live is
+        // *newer* than the record being forwarded, which is stronger evidence, not weaker. The
+        // baseline is already prevented from regressing by the bound on the heartbeat update, so a
+        // bound here would only reject valid mutations. See the method documentation, and
+        // `a_pre_forward_observation_long_before_the_baseline_is_accepted`.
         Ok(())
     }
 
@@ -1480,41 +1513,104 @@ mod tests {
             .expect("a generation is active");
 
         routing
-            .validate_critical_mutation_traffic_acknowledgement(&route, 30_999, E, S)
+            .validate_critical_mutation_traffic_acknowledgement(&route, 30_999, E)
             .expect("29_999 < E");
         routing
-            .validate_critical_mutation_traffic_acknowledgement(&route, 900, E, S)
+            .validate_critical_mutation_traffic_acknowledgement(&route, 900, E)
             .expect("100 ms before the baseline is inside S");
 
         assert!(
             routing
-                .validate_critical_mutation_traffic_acknowledgement(&route, 31_000, E, S)
+                .validate_critical_mutation_traffic_acknowledgement(&route, 31_000, E)
                 .is_err(),
             "exactly E past the baseline is a rejection"
         );
         assert!(
             routing
-                .validate_critical_mutation_traffic_acknowledgement(&route, 0, E, S)
+                .validate_critical_mutation_traffic_acknowledgement(&route, 0, E)
                 .is_err(),
             "a non-positive observation proves nothing"
         );
     }
 
     #[test]
-    fn critical_mutation_validation_applies_the_od6_lower_bound() {
-        // Owner decision OD-6 extends the lower bound to the pre-forward check. Java accepts an
-        // observation arbitrarily far before the baseline.
+    fn a_pre_forward_observation_long_before_the_baseline_is_accepted() {
+        // Owner decision OD-6 as amended, and the regression that was nearly shipped: the
+        // pre-forward check has NO lower bound.
+        //
+        // This is not a tolerance, it is the safe direction. An observation before the baseline
+        // means the heartbeat proving capture was live is *newer* than the record being forwarded.
+        // It happens with zero clock skew whenever a later heartbeat is accepted between a traffic
+        // record's acknowledgement and the moment its validation runs — a gap of up to roughly `H`
+        // plus handler delay. With the defaults H = 10 s and S = 5 s, a lower bound of `-S` would
+        // reject valid mutations routinely, each one a terminal capture failure and, under
+        // fail-closed, a process exit.
         let mut routing = state();
         activate(&mut routing, &[0, 1, 2, 3], 100_000);
         let route = routing.route_new_connection("conn-1").expect("active");
 
+        // S is 5 s here. Every one of these precedes the baseline by far more than that.
+        for observation in [95_000_i64, 94_999, 90_000, 1_000, 1] {
+            routing
+                .validate_critical_mutation_traffic_acknowledgement(&route, observation, E)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "observation {observation} precedes the baseline, which is stronger \
+                         evidence, not weaker, but it was rejected: {error}"
+                    )
+                });
+        }
+
+        // The upper bound is the one that protects anything, and it still does.
+        assert!(
+            routing
+                .validate_critical_mutation_traffic_acknowledgement(&route, 130_000, E)
+                .is_err(),
+            "a record appended E or more after the last proven-live heartbeat is still refused"
+        );
+        // And a non-positive observation is still not a proof of anything.
+        assert!(
+            routing
+                .validate_critical_mutation_traffic_acknowledgement(&route, 0, E)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn the_heartbeat_lower_bound_alone_prevents_a_regressed_baseline() {
+        // Why the pre-forward check needs no bound of its own: the baseline can never regress
+        // below its skew-adjusted floor, so the window it anchors cannot be widened.
+        let mut routing = state();
+        let pending = activate(&mut routing, &[0], 100_000);
+        let writer_partition = &pending.writer_partitions()[0];
+
+        // Repeatedly try to drag the baseline backwards. Each attempt beyond S is refused and
+        // leaves the baseline untouched, so it cannot be walked down.
+        for attempt in [50_000_i64, 1_000, 94_000] {
+            assert!(
+                routing
+                    .accept_heartbeat_log_append_time(writer_partition, attempt, E, S)
+                    .is_err(),
+                "{attempt} is more than S before the baseline"
+            );
+            assert_eq!(
+                routing
+                    .last_accepted_heartbeat_log_append_time(writer_partition)
+                    .expect("registered"),
+                Some(100_000),
+                "a refused heartbeat never moves the baseline"
+            );
+        }
+        // Within S it moves, and only within S.
         routing
-            .validate_critical_mutation_traffic_acknowledgement(&route, 95_000, E, S)
-            .expect("exactly -S is accepted");
-        let error = routing
-            .validate_critical_mutation_traffic_acknowledgement(&route, 94_999, E, S)
-            .expect_err("more than S before the baseline is rejected");
-        assert!(matches!(error, RoutingError::BrokerTime(_)));
+            .accept_heartbeat_log_append_time(writer_partition, 95_000, E, S)
+            .expect("exactly -S is inside the allowance");
+        assert_eq!(
+            routing
+                .last_accepted_heartbeat_log_append_time(writer_partition)
+                .expect("registered"),
+            Some(95_000)
+        );
     }
 
     #[test]
@@ -1536,7 +1632,7 @@ mod tests {
             token: route.token(),
         };
         let error = routing
-            .validate_critical_mutation_traffic_acknowledgement(&orphan_route, 1_500, E, S)
+            .validate_critical_mutation_traffic_acknowledgement(&orphan_route, 1_500, E)
             .expect_err("no baseline");
         assert!(error.is_corruption());
     }

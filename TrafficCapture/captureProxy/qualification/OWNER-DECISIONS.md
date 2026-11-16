@@ -128,9 +128,17 @@ safer than capturing. The proxy does **not** attempt to change the topic configu
 rejects only `elapsed >= expirationMillis`, with no lower bound, then overwrites
 `lastAcceptedHeartbeatLogAppendTime` unconditionally. `CaptureRoutingStateTest.java:73` deliberately
 asserts this. `validateCriticalMutationTrafficAcknowledgement`
-(`CaptureRoutingState.java:486-518`) has the same one-sided bound. A regressed baseline makes
-`observation - baseline < E` easier to satisfy, widening the window in which a stale observation can
-release a source write. `proxyCaptureProtocol.md` §5.4's literal wording also permits it, while
+(`CaptureRoutingState.java:486-518`) has the same one-sided bound.
+
+*Corrected harm model (the original text here claimed a regressed baseline widens the pre-forward
+window; that was arithmetically backwards — a smaller baseline makes `observation - baseline`
+larger, so the pre-forward check becomes **stricter**, not looser).* The real harm of unbounded
+backward movement is on the heartbeat side: the baseline stops reliably tracking broker time, so the
+continuity chain — each accepted heartbeat within `E` of the previous — can be satisfied by a clock
+that jumps around, and "capture is live" is then no longer actually proven by it. The spec's own D-4
+rationale carries the same backwards claim.
+
+`proxyCaptureProtocol.md` §5.4's literal wording also permits the regression, while
 `captureAndReplayArchitecture.md` §§8-8.1 bound backward broker-time movement by `S` and the replayer
 treats a backward move greater than `S` as immediately fatal.
 

@@ -11,12 +11,18 @@ description = "Kafka capability probing, group membership, routing generations, 
 workspace = true
 
 [dependencies]
+# MSK IAM credential sourcing only. `aws-config`'s default provider chain is what makes IRSA and
+# IMDSv2 work with no proxy code change; it is resolved on a dedicated OS thread so librdkafka's
+# token-refresh callback never drives an async runtime (see `msk_iam`).
+aws-config.workspace = true
+aws-credential-types.workspace = true
 base64.workspace = true
 capture-config.workspace = true
 capture-wire.workspace = true
 prost.workspace = true
 rdkafka.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, features = ["rt"] }
 tracing.workspace = true
 uuid.workspace = true
 

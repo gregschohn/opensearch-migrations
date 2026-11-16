@@ -49,8 +49,14 @@
 //!   through librdkafka, which substitutes the client wall clock for a zero timestamp, so
 //!   "positive" would falsely pass on a `CreateTime` topic. See [`capability_probe`].
 //! * **OD-5** — a non-`LogAppendTime` traffic topic refuses startup, before the listener opens.
-//! * **OD-6** — backward broker-time movement beyond the clock-skew allowance `S` is rejected. See
-//!   [`routing_state::RoutingState::accept_heartbeat_log_append_time`].
+//! * **OD-6 (as amended)** — backward broker-time movement beyond the clock-skew allowance `S` is
+//!   rejected **on the heartbeat update**, and only there: see
+//!   [`routing_state::RoutingState::accept_heartbeat_log_append_time`]. The pre-forward
+//!   critical-mutation check keeps `elapsed < E` with no lower bound, matching Java, because an
+//!   observation preceding the baseline means capture authority is *fresher* than the record being
+//!   forwarded. Bounding the heartbeat update already prevents a regressed baseline, so a second
+//!   bound would only reject valid mutations. See
+//!   [`routing_state::RoutingState::validate_critical_mutation_traffic_acknowledgement`].
 //! * **OD-7** — the proxy **never** changes the partition count and performs **no** admin
 //!   operation. Layout is validated, never mutated. See [`topic_metadata`].
 //!

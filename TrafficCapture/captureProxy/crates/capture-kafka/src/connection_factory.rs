@@ -353,8 +353,10 @@ impl ConnectionCapture {
     ///    D-3);
     /// 2. the acknowledgement names the partition this connection is bound to, which is the only
     ///    place a returned partition is compared against the intended one;
-    /// 3. the broker `LogAppendTime` is positive and within `[-S, E)` of the writer partition's
-    ///    heartbeat baseline, with broker time on both sides and no local clock involved.
+    /// 3. the broker `LogAppendTime` is positive and less than `E` past the writer partition's
+    ///    heartbeat baseline, with broker time on both sides and no local clock involved. There is
+    ///    deliberately no lower bound: an observation *preceding* the baseline means the liveness
+    ///    proof is newer than the record being forwarded (owner decision OD-6 as amended).
     ///
     /// # Errors
     ///
@@ -388,7 +390,6 @@ impl ConnectionCapture {
                 &self.route,
                 acknowledgement.log_append_time,
                 self.timing.heartbeat_expiration(),
-                self.timing.clock_skew_allowance(),
             )
             .map_err(RoutingError::into_capture_failure)
     }
@@ -733,9 +734,10 @@ mod tests {
             (31_000, false),
             (0, false),
             (-1, false),
-            // Owner decision OD-6 bounds how far before the baseline an observation may be.
+            // No lower bound (owner decision OD-6 as amended): an observation before the baseline
+            // means the liveness proof is newer than the record, which is stronger evidence.
             (996, true),
-            (4_000 - 5_000, false),
+            (1, true),
         ] {
             let result = capture.validate_critical_mutation(AcknowledgedRecord {
                 partition,
