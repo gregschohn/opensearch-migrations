@@ -30,6 +30,11 @@ capture-wire = { path = "crates/capture-wire" }
 
 # External
 anyhow = "1.0"
+# AWS credential sourcing for the MSK IAM (SASL/OAUTHBEARER + SigV4) path. aws-config's default
+# provider chain is what makes IRSA and IMDSv2 work without proxy code changes.
+aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "rt-tokio"] }
+aws-credential-types = "1"
+aws-sigv4 = "1"
 async-trait = "0.1"
 base64 = "0.22"
 bytes = "1.10"
@@ -62,6 +67,7 @@ tokio-rustls = "0.26"
 tracing = "0.1"
 tracing-opentelemetry = "0.32"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+url = "2.5"
 uuid = { version = "1.18", features = ["v4"] }
 
 [workspace.lints.rust]

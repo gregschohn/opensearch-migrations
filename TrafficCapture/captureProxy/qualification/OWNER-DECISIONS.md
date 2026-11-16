@@ -144,6 +144,36 @@ the bound the replayer already enforces fatally.
 
 ---
 
+### OD-6 amendment — the lower bound applies to the heartbeat update ONLY
+
+The original ruling said to apply the same `-S` lower bound to the pre-forward critical-mutation
+check. **That was wrong and is withdrawn.** The two checks compare different quantities:
+
+* The **heartbeat** check compares two heartbeat timestamps on the same partition, published `H`
+  apart. A negative result there means broker time moved backward, which is exactly what `S`
+  bounds. The lower bound belongs here.
+* The **pre-forward** check compares a *traffic* record's `LogAppendTime` against the last accepted
+  *heartbeat* on that partition. These are different records, and the baseline can legitimately
+  advance between the traffic record's acknowledgement and the moment its validation runs. So
+  `observation - baseline` can be legitimately negative by roughly `H` plus handler delay with no
+  clock skew whatsoever. With the defaults `H = 10 s` and `S = 5 s`, a perfectly valid critical
+  mutation would be rejected as a `BrokerTime` capture failure and, under fail-closed, exit 78.
+
+Crucially, a negative pre-forward result is the **safe** direction: it means capture authority is
+*fresher* than the record being forwarded. The danger the check guards against is the opposite —
+an observation appended long after the last proven-live heartbeat, which is what `< E` catches.
+
+The protection OD-6 was actually after is that a *regressed baseline* must not widen the pre-forward
+window. Bounding the heartbeat update achieves that completely: once the baseline cannot regress
+below its skew-adjusted floor, the pre-forward check needs no lower bound of its own.
+
+**Final rule:**
+
+* heartbeat acknowledgement accepted when `-S <= elapsed < E`;
+* pre-forward check accepted when `elapsed < E`, with **no** lower bound, matching Java.
+
+---
+
 ## OD-7 — The proxy never changes the partition count
 
 **Evidence.** `TrafficTopicMetadata.java` implements "increase but never reduce" partition growth,
