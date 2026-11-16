@@ -147,6 +147,66 @@ where
 }
 
 /// Byte counters, threaded through the handlers.
+/// The HTTP/2 client connection preface (RFC 9113 §3.4).
+const HTTP2_PREFACE: &[u8; 24] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+
+/// Which protocol the client is speaking, decided from its first bytes (owner decision OD-11).
+#[derive(Debug)]
+enum ClientProtocol {
+    /// Fewer than 24 bytes so far, all of them a prefix of the HTTP/2 preface. Held, unforwarded.
+    Undecided(BytesMut),
+    /// Ordinary HTTP/1 capture.
+    Http1,
+    /// The exact HTTP/2 preface arrived first: an opaque, uncaptured, byte-exact tunnel for the
+    /// rest of the connection, which is Java's observable behaviour for HTTP/2.
+    Http2Tunnel,
+}
+
+/// What to do with one client read, given the protocol decision so far.
+enum ClientBytes {
+    /// Still deciding; nothing to forward yet.
+    Hold,
+    /// HTTP/1 bytes for the scanner, including any bytes held while deciding.
+    Http1(Bytes),
+    /// Tunnel bytes, forwarded as they are.
+    Tunnel(Bytes),
+}
+
+impl ClientProtocol {
+    fn new() -> Self {
+        Self::Undecided(BytesMut::new())
+    }
+
+    fn is_tunnel(&self) -> bool {
+        matches!(self, Self::Http2Tunnel)
+    }
+
+    /// Classifies one read. Only the exact preface at connection start qualifies, so malformed
+    /// HTTP/1 still fails closed under OD-1: the first byte that diverges from the preface hands
+    /// everything read so far to the HTTP/1 scanner, unchanged and in order.
+    fn classify(&mut self, chunk: Bytes) -> ClientBytes {
+        match self {
+            Self::Http1 => ClientBytes::Http1(chunk),
+            Self::Http2Tunnel => ClientBytes::Tunnel(chunk),
+            Self::Undecided(held) => {
+                held.extend_from_slice(&chunk);
+                let compared = held.len().min(HTTP2_PREFACE.len());
+                if held[..compared] != HTTP2_PREFACE[..compared] {
+                    let bytes = std::mem::take(held).freeze();
+                    *self = Self::Http1;
+                    ClientBytes::Http1(bytes)
+                } else if held.len() >= HTTP2_PREFACE.len() {
+                    let bytes = std::mem::take(held).freeze();
+                    *self = Self::Http2Tunnel;
+                    ClientBytes::Tunnel(bytes)
+                } else {
+                    ClientBytes::Hold
+                }
+            }
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct Counters {
     client_bytes_read: u64,
@@ -238,6 +298,7 @@ where
         let mut client_buf = BytesMut::with_capacity(config.read_buffer_bytes);
         let mut source_buf = vec![0u8; config.read_buffer_bytes];
         let mut counters = Counters::default();
+        let mut protocol = ClientProtocol::new();
 
         // Armed at connection start, i.e. before the TLS handshake and before any byte, matching
         // Java's scheduling in `handlerAdded` (`LHH:287-303`). Source activity never extends it.
@@ -295,20 +356,28 @@ where
                         Ok(read) => {
                             counters.client_bytes_read += read as u64;
                             let chunk = client_buf.split().freeze();
-                            handle_client_chunk(
-                                &chunk,
-                                ClientPath {
-                                    sink: &mut sink,
-                                    request: &mut request,
-                                    response: &mut response,
-                                    completion: &mut completion,
-                                    counters: &mut counters,
-                                },
-                                &mut source_writer,
-                                &config,
-                            )
-                            .await
-                            .err()
+                            match protocol.classify(chunk) {
+                                ClientBytes::Hold => None,
+                                ClientBytes::Http1(chunk) => handle_client_chunk(
+                                    &chunk,
+                                    ClientPath {
+                                        sink: &mut sink,
+                                        request: &mut request,
+                                        response: &mut response,
+                                        completion: &mut completion,
+                                        counters: &mut counters,
+                                    },
+                                    &mut source_writer,
+                                    &config,
+                                )
+                                .await
+                                .err(),
+                                ClientBytes::Tunnel(chunk) => {
+                                    tunnel_to_source(&chunk, &mut sink, &mut source_writer, &mut counters)
+                                        .await
+                                        .err()
+                                }
+                            }
                         }
                     };
                     // Assembly-deadline lifecycle, exactly the six steps of spec §4.4.
@@ -333,6 +402,12 @@ where
                         // (`BH:50-56`, spec §12.3).
                         Err(_) => Some(Termination::reason(CloseReason::SourceIoError)),
                         Ok(0) => Some(Termination::reason(CloseReason::Normal)),
+                        Ok(read) if protocol.is_tunnel() => {
+                            counters.source_bytes_read += read as u64;
+                            tunnel_to_client(&source_buf[..read], &mut sink, &mut client_writer, &mut counters)
+                                .await
+                                .err()
+                        }
                         Ok(read) => {
                             counters.source_bytes_read += read as u64;
                             handle_source_chunk(
@@ -416,6 +491,47 @@ where
             capture_abort: abort,
         }
     }
+}
+
+/// Forwards tunnel bytes from the client to the source, uncaptured (OD-11).
+///
+/// Telemetry still counts the bytes, as Java does for all traffic; no capture call is made, no
+/// framing is applied, and the capture-before-forward gate does not apply.
+async fn tunnel_to_source<K, W>(
+    chunk: &[u8],
+    sink: &mut K,
+    source_writer: &mut W,
+    counters: &mut Counters,
+) -> Result<(), Termination>
+where
+    K: CaptureSink,
+    W: AsyncWrite + Unpin,
+{
+    sink.observe_client_bytes(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
+    if source_writer.write_all(chunk).await.is_err() || source_writer.flush().await.is_err() {
+        return Err(Termination::reason(CloseReason::SourceIoError));
+    }
+    counters.source_bytes_written += chunk.len() as u64;
+    Ok(())
+}
+
+/// Forwards tunnel bytes from the source to the client, uncaptured (OD-11).
+async fn tunnel_to_client<K, W>(
+    chunk: &[u8],
+    sink: &mut K,
+    client_writer: &mut W,
+    counters: &mut Counters,
+) -> Result<(), Termination>
+where
+    K: CaptureSink,
+    W: AsyncWrite + Unpin,
+{
+    sink.observe_source_bytes(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
+    if client_writer.write_all(chunk).await.is_err() || client_writer.flush().await.is_err() {
+        return Err(Termination::reason(CloseReason::ClientWriteFailure));
+    }
+    counters.client_bytes_written += chunk.len() as u64;
+    Ok(())
 }
 
 /// Sleeps until the record-flush deadline, or forever when no record is open.
@@ -2129,5 +2245,136 @@ pub(crate) mod tests {
             .expect("no panic");
         assert!(outcome.capture_abort.is_none());
         drop(source_side);
+    }
+    #[test]
+    fn the_exact_http2_preface_switches_to_a_tunnel_even_when_fragmented() {
+        // OD-11. The preface may arrive split across reads; bytes are held, never forwarded, until
+        // the decision is made, and then released in order.
+        for split in 1..HTTP2_PREFACE.len() {
+            let mut protocol = ClientProtocol::new();
+            let (first, second) = HTTP2_PREFACE.split_at(split);
+            assert!(matches!(
+                protocol.classify(Bytes::copy_from_slice(first)),
+                ClientBytes::Hold
+            ));
+            let mut rest = second.to_vec();
+            rest.extend_from_slice(b"\x00\x00\x00\x04");
+            match protocol.classify(Bytes::from(rest)) {
+                ClientBytes::Tunnel(bytes) => {
+                    let mut expected = HTTP2_PREFACE.to_vec();
+                    expected.extend_from_slice(b"\x00\x00\x00\x04");
+                    assert_eq!(&bytes[..], &expected[..], "split at {split}");
+                }
+                _ => panic!("split at {split} must tunnel"),
+            }
+            assert!(protocol.is_tunnel());
+        }
+    }
+
+    #[test]
+    fn any_divergence_from_the_preface_hands_every_held_byte_to_http1() {
+        // Malformed HTTP/1 must still fail closed under OD-1, so only the exact preface tunnels.
+        for input in [
+            &b"POST / HTTP/1.1\r\n"[..],
+            &b"PRI * HTTP/2.0\r\n\r\nXX\r\n\r\n"[..],
+            &b"PRI / HTTP/1.1\r\n"[..],
+            &b"GET / HTTP/1.1\r\n\r\n"[..],
+        ] {
+            let mut protocol = ClientProtocol::new();
+            let mut forwarded = Vec::new();
+            for byte in input {
+                if let ClientBytes::Http1(bytes) =
+                    protocol.classify(Bytes::copy_from_slice(&[*byte]))
+                {
+                    forwarded.extend_from_slice(&bytes);
+                }
+            }
+            assert_eq!(
+                forwarded, input,
+                "nothing may be lost or reordered while deciding"
+            );
+            assert!(!protocol.is_tunnel());
+        }
+    }
+
+    #[tokio::test]
+    async fn an_http2_prior_knowledge_connection_is_tunnelled_uncaptured_and_byte_exact() {
+        const SETTINGS: &[u8] = b"\x00\x00\x00\x04\x00\x00\x00\x00\x00";
+        let (client_side, client_proxy) = tokio::io::duplex(64 * 1024);
+        let (source_proxy, source_side) = tokio::io::duplex(64 * 1024);
+        let sink = Arc::new(Mutex::new(Some(RecordingSink::new())));
+        let connection = Connection::new(
+            client_proxy,
+            source_proxy,
+            SinkHandle(Arc::clone(&sink)),
+            SuppressionPolicy::permit_everything(),
+            config(),
+        );
+        let proxy = tokio::spawn(connection.run(None));
+
+        let mut sent = HTTP2_PREFACE.to_vec();
+        sent.extend_from_slice(SETTINGS);
+        let expected_at_source = sent.clone();
+        let source = tokio::spawn(async move {
+            let (mut reader, mut writer) = tokio::io::split(source_side);
+            let mut received = vec![0u8; expected_at_source.len()];
+            reader
+                .read_exact(&mut received)
+                .await
+                .expect("the preface and frame arrive");
+            writer.write_all(SETTINGS).await.expect("server settings");
+            writer.flush().await.expect("flush");
+            let _ = writer.shutdown().await;
+            received
+        });
+        let client = tokio::spawn(async move {
+            let (mut reader, mut writer) = tokio::io::split(client_side);
+            // Split mid-preface to exercise the hold path end to end.
+            writer.write_all(&sent[..7]).await.expect("write");
+            writer.flush().await.expect("flush");
+            tokio::task::yield_now().await;
+            writer.write_all(&sent[7..]).await.expect("write");
+            writer.flush().await.expect("flush");
+            let mut back = vec![0u8; SETTINGS.len()];
+            reader
+                .read_exact(&mut back)
+                .await
+                .expect("server settings reach the client");
+            back
+        });
+
+        let source_received = source.await.expect("source task");
+        let client_received = client.await.expect("client task");
+        let outcome = proxy.await.expect("no panic");
+        let sink = sink
+            .lock()
+            .expect("not poisoned")
+            .take()
+            .expect("the sink is returned");
+
+        let mut expected = HTTP2_PREFACE.to_vec();
+        expected.extend_from_slice(SETTINGS);
+        assert_eq!(
+            source_received, expected,
+            "client bytes reach the source byte-exact"
+        );
+        assert_eq!(
+            client_received, SETTINGS,
+            "source bytes reach the client byte-exact"
+        );
+        let events = sink.events();
+        assert!(
+            !events.iter().any(|event| matches!(
+                event.as_str(),
+                "read" | "write" | "eom" | "gate" | "forwarded" | "dropped" | "interim"
+            )),
+            "an HTTP/2 tunnel must capture nothing: {events:?}"
+        );
+        assert_eq!(
+            events.iter().filter(|event| *event == "close").count(),
+            1,
+            "the terminal CloseObservation is still emitted, as Java's is"
+        );
+        assert_eq!(outcome.requests_forwarded, 0);
     }
 }

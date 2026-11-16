@@ -491,6 +491,11 @@ async fn serve_connection<P>(
     // deadline at pipeline install.
     let accepted_at = Instant::now();
     telemetry.connections().connection_opened();
+    // WIRE-10: activeConnection (queried by the k6 Grafana dashboard as activeConnection_count),
+    // captureConnectionCount/Duration/ExceptionCount. Opened at accept, closed on drop at the end of
+    // this function, so every path -- refusal, handshake failure, normal close -- is counted.
+    let connection_span =
+        telemetry.open_connection_span(connection_id.clone(), telemetry.identity().process_id());
 
     match mode {
         CaptureTarget::Disabled => {
@@ -503,6 +508,7 @@ async fn serve_connection<P>(
                 &telemetry,
                 connection_config,
                 predicate.as_ref(),
+                &connection_span,
             )
             .await;
         }
@@ -519,6 +525,7 @@ async fn serve_connection<P>(
                 &telemetry,
                 connection_config,
                 predicate.as_ref(),
+                &connection_span,
             )
             .await;
         }
@@ -534,6 +541,7 @@ async fn serve_connection<P>(
                         &telemetry,
                         connection_config,
                         predicate.as_ref(),
+                        &connection_span,
                     )
                     .await;
                 }
@@ -555,6 +563,7 @@ async fn serve_connection<P>(
                         &telemetry,
                         connection_config,
                         predicate.as_ref(),
+                        &connection_span,
                     )
                     .await;
                 }
@@ -589,6 +598,7 @@ async fn serve_with_sink<K, P>(
     telemetry: &RootTelemetry,
     connection_config: ConnectionConfig,
     predicate: P,
+    connection_span: &capture_observability::connection_span::ConnectionSpan,
 ) where
     K: CaptureSink,
     P: capture_http_scan::CapturePredicate,
@@ -655,6 +665,11 @@ async fn serve_with_sink<K, P>(
         requests_forwarded = outcome.requests_forwarded,
         "connection finished"
     );
+    connection_span.add_bytes_read(outcome.client_bytes_read);
+    connection_span.add_bytes_written(outcome.client_bytes_written);
+    if outcome.close_reason.emits_connection_exception() {
+        connection_span.record_exception();
+    }
     finish_connection(telemetry, connection_id, outcome.close_reason);
     drop(guard);
 }

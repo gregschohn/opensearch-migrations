@@ -277,6 +277,26 @@ alarm on it.
 
 ---
 
+## OD-11 — HTTP/2 prior-knowledge connections are passed through uncaptured
+
+**Evidence.** See open item D7 (now resolved). Rust closed an `h2c` prior-knowledge connection as
+`malformed_framing` and the origin received 0 bytes; Java forwards it uncaptured, through the
+`BAD_MESSAGE` tunnel that OD-1 removed for HTTP/1.
+
+**Ruling.** Pass HTTP/2 through rather than surprise a user in production.
+
+**Implementation.** A connection whose first bytes are exactly the 24-byte HTTP/2 client connection
+preface (`PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n`, RFC 9113 §3.4) is switched, before any capture
+observation, into an opaque tunnel for its whole life: bytes are forwarded byte-exact in both
+directions, nothing is scanned, rewritten, or captured, and the capture-before-forward gate does
+not apply. This is the narrow, explicit form of Java's observable behaviour: only the exact preface
+at connection start qualifies, so malformed HTTP/1 still fails closed under OD-1. The connection
+still emits its terminal `CloseObservation`, as Java's does, and HTTP/2 requests are not replayed —
+the same accepted gap as Java's hardcoded `HTTP/2.*` suppression. HTTP/1.1 `Upgrade` → `101` was
+already tunnelled and is unchanged.
+
+---
+
 ## Open items still awaiting a ruling
 
 | # | Item |
@@ -286,4 +306,4 @@ alarm on it.
 | D4 | Confirm publisher sharding stays deferred until the single-owner implementation is measured. |
 | D5 | `proxyCaptureProtocol.md` §7.3 specifies a controller-managed `COMPROMISED_AWAITING_CONTROLLER_ACK` state that blocks uncaptured forwarding until a controller durably acknowledges. Whether Java implements it, and whether Rust must, is unresolved. |
 | D6 | Production Kubernetes sets no `terminationGracePeriodSeconds` (`setupCapture.ts:829-852`), so the default 30 s `SIGKILL` pre-empts the entire tested 60/240/270/300 s shutdown sequence. Does the orchestration get fixed, or does the Rust shutdown budget shrink to fit 30 s? |
-| D7 | **HTTP/2 prior knowledge (`h2c`).** The plan lists "HTTP/2 traffic is forwarded but suppressed from capture" as current behaviour. Java achieves it only by accident: Netty parses `PRI * HTTP/2.0`, the hardcoded `HTTP/2.*` pattern suppresses its capture, and the following `SM` line drives the decoder into `BAD_MESSAGE`, which then tunnels every later byte raw and uncaptured — the same path OD-1 removed. Measured on Rust (`/tmp/rust-proxy-qual/h2c_probe.py`): the connection is closed as `malformed_framing` and the origin receives 0 bytes. Options: (a) recognise the exact 24-byte preface at connection start and tunnel that connection uncaptured, restoring Java's observable behaviour and adding no capture; (b) keep refusing, since uncaptured HTTP/2 mutations would bypass capture-before-forward. HTTP/1.1 `Upgrade` → `101` (WebSocket, `h2c` upgrade) is unaffected: Rust tunnels it byte-exact after the `101`, as Java does. |
+| ~~D7~~ | **RESOLVED by OD-11.** HTTP/2 prior knowledge (`h2c`). The plan lists "HTTP/2 traffic is forwarded but suppressed from capture" as current behaviour. Java achieves it only by accident: Netty parses `PRI * HTTP/2.0`, the hardcoded `HTTP/2.*` pattern suppresses its capture, and the following `SM` line drives the decoder into `BAD_MESSAGE`, which then tunnels every later byte raw and uncaptured — the same path OD-1 removed. Measured on Rust (`/tmp/rust-proxy-qual/h2c_probe.py`): the connection is closed as `malformed_framing` and the origin receives 0 bytes. Options: (a) recognise the exact 24-byte preface at connection start and tunnel that connection uncaptured, restoring Java's observable behaviour and adding no capture; (b) keep refusing, since uncaptured HTTP/2 mutations would bypass capture-before-forward. HTTP/1.1 `Upgrade` → `101` (WebSocket, `h2c` upgrade) is unaffected: Rust tunnels it byte-exact after the `101`, as Java does. |

@@ -610,6 +610,10 @@ const JAVA_ONLY_IGNORED: &[&str] = &[
 
 /// Properties either client may tune.
 const COMMON_ALLOWED: &[&str] = &[
+    // librdkafka's own diagnostic contexts (e.g. `broker,protocol,msg`). Routed through the
+    // tracing facade like every other native diagnostic (PROXY-16); needed to see request-level
+    // produce pipelining, which is not otherwise observable.
+    "debug",
     "api.version.request",
     "api.version.request.timeout.ms",
     "api.version.fallback.ms",

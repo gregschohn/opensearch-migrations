@@ -461,7 +461,6 @@ struct InFlightRecord {
     writer_partition: WriterPartition,
     bytes: u64,
     accepted_at: Instant,
-    submitted_at: Instant,
     /// For traffic: who to tell and under which ticket.
     traffic: Option<(ConnectionRoute, u64, OutcomeSender, bool)>,
 }
@@ -1213,7 +1212,6 @@ impl PublisherActor {
                 writer_partition,
                 bytes,
                 accepted_at,
-                submitted_at,
                 traffic,
             },
         );
@@ -1269,9 +1267,11 @@ impl PublisherActor {
             // it. There is nothing left to do.
             return;
         };
-        self.config
-            .metrics
-            .submit_to_delivery(record.kind, record.submitted_at.elapsed());
+        // Submit-to-delivery latency is sampled once, on the delivery-callback thread where the
+        // report physically arrived (`CaptureProducerContext::delivery`). Sampling it here as well
+        // double-counted kafkaCommitCount and mixed a later, actor-side sample (three thread hops
+        // after the callback) into the kafkaCommitDuration histogram that Phase 1 Gate 5 compares
+        // against Java's send-to-callback span.
 
         if let Some(Err(corruption)) = self
             .lanes
