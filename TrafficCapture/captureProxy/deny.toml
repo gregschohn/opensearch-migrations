@@ -1,0 +1,55 @@
+# cargo-deny configuration for the capture-proxy Cargo workspace: licence checking.
+#
+# Run from TrafficCapture/captureProxy, after third_party/rdkafka-sys/prepare.sh (it recreates the
+# patched rdkafka-sys path crate that [patch.crates-io] names; without it `cargo metadata` fails
+# before any check runs):
+#
+#   cargo deny --locked check licenses
+#
+# Only the [licenses] check is configured and gated here. A Rust binary is statically linked, so
+# the image SBOM (release-drafter.yml, anchore) does not see the crates compiled into it; this check
+# is what does. CI should run the command above in the Rust job (phase5-plan.md, section 5).
+#
+# The allow list is the set of licences the current dependency graph actually needs on the targets
+# below, each compatible with distributing an Apache-2.0 binary. A crate that needs a licence not
+# listed fails the check: add the licence only after deciding it is acceptable, never to make the
+# check pass. A crate offering a choice (`MIT OR Apache-2.0`) passes if any one choice is allowed.
+#
+# Not covered: C code. rdkafka-sys compiles librdkafka (BSD-2-Clause) and the code it bundles,
+# zstd-sys compiles zstd, and the build links the distribution's OpenSSL, Cyrus SASL and zlib.
+# cargo-deny reads crate metadata only, so it checks those crates' declared licences (rdkafka-sys
+# says `MIT`), not the C code's. Their notices belong in the image's third-party notices.
+
+[graph]
+# The image targets (TrafficCapture/captureProxy/Dockerfile builds linux/amd64 and linux/arm64) and
+# the developer platforms. Windows-only and WASI-only crates in Cargo.lock are out of scope.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+]
+all-features = false
+no-default-features = false
+
+[licenses]
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "ISC",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Unicode-3.0",
+    "Zlib",
+]
+# The SPDX expression in Cargo.toml is authoritative; a licence *file* is only used when no
+# expression is declared, and must then be matched with high confidence.
+confidence-threshold = 0.93
+# Fail, not warn, when the allow list names a licence nothing needs any more, so the list stays
+# the verified minimum.
+unused-allowed-license = "deny"
+exceptions = []
+
+[licenses.private]
+# The workspace's own crates (license = "Apache-2.0", not published) are checked like any other.
+ignore = false
