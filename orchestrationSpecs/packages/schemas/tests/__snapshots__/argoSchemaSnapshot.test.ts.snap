@@ -911,7 +911,7 @@ exports[`test schemas matches expected argo schema matches expected 1`] = `
                       "items": {
                         "type": "string"
                       },
-                      "description": "List of static headers to add to proxied requests, each in 'Header-Name: value' format.",
+                      "description": "Static headers to add to proxied requests, as a flat list of alternating header names and values, e.g. ['X-Env', 'prod', 'X-Tier', 'gold'].",
                       "checksumFor": [
                         "snapshot",
                         "replayer"
@@ -6022,7 +6022,7 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                     "items": {
                       "type": "string"
                     },
-                    "description": "List of static headers to add to proxied requests, each in 'Header-Name: value' format.",
+                    "description": "Static headers to add to proxied requests, as a flat list of alternating header names and values, e.g. ['X-Env', 'prod', 'X-Tier', 'gold'].",
                     "checksumFor": [
                       "snapshot",
                       "replayer"
@@ -6343,7 +6343,7 @@ exports[`test schemas matches expected argo user matches expected 1`] = `
                       "type": "string"
                     },
                     "default": [],
-                    "description": "List of header patterns. Requests matching any of these header patterns will be forwarded but not captured to Kafka.",
+                    "description": "Headers that suppress capture, as a flat list of alternating header names and whole-value regexes, e.g. ['X-Probe', 'true']. Requests with a matching header are forwarded but not captured to Kafka.",
                     "checksumFor": [
                       "snapshot",
                       "replayer"
