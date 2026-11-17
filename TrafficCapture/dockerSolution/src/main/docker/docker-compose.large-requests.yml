@@ -5,7 +5,7 @@ services:
     networks:
       - migrations
     ports:
-      - "9092:9092"
+      - "127.0.0.1:9092:9092"
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: 'CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT'
@@ -35,14 +35,14 @@ services:
     environment:
       - discovery.type=single-node
     ports:
-      - '19200:9200'
+      - '127.0.0.1:19200:9200'
 
   capture-proxy:
     image: 'migrations/capture_proxy:latest'
     networks:
       - migrations
     ports:
-      - "9200:9200"
+      - "127.0.0.1:9200:9200"
     volumes:
       - ./kafka-producer.properties:/tmp/kafka-producer.properties
     command:
@@ -75,7 +75,7 @@ services:
     networks:
       - migrations
     ports:
-      - "29200:9200"
+      - "127.0.0.1:29200:9200"
 
   replayer:
     image: 'migrations/traffic_replayer:latest'

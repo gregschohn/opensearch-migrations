@@ -94,6 +94,10 @@ static TaskProvider<Sync> getMigrationConsoleSyncTask(Project project, String do
 
 dockerCompose {
     useComposeFiles = ['src/main/docker/docker-compose.yml']
+    // The compose files publish ports on 127.0.0.1 only. composeUp waits for each published port
+    // by connecting to it, and on Linux it would otherwise connect to the Docker network gateway
+    // address, where nothing listens; SERVICES_HOST makes it probe the loopback address instead.
+    environment.put('SERVICES_HOST', System.getenv('SERVICES_HOST') ?: '127.0.0.1')
     def kafkaRunId = UUID.randomUUID().toString()
     environment.put(
         'KAFKA_TRAFFIC_TOPIC',
