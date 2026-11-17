@@ -33,12 +33,28 @@ services:
     ports:
       - '127.0.0.1:19200:9200'
 
+  # The Rust proxy image ships no TLS material (the Java image had a shared self-signed key baked
+  # in), so this init container generates a certificate once per stack into a volume the proxy
+  # mounts read-only. See capture-proxy-dev-tls.sh. It borrows the Kafka image only because the
+  # stack already pulls it and it carries openssl; root is needed to hand the key to the proxy's
+  # unprivileged user.
+  capture-proxy-tls:
+    image: mirror.gcr.io/apache/kafka:3.9.1
+    user: '0:0'
+    network_mode: none
+    volumes:
+      - ./capture-proxy-dev-tls.sh:/capture-proxy-dev-tls.sh:ro
+      - captureProxyTls:/tls
+    entrypoint: ["/bin/sh", "/capture-proxy-dev-tls.sh", "/tls"]
+
   capture-proxy:
     image: 'migrations/capture_proxy:latest'
     networks:
       - migrations
     ports:
       - "127.0.0.1:9200:9200"
+    volumes:
+      - captureProxyTls:/usr/share/captureProxy/config:ro
     command:
       - "--kafkaConnection"
       - "kafka:9092"
@@ -58,8 +74,12 @@ services:
       - "--heartbeat-interval-seconds"
       - "2"
     depends_on:
-      - kafka
-      - elasticsearch
+      capture-proxy-tls:
+        condition: service_completed_successfully
+      kafka:
+        condition: service_started
+      elasticsearch:
+        condition: service_started
 
   opensearchtarget:
     image: 'mirror.gcr.io/opensearchproject/opensearch:2.15.0'
@@ -123,6 +143,8 @@ services:
 
 volumes:
   sharedLogsVolume:
+    driver: local
+  captureProxyTls:
     driver: local
 
 networks:

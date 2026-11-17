@@ -39,8 +39,12 @@ done
 
 ## Services
 
+Ports are published on `127.0.0.1` only, so the stack is reachable from this machine and not from
+the network.
+
 | Service | Port | Description |
 |---------|------|-------------|
+| capture-proxy-tls | — | Init container: generates the proxy's self-signed TLS certificate into a volume (`capture-proxy-dev-tls.sh`), then exits |
 | capture-proxy | 9200 | Capture Proxy — send requests here to capture traffic |
 | elasticsearch | 19200 | ES 7.10 source cluster (SearchGuard TLS, admin/admin) |
 | opensearchtarget | 29200 | OpenSearch 2.15 target cluster (admin/myStrongPassword123!) |
