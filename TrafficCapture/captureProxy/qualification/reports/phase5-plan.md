@@ -1,8 +1,9 @@
 # Phase 5 — remaining repository replacement work
 
 Date: 2026-11-17
-Status: **PLAN.** Kubernetes only (OD-14). `deployment/cdk/` is out of scope and is not touched by
-any step below.
+Status: **PLAN, partly done** (§0 lists what is done; §4 and the docker-compose, `/VERSION` and
+licence rows of §5 are done). Kubernetes only (OD-14). `deployment/cdk/` is out of scope and is not
+touched by any step below.
 
 Plan reference: `rust-capture-proxy-rewrite-plan.md` Phase 5. Owner rulings: OD-14 (Kubernetes is
 the only qualified target), OD-15 (330 s grace period).
@@ -15,6 +16,13 @@ the only qualified target), OD-15 (330 s grace period).
 | `264eeb6fb` | `proxyConfig.enableMSKAuth` reaches the proxy as `kafkaAuthType: msk-iam`; the container gets `AWS_REGION` from the `aws-metadata` ConfigMap (optional) | `setupCapture.ts` `makeProxyParamsDict`, container env | Before the fix the orchestration emitted `enableMSKAuth: true` with `kafkaAuthType: none`, which Java and Rust both reject; with the fix reverted the contract test fails (`--enable-msk-auth is only compatible with --kafka-auth-type=msk-iam, not none`). The Rust proxy signs MSK IAM tokens for `AWS_REGION`/`AWS_DEFAULT_REGION` and refuses to start without one; the Java `aws-msk-iam-auth` library resolved the region itself (believed to be from the broker host name; not re-checked here) |
 | `fa89db0ea` | Orchestration-to-Rust configuration contract | `migration-workflow-templates/tests/captureProxyRustConfigContract.test.ts`, `tests/support/argoTemplateEvaluator.ts`; fixtures in `crates/capture-config/tests/fixtures/orchestration/`; `capture-config/tests/orchestration_contract.rs`, `capture-proxy/tests/orchestration_contract.rs` | 10 scenarios, fixtures regenerated with `jest -u` and compared byte for byte otherwise |
 | `57b7d7033` | `capture_proxy` image built from `TrafficCapture/captureProxy/Dockerfile` | `buildImages/build.gradle` (BuildKit project `captureProxy`), `buildSrc/.../RegistryImageBuildUtils.groovy` (`dockerfile`, `inputPaths`), `trafficCaptureProxyServer/build.gradle` (Jib plugin removed) | Same image name, tag rules and platforms as the Jib image. Built locally for linux/arm64 through both paths (per-image `buildKit_captureProxy_arm64`, and the `captureProxy` target of the Gradle-generated `buildKitBakeAll` file) into the local registry; context transfer 2.5 MB. **linux/amd64 not built** (QEMU build stopped to avoid disturbing a measurement run) |
+
+| `65bd752f0` | §4: shipped dashboards tied to the metric contract | `crates/capture-observability/tests/dashboard_contract.rs` | 11 tests. Every proxy series the dashboards and scripts read is exported (§4 result table); the readers' union equals `Exposure::ExternallyConsumed`. Mutation-checked: re-uniting `fullRequest`, renaming `captureConnectionCloses`' `reason`, or changing `SERVICE_NAME` fails the shipped-file tests |
+| `9a75c3dda` | §5: binary version and image `/VERSION` from the repository `VERSION` | `capture-config/src/cli.rs` (`PROXY_VERSION`), `Dockerfile` (`CAPTURE_PROXY_VERSION` build argument), `buildImages/build.gradle` | Image built with the argument: `capture-proxy --version` prints `capture-proxy 3.4.1`; `/VERSION` is byte-identical to the repository file (`3.4.1\n`). The Dockerfile fails the build if the binary reports anything else |
+| `498c70167` | docker-compose ports published on `127.0.0.1` only | both compose files; `TrafficCapture/dockerSolution/build.gradle` (`SERVICES_HOST`) | `docker compose config` shows `host_ip: 127.0.0.1` for every port; `lsof` showed the published listeners on `127.0.0.1` only |
+| `1237a6cc1` | §5: docker-compose dev TLS certificate generated in the stack | `capture-proxy-dev-tls.sh`, `capture-proxy-tls` init service in both compose files | See the §5 docker-compose row |
+| `8ac9634e3` | §5: large-requests stack no longer passes a Java-only producer property | `docker-compose.large-requests.yml`, `kafka-producer.properties` (deleted), `test-large-requests.sh` | See the §5 docker-compose row |
+| `8c3698edb` | §5: licence check for the Cargo workspace | `TrafficCapture/captureProxy/deny.toml` | `cargo deny --locked check licenses` (cargo-deny 0.21.0): `licenses ok`, no warnings, 269 crates; removing `Zlib` from the allow list fails it on `foldhash` |
 
 The in-cluster build job (`deployment/k8s/charts/components/buildImages`, which runs
 `buildImagesToRegistry`) was not run: it needs a cluster with the EKS BuildKit backend.
@@ -132,8 +140,8 @@ and 2, nothing outside the four depends on them.
 | `docs/LoadTestingBackground.md:58,234,472` | Rename `trafficCaptureProxyServer`/`captureKafkaOffloader` to the Rust proxy. |
 | `DEVELOPER_GUIDE.md` | Add the Cargo workspace: toolchain (`rust-toolchain.toml`), `third_party/rdkafka-sys/prepare.sh`, `cargo test --workspace --locked`, clippy/fmt gates. |
 | `TrafficCapture/captureProxy/crates/capture-config/src/policy.rs:81` | Comment cites `trafficCaptureProxyServer/build.gradle`; reword as historical. Other Rust comments cite Java file/line numbers as provenance; leave them, but add one note in the workspace README that the cited Java sources were deleted at commit X. |
-| `TrafficCapture/dockerSolution/src/main/docker/docker-compose.yml:36-60` | Already broken by the image switch (see §5); must be fixed by this step at the latest. |
-| `.github/workflows/` | No workflow names these modules or runs Cargo. Add a Rust job to `CI.yml`: `prepare.sh`, `cargo fmt --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --locked`. Without it, deleting the Java tests leaves the proxy with **no** CI coverage at all. |
+| `TrafficCapture/dockerSolution/src/main/docker/docker-compose.yml:36-60` | **Done** (`1237a6cc1`, `8ac9634e3`; see §5). |
+| `.github/workflows/` | No workflow names these modules or runs Cargo. Add a Rust job to `CI.yml`: `prepare.sh`, `cargo fmt --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --locked`, and `cargo deny --locked check licenses` (config `TrafficCapture/captureProxy/deny.toml`; install with `cargo install --locked cargo-deny`). Without it, deleting the Java tests leaves the proxy with **no** CI coverage at all. `tests/dashboard_contract.rs` reads files outside the Cargo workspace (`deployment/k8s/...`, `migrationConsole/...`), so the job needs a full checkout. |
 | `sonar-project.properties`, `whitesource.config` | No module paths today; check exclusions after the delete. |
 
 Not changed (OD-14): `deployment/cdk/opensearch-service-migration/options.md:18` links to
@@ -254,16 +262,84 @@ Risks:
 - **`exported_job="capture"`.** Comes from `service.name`; an OTel resource change in Rust breaks
   the k6 dashboard silently today.
 
-## 5. Other Phase 5 items not yet done, and known gaps
+### §4 result (done, `65bd752f0`)
+
+`tests/dashboard_contract.rs` reads the shipped files and checks, per consumer:
+
+- **CloudWatch** (both copies, asserted byte-identical): every metric array and `SEARCH` pinned to
+  `OTelLib="captureProxy"`. The instrument must exist; beyond the collector's `OTelLib` and
+  `qualifier`, the dimension set must equal the instrument's exactly (CloudWatch matches exact
+  dimension sets; `valuesEks.yaml` deletes `service.name`, `service.instance.id` and
+  `telemetry.sdk.*` before `resource_to_telemetry_conversion`); filter values (`outcome="failed"`)
+  must be in the closed domain. A proxy-looking metric without the `OTelLib` pin fails.
+- **Grafana and k6** (`PromQL`, via a small lexer): every selector that is pinned to the proxy, names
+  an exported proxy series, or merely looks like one (`capture<Upper>…`, or a contract instrument
+  name followed by `_`, which is what catches a re-unit) must be an exported series name with the
+  right histogram suffix; label matchers and grouping labels must be instrument dimensions or
+  resource labels (`exported_instance`, `exported_job`, `le` on `_bucket`); a proxy-only series
+  pinned to another scope or job fails (catches `SCOPE_NAME`/`SERVICE_NAME` drift); every k6 proxy
+  selector must carry `exported_job="capture"`.
+- **Scripts** (by token): `verify-kafka-observability.py` names **no** proxy series (it checks Kafka
+  broker/PVC series and that both dashboards match their generators; the test asserts this so a
+  later proxy assertion is noticed); `capture-replay-gameday.sh` and `replayer_tests.py` are
+  scanned too.
+- The union of instruments read equals `Exposure::ExternallyConsumed` (25), both directions.
+
+Every proxy series a shipped consumer reads is exported by the Rust proxy. **No series is missing;
+nothing was implemented and no panel needs dropping.**
+
+| Instrument | Exported series (Prometheus) | Read by | Status |
+|---|---|---|---|
+| `bytesRead`, `bytesWritten` | `…_bytes_total` | CW, Grafana | exported |
+| `fullRequest` | `fullRequest_count_total` | CW, Grafana, k6 | exported |
+| `gatheringRequestDuration`, `gatheringResponseDuration` | `…_milliseconds` (`_sum`/`_count`; k6 `_bucket`) | CW, Grafana, k6 | exported |
+| `waitingForResponseDuration` | `waitingForResponseDuration_milliseconds` | CW, Grafana (scope-pinned) | exported |
+| `kafkaCommitDuration` | `kafkaCommitDuration_milliseconds` (`_sum`/`_count`/`_bucket`) | CW, Grafana | exported; Grafana query **not scope-pinned** (finding below) |
+| `gatheringRequestExceptionCount`, `gatheringResponseExceptionCount` | `…_total` | CW, Grafana | exported |
+| `kafkaCommitExceptionCount` | `kafkaCommitExceptionCount_total` | CW, Grafana | exported; Grafana query **not scope-pinned** |
+| `kafkaCommitCount` | `kafkaCommitCount_total` | `replayer_tests.py` | exported |
+| `captureConnectionDuration` | `captureConnectionDuration_milliseconds` | CW | exported |
+| `captureConnectionsActive` | `captureConnectionsActive_connections` | CW, Grafana (`by exported_instance`) | exported |
+| `captureConnectionCloses` (`reason`) | `captureConnectionCloses_connections_total` | CW, Grafana (`by reason`) | exported |
+| `activeConnection` | `activeConnection_count` | k6 | exported |
+| `captureGapActive` (`processId`, `captureActivationId`, `mode`, `sourceForwardingContinued`) | `captureGapActive_processes` | CW, Grafana | exported |
+| `capturePublishingRecordsAccepted`, `capturePublishingBytesAccepted` (`recordKind`) | `…_records_total`, `…_bytes_total` | CW, Grafana | exported |
+| `capturePublishingCompletions` (`recordKind`, `outcome`) | `capturePublishingCompletions_records_total` | CW, Grafana | exported |
+| `capturePublishingRecordsAwaitingAcknowledgement` (`recordKind`) | `…_records` | CW, Grafana, gameday script | exported |
+| `captureWritersActive`, `captureWritersDraining` | `…_writers` | CW, Grafana | exported |
+| `captureWritesRejected` | `captureWritesRejected_writes_total` | CW, Grafana | exported |
+| `capturePublisherFailures` (`reason`) | `capturePublisherFailures_failures_total` | CW, Grafana | exported |
+| `captureHeartbeatDeadlineViolations` | `…_violations_total` | CW, Grafana | exported |
+
+The KAFKA-11 "pending" instruments (`capturePublishingQueueDepthRecords`/`Bytes`,
+`…AcceptToSubmitMillis`, `…SubmitToDeliveryMillis`, `…OldestUnacknowledgedAgeMillis`) are new
+Rust-only names that no dashboard reads, so they are not a dashboard gap.
+
+**Finding (open, ratcheted in the test).** The Grafana "Proxy latency" (Kafka publish → ack mean
+and p95) and "Proxy faults" (Kafka commit exceptions) queries use `kafkaCommitDuration_*` and
+`kafkaCommitExceptionCount_total` **without** `otel_scope_name="captureProxy"`, and the replayer
+registers instruments of the same names (`IKafkaConsumerContexts.java:38`,
+`RootReplayerContext.java:97`; `replayer_tests.py` expects the replayer to export
+`kafkaCommitCount_total`). Its main code does not create that context today, so the panels show
+proxy data only in practice. Fix in `generate-capture-replay-grafana-dashboard.py` with
+`sel=PROXY` on those three queries (as its `waitingForResponseDuration` query already does) and
+regenerate; then remove the names from `KNOWN_UNSCOPED_SHARED_GRAFANA_SERIES`. Not done here: it
+is a dashboard change owned with the generators.
+
+Not done: the optional machine-readable series list from the generators (the test parses the
+dashboard JSON directly).
+
+## 5. Other Phase 5 items and known gaps
 
 | Item | Files | State / risk |
 |---|---|---|
-| docker-compose dev stack uses Java flags and Java-baked certificates | `TrafficCapture/dockerSolution/src/main/docker/docker-compose.yml:36-60`, `docker-compose.large-requests.yml` | **Broken by the image switch.** The flags are accepted (Java aliases), but `--sslCertChainFile /usr/share/captureProxy/config/pub.pem` and `key.pem` were generated into the Java image by `trafficCaptureProxyServer`'s `generateSelfSignedCerts`; the Rust image has no such files. Verified with the image built here (with `--no-capture` instead of Kafka): it exits 70, `failed to read TLS material from /usr/share/captureProxy/config/pub.pem`. Fix: generate a certificate in the compose stack and mount it, or drop TLS on the dev proxy. Not Kubernetes, so not in this change. |
+| docker-compose dev stack uses Java flags and Java-baked certificates | `TrafficCapture/dockerSolution/src/main/docker/docker-compose.yml:36-60`, `docker-compose.large-requests.yml` | **Done** (`1237a6cc1`, `8ac9634e3`, `498c70167`). Was broken by the image switch: the Java image had `pub.pem`/`key.pem` generated into it (`generateSelfSignedCerts`, one key shared by every copy), the Rust image has none, and the proxy exited 70. **Fix: generate a certificate in the stack**, not drop TLS, because `services.yaml`, the README, `test-large-requests.sh` and CI's `docker-compose-e2e-test` (`replayer_tests.py`) all address the source as `https://capture-proxy:9200` / `https://localhost:9200`. A `capture-proxy-tls` init service (the stack's own Kafka image, which ships openssl; AL2023 has no openssl CLI; root, no network) runs the committed `capture-proxy-dev-tls.sh`, which writes a self-signed RSA-2048 certificate (SANs `capture-proxy`, `localhost`, `127.0.0.1`) and key into a volume owned by uid 10001 (key 0400) and keeps existing files on re-run; the proxy mounts it read-only at the old path and waits on `service_completed_successfully`, so its flags are unchanged. The large-requests stack also passed `--kafkaPropertyFile` with the Java-only `max.request.size`, which the Rust proxy refuses (exit 78); removed. All published ports are now `127.0.0.1` only, and the Gradle `dockerCompose` block sets `SERVICES_HOST=127.0.0.1` because the avast plugin otherwise probes ports at the Docker network gateway on Linux. **Verified** with the image built here (`localhost:5001/migrations/capture_proxy:p5ops-a5672d249-ver1`) under unique compose projects, proxy and its dependencies only, torn down after: init exits 0; proxy runs, listens on `127.0.0.1:9200` only, presents `CN=capture-proxy`; `GET /` through it returns the Elasticsearch banner and the request and response are on the topic; large-requests stack: a 3.2 MB `_bulk` (3000 docs) returns 200, all documents indexed, largest topic batch 1,034,565 bytes. **Not verified:** Gradle `composeUp` (the avast plugin path, including `SERVICES_HOST`), the replayer and migration-console services, and the full `test-large-requests.sh`. |
+| Intermittent capture termination seen in the large-requests stack | `capture-kafka/src/publisher_actor.rs` (heartbeat scheduling, broker-time continuity) | **Needs investigation; not caused by the compose change.** In 2 of 4 runs of `docker-compose.large-requests.yml` (24 partitions, default `H` = 10 s, `E` = 30 s) the proxy exited 78 after 1–3 minutes: `capture_broker_time_violation` then `Heartbeat broker time exceeded the configured expiration interval … previous=…, candidate=… (+66.7 s and +98.7 s), expirationMillis=30000 (reason=broker_time)`. In the 66.7 s case no partition had a record after the startup ones except the client traffic that triggered the check (21 of 24 partitions held exactly one record, where a healthy run holds one per 10 s), so periodic heartbeats had stopped, and no `heartbeat_deadline` failure fired first. Not reproduced in 2 further runs of the same file (heartbeats every 10 s, idle and after the 3.2 MB request), with `--heartbeat-interval-seconds 2` and 24 partitions, or in `docker-compose.yml` (2 partitions) with default or 2 s `H`. In one failing run Kafka CLI tools were running inside the broker container; in the other, clients were connecting while the destination was still down. Root cause unknown; worth reproducing on the qualification harness with 24 partitions before Phase 6. |
 | CDK/ECS command line | `deployment/cdk/.../capture-proxy-stack.ts` | Out of scope (OD-14). May not start the Rust proxy; needs the release note OD-14 requires. |
-| Image `/VERSION` file | Java Jib images carried the repo `VERSION` at `/VERSION`; the Rust image does not, and `capture-proxy --version` reports the Cargo version `0.1.0` | Decide whether the binary version should come from the repo `VERSION` (build arg into `Cargo` env) and whether anything reads `/VERSION` from this image. |
+| Image `/VERSION` file | `capture-config/src/cli.rs`, `Dockerfile`, `buildImages/build.gradle` | **Done** (`9a75c3dda`). `capture-proxy --version` reports `CAPTURE_PROXY_VERSION`, read at compile time, falling back to the Cargo version when absent or empty. The Dockerfile takes it as a build argument (the repository `VERSION` is outside the `TrafficCapture/` context), fails the build if the binary reports anything else, and writes the reported version to `/VERSION`, as the Jib images did; `buildImages/build.gradle` passes the trimmed `VERSION` file (evaluated: `3.4.1`). `grep -rn '/VERSION'` finds no reader of `/VERSION` in the proxy image (the console reads `~/VERSION` in its own image; RFS uses `/rfs-app/VERSION`); it is kept for parity. Verified on an image built with the argument; the Gradle BuildKit task itself was only configured (`--dry-run`), not run. |
 | Image build time in the cluster job | `deployment/k8s/charts/components/buildImages` → `buildImagesToRegistry` → `buildKitBakeAll` | The Rust release build (thin LTO, one codegen unit, librdkafka from source) runs inside buildkitd (4–8 CPU, 8–12 GiB). With `multiArchNative: false` the non-native architecture builds under QEMU, which can take an hour or more for Rust. Measure on a real cluster; consider `cargo-chef`-style dependency caching in the Dockerfile and `multiArchNative: true`. |
 | CI image build | `.github/workflows/k8s-local-test.yml:115` (`buildImagesToRegistry_amd64`) | Now includes the Rust build. First run has no registry cache. |
-| SBOM / licences | `.github/workflows/release-drafter.yml:167` (anchore SBOM on the image) | The image SBOM still works (it scans the image). Cargo crate licences are not in it as a Rust binary is static: add `cargo about`/`cargo deny check licenses` to the Rust CI job and attach the result. |
+| SBOM / licences | `TrafficCapture/captureProxy/deny.toml`; `.github/workflows/release-drafter.yml:167` (anchore SBOM on the image) | **Config done** (`8c3698edb`); **CI wiring not done** (another owner has `.github/workflows/`). The image SBOM still works but does not see the crates in the static binary. `cargo deny --locked check licenses` (run after `prepare.sh`, from `TrafficCapture/captureProxy`) passes with cargo-deny 0.21.0: `licenses ok`, no warnings, 269 crates on the four image/developer targets; allow list Apache-2.0, MIT, ISC, BSD-2-Clause, BSD-3-Clause, Unicode-3.0, Zlib, with unused entries denied. **CI should call it** in the Rust job (§3, `.github/workflows/` row). It checks crate metadata only: librdkafka (BSD-2-Clause) and zstd compiled by the `-sys` crates, and the linked OpenSSL, Cyrus SASL and zlib, need their notices in the image's third-party notices. |
 | `setHeader` documented format | `orchestrationSpecs/packages/schemas/src/userSchemas.ts:730` says each entry is `'Header-Name: value'`; Java and Rust both read alternating names and values | **Needs an owner ruling.** A spec written as documented is rejected (Rust, exit 2; Java crashed or set a garbage header). Either fix the description (and add an even-length refinement) or translate `Name: value` in the orchestration. The contract test pins today's rejection (`rejected-set-header-in-name-colon-value-form`). Same question for `suppressCaptureForHeaderMatch`, whose description gives no format. |
 | Cluster-level `enableMSKAuth` | `KAFKA_EXISTING_CLUSTER_CONFIG.enableMSKAuth` | Drives the console and the CapturedTraffic CR only; the proxy needs `proxyConfig.enableMSKAuth` as well. Pre-existing; document or derive. |
 | Kafka TLS without SASL (`ssl`) | — | No migration-spec field produces `kafkaAuthType: ssl`; workflow-managed clusters are plain or SCRAM, existing ones none or SCRAM. The proxy supports it; the orchestration cannot select it. |
