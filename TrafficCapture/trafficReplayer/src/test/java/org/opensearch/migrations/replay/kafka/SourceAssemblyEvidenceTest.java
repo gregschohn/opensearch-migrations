@@ -52,9 +52,10 @@ import org.junit.jupiter.api.Test;
  * negative assertions stronger, since each mode is then shown to pick its own subject out of everything
  * available rather than out of a topic curated for it.
  *
- * <p>Requires Docker, hence {@code isolatedTest}.
+ * <p>Requires Docker and the capture proxy image, hence {@code isolatedTest} and {@code requiresProxyImage}.
  */
 @Tag("isolatedTest")
+@Tag("requiresProxyImage")
 class SourceAssemblyEvidenceTest {
 
     private static ProxyWrittenTopic supply;

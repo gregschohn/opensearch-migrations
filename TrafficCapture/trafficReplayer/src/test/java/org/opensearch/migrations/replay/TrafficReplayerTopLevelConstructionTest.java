@@ -120,6 +120,7 @@ class TrafficReplayerTopLevelConstructionTest {
 
     @Test
     @Tag("isolatedTest")
+    @Tag("requiresProxyImage")
     @Timeout(value = 110, unit = TimeUnit.SECONDS)
     void twoLiveCaptureProxiesAndReplayersProcessDistinctPartitionsExactlyOnce()
         throws Exception {
@@ -129,12 +130,10 @@ class TrafficReplayerTopLevelConstructionTest {
         final String groupId = "g10-two-replayers";
         final String firstClientId = "g10-replayer-a";
         final String secondClientId = "g10-replayer-b";
-        // CaptureProxyContainer.start() proves the listener is up with an HTTP GET through the proxy, so
-        // every proxy contributes one genuinely captured readiness request that the replayers are correct
-        // to replay. Classifying by the generated document namespace keeps that expected fixture traffic
-        // out of the document oracle without filtering anything out of the exact assertions below.
+        // RustCaptureProxyContainer waits for the listen port and sends nothing through the proxy, so every
+        // request the target sees must be one of the generated documents; anything else fails the
+        // non-document assertion below.
         final String documentPathPrefix = "/documents/_doc/";
-        final TargetDocument startupReadinessProbe = new TargetDocument("GET", "/", "");
         var targetRequests = new ConcurrentLinkedQueue<TargetDocument>();
         var allDocumentsReplayed = new CountDownLatch(expectedRequestCount);
         var expected = new java.util.LinkedHashSet<TargetDocument>();
@@ -254,12 +253,8 @@ class TrafficReplayerTopLevelConstructionTest {
             .collect(java.util.stream.Collectors.toList());
         Assertions.assertEquals(
             List.of(),
-            nonDocumentTraffic.stream()
-                .filter(request -> !startupReadinessProbe.equals(request))
-                .collect(java.util.stream.Collectors.toList()),
-            () -> "the target received traffic that is neither a generated document nor the fixture"
-                + " proxy readiness probe " + startupReadinessProbe
-                + "; all non-document traffic observed was " + nonDocumentTraffic
+            nonDocumentTraffic,
+            "the target received traffic that is not a generated document"
         );
         Assertions.assertEquals(
             expectedRequestCount,

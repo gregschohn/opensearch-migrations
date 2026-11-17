@@ -52,7 +52,8 @@ import org.junit.jupiter.api.Test;
  * module can parse. This one proves the dumper renders them. Keeping the claims apart is what stops a
  * formatting change from masking a format change, and it is why the fixture deliberately does not decode.
  *
- * <p>Requires Docker, hence {@code isolatedTest}.
+ * <p>Requires Docker, hence {@code isolatedTest}; the tests that start a {@link ProxyWrittenTopic} also need the
+ * capture proxy image, hence {@code requiresProxyImage}.
  */
 @Tag("isolatedTest")
 class KafkaTopicDumperEvidenceTest {
@@ -161,6 +162,7 @@ class KafkaTopicDumperEvidenceTest {
     }
 
     @Test
+    @Tag("requiresProxyImage")
     void dumpRawRendersEveryEnvelopeCaseFromARealProxyTopic() throws Exception {
         try (var supply = ProxyWrittenTopic.start("g1-dump-evidence")) {
             Assertions.assertEquals(200, supply.sendGet("/"));
@@ -217,6 +219,7 @@ class KafkaTopicDumperEvidenceTest {
      * rather than merely checked for being present, so a dumper printing a plausible but wrong partition fails.
      */
     @Test
+    @Tag("requiresProxyImage")
     void dumpRawRendersEveryPartitionAndTheMetadataKafkaReported() throws Exception {
         try (var supply = ProxyWrittenTopic.start("g1-dump-multipartition", 3)) {
             // Several requests, so the proxy's partitioner spreads connections across partitions.
@@ -275,6 +278,7 @@ class KafkaTopicDumperEvidenceTest {
      * the second batch then failed because no matching explicit request had been observed.
      */
     @Test
+    @Tag("requiresProxyImage")
     void dumpBothWaitsForExplicitDemandAcrossPartitionsAndPolls() throws Exception {
         try (var supply = ProxyWrittenTopic.start("g10-dump-demand", 2)) {
             Assertions.assertEquals(200, supply.sendGet("/demand-one"));
@@ -359,6 +363,7 @@ class KafkaTopicDumperEvidenceTest {
      * short rather than the production interval.
      */
     @Test
+    @Tag("requiresProxyImage")
     void dumpRawRendersTrafficProbeAndHeartbeatFromARealProxy() throws Exception {
         try (var supply = ProxyWrittenTopic.start("g1-dump-all-payloads")) {
             Assertions.assertEquals(200, supply.sendGet("/"));
@@ -398,6 +403,7 @@ class KafkaTopicDumperEvidenceTest {
      * a producer-side format change pass as an empty or partial dump.
      */
     @Test
+    @Tag("requiresProxyImage")
     void anUndecodableRecordEndsTheDumpAndNamesItsLocation() throws Exception {
         try (var supply = ProxyWrittenTopic.start("g1-dump-malformed")) {
             Assertions.assertEquals(200, supply.sendGet("/"));
@@ -426,6 +432,7 @@ class KafkaTopicDumperEvidenceTest {
      * propagate that asynchronous violation back to the dump command rather than printing it and continuing.
      */
     @Test
+    @Tag("requiresProxyImage")
     void aPayloadlessEnvelopeEndsTheHttpDumpAndNamesItsRecord() throws Exception {
         try (var supply = ProxyWrittenTopic.start("g3-http-dump-payloadless")) {
             Assertions.assertEquals(200, supply.sendGet("/"));

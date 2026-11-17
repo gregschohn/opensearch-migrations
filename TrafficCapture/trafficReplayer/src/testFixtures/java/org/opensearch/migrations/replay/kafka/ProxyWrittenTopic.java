@@ -25,7 +25,6 @@ import org.opensearch.migrations.testutils.SimpleHttpClientForTesting;
 import org.opensearch.migrations.testutils.SimpleHttpResponse;
 import org.opensearch.migrations.testutils.SimpleNettyHttpServer;
 import org.opensearch.migrations.trafficcapture.protos.CaptureRecord;
-import org.opensearch.migrations.trafficcapture.proxyserver.testcontainers.CaptureProxyContainer;
 
 import com.google.protobuf.InvalidProtocolBufferException;
 import org.apache.kafka.clients.admin.AdminClient;
@@ -38,6 +37,8 @@ import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.config.TopicConfig;
+import org.testcontainers.Testcontainers;
+import org.testcontainers.containers.Network;
 
 /**
  * A capture topic written by the real, unmodified capture proxy.
@@ -47,32 +48,44 @@ import org.apache.kafka.common.config.TopicConfig;
  * detect that belief drifting from the producer.
  *
  * <p>Three things start, in dependency order: a Kafka broker, an in-process destination server, and
- * one or more {@code CaptureProxyContainer} instances, each of which runs the actual
- * {@code CaptureProxy.main} on a thread. Traffic driven through {@link #sendGet} reaches the
+ * one or more {@link RustCaptureProxyContainer} instances, each of which runs the Rust capture proxy
+ * from its {@code capture_proxy} image. Traffic driven through {@link #sendGet} reaches the
  * destination and is captured to the topic as a side effect, exactly as in production.
+ *
+ * <p>The proxies are containers, so they reach Kafka and the destination as a container would: the
+ * broker through a listener on a per-instance Docker {@link Network} ({@value #KAFKA_NETWORK_BROKERS}),
+ * and the destination, which runs in this JVM, through {@code Testcontainers.exposeHostPorts} as
+ * {@code host.testcontainers.internal}. The test itself keeps using the broker's host-mapped address
+ * ({@link #brokers()}) and each proxy's host-mapped port ({@link #proxyEndpoint(int)}).
  *
  * <p>It deliberately stops at raw record bytes. Decoding is the dumper's job, and a fixture that also
  * decoded would be a second implementation of the thing under test — so a test asserting the envelope
  * shape and a test asserting the dumper's output stay independent claims.
  *
- * <p>Requires Docker, so callers are tagged {@code isolatedTest}. Each instance owns its own broker
- * rather than sharing a static one, so two of these never collide.
+ * <p>Requires Docker and the proxy image (see {@code SharedDockerImageNames.CAPTURE_PROXY}), so callers
+ * are tagged {@code isolatedTest} and {@code requiresProxyImage}. Each instance owns its own broker and
+ * network rather than sharing static ones, so two of these never collide.
  */
 public final class ProxyWrittenTopic implements AutoCloseable {
     private static final String DESTINATION_BODY = "it works";
     private static final Duration DEFAULT_READ_TIMEOUT = Duration.ofSeconds(30);
+    /** The broker as the proxy containers reach it; the alias is scoped to this instance's network. */
+    private static final String KAFKA_NETWORK_BROKERS = "kafka:19092";
 
+    private final Network network;
     private final org.testcontainers.kafka.ConfluentKafkaContainer kafka;
     private final SimpleNettyHttpServer destination;
-    private final List<CaptureProxyContainer> proxies;
+    private final List<RustCaptureProxyContainer> proxies;
     private final String topic;
 
     private ProxyWrittenTopic(
+        Network network,
         org.testcontainers.kafka.ConfluentKafkaContainer kafka,
         SimpleNettyHttpServer destination,
-        List<CaptureProxyContainer> proxies,
+        List<RustCaptureProxyContainer> proxies,
         String topic
     ) {
+        this.network = network;
         this.kafka = kafka;
         this.destination = destination;
         this.proxies = List.copyOf(proxies);
@@ -81,7 +94,7 @@ public final class ProxyWrittenTopic implements AutoCloseable {
 
     /**
      * Starts a broker, a destination, and the real proxy wired between them. The topic is passed to the
-     * proxy with {@code --kafkaTopic} rather than relying on its default, so concurrent runs cannot read
+     * proxy with {@code --kafka-topic} rather than relying on its default, so concurrent runs cannot read
      * each other's records.
      */
     public static ProxyWrittenTopic start(String topic) throws Exception {
@@ -132,34 +145,42 @@ public final class ProxyWrittenTopic implements AutoCloseable {
         int proxyCount,
         List<SimpleHttpResponse> sourceResponses
     ) throws Exception {
-        var kafka = new org.testcontainers.kafka.ConfluentKafkaContainer(SharedDockerImageNames.KAFKA);
-        kafka.start();
+        var network = Network.newNetwork();
+        // The extra listener is what the proxy containers use; getBootstrapServers() stays the host-mapped
+        // address for everything this JVM does.
+        var kafka = new org.testcontainers.kafka.ConfluentKafkaContainer(SharedDockerImageNames.KAFKA)
+            .withNetwork(network)
+            .withListener(KAFKA_NETWORK_BROKERS);
         SimpleNettyHttpServer destination = null;
-        var proxies = new ArrayList<CaptureProxyContainer>();
+        var proxies = new ArrayList<RustCaptureProxyContainer>();
         try {
+            kafka.start();
             createTrafficTopic(stripScheme(kafka.getBootstrapServers()), topic, partitions);
             destination = SimpleNettyHttpServer.makeServerWithResponses(
                 false,
                 request -> sourceResponses
             );
-            var destinationUri = destination.localhostEndpoint().toString();
-            var brokers = stripScheme(kafka.getBootstrapServers());
+            // Must precede the proxies' start: it is what makes the host port reachable from a container.
+            Testcontainers.exposeHostPorts(destination.port());
+            var destinationUri = "http://host.testcontainers.internal:" + destination.port();
             for (var i = 0; i < proxyCount; i++) {
-                var proxy = new CaptureProxyContainer(
-                    () -> destinationUri,
-                    () -> brokers,
+                var proxy = new RustCaptureProxyContainer(
+                    SharedDockerImageNames.CAPTURE_PROXY,
+                    network,
+                    KAFKA_NETWORK_BROKERS,
+                    destinationUri,
                     // A one-second heartbeat, so a test can wait for a WriterPartitionHeartbeat without sitting
                     // out the production interval. The heartbeat is one of the three payload cases the replayer
                     // must decode, so it has to be observable here rather than assumed.
-                    Stream.of("--kafkaTopic", topic, "--heartbeat-interval-seconds", "1")
+                    List.of("--kafka-topic", topic, "--heartbeat-interval-seconds", "1")
                 );
-                proxy.start();
                 proxies.add(proxy);
+                proxy.start();
             }
-            return new ProxyWrittenTopic(kafka, destination, proxies, topic);
+            return new ProxyWrittenTopic(network, kafka, destination, proxies, topic);
         } catch (Exception | Error startupFailure) {
             closeQuietly(proxies);
-            closeQuietly(destination, kafka);
+            closeQuietly(destination, kafka, network);
             throw startupFailure;
         }
     }
@@ -199,7 +220,7 @@ public final class ProxyWrittenTopic implements AutoCloseable {
     }
 
     public URI proxyEndpoint(int proxyIndex) {
-        return URI.create(CaptureProxyContainer.getUriFromContainer(proxies.get(proxyIndex)));
+        return proxies.get(proxyIndex).endpoint();
     }
 
     /**
@@ -460,13 +481,12 @@ public final class ProxyWrittenTopic implements AutoCloseable {
     @Override
     public void close() {
         closeQuietly(proxies);
-        closeQuietly(destination, kafka);
+        closeQuietly(destination, kafka, network);
     }
 
     /**
-     * {@code ConfluentKafkaContainer} reports {@code PLAINTEXT://host:port}, while both the proxy's
-     * {@code --kafkaConnection} and the replayer's {@code --kafka-traffic-brokers} take a bare
-     * {@code host:port}.
+     * {@code ConfluentKafkaContainer} reports {@code PLAINTEXT://host:port}, while the replayer's
+     * {@code --kafka-traffic-brokers} and the Kafka clients here take a bare {@code host:port}.
      */
     private static String stripScheme(String bootstrapServers) {
         var schemeEnd = bootstrapServers.indexOf("://");

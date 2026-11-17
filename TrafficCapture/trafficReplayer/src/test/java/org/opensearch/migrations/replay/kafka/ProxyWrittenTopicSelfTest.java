@@ -30,9 +30,10 @@ import org.junit.jupiter.api.Test;
  * what we think"; a dumper test answers "do we render it correctly". Collapsing them would mean a
  * formatting change could mask a format change.
  *
- * <p>Requires Docker, hence {@code isolatedTest}.
+ * <p>Requires Docker and the capture proxy image, hence {@code isolatedTest} and {@code requiresProxyImage}.
  */
 @Tag("isolatedTest")
+@Tag("requiresProxyImage")
 class ProxyWrittenTopicSelfTest {
 
     @Test

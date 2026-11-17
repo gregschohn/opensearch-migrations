@@ -227,10 +227,13 @@ jobs:
       - name: Run Gradle tests with striping
         run: |
           MAX_WORKERS=$(( $(nproc) - 1 ))
+          # -PproxyImageTests=exclude: the replayer tests that run the capture proxy image are run once,
+          # by capture-proxy-image-tests, which builds the image.
           ./gradlew allTests mergeJacocoReports \
           --max-workers $MAX_WORKERS \
           -Dtest.striping.total=${{ env.gradle-test-parallelization }} \
           -Dtest.striping.index=${{ matrix.index }} \
+          -PproxyImageTests=exclude \
           -x spotlessCheck --stacktrace --continue
         env:
           OS_MIGRATIONS_GRADLE_SCAN_TOS_AGREE_AND_ENABLED: ''
@@ -280,6 +283,51 @@ jobs:
         run: |
           df -h
           docker system df -v
+
+  # The replayer tests tagged requiresProxyImage read a topic written by the Rust capture proxy running from
+  # its image. The image (a release Rust build) is built once here; the gradle-tests stripes exclude those
+  # tests instead of each building it.
+  capture-proxy-image-tests:
+    needs: [seed-gradle-test-docker-cache]
+    runs-on: ubuntu-22.04
+    env:
+      CAPTURE_PROXY_TEST_IMAGE: migrations/capture_proxy:ci-${{ github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ./.github/actions/setup-env
+        with:
+          gradle-cache-enabled: true
+          gradle-cache-read-only: ${{ !(github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/share/swift
+          sudo docker system prune -af
+          df -h
+      - name: Restore Gradle test infrastructure Docker cache
+        uses: AndreKurait/docker-cache@7a3887908bdb97935395833df69b060cfcca0f7f # 0.7.0
+        with:
+          key: gradle-test-docker-${{ runner.os }}-infrastructure-${{ hashFiles('.github/gradle-test-images/infrastructure.txt') }}
+          read-only: true
+      - name: Build the capture proxy image
+        run: |
+          docker build --file TrafficCapture/captureProxy/Dockerfile \
+            --tag "$CAPTURE_PROXY_TEST_IMAGE" TrafficCapture
+      - name: Run the replayer tests that need the capture proxy image
+        run: |
+          ./gradlew :TrafficCapture:trafficReplayer:isolatedTest \
+          -PproxyImageTests=only \
+          -PcaptureProxyImage="$CAPTURE_PROXY_TEST_IMAGE" \
+          -x spotlessCheck --stacktrace
+        env:
+          OS_MIGRATIONS_GRADLE_SCAN_TOS_AGREE_AND_ENABLED: ''
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          if-no-files-found: error
+          name: test-reports-capture-proxy-image-tests
+          path: |
+            **/build/reports/tests/
 
   node-tests:
     runs-on: ubuntu-22.04
@@ -529,6 +577,7 @@ jobs:
       - gradle-repository-tests
       - seed-gradle-test-docker-cache
       - gradle-tests
+      - capture-proxy-image-tests
       - link-checker
       - node-tests
       - mountable-transforms-k8s-test

@@ -64,12 +64,6 @@ dependencies {
     testFixturesApi libs.netty.all
     testFixturesApi libs.kafka.clients
 
-    // The supply side of G1's exit criterion: "a topic written by the current, unmodified proxy". This
-    // brings CaptureProxyContainer, which runs the real CaptureProxy in-process against a real broker, so
-    // the replayer reads bytes the proxy actually produced rather than bytes a test wrote to look like it.
-    // Extracted to the proxy module's test fixtures for this; nothing is duplicated here.
-    testFixturesImplementation testFixtures(project(path: ':TrafficCapture:trafficCaptureProxyServer'))
-
     testImplementation testFixtures(project(path: ':testHelperFixtures'))
     testImplementation testFixtures(project(path: ':coreUtilities'))
 
@@ -114,5 +108,38 @@ tasks.withType(Test).configureEach {
         .withPathSensitivity(PathSensitivity.RELATIVE)
     doFirst {
         systemProperty 'trafficReplayerMainRuntimeClasspath', sourceSets.main.runtimeClasspath.asPath
+    }
+}
+
+// The supply side of G1's exit criterion, "a topic written by the real proxy": ProxyWrittenTopic runs the Rust
+// capture proxy from its capture_proxy image (RustCaptureProxyContainer), so the replayer reads bytes the shipped
+// proxy produced rather than bytes a test wrote to look like it. The tests that need it are tagged
+// requiresProxyImage.
+//
+// The image is a prerequisite, not a task dependency (the buildKit_captureProxy_* tasks push to a registry and
+// need a BuildKit builder). Build it, then point the tests at it:
+//   docker build --file TrafficCapture/captureProxy/Dockerfile --tag <ref> TrafficCapture
+//   ./gradlew :TrafficCapture:trafficReplayer:isolatedTest -PcaptureProxyImage=<ref>
+// Without -PcaptureProxyImage the tests use migrations/capture_proxy:latest. -PproxyImageTests=exclude leaves
+// those tests out and -PproxyImageTests=only runs nothing else, which is how CI builds the image once instead
+// of in every test stripe.
+def captureProxyImage = (findProperty('captureProxyImage') ?: System.getProperty('captureProxyImage')
+    ?: 'migrations/capture_proxy:latest').toString()
+def proxyImageTests = (findProperty('proxyImageTests') ?: 'include').toString()
+if (!(proxyImageTests in ['include', 'exclude', 'only'])) {
+    throw new GradleException("-PproxyImageTests must be include, exclude or only, not '${proxyImageTests}'")
+}
+tasks.withType(Test).configureEach {
+    // Read by SharedDockerImageNames.CAPTURE_PROXY. A system property is a task input, so pointing at another
+    // image re-runs the tests; rebuilding under the same reference does not, so use a fresh tag per build.
+    systemProperty 'captureProxyImage', captureProxyImage
+}
+tasks.named('isolatedTest', Test) {
+    useJUnitPlatform {
+        if (proxyImageTests == 'exclude') {
+            excludeTags 'requiresProxyImage'
+        } else if (proxyImageTests == 'only') {
+            includeTags = ['requiresProxyImage'] as Set
+        }
     }
 }
