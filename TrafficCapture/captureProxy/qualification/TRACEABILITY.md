@@ -29,7 +29,7 @@ A row is only `PROVED` when a named command and its output exist in a report und
 |---|---|---|
 | 0 | Agreed correctness and performance scorecard | **MET** (Java scorecard measured; see `reports/`) |
 | 1 | Zero exercised WIRE/PROTOCOL divergence + reproducible Java/Rust perf report, owner-reviewed | **AWAITING OWNER REVIEW** (`reports/phase1-owner-review.md`; recommendation: rework delivery path) |
-| 2 | Java replayer utilities decode Rust golden records with equivalent fields and exact bytes | TODO |
+| 2 | Java replayer utilities decode Rust golden records with equivalent fields and exact bytes | **MET** (12 goldens, 40 records; Java 39/39, 0 divergences; see [Phase 2 detail](#phase-2-detail)) |
 | 3 | Kafka/rebalance/failure scenarios pass against a real broker with Rust as writer | TODO |
 | 4 | Black-box compatibility against recorded Java transcripts/goldens | TODO |
 | 5 | No proxy Java implementation/tests remain; surviving modules build; migration spec yields a correct Rust-only deployment | TODO |
@@ -47,6 +47,52 @@ A row is only `PROVED` when a named command and its output exist in a report und
 | Contract-vs-code discrepancies resolved | PROVED | 5 verified Java defects + 5 doc/code disagreements; rulings in `OWNER-DECISIONS.md` (OD-1..OD-7) |
 | Java CPU/allocation/memory profile matrix | PROVED | JFR attribution: 49.9% of Java-thread CPU is telemetry, 23.1% in ActiveContextTracker sorted-map work; 45% of allocation is protobuf byte[]. async-profiler NOT available for linux/arm64. |
 | Java baseline performance scorecard | PROVED | 38 valid runs across 8 profiles, >=5 reps each. Cross-validates production within ~1%: 3.512 cores at 23.01% churn vs 3.54/pod, 1.045x Kafka amplification vs ~1.05x. |
+
+### Phase 2 detail
+
+This is a cross-language golden test that is checked in and reviewed. It is
+separate from the end-to-end wire-proof differential.
+
+- **Generator:** `crates/capture-test-support/tests/golden_records.rs`. It
+  drives the real `ConnectionRecorder` and `capture-kafka`'s real heartbeat and
+  probe builders. Inputs are fixed ids, a `ManualClock` and fixed timestamps;
+  no protobuf is built by hand.
+- **Goldens:** `crates/capture-test-support/fixtures/goldens/*.json`.
+- **Java decoder:**
+  `trafficReplayer/src/test/java/org/opensearch/migrations/replay/kafka/RustGoldenRecordCompatibilityTest.java`.
+  Records go through `PolledKafkaRecord` and `ApplicationKafkaRecord`, then the
+  real `ReplayIntakeOwner`/`SourceConnectionState` reconstruction, and the
+  `TrafficStreamDumper`/`HttpTransactionDumper` views of dump-both.
+- **Commits:** `ae743961b` (generator and goldens), `013ac2c72` (Java test).
+
+| Item | Status | Evidence |
+|---|---|---|
+| Goldens generated from the real encoder path, and current | PROVED | `cargo test -p capture-test-support --test golden_records`: 4 passed. 12 scenarios, 40 records (30 `trafficStream`, 9 `writerPartitionHeartbeat`, 1 `captureCapabilityProbe`), 145 observations. Before rendering, the generator checks prost's decoding against the inputs: read/write/interim bytes exact, `connectionObservationSequence` +1 from 1, index contiguous with `numberOfThisLastChunk` only on the final record, `CloseObservation` exactly last, key = `connectionId`, every record within its payload limit. The test fails if a golden is stale; `CAPTURE_GOLDENS_UPDATE=1` rewrites them. |
+| Rust gates with the goldens | PROVED | `cargo test --workspace --locked`: 926 passed, 0 failed, 10 ignored (real-broker tests). `cargo clippy --workspace --all-targets --locked -- -D warnings` clean. `cargo fmt --check` clean. |
+| Java decodes Rust records with equivalent fields | PROVED | `./gradlew :TrafficCapture:trafficReplayer:test --rerun --tests 'org.opensearch.migrations.replay.kafka.RustGoldenRecordCompatibilityTest'`: 39 tests, 0 failures, 0 skipped. All 40 records match every expected field, including presence of `priorRequestsReceived`, `lastObservationWasUnterminatedRead`, `emittedAtMillis` and both `EndOfMessageIndication` lengths. Java re-serializes all 40 to byte-identical values, so they are canonical protobuf, with 0 unknown fields. Key rules hold: traffic = `connectionId`, heartbeat = `writerNodeId:heartbeat:partition`, probe = `writerNodeId:probeId`. |
+| Java reconstructs exact embedded traffic bytes | PROVED | Same run. Replay intake applied all 40 records with 0 capture-protocol violations. REQ/INT/RSP/CLOSED events match exactly on all 11 connections: 18 REQ, 1 INT, 18 RSP, 10 CLOSED. The eleventh connection carries no traffic and correctly yields no events. Matched per event: ordinals, bytes, packet counts, first-byte and EOM source times, request-completing `LogAppendTime`, completion evidence, and requestForwarded time. Heartbeats give `EXACT_HEARTBEAT_STARTED`=8 and `TIMELY_HEARTBEAT_ACCEPTED`=1; the probe gives no writer transition. The dump-both raw and transaction lines agree for all 12 scenarios. |
+| Continuity fields mean the same to the replayer | PROVED | Same run. Replay resumed mid-connection reconstructs the expected later requests and ordinals: `critical_mutations` from record 3 gives DELETE #2 and PATCH #3; `periodic_flush` from record 2 discards the inherited tail and gives GET #2. |
+| Comparison sensitivity (negative control) | PROVED | 3 perturbations gave 4 failures, each in the expected test: one read byte inside a Kafka value, one expected `priorRequestsReceived`, and one expected completion evidence. The goldens were then restored. Gradle does not track the goldens as test inputs, so `--rerun` is required after a golden changes. |
+| WIRE/PROTOCOL divergences found | **none** | 0 |
+
+| Scenario | Records | What it pins |
+|---|---|---|
+| `keep_alive_gets` | 1 | 3 fragmented GETs on one connection; one terminal record |
+| `critical_mutations` | 5 | POST/PUT/DELETE/PATCH, each flushed after its EOM (Critical Mutation Traffic); `requestForwarded` opens the next record; resume |
+| `chunked_with_trailers` | 2 | chunked body, terminal chunk, 2 trailers |
+| `expect_continue_interim` | 2 | `interimResponse` (100 Continue) between head and body, delivered for the request |
+| `suppressed_request_dropped` | 1 | captured prefix + `requestDropped` between two captured GETs; ordinal #1 consumed |
+| `segmented_large_response` | 8 | 6 KiB response as `writeSegment` across records under a 1024-byte payload limit, `segmentEnd` |
+| `segmented_large_request` | 5 | 3000-byte body as `readSegment` across records under a 1024-byte payload limit |
+| `connection_exception` | 1 | truncated response, `connectionException` (unproven completion), then close |
+| `close_terminal_record` | 3 | F-deadline flush; terminal record holding only `close`; close-delimited response; traffic-less connection |
+| `periodic_flush` | 2 | scheduled F flush splits a request across records; `priorRequestsReceived`=1, `lastObservationWasUnterminatedRead`=true; resume |
+| `writer_partition_heartbeat` | 9 | heartbeats on 8 partitions, then one with `emittedAtMillis` absent |
+| `capture_capability_probe` | 1 | probe with writer `captureActivationId:PROBE` |
+
+Not covered by the goldens: producer-level facts, which a `RecordSink` cannot
+express. These are zero Kafka headers and the `LogAppendTime` timestamp type.
+The wire-proof differential still covers them.
 
 ## Phase 1 continuation gates
 
@@ -84,15 +130,15 @@ Evidence suites: PROTO, WIRE, HTTP, KMODEL, KREAL, TRANSPORT, TLS, OPS, DEPLOY, 
 
 | ID | Treatment | Rust owner | Status | Evidence |
 |---|---|---|---|---|
-| PROTO-01 | Exact | `capture-wire` generated types | PROVED | Java replayer decodes Rust records: 3 Rust passes, 0 differences vs calibrated Java (wire-proof) |
+| PROTO-01 | Exact | `capture-wire` generated types | PROVED | Java replayer decodes Rust records: 3 Rust passes, 0 differences vs calibrated Java (wire-proof). Phase 2 goldens: Java decodes all 40 records with equivalent fields, re-serializes them to byte-identical values, and finds 0 unknown fields ([Phase 2 detail](#phase-2-detail)) |
 | WIRE-01 | Retired | `capture-wire::record_buffer` | IMPL | RAII buffers; exactly-once release proved on 8 paths |
 | WIRE-02 | Exact | `capture-wire::protobuf_size` | IMPL | All 11 Java size vectors + full 38-row CsvSource + proptests vs prost |
-| WIRE-03 | Semantic | `capture-wire::connection_recorder` | IMPL | Observation catalogue, contiguous +1 sequence, counters, F deadline |
+| WIRE-03 | Semantic | `capture-wire::connection_recorder` | PROVED | Observation catalogue, contiguous +1 sequence, counters, F deadline. Phase 2 goldens: the replayer accepts the Rust sequences, EOM lengths, `requestDropped`, `connectionException` and terminal close, and honours `priorRequestsReceived`/`lastObservationWasUnterminatedRead` on mid-connection resume ([Phase 2 detail](#phase-2-detail)) |
 | WIRE-04 | Semantic | `capture-kafka::connection_factory` | PROVED | route immutability across a replacement generation, real broker |
 | WIRE-05 | Semantic | `capture-kafka::readiness` | PROVED | listener admission blocked until capability + first generation usable; proved by construction in the binary (port never binds against a dead broker, exit 78) |
 | WIRE-06 | Semantic | `capture-kafka::shutdown` | PROVED | retirement e2e: normal, force-close, large-response-then-close all outcome=completed; compromised path skips retirement per 7.3 |
 | WIRE-07 | Exact | `capture-wire::publish_chain` | PROVED | per-connection ack chain; terminal-record drain fixed (gap A) and re-proved 3/3 e2e |
-| WIRE-08 | Exact | `capture-wire` recorder/encoder/segmentation | PROVED | 0-difference replayer differential; 3 MiB segmented response reconstructs RSP[3145863]; F flush e2e 2003 ms at F=2000 ms |
+| WIRE-08 | Exact | `capture-wire` recorder/encoder/segmentation | PROVED | 0-difference replayer differential; 3 MiB segmented response reconstructs RSP[3145863]; F flush e2e 2003 ms at F=2000 ms. Phase 2 goldens: canonical single-pass bytes; segmented reads and writes, critical-mutation and F-deadline record splits all reconstruct exact bytes in Java ([Phase 2 detail](#phase-2-detail)) |
 | WIRE-09 | Semantic | `capture-wire::record_sink` | IMPL | Kafka-free RecordSink trait |
 | WIRE-10 | Operational | `capture-observability::connection_span` | IMPL | connection span at debug; metrics unconditional |
 | WIRE-11 | Retired | `capture-observability::RootTelemetry` | N/A | retired: RootTelemetry explicit registry |
