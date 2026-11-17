@@ -59,6 +59,8 @@ const KAFKA_AUTH_CONFIG_MOUNT_PATH = "/config/kafka-auth";
 const KAFKA_AUTH_CONFIG_FILE_PATH = `${KAFKA_AUTH_CONFIG_MOUNT_PATH}/client.properties`;
 const KAFKA_CA_MOUNT_PATH = "/config/kafka-ca";
 const CAPTURE_PROXY_SSL_TRUST_CERT_PEM_ENV_VAR = "CAPTURE_PROXY_SSL_TRUST_CERT_PEM";
+/** Created by the migrationAssistantWithArgo chart on EKS (aws.configureAwsEksResources). */
+const AWS_METADATA_CONFIG_MAP = "aws-metadata";
 
 /**
  * How long Kubernetes waits after SIGTERM before it SIGKILLs a capture-proxy pod.
@@ -201,6 +203,23 @@ function makeProxyParamsDict(
     const effectiveKafkaSecretName = expr.getLoose(kafkaConfig, "secretName");
     const effectiveKafkaUserName = expr.getLoose(kafkaConfig, "kafkaUserName");
     const shouldUseScram = expr.equals(effectiveKafkaAuthType, expr.literal("scram-sha-512"));
+    // proxyConfig.enableMSKAuth is the user-facing switch for the proxy's MSK IAM auth, but the
+    // Kafka cluster's own auth type for an existing MSK cluster is "none". Passing both as-is
+    // (`enableMSKAuth: true` with `kafkaAuthType: none`) is a combination the proxy rejects as a
+    // configuration error, so the switch could never take effect. With the switch on and no other
+    // auth type in force, the proxy's auth type is msk-iam. A real conflict (the switch together
+    // with scram-sha-512) is still passed through for the proxy to reject.
+    const kafkaAuthTypeForProxy = expr.ternary(
+        expr.and(
+            expr.dig(config, ["proxyConfig", "enableMSKAuth"], false),
+            expr.or(
+                expr.equals(effectiveKafkaAuthType, expr.literal("")),
+                expr.equals(effectiveKafkaAuthType, expr.literal("none"))
+            )
+        ),
+        expr.literal("msk-iam"),
+        effectiveKafkaAuthType
+    );
     const processConfig = expr.omit(
         expr.get(config, "proxyConfig"),
         ...ARGO_PROXY_WORKFLOW_OPTION_KEYS
@@ -228,7 +247,7 @@ function makeProxyParamsDict(
                     insecureDestination: expr.dig(config, ["sourceConfig", "allowInsecure"], false),
                     kafkaTopic: expr.jsonPathStrict(proxyConfig, "kafkaConfig", "kafkaTopic"),
                     kafkaListenerName: effectiveKafkaListenerName,
-                    kafkaAuthType: effectiveKafkaAuthType,
+                    kafkaAuthType: kafkaAuthTypeForProxy,
                     kafkaSecretName: effectiveKafkaSecretName,
                     kafkaUserName: effectiveKafkaUserName,
                 }),
@@ -328,6 +347,20 @@ function makeProxyDeploymentManifest(args: {
             {
                 name: "MIGRATIONS_ROOT_LOG_LEVEL",
                 value: makeStringTypeProxy(args.rootLogLevel)
+            },
+            {
+                // MSK IAM signs its token for a region, and the proxy takes it from AWS_REGION /
+                // AWS_DEFAULT_REGION rather than guessing it from a broker host name. EKS
+                // deployments publish the region in the aws-metadata ConfigMap; elsewhere the
+                // reference is absent, the variable stays unset, and only msk-iam needs it.
+                name: "AWS_REGION",
+                valueFrom: {
+                    configMapKeyRef: {
+                        name: AWS_METADATA_CONFIG_MAP,
+                        key: "AWS_REGION",
+                        optional: true
+                    }
+                }
             }
         ],
         volumeMounts: [
