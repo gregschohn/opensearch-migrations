@@ -423,17 +423,6 @@ const SCENARIOS: Scenario[] = [
             ...DEFAULT_TUNING,
         },
     },
-    {
-        name: "rejected-set-header-in-name-colon-value-form",
-        description: "setHeader written the way the schema describes it, one 'Header-Name: value' " +
-            "string per header. The proxy reads setHeader as alternating names and values, as Java " +
-            "does, so this is rejected as a configuration error (exit 2) instead of starting.",
-        spec: migrationSpec({
-            kafka: {existing: {kafkaConnection: "kafka.example.internal:9092"}},
-            proxyConfig: {listenPort: 9201, tls: {mode: "plaintext"}, setHeader: ["X-Capture-Proxy: rust"]},
-        }),
-        expect: {accepted: false, exitCode: 2, errorContains: "even number"},
-    },
 ];
 
 const templates = (SetupCapture as any).templates as Record<string, any>;
@@ -600,6 +589,17 @@ describe("capture-proxy configuration rendered for the Rust proxy", () => {
         }
         expect(fs.existsSync(file)).toBe(true);
         expect(fs.readFileSync(file, "utf-8")).toBe(rendered);
+    });
+
+    it("rejects setHeader written as 'Name: value' strings at spec validation, before any proxy starts", async () => {
+        // Both proxies read setHeader as alternating names and values. The schema used to document
+        // one "Name: value" string per header, which the proxy then refused at startup (exit 2); the
+        // schema now rejects that form itself, with a message that says how to write it.
+        const spec = migrationSpec({
+            kafka: {existing: {kafkaConnection: "kafka.example.internal:9092"}},
+            proxyConfig: {listenPort: 9201, tls: {mode: "plaintext"}, setHeader: ["X-Capture-Proxy: rust"]},
+        });
+        await expect(new MigrationConfigTransformer().processFromObject(spec)).rejects.toThrow(/not a header name/);
     });
 
     it("has no committed fixture without a scenario", () => {

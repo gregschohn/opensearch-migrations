@@ -725,10 +725,40 @@ export const USER_PROXY_WORKFLOW_OPTIONS = withScalableServiceValidation(z.objec
 }))
     .describe("Kubernetes deployment-level options for the capture proxy.");
 
+/**
+ * A flat list of alternating header names and values, as both proxies read `setHeader` and
+ * `suppressCaptureForHeaderMatch`: `["X-Env", "prod", "X-Tier", "gold"]`. A `"Name: value"` entry is
+ * rejected here because the proxy would refuse it at startup (an odd-length list, or a name that is
+ * not an HTTP token).
+ */
+const HTTP_TOKEN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+function alternatingHeaderPairs(valueLabel: string) {
+    return z.array(z.string()).superRefine((entries, ctx) => {
+        if (entries.length % 2 !== 0) {
+            ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                message: `expected alternating header names and ${valueLabel}s, ` +
+                    `e.g. ["X-Env", "prod"]; got ${entries.length} entries (an odd number)`,
+            });
+        }
+        entries.forEach((entry, index) => {
+            if (index % 2 === 0 && !HTTP_TOKEN.test(entry)) {
+                ctx.addIssue({
+                    code: z.ZodIssueCode.custom,
+                    path: [index],
+                    message: `"${entry}" is not a header name; list names and ${valueLabel}s as ` +
+                        `separate entries (["Name", "value"]), not "Name: value"`,
+                });
+            }
+        });
+    });
+}
+
 export const USER_PROXY_PROCESS_OPTIONS = withOtelExportOptions(z.object({
     ...OTEL_EXPORT_OPTIONS,
-    setHeader: z.array(z.string()).optional()
-        .describe("List of static headers to add to proxied requests, each in 'Header-Name: value' format.")
+    setHeader: alternatingHeaderPairs("value").optional()
+        .describe("Static headers to add to proxied requests, as a flat list of alternating header names and values, " +
+            "e.g. ['X-Env', 'prod', 'X-Tier', 'gold'].")
         .checksumFor('snapshot', 'replayer')
         .changeRestriction('gated'),
     destinationConnectionPoolSize: z.number().default(0).optional()
@@ -760,8 +790,9 @@ export const USER_PROXY_PROCESS_OPTIONS = withOtelExportOptions(z.object({
     enableMSKAuth: z.boolean().default(false).optional()
         .describe("Enable SASL/IAM authentication for the proxy's Kafka producer when connecting to Amazon MSK. Uses the pod's IAM role via EKS Pod Identity.")
         .changeRestriction('gated'),
-    suppressCaptureForHeaderMatch: z.array(z.string()).default([]).optional()
-        .describe("List of header patterns. Requests matching any of these header patterns will be forwarded but not captured to Kafka.")
+    suppressCaptureForHeaderMatch: alternatingHeaderPairs("value regex").default([]).optional()
+        .describe("Headers that suppress capture, as a flat list of alternating header names and whole-value regexes, " +
+            "e.g. ['X-Probe', 'true']. Requests with a matching header are forwarded but not captured to Kafka.")
         .checksumFor('snapshot', 'replayer')
         .changeRestriction('gated'),
     suppressCaptureForMethod: z.string().default("").optional()
