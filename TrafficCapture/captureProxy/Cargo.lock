@@ -597,12 +597,14 @@ name = "capture-proxy"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "capture-config",
  "capture-http-scan",
  "capture-kafka",
  "capture-observability",
  "capture-transport",
  "capture-wire",
+ "serde_json",
  "tempfile",
  "thiserror",
  "tokio",

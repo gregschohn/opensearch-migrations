@@ -25,4 +25,7 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+# base64 and serde_json read the orchestration contract fixtures (tests/orchestration_contract.rs).
+base64.workspace = true
+serde_json.workspace = true
 tempfile.workspace = true
