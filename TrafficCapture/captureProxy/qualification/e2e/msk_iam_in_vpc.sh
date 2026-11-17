@@ -1,11 +1,15 @@
 set -uo pipefail
+# Run on an EC2 instance inside the MSK cluster's VPC, with an instance profile that grants
+# kafka-cluster:* on the cluster. MSK_BOOTSTRAP is the cluster's IAM bootstrap endpoint
+# (host:9098); AWS_REGION defaults to us-east-2.
+: "${MSK_BOOTSTRAP:?set MSK_BOOTSTRAP to the MSK IAM bootstrap host:port}"
 unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_PROFILE
-export AWS_REGION=us-east-2
+export AWS_REGION="${AWS_REGION:-us-east-2}" MSK_BOOTSTRAP
 cd /opt/rp
 cat > /opt/rp/msk_proof.py <<'PY'
 import os, socket, subprocess, sys, time, signal, threading, http.server, socketserver
 BIN = '/opt/rp/src/TrafficCapture/captureProxy/target/debug/capture-proxy'
-BOOT = '<msk-iam-bootstrap-host>:9098'
+BOOT = os.environ['MSK_BOOTSTRAP']
 class H(http.server.BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
     def _ok(self):
