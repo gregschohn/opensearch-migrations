@@ -47,12 +47,8 @@ pub const DEFAULT_MAX_TRAFFIC_BUFFER_SIZE: u32 = 1024 * 1024;
 /// Default Kafka traffic topic (`KafkaCaptureFactory.java:53`).
 pub const DEFAULT_KAFKA_TOPIC: &str = "logging-traffic-topic";
 
-/// Default `--kafka-producer-count` (owner decision OD-12).
-///
-/// One until librdkafka's idempotent per-partition in-flight cap is resolved: with more than one
-/// producer that cap arms an immediate broker-thread wake-up it then refuses to act on, and the
-/// thread spins (measured: 2.4 proxy cores at 70 req/s with four producers under a slow broker).
-pub const DEFAULT_KAFKA_PRODUCER_COUNT: u32 = 1;
+/// Default `--kafka-producer-count` (owner decision OD-12): sized automatically, capped at four.
+pub const DEFAULT_KAFKA_PRODUCER_COUNT: &str = "auto";
 
 /// Default Kafka producer `client.id` (`KafkaConfig.java:16`).
 pub const DEFAULT_KAFKA_CLIENT_ID: &str = "HttpCaptureProxyProducer";
@@ -1003,19 +999,21 @@ pub struct CliArgs {
     )]
     pub kafka_topic: String,
 
-    /// Number of independent Kafka producers publishing captured traffic (owner decision OD-12).
+    /// Kafka producers publishing captured traffic: `auto`, or a fixed count (owner decision OD-12).
     ///
-    /// Partition `p` is always published by producer `p mod COUNT`, so each partition keeps exactly
-    /// one producer for the life of the process. More producers multiply the requests the proxy can
-    /// keep in flight (idempotence caps each producer at five per broker) at the cost of librdkafka
-    /// threads and broker connections.
+    /// `auto` runs `min(4, the most assigned partitions led by one broker)` producers, created as
+    /// partitions are assigned: one when each broker leads at most one of this proxy's partitions,
+    /// more when several share a broker (librdkafka sends one partition per request, and idempotence
+    /// caps each producer at five requests in flight per broker). A number fixes the count. Either
+    /// way each partition keeps one producer for the life of the process, and each broker's
+    /// partitions are spread across producers.
     #[arg(
         long = "kafka-producer-count",
         env = "CAPTURE_PROXY_KAFKA_PRODUCER_COUNT",
-        default_value_t = DEFAULT_KAFKA_PRODUCER_COUNT,
-        value_name = "COUNT"
+        default_value = DEFAULT_KAFKA_PRODUCER_COUNT,
+        value_name = "auto|COUNT"
     )]
-    pub kafka_producer_count: u32,
+    pub kafka_producer_count: crate::kafka::ProducerCount,
 
     /// Partition count the traffic topic must already have. `0` disables the check.
     ///

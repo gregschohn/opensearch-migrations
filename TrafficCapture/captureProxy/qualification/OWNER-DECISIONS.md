@@ -329,21 +329,37 @@ Raising `max.in.flight` above 5 was considered and rejected:
 Several producers give the same extra capacity, 5 × N requests per broker, without weakening any
 of this.
 
-**Implementation.**
+**Implementation** (amended after measurement; owner direction: automatic sizing capped at four).
 
-* `--kafka-producer-count` (`CAPTURE_PROXY_KAFKA_PRODUCER_COUNT`) takes `1..=64`. The default is
-  set from rework measurements.
-* Partition `p` is always published by producer `p mod N`, a pure function fixed for the process.
-  So every `(writerNodeId, partition)` has exactly one producer and ownership never overlaps.
-* There is never a handoff. Every handoff obligation in `proxyCaptureProtocol.md` is discharged by
-  construction.
-* The single publisher actor remains the one lane owner and orders every submission.
-* Heartbeats, traffic and capability probes for a partition share its producer, so submission
-  order and librdkafka's per-partition delivery-report order are preserved.
-* Every producer keeps idempotence, `acks=all`, `max.in.flight=5` and `linger.ms=0`. The
-  effective-configuration read-back still gates startup.
-* All producers report into one delivery channel; reports for different partitions may
-  interleave, which the protocol permits.
+* **librdkafka is built with two upstream fixes**, PR #5636 and draft PR #5622, carried as patches in
+  `third_party/rdkafka-sys/`.
+  * The idempotent per-partition cap counted records instead of requests.
+  * The broker thread busy-spun while a partition was at that cap.
+  * With both fixed, the remaining limit is five requests per producer per broker connection.
+* **`--kafka-producer-count` takes `auto` or a number** (`CAPTURE_PROXY_KAFKA_PRODUCER_COUNT`).
+  * `auto` is the default: `min(4, the most of a generation's partitions led by one broker)`,
+    evaluated when partitions are assigned.
+  * Producers are created on demand, so production's layout (about one partition per broker per
+    proxy) runs one, and four partitions on one broker run four.
+  * A number (1–64) fixes the count.
+* **Each partition's producer is chosen once and never changes** for the life of the process. It
+  is chosen when a generation announces the partition (`RecordProducer::prepare_partitions`,
+  called before the generation's first heartbeat) or, failing that, by its first record, which
+  pins it to producer 0. This covers the capability probe.
+  * So every `(writerNodeId, partition)` has exactly one producer and ownership never overlaps.
+  * No handoff ever occurs, which discharges the drained-handoff obligation by construction.
+  * A leader change or rebalance can make the spread uneven, never incorrect.
+* **Each broker's partitions are spread across producers.** Each new partition goes to the producer
+  with the fewest of that leader's partitions.
+  * A `partition mod N` mapping is avoided: with Kafka's round-robin leader placement it would put
+    all of a broker's partitions on one producer whenever N divides the broker count.
+  * If leader metadata is unavailable within 2 s, all partitions are treated as one broker's.
+* **Unchanged:**
+  * The single publisher actor remains the one lane owner and orders every submission.
+  * Every producer keeps idempotence, `acks=all`, `max.in.flight=5` and `linger.ms=0`, and the
+    effective-configuration read-back still gates startup.
+  * All producers report into one delivery channel; reports for different partitions may
+    interleave, which the protocol permits.
 
 ---
 

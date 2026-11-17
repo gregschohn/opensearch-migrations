@@ -63,6 +63,8 @@ struct ScriptedProducer {
     blocked_entered: Mutex<Option<mpsc::Sender<()>>>,
     fail_next: Mutex<Option<ProduceError>>,
     flushes: AtomicU64,
+    /// Every `prepare_partitions` call, with how many records had been enqueued before it.
+    prepared: Mutex<Vec<(Vec<i32>, usize)>>,
 }
 
 impl ScriptedProducer {
@@ -111,6 +113,14 @@ impl RecordProducer for ScriptedProducer {
     fn flush(&self, _timeout: Duration) -> Result<(), String> {
         self.flushes.fetch_add(1, Ordering::SeqCst);
         Ok(())
+    }
+
+    fn prepare_partitions(&self, partitions: &[i32]) {
+        let before = self.history_len();
+        self.prepared
+            .lock()
+            .expect("test mutex")
+            .push((partitions.to_vec(), before));
     }
 }
 
@@ -521,6 +531,48 @@ fn initial_heartbeats_must_all_be_acknowledged_before_a_generation_becomes_usabl
         .expect("activation");
     assert_eq!(&*writer, "activation:1");
     assert_eq!(harness.active_partitions(), vec![0, 2]);
+}
+
+#[test]
+fn every_generation_announces_its_partitions_before_its_first_heartbeat() {
+    // OD-12: a multi-producer sink pins each partition's producer in `prepare_partitions`, so the
+    // actor must announce a generation before submitting any of its records.
+    let harness = Harness::new(timing(10_000, 30_000), 4);
+    let _first = harness
+        .handle()
+        .initialize_generation(vec![0, 2])
+        .expect("running");
+    harness.wait_for_records(2);
+    harness.acknowledge(0, 1_000);
+    harness.acknowledge(1, 1_000);
+
+    let _second = harness
+        .handle()
+        .initialize_generation(vec![1, 3])
+        .expect("running");
+    harness.wait_for_records(4);
+
+    let prepared = harness
+        .producer
+        .prepared
+        .lock()
+        .expect("test mutex")
+        .clone();
+    assert_eq!(
+        prepared.len(),
+        2,
+        "one announcement per generation: {prepared:?}"
+    );
+    assert_eq!(
+        prepared[0],
+        (vec![0, 2], 0),
+        "before the first generation's heartbeats"
+    );
+    assert_eq!(prepared[1].0, vec![1, 3]);
+    assert_eq!(
+        prepared[1].1, 2,
+        "after the first generation's two heartbeats, before the second's"
+    );
 }
 
 #[test]

@@ -128,8 +128,17 @@ pub fn kafka_settings(
     kafka.client_id().clone_into(&mut settings.client_id);
     settings.properties = file_properties;
     settings.auth = auth_mode(kafka, environment)?;
-    // Validated to 1..=64 by capture-config, so the conversion cannot fail in practice.
-    settings.producer_count = usize::try_from(kafka.producer_count()).unwrap_or(1);
+    settings.producer_sizing = match kafka.producer_count() {
+        capture_config::kafka::ProducerCount::Auto => {
+            capture_kafka::client_config::ProducerSizing::Auto {
+                cap: capture_kafka::client_config::AUTO_PRODUCER_CAP,
+            }
+        }
+        // Validated to 1..=64 by capture-config, so the conversion cannot fail in practice.
+        capture_config::kafka::ProducerCount::Fixed(count) => {
+            capture_kafka::client_config::ProducerSizing::Fixed(usize::try_from(count).unwrap_or(1))
+        }
+    };
 
     // `message.max.bytes` is what bounds a record on the wire. `--max-traffic-buffer-size` is the
     // configured traffic-stream size. Both are ceilings, so the smaller one binds; taking the

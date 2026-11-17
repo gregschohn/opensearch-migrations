@@ -42,23 +42,26 @@
 //! before `E` win even when the actor is backlogged past `E` — and the second is what lets
 //! backpressure lift the moment Kafka acknowledges.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex, RwLock, mpsc};
 use std::time::{Duration, Instant};
 
 use rdkafka::TopicPartitionList;
 use rdkafka::client::{ClientContext, OAuthToken};
+use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{BaseConsumer, Consumer, ConsumerContext, Rebalance};
 use rdkafka::error::KafkaError;
 use rdkafka::message::Message as _;
 use rdkafka::producer::{BaseRecord, DeliveryResult, Producer, ProducerContext, ThreadedProducer};
 
 use crate::budget::{BudgetClass, PublicationBudget};
-use crate::client_config::{ClientRole, KafkaClientSettings};
+use crate::client_config::{ClientRole, KafkaClientSettings, ProducerSizing};
 use crate::error::{ClientConfigError, StartupRefusal, TopicLayoutError};
 use crate::membership::{MembershipConsumer, MembershipEvent, PollOutcome};
 use crate::metrics::{CaptureMetrics, RecordKind};
 use crate::msk_iam::MskIamTokenSource;
+use crate::producer_pool::ProducerAssignment;
 use crate::publisher_actor::{DeliveryNotice, OutboundRecord, ProduceError, RecordProducer};
 use crate::routing_state::RoutingState;
 use crate::topic_metadata::{MetadataSource, PartitionLayout, TrafficTopicMetadata};
@@ -224,55 +227,144 @@ impl ProducerContext for CaptureProducerContext {
 ///
 /// # Several producers, one owner per partition (owner decision OD-12)
 ///
-/// librdkafka sends one partition per `ProduceRequest`, and idempotence caps each broker connection
-/// at five requests in flight. One producer therefore saturates its window long before the Java
-/// client, which packs every partition led by a broker into one request (Phase 1 review §5.5).
-/// The sink holds [`KafkaClientSettings::producer_count`] independent producers, each with its own
-/// broker connections and window.
-///
-/// Every record for partition `p` goes to producer `p mod N`, a pure function of the partition
-/// fixed for the life of the process. That is exactly the ownership rule of
-/// `captureAndReplayArchitecture.md` §5.1 and `proxyCaptureProtocol.md`: for each
-/// `(writerNodeId, partition)` exactly one producer and one lane owner (the single publisher
-/// actor, which still orders every submission), ownership never overlaps, and because a
-/// partition's producer never changes there is never a handoff to drain. Heartbeats, traffic and
-/// capability probes for a partition all take the same producer, so their submission order — and
-/// librdkafka's per-partition delivery-report order — is preserved.
+/// librdkafka sends one partition per `ProduceRequest`, and idempotence caps each producer at five
+/// requests in flight per broker connection, so partitions that share a leader broker and a
+/// producer compete for those slots. The sink therefore runs up to [`ProducerSizing`] producers and
+/// spreads each broker's partitions across them; see [`crate::producer_pool`] for the sizing rule
+/// and the write-once ownership that satisfies `captureAndReplayArchitecture.md` §5.1 by
+/// construction. Producers are created on demand, so the production layout runs exactly one.
 pub struct KafkaProducerSink {
-    producers: Vec<ThreadedProducer<CaptureProducerContext>>,
+    topic: String,
+    sizing: ProducerSizing,
+    factory: ProducerFactory,
+    state: RwLock<SinkState>,
 }
+
+/// What it takes to build one more producer identical to the first.
+struct ProducerFactory {
+    config: ClientConfig,
+    deliveries: mpsc::Sender<DeliveryNotice>,
+    budget: Arc<PublicationBudget>,
+    metrics: Arc<dyn CaptureMetrics>,
+    oauth: Option<Arc<MskIamTokenSource>>,
+}
+
+impl ProducerFactory {
+    fn create(&self) -> Result<Arc<ThreadedProducer<CaptureProducerContext>>, ClientConfigError> {
+        let context = CaptureProducerContext {
+            base: CaptureClientContext::new("producer", self.oauth.clone()),
+            deliveries: self.deliveries.clone(),
+            budget: Arc::clone(&self.budget),
+            metrics: Arc::clone(&self.metrics),
+            reports: AtomicU64::new(0),
+        };
+        self.config
+            .create_with_context(context)
+            .map(Arc::new)
+            .map_err(|error| ClientConfigError::ClientCreation {
+                role: "producer",
+                detail: error.to_string(),
+            })
+    }
+}
+
+struct SinkState {
+    producers: Vec<Arc<ThreadedProducer<CaptureProducerContext>>>,
+    assignment: ProducerAssignment,
+}
+
+/// How long a generation waits for leader metadata before spreading without it.
+const LEADER_LOOKUP_TIMEOUT: Duration = Duration::from_secs(2);
 
 impl std::fmt::Debug for KafkaProducerSink {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("KafkaProducerSink")
-            .field("producers", &self.producers.len())
+            .field("sizing", &self.sizing)
+            .field("producers", &self.producer_count())
             .finish_non_exhaustive()
     }
 }
 
 impl KafkaProducerSink {
-    /// How many independent producers this sink owns.
+    /// How many producers this sink owns now.
     #[must_use]
     pub fn producer_count(&self) -> usize {
-        self.producers.len()
+        self.read_state().producers.len()
     }
 
-    /// The producer that owns `partition` for the life of the process.
-    fn owner(&self, partition: i32) -> &ThreadedProducer<CaptureProducerContext> {
-        &self.producers[producer_index(partition, self.producers.len())]
+    /// The producer index that owns `partition`, if one has been chosen.
+    #[must_use]
+    pub fn producer_for(&self, partition: i32) -> Option<usize> {
+        self.read_state().assignment.owner_of(partition)
     }
-}
 
-/// The fixed partition → producer mapping: `partition mod count`.
-///
-/// Kafka partitions are non-negative; `rem_euclid` keeps the mapping total for any `i32` anyway.
-fn producer_index(partition: i32, count: usize) -> usize {
-    debug_assert!(
-        count > 0,
-        "a producer sink always owns at least one producer"
-    );
-    let count = i64::try_from(count).unwrap_or(i64::MAX).max(1);
-    usize::try_from(i64::from(partition).rem_euclid(count)).unwrap_or(0)
+    fn read_state(&self) -> std::sync::RwLockReadGuard<'_, SinkState> {
+        // A poisoned lock means a panic while holding it, and the process aborts on panic.
+        self.state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn write_state(&self) -> std::sync::RwLockWriteGuard<'_, SinkState> {
+        self.state
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The first producer, which always exists; it serves metadata.
+    fn first(&self) -> Arc<ThreadedProducer<CaptureProducerContext>> {
+        Arc::clone(&self.read_state().producers[0])
+    }
+
+    /// The producer for `partition`, pinning it to producer 0 on first use if no generation
+    /// announced it (the capability probe at startup).
+    fn owner(&self, partition: i32) -> Arc<ThreadedProducer<CaptureProducerContext>> {
+        {
+            let state = self.read_state();
+            if let Some(index) = state.assignment.owner_of(partition) {
+                return Arc::clone(&state.producers[index]);
+            }
+        }
+        let mut state = self.write_state();
+        let index = state.assignment.owner_or_pin_first(partition);
+        Arc::clone(&state.producers[index])
+    }
+
+    /// Each partition's current leader broker, or `None` for all of them if metadata is
+    /// unavailable within [`LEADER_LOOKUP_TIMEOUT`].
+    fn leaders(&self, partitions: &[i32]) -> Vec<(i32, Option<i32>)> {
+        let lookup = self
+            .first()
+            .client()
+            .fetch_metadata(Some(&self.topic), LEADER_LOOKUP_TIMEOUT)
+            .map(|metadata| {
+                metadata
+                    .topics()
+                    .iter()
+                    .filter(|topic| topic.name() == self.topic)
+                    .flat_map(|topic| topic.partitions().iter())
+                    .filter(|partition| partition.leader() >= 0)
+                    .map(|partition| (partition.id(), partition.leader()))
+                    .collect::<HashMap<i32, i32>>()
+            });
+        match lookup {
+            Ok(leaders) => partitions
+                .iter()
+                .map(|partition| (*partition, leaders.get(partition).copied()))
+                .collect(),
+            Err(error) => {
+                tracing::warn!(
+                    topic = %self.topic,
+                    detail = %error,
+                    "event=capture_producer_leader_lookup_failed reason=spreading_without_leaders"
+                );
+                partitions
+                    .iter()
+                    .map(|partition| (*partition, None))
+                    .collect()
+            }
+        }
+    }
 }
 
 impl RecordProducer for KafkaProducerSink {
@@ -309,13 +401,76 @@ impl RecordProducer for KafkaProducerSink {
     fn flush(&self, timeout: Duration) -> Result<(), String> {
         // One deadline across all producers, not `timeout` each: shutdown budgets are absolute.
         let deadline = Instant::now() + timeout;
-        for (index, producer) in self.producers.iter().enumerate() {
+        let producers = self.read_state().producers.clone();
+        for (index, producer) in producers.iter().enumerate() {
             let remaining = deadline.saturating_duration_since(Instant::now());
             producer
                 .flush(remaining)
                 .map_err(|error| format!("producer {index}: {error}"))?;
         }
         Ok(())
+    }
+
+    fn prepare_partitions(&self, partitions: &[i32]) {
+        let unpinned = {
+            let state = self.read_state();
+            partitions
+                .iter()
+                .any(|partition| state.assignment.owner_of(*partition).is_none())
+        };
+        if !unpinned {
+            return;
+        }
+        // Leader lookup happens outside the lock; the actor is the only caller, so nothing races
+        // to pin these partitions in between except a first-use record, which `assign` respects.
+        let generation = self.leaders(partitions);
+
+        let mut state = self.write_state();
+        let owned = state.producers.len();
+        // Plan on a copy and commit only once the producers it needs exist, so no partition is
+        // ever pinned to a producer that was never created.
+        let mut trial = state.assignment.clone();
+        let mut plan = trial.assign(&generation, self.sizing, owned);
+        while state.producers.len() < plan.required {
+            match self.factory.create() {
+                Ok(producer) => state.producers.push(producer),
+                Err(error) => {
+                    // Cannot happen with a configuration that already built one producer. Stay
+                    // correct anyway: spread over the producers that exist.
+                    tracing::error!(
+                        detail = %error,
+                        "event=capture_producer_creation_failed reason=spreading_over_existing"
+                    );
+                    trial = state.assignment.clone();
+                    plan = trial.assign(
+                        &generation,
+                        ProducerSizing::Auto {
+                            cap: state.producers.len(),
+                        },
+                        state.producers.len(),
+                    );
+                    break;
+                }
+            }
+        }
+        state.assignment = trial;
+        let summary: Vec<(i32, usize)> = partitions
+            .iter()
+            .filter_map(|partition| {
+                state
+                    .assignment
+                    .owner_of(*partition)
+                    .map(|index| (*partition, index))
+            })
+            .collect();
+        tracing::info!(
+            sizing = ?self.sizing,
+            producers = state.producers.len(),
+            spread = plan.spread,
+            leaders = ?generation,
+            owners = ?summary,
+            "event=capture_producers_assigned"
+        );
     }
 }
 
@@ -502,31 +657,16 @@ pub fn connect(
     // Every producer reports into the same channel. Per-partition report order is preserved
     // because a partition only ever has one producer.
     let (deliveries_tx, deliveries_rx) = mpsc::channel();
-    let count = settings.producer_count.max(1);
-    // One shared budget and metrics handle per producer; the last producer takes the originals.
-    let mut shared: Vec<_> = (1..count)
-        .map(|_| (Arc::clone(&budget), Arc::clone(&metrics)))
-        .collect();
-    shared.push((budget, metrics));
-    let mut producers = Vec::with_capacity(count);
-    for (budget, metrics) in shared {
-        let producer_context = CaptureProducerContext {
-            base: CaptureClientContext::new("producer", oauth.clone()),
-            deliveries: deliveries_tx.clone(),
-            budget,
-            metrics,
-            reports: AtomicU64::new(0),
-        };
-        let producer: ThreadedProducer<CaptureProducerContext> = producer_config
-            .create_with_context(producer_context)
-            .map_err(|error| ClientConfigError::ClientCreation {
-                role: "producer",
-                detail: error.to_string(),
-            })?;
-        producers.push(producer);
-    }
-    // The forwarder ends when the last producer is dropped, which closes the channel.
-    drop(deliveries_tx);
+    let factory = ProducerFactory {
+        config: producer_config,
+        deliveries: deliveries_tx,
+        budget,
+        metrics,
+        oauth: oauth.clone(),
+    };
+    let producers = (0..settings.producer_sizing.initial())
+        .map(|_| factory.create())
+        .collect::<Result<Vec<_>, _>>()?;
 
     let consumer_config = settings.build(ClientRole::MembershipConsumer)?;
     let consumer_context = CaptureConsumerContext {
@@ -541,7 +681,15 @@ pub fn connect(
         })?;
 
     Ok(CaptureClients {
-        producer: Arc::new(KafkaProducerSink { producers }),
+        producer: Arc::new(KafkaProducerSink {
+            topic: settings.topic.clone(),
+            sizing: settings.producer_sizing,
+            factory,
+            state: RwLock::new(SinkState {
+                producers,
+                assignment: ProducerAssignment::default(),
+            }),
+        }),
         consumer: Arc::new(KafkaMembershipConsumer { consumer }),
         deliveries: deliveries_rx,
     })
@@ -597,7 +745,9 @@ impl MetadataSource for ProducerMetadataSource {
         timeout: Duration,
     ) -> Result<Vec<PartitionLayout>, String> {
         // Any producer sees the same cluster metadata; the first always exists.
-        let metadata = self.0.producers[0]
+        let metadata = self
+            .0
+            .first()
             .client()
             .fetch_metadata(Some(topic), timeout)
             .map_err(|error| error.to_string())?;
@@ -1164,35 +1314,49 @@ mod tests {
     }
 
     #[test]
-    fn each_partition_has_exactly_one_producer_for_the_life_of_the_process() {
-        // OD-12 / architecture §5.1: one owner per (writer, partition), never overlapping. The
-        // mapping is a pure function of the partition, so asking twice — or after any rebalance —
-        // always names the same producer.
-        for count in 1..=8 {
-            for partition in 0..256 {
-                let owner = producer_index(partition, count);
-                assert!(owner < count);
-                assert_eq!(owner, producer_index(partition, count));
-            }
-        }
-        // Contiguous assignments (librdkafka's default `range` assignor) spread evenly.
-        let mut load = [0_usize; 4];
-        for partition in 4..12 {
-            load[producer_index(partition, 4)] += 1;
-        }
-        assert_eq!(load, [2, 2, 2, 2]);
-        // Total for any i32, though Kafka never produces a negative partition.
-        assert!(producer_index(-1, 4) < 4);
-        assert!(producer_index(i32::MIN, 3) < 3);
-    }
+    fn automatic_sizing_starts_with_one_producer_and_a_fixed_count_starts_with_all() {
+        let settings = KafkaClientSettings::new("localhost:9092");
+        let clients = connect(&settings, budget(), Arc::new(NoopMetrics), None)
+            .expect("clients construct without a reachable broker");
+        assert_eq!(clients.producer.producer_count(), 1);
 
-    #[test]
-    fn the_sink_builds_the_configured_number_of_producers() {
         let mut settings = KafkaClientSettings::new("localhost:9092");
-        settings.producer_count = 3;
+        settings.producer_sizing = ProducerSizing::Fixed(3);
         let clients = connect(&settings, budget(), Arc::new(NoopMetrics), None)
             .expect("clients construct without a reachable broker");
         assert_eq!(clients.producer.producer_count(), 3);
+    }
+
+    #[test]
+    fn a_generation_creates_producers_on_demand_and_pins_every_partition_once() {
+        // No broker: the leader lookup fails after LEADER_LOOKUP_TIMEOUT and the spread falls back
+        // to treating every partition as one broker's, which is the conservative case.
+        let settings = KafkaClientSettings::new("127.0.0.1:1");
+        let clients = connect(&settings, budget(), Arc::new(NoopMetrics), None)
+            .expect("clients construct without a reachable broker");
+        let sink = &clients.producer;
+        sink.prepare_partitions(&[0, 1, 2, 3, 4, 5]);
+        assert_eq!(sink.producer_count(), 4, "capped at four");
+        let owners: Vec<usize> = (0..6)
+            .map(|p| sink.producer_for(p).expect("pinned"))
+            .collect();
+        let mut per_producer = [0_usize; 4];
+        for owner in &owners {
+            per_producer[*owner] += 1;
+        }
+        assert!(
+            per_producer.iter().all(|n| (1..=2).contains(n)),
+            "{owners:?}"
+        );
+
+        // A second generation never moves a pinned partition.
+        sink.prepare_partitions(&[4, 5, 6]);
+        let again: Vec<usize> = (0..6)
+            .map(|p| sink.producer_for(p).expect("pinned"))
+            .collect();
+        assert_eq!(owners, again);
+        assert!(sink.producer_for(6).is_some());
+        assert_eq!(sink.producer_count(), 4);
     }
 
     #[test]

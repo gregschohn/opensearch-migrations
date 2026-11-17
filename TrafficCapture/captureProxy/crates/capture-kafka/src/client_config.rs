@@ -78,17 +78,7 @@ use crate::msk_iam::MskIamSettings;
 /// The default producer `client.id`, matching `KafkaConfig.java:16`.
 pub const DEFAULT_CLIENT_ID: &str = "HttpCaptureProxyProducer";
 
-/// Default number of independent traffic producers (owner decision OD-12).
-///
-/// Each producer brings its own five-request window per broker, so this multiplies the requests
-/// the proxy can keep in flight without weakening idempotence. One until librdkafka's per-partition
-/// in-flight cap stops busy-spinning its broker thread when more than one producer is configured
-/// (see `DEFAULT_KAFKA_PRODUCER_COUNT` in `capture-config`).
-pub const DEFAULT_PRODUCER_COUNT: usize = 1;
-
-/// Upper bound on [`KafkaClientSettings::producer_count`]. Every producer owns librdkafka threads
-/// and a connection to every broker it leads partitions on, so the count is bounded.
-pub const MAX_PRODUCER_COUNT: usize = 64;
+pub use crate::producer_pool::{AUTO_PRODUCER_CAP, MAX_FIXED_PRODUCERS, ProducerSizing};
 
 /// The default traffic topic, matching `KafkaCaptureFactory.java:53`.
 pub const DEFAULT_TOPIC: &str = "logging-traffic-topic";
@@ -221,9 +211,9 @@ pub struct KafkaClientSettings {
     pub max_message_bytes: usize,
     /// Property-file entries, already parsed.
     pub properties: BTreeMap<String, String>,
-    /// How many independent traffic producers to run, `1..=MAX_PRODUCER_COUNT`. Partition `p` is
-    /// always published by producer `p mod producer_count` (OD-12).
-    pub producer_count: usize,
+    /// How many independent traffic producers to run, and how partitions are spread over them
+    /// (OD-12; see [`crate::producer_pool`]).
+    pub producer_sizing: ProducerSizing,
 }
 
 impl KafkaClientSettings {
@@ -237,7 +227,7 @@ impl KafkaClientSettings {
             auth: AuthMode::None,
             max_message_bytes: 1024 * 1024,
             properties: BTreeMap::new(),
-            producer_count: DEFAULT_PRODUCER_COUNT,
+            producer_sizing: ProducerSizing::default(),
         }
     }
 

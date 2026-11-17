@@ -131,7 +131,7 @@ pub struct KafkaConfig {
     secret_name: Option<String>,
     property_file: Option<PathBuf>,
     required_topic_partitions: u32,
-    producer_count: u32,
+    producer_count: ProducerCount,
 }
 
 /// The Kafka parameters as configured, before validation.
@@ -160,7 +160,7 @@ pub struct KafkaInputs {
     /// `--require-kafka-topic-partitions` (Java: `--minimumKafkaTopicPartitions`).
     pub required_topic_partitions: u32,
     /// `--kafka-producer-count` (OD-12).
-    pub producer_count: u32,
+    pub producer_count: ProducerCount,
 }
 
 impl KafkaConfig {
@@ -197,10 +197,10 @@ impl KafkaConfig {
             return Err(KafkaConfigError::EmptyClientId);
         }
 
-        if !(1..=MAX_PRODUCER_COUNT).contains(&inputs.producer_count) {
-            return Err(KafkaConfigError::ProducerCount {
-                value: inputs.producer_count,
-            });
+        if let ProducerCount::Fixed(value) = inputs.producer_count
+            && !(1..=MAX_PRODUCER_COUNT).contains(&value)
+        {
+            return Err(KafkaConfigError::ProducerCount { value });
         }
 
         let username = non_empty(inputs.username);
@@ -240,7 +240,7 @@ impl KafkaConfig {
 
     /// How many independent traffic producers to run (OD-12).
     #[must_use]
-    pub fn producer_count(&self) -> u32 {
+    pub fn producer_count(&self) -> ProducerCount {
         self.producer_count
     }
 
@@ -451,9 +451,45 @@ pub enum KafkaConfigError {
     },
 }
 
-/// Upper bound on `--kafka-producer-count`. Each producer owns librdkafka threads and a connection
-/// to every broker it publishes to.
+/// Upper bound on a fixed `--kafka-producer-count`. Each producer owns librdkafka threads and a
+/// connection to every broker it publishes to.
 pub const MAX_PRODUCER_COUNT: u32 = 64;
+
+/// `--kafka-producer-count`: `auto` (the default) or a fixed number of producers (OD-12).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ProducerCount {
+    /// Sized from the assignment's leader layout, capped at four.
+    #[default]
+    Auto,
+    /// Exactly this many.
+    Fixed(u32),
+}
+
+impl std::str::FromStr for ProducerCount {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let value = value.trim();
+        if value.eq_ignore_ascii_case("auto") {
+            return Ok(Self::Auto);
+        }
+        match value.parse::<u32>() {
+            Ok(count) if (1..=MAX_PRODUCER_COUNT).contains(&count) => Ok(Self::Fixed(count)),
+            _ => Err(format!(
+                "expected `auto` or a count between 1 and {MAX_PRODUCER_COUNT}, got `{value}`"
+            )),
+        }
+    }
+}
+
+impl std::fmt::Display for ProducerCount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Auto => f.write_str("auto"),
+            Self::Fixed(count) => write!(f, "{count}"),
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -464,33 +500,42 @@ mod tests {
             brokers: Some("b-1:9096,b-2:9096".to_owned()),
             topic: crate::cli::DEFAULT_KAFKA_TOPIC.to_owned(),
             client_id: crate::cli::DEFAULT_KAFKA_CLIENT_ID.to_owned(),
-            producer_count: crate::cli::DEFAULT_KAFKA_PRODUCER_COUNT,
             ..KafkaInputs::default()
         }
     }
 
     #[test]
-    fn the_producer_count_is_bounded() {
+    fn the_producer_count_is_auto_by_default_and_bounded_when_fixed() {
+        let config = KafkaConfig::new(inputs()).expect("valid");
+        assert_eq!(config.producer_count(), ProducerCount::Auto);
         for value in [0, MAX_PRODUCER_COUNT + 1] {
             let error = KafkaConfig::new(KafkaInputs {
-                producer_count: value,
+                producer_count: ProducerCount::Fixed(value),
                 ..inputs()
             })
             .expect_err("out of range");
             assert!(matches!(error, KafkaConfigError::ProducerCount { value: v } if v == value));
         }
-        for value in [
-            1,
-            crate::cli::DEFAULT_KAFKA_PRODUCER_COUNT,
-            MAX_PRODUCER_COUNT,
-        ] {
+        for value in [1, 4, MAX_PRODUCER_COUNT] {
             let config = KafkaConfig::new(KafkaInputs {
-                producer_count: value,
+                producer_count: ProducerCount::Fixed(value),
                 ..inputs()
             })
             .expect("in range");
-            assert_eq!(config.producer_count(), value);
+            assert_eq!(config.producer_count(), ProducerCount::Fixed(value));
         }
+    }
+
+    #[test]
+    fn the_producer_count_parses_auto_or_a_bounded_number() {
+        assert_eq!("auto".parse::<ProducerCount>(), Ok(ProducerCount::Auto));
+        assert_eq!(" AUTO ".parse::<ProducerCount>(), Ok(ProducerCount::Auto));
+        assert_eq!("4".parse::<ProducerCount>(), Ok(ProducerCount::Fixed(4)));
+        for bad in ["0", "65", "-1", "four", ""] {
+            assert!(bad.parse::<ProducerCount>().is_err(), "{bad:?}");
+        }
+        assert_eq!(ProducerCount::Auto.to_string(), "auto");
+        assert_eq!(ProducerCount::Fixed(3).to_string(), "3");
     }
 
     fn scram_inputs() -> KafkaInputs {

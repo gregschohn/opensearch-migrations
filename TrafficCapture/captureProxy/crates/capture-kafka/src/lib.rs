@@ -73,6 +73,7 @@ pub mod error;
 pub mod membership;
 pub mod metrics;
 pub mod msk_iam;
+pub mod producer_pool;
 pub mod publisher_actor;
 pub mod publisher_lane;
 pub mod records;

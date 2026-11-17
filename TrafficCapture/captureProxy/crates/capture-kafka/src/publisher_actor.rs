@@ -156,6 +156,13 @@ pub trait RecordProducer: Send + Sync {
     ///
     /// Returns a message when the flush did not complete.
     fn flush(&self, timeout: Duration) -> Result<(), String>;
+
+    /// Announces every partition of a routing generation before its first record is submitted.
+    ///
+    /// A multi-producer implementation chooses each new partition's producer here (OD-12). The
+    /// choice must be write-once: a partition already seen keeps its producer. Infallible by
+    /// design: an implementation that cannot plan falls back to a correct, less even spread.
+    fn prepare_partitions(&self, _partitions: &[i32]) {}
 }
 
 /// What a delivery report told us.
@@ -731,6 +738,11 @@ impl PublisherActor {
 
     fn begin_generation(&mut self, request: &GenerationRequest) -> Result<(), CaptureFailure> {
         let pending = self.prepare_generation(&request.partitions)?;
+        // Before any lane's first heartbeat, so each partition's producer is chosen up front and
+        // never changes afterwards (OD-12).
+        self.config
+            .producer
+            .prepare_partitions(pending.partitions());
         self.config
             .metrics
             .routing_transition(RoutingTransition::GenerationPrepared);
