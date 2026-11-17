@@ -35,6 +35,7 @@ RUN dnf -y update \
       libcurl-devel \
       zlib-devel \
       libzstd-devel \
+      patch \
       tar \
       gzip \
       xz \
@@ -68,7 +69,10 @@ WORKDIR /build/captureProxy
 # CARGO_PROFILE=profiling builds the same code with release code generation but keeps symbols, for
 # CPU profiling only. Performance gates are measured on the default `release` profile.
 ARG CARGO_PROFILE=release
-RUN cargo build --profile "${CARGO_PROFILE}" --locked --bin capture-proxy \
+# librdkafka 2.12.1 plus two upstream idempotent-producer fixes, recreated from the checksum-pinned
+# crate and the committed patches (third_party/rdkafka-sys/README.md).
+RUN third_party/rdkafka-sys/prepare.sh \
+ && cargo build --profile "${CARGO_PROFILE}" --locked --bin capture-proxy \
  && mkdir -p /build/out \
  && cp "target/${CARGO_PROFILE}/capture-proxy" /build/out/capture-proxy \
  && if [ "${CARGO_PROFILE}" = "release" ]; then strip /build/out/capture-proxy; fi \

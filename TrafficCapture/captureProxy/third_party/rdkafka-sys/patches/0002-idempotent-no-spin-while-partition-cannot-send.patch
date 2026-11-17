@@ -1,0 +1,82 @@
+Upstream: https://github.com/confluentinc/librdkafka/pull/5622 (head 212abf34156b, DRAFT)
+Fixes:    https://github.com/confluentinc/librdkafka/issues/5617
+Subject:  Idempotent producer: don't spin while a partition can't send
+
+rd_kafka_msgq_allow_wakeup_at lowered the broker thread's wake-up to "now"
+(linger.ms=0) before the idempotent in-flight cap returned without sending, so
+the broker thread spun on zero-timeout polls until a response arrived. The
+wake-up is now applied only once a request can actually be created; after all
+request slots are used no wake-up is armed (the response wakes the thread); and
+a response handled on a previous leader's thread wakes the current one. Source
+hunks only, rebased onto librdkafka 2.12.1. Applied after 0001.
+
+diff -ru -x *.orig b/librdkafka/src/rdkafka_broker.c c/librdkafka/src/rdkafka_broker.c
+--- b/librdkafka/src/rdkafka_broker.c	2026-11-16 19:55:50
++++ c/librdkafka/src/rdkafka_broker.c	2026-11-16 19:55:50
+@@ -3889,6 +3889,7 @@
+         int inflight              = 0;
+         uint64_t epoch_base_msgid = 0;
+         rd_bool_t batch_ready     = rd_false;
++        rd_ts_t batch_wakeup      = RD_TS_MAX;
+ 
+         /* By limiting the number of not-yet-sent buffers (rkb_outbufs) we
+          * provide a backpressure mechanism to the producer loop
+@@ -3974,12 +3975,7 @@
+                  * Unless flushing in which case immediate
+                  * wakeups are allowed. */
+                 batch_ready = rd_kafka_msgq_allow_wakeup_at(
+-                    &rktp->rktp_msgq, &rktp->rktp_xmit_msgq,
+-                    /* Only update the broker thread wakeup time
+-                     * if connection is up and messages can actually be
+-                     * sent, otherwise the wakeup can't do much. */
+-                    rkb->rkb_state == RD_KAFKA_BROKER_STATE_UP ? next_wakeup
+-                                                               : NULL,
++                    &rktp->rktp_msgq, &rktp->rktp_xmit_msgq, &batch_wakeup,
+                     now, flushing ? 1 : rkb->rkb_rk->rk_conf.buffering_max_us,
+                     /* Batch message count threshold */
+                     rkb->rkb_rk->rk_conf.batch_num_messages,
+@@ -4119,6 +4115,10 @@
+                 return 0;
+         }
+ 
++        /* Only once producing is possible, else the thread spins (#5617). */
++        if (batch_wakeup != RD_TS_MAX)
++                rd_kafka_set_next_wakeup(next_wakeup, batch_wakeup);
++
+         /* Attempt to fill the batch size, but limit our waiting
+          * to queue.buffering.max.ms, batch.num.messages, and batch.size. */
+         if (!batch_ready) {
+@@ -4142,7 +4142,8 @@
+         if (cnt > 0) {
+                 rd_kafka_toppar_lock(rktp);
+                 batch_ready = rd_kafka_msgq_allow_wakeup_at(
+-                    &rktp->rktp_msgq, &rktp->rktp_xmit_msgq, next_wakeup, now,
++                    &rktp->rktp_msgq, &rktp->rktp_xmit_msgq,
++                    reqcnt < max_requests ? next_wakeup : NULL, now,
+                     flushing ? 1 : rkb->rkb_rk->rk_conf.buffering_max_us,
+                     /* Batch message count threshold */
+                     rkb->rkb_rk->rk_conf.batch_num_messages,
+diff -ru -x *.orig b/librdkafka/src/rdkafka_request.c c/librdkafka/src/rdkafka_request.c
+--- b/librdkafka/src/rdkafka_request.c	2026-11-16 19:55:50
++++ c/librdkafka/src/rdkafka_request.c	2026-11-16 19:55:50
+@@ -4814,8 +4814,18 @@
+                 rd_kafka_dr_msgq0(rktp->rktp_rkt, &batch->msgq, err, presult);
+         }
+ 
+-        if (rd_kafka_is_idempotent(rk) && last_inflight)
+-                rd_kafka_idemp_inflight_toppar_sub(rk, rktp);
++        if (rd_kafka_is_idempotent(rk)) {
++                /* A previous leader's response is not an IO event for the
++                 * partition's current broker thread (#5617). */
++                rd_kafka_toppar_lock(rktp);
++                if (rktp->rktp_broker && rktp->rktp_broker != rkb)
++                        rd_kafka_broker_wakeup(rktp->rktp_broker,
++                                               "produce in-flight decreased");
++                rd_kafka_toppar_unlock(rktp);
++
++                if (last_inflight)
++                        rd_kafka_idemp_inflight_toppar_sub(rk, rktp);
++        }
+ }
+ 
+ 

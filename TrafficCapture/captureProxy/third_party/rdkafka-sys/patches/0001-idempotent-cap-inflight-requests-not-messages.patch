@@ -1,0 +1,92 @@
+Upstream: https://github.com/confluentinc/librdkafka/pull/5636 (head e8b63ae1e3d4)
+Fixes:    https://github.com/confluentinc/librdkafka/issues/5632
+Subject:  Idempotent producer: cap in-flight ProduceRequests, not messages
+
+The idempotent per-partition in-flight limit subtracted rktp_msgs_inflight (a
+MESSAGE count) from RD_KAFKA_IDEMP_MAX_INFLIGHT (a REQUEST limit), so a
+partition with five records in flight could not start another request. The
+broker's de-duplication window is five batches, and kafka-clients allows five
+requests per partition. Source hunks of the upstream PR only (CHANGELOG and the
+mock test omitted), rebased onto librdkafka 2.12.1 as bundled by
+rdkafka-sys 4.10.0+2.12.1.
+
+diff -ru -x *.orig a/librdkafka/src/rdkafka_broker.c b/librdkafka/src/rdkafka_broker.c
+--- a/librdkafka/src/rdkafka_broker.c	2026-11-16 19:55:49
++++ b/librdkafka/src/rdkafka_broker.c	2026-11-16 19:55:50
+@@ -4030,7 +4030,7 @@
+                                     rkb, QUEUE, "TOPPAR",
+                                     "%.*s [%" PRId32
+                                     "] waiting for "
+-                                    "%d in-flight request(s) to drain "
++                                    "%d in-flight message(s) to drain "
+                                     "from queue before continuing "
+                                     "to produce",
+                                     RD_KAFKAP_STR_PR(rktp->rktp_rkt->rkt_topic),
+@@ -4060,8 +4060,10 @@
+ 
+                 /* Limit the number of in-flight requests (per partition)
+                  * to the broker's sequence de-duplication window. */
+-                max_requests = RD_MIN(max_requests,
+-                                      RD_KAFKA_IDEMP_MAX_INFLIGHT - inflight);
++                max_requests =
++                    RD_MIN(max_requests,
++                           RD_KAFKA_IDEMP_MAX_INFLIGHT -
++                               rd_atomic32_get(&rktp->rktp_reqs_inflight));
+         }
+ 
+ 
+diff -ru -x *.orig a/librdkafka/src/rdkafka_msg.c b/librdkafka/src/rdkafka_msg.c
+--- a/librdkafka/src/rdkafka_msg.c	2026-11-16 19:55:49
++++ b/librdkafka/src/rdkafka_msg.c	2026-11-16 19:55:50
+@@ -1689,7 +1689,12 @@
+         rd_kafka_t *rk          = rktp->rktp_rkt->rkt_rk;
+ 
+         /* Keep track of number of requests in-flight per partition,
+-         * and the number of partitions with in-flight requests when
++         * which the idempotent producer limits to the broker's sequence
++         * de-duplication window. */
++        rd_atomic32_add(&rktp->rktp_reqs_inflight, 1);
++
++        /* Keep track of number of messages in-flight per partition,
++         * and the number of partitions with in-flight messages when
+          * idempotent producer - this is used to drain partitions
+          * before resetting the PID. */
+         if (rd_atomic32_add(&rktp->rktp_msgs_inflight,
+diff -ru -x *.orig a/librdkafka/src/rdkafka_partition.c b/librdkafka/src/rdkafka_partition.c
+--- a/librdkafka/src/rdkafka_partition.c	2026-11-16 19:55:49
++++ b/librdkafka/src/rdkafka_partition.c	2026-11-16 19:55:50
+@@ -264,6 +264,7 @@
+         rktp->rktp_op_version = rd_atomic32_get(&rktp->rktp_version);
+ 
+         rd_atomic32_init(&rktp->rktp_msgs_inflight, 0);
++        rd_atomic32_init(&rktp->rktp_reqs_inflight, 0);
+         rd_kafka_pid_reset(&rktp->rktp_eos.pid);
+ 
+         /* Consumer: If statistics is available we query the log start offset
+diff -ru -x *.orig a/librdkafka/src/rdkafka_partition.h b/librdkafka/src/rdkafka_partition.h
+--- a/librdkafka/src/rdkafka_partition.h	2026-11-16 19:55:49
++++ b/librdkafka/src/rdkafka_partition.h	2026-11-16 19:55:50
+@@ -187,6 +187,9 @@
+         rd_atomic32_t rktp_msgs_inflight; /**< Current number of
+                                            *   messages in-flight to/from
+                                            *   the broker. */
++        rd_atomic32_t rktp_reqs_inflight; /**< Current number of
++                                           *   ProduceRequests in-flight
++                                           *   to/from the broker. */
+ 
+         uint64_t rktp_msgid; /**< Current/last message id.
+                               *   Each message enqueued on a
+diff -ru -x *.orig a/librdkafka/src/rdkafka_request.c b/librdkafka/src/rdkafka_request.c
+--- a/librdkafka/src/rdkafka_request.c	2026-11-16 19:55:49
++++ b/librdkafka/src/rdkafka_request.c	2026-11-16 19:55:50
+@@ -4749,6 +4749,10 @@
+         last_inflight = !rd_atomic32_sub(&rktp->rktp_msgs_inflight,
+                                          rd_kafka_msgq_len(&batch->msgq));
+ 
++        /* Decrease partition's requests in-flight counter */
++        rd_assert(rd_atomic32_get(&rktp->rktp_reqs_inflight) > 0);
++        rd_atomic32_sub(&rktp->rktp_reqs_inflight, 1);
++
+         /* Next expected sequence (and handle wrap) */
+         next_seq = rd_kafka_seq_wrap(batch->first_seq +
+                                      rd_kafka_msgq_len(&batch->msgq));

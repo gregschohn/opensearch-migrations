@@ -93,3 +93,8 @@ strip = "symbols"
 inherits = "release"
 debug = 1
 strip = "none"
+
+# librdkafka 2.12.1 plus two upstream idempotent-producer fixes (PRs #5636 and #5622), until a
+# release contains them. Run third_party/rdkafka-sys/prepare.sh first; see its README.
+[patch.crates-io]
+rdkafka-sys = { path = "third_party/rdkafka-sys/crate" }

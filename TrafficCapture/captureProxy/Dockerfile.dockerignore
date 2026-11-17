@@ -5,6 +5,8 @@
 !captureProtobufs/src/main/proto/
 !captureProxy/
 captureProxy/target/
+# Recreated in the builder by prepare.sh from the pinned crate and the committed patches.
+captureProxy/third_party/rdkafka-sys/crate/
 captureProxy/qualification/
 captureProxy/Dockerfile
 captureProxy/Dockerfile.dockerignore
