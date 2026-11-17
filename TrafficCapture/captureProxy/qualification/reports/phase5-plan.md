@@ -345,3 +345,10 @@ dashboard JSON directly).
 | Kafka TLS without SASL (`ssl`) | — | No migration-spec field produces `kafkaAuthType: ssl`; workflow-managed clusters are plain or SCRAM, existing ones none or SCRAM. The proxy supports it; the orchestration cannot select it. |
 | MSK IAM identity for the proxy pod | Deployment has no `serviceAccountName` | EKS Pod Identity must be associated with the namespace's default service account for MSK IAM to work. Unverified. |
 | New proxy flags | `--kafka-producer-count`, `--kafka-publication-budget-bytes`, `--kafka-publication-budget-records` | Not exposed in the migration spec; defaults apply. Expose only if an owner wants them tunable per deployment. |
+
+## 6. Open findings after the Phase 5 merge (2026-11-17)
+
+| Finding | Evidence | Next step |
+|---|---|---|
+| Flaky proxy-image test `KafkaTopicDumperEvidenceTest.dumpBothWaitsForExplicitDemandAcrossPartitionsAndPolls` | First run on the merged branch: `expected <200> but was <404>` on the first `sendGet`; the in-JVM destination logged no request for that path, so the 404 came from something other than the test destination. Two reruns passed. | Measure the flake rate (20 runs). Find which server answered 404, most likely a host-port mapping through `exposeHostPorts` reaching a different listener, then fix the fixture. |
+| Heartbeat stall in the large-requests dev stack | In 2 of 4 runs (24 partitions, H=10 s, E=30 s, 3.2 MB `_bulk` requests), the proxy exited 78 after 1–3 min on a broker-time violation with heartbeat gaps of 66.7 s and 98.7 s; periodic heartbeats had stopped. Not reproduced in 2 later runs, with a 2 s heartbeat, or on the main compose file. | Reproduce on the qualification harness with 24 partitions and maximum-size records. If it reproduces, compare `rust-e84c1750c` (before the direct delivery route) and `rust-87aa0fc89`. The publisher actor's only blocking calls are metadata lookups (2 s and 10 s timeouts); outcome sends are unbounded. |
