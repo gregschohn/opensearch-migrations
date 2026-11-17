@@ -60,16 +60,10 @@ use crate::capture_sink::RecordingCaptureSink;
 use crate::publication::{Acknowledgement, PublicationOutcome, PublishingRecordSink};
 use crate::shutdown::{CaptureRetirement, ShutdownTiming};
 
-/// Total publication memory held awaiting acknowledgement.
-///
-/// CHOSEN DEFAULT: no configuration parameter carries this, in Java or here. Java's bound is
-/// implicit and effectively unbounded — its publication futures accumulate without a byte ceiling —
-/// so there is no value to port. 64 MiB is the value `capture-kafka`'s own real-broker test uses
-/// and is roughly 250 records at the default 256 KiB traffic-buffer size.
-pub const PUBLICATION_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
-
-/// Total records held awaiting acknowledgement. See [`PUBLICATION_BUDGET_BYTES`].
-pub const PUBLICATION_BUDGET_RECORDS: u64 = 4_096;
+// The publication budget (bytes and records held awaiting acknowledgement) is configured by
+// `--kafka-publication-budget-bytes` / `--kafka-publication-budget-records` (owner decision OD-13);
+// defaults live in `capture_config::cli`. Java has no equivalent: its bound is implicit and
+// effectively unbounded.
 
 /// How long start-up keeps retrying transient Kafka metadata failures before refusing.
 ///
@@ -468,8 +462,8 @@ impl CaptureMode {
             timing: config.timing(),
             minimum_partitions: usize::try_from(partitions).unwrap_or(1),
             budget_limits: BudgetLimits::for_lanes(
-                PUBLICATION_BUDGET_BYTES,
-                PUBLICATION_BUDGET_RECORDS,
+                kafka.publication_budget().bytes,
+                kafka.publication_budget().records,
                 u64::from(partitions).max(1),
             ),
             metrics: Arc::new(ContractedKafkaMetrics(Arc::clone(telemetry))),

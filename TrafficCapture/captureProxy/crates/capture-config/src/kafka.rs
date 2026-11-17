@@ -132,7 +132,32 @@ pub struct KafkaConfig {
     property_file: Option<PathBuf>,
     required_topic_partitions: u32,
     producer_count: ProducerCount,
+    publication_budget: PublicationBudget,
 }
+
+/// `--kafka-publication-budget-bytes` / `--kafka-publication-budget-records` (OD-13).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PublicationBudget {
+    /// Most bytes held awaiting acknowledgement.
+    pub bytes: u64,
+    /// Most records held awaiting acknowledgement.
+    pub records: u64,
+}
+
+impl Default for PublicationBudget {
+    fn default() -> Self {
+        Self {
+            bytes: crate::cli::DEFAULT_KAFKA_PUBLICATION_BUDGET_BYTES,
+            records: crate::cli::DEFAULT_KAFKA_PUBLICATION_BUDGET_RECORDS,
+        }
+    }
+}
+
+/// Smallest accepted `--kafka-publication-budget-records`: enough for control traffic plus traffic.
+pub const MIN_PUBLICATION_BUDGET_RECORDS: u64 = 16;
+
+/// Largest accepted `--kafka-publication-budget-bytes` (16 GiB): a guard against unit mistakes.
+pub const MAX_PUBLICATION_BUDGET_BYTES: u64 = 16 * 1024 * 1024 * 1024;
 
 /// The Kafka parameters as configured, before validation.
 #[derive(Debug, Clone, Default)]
@@ -161,6 +186,11 @@ pub struct KafkaInputs {
     pub required_topic_partitions: u32,
     /// `--kafka-producer-count` (OD-12).
     pub producer_count: ProducerCount,
+    /// `--kafka-publication-budget-bytes` / `-records` (OD-13).
+    pub publication_budget: PublicationBudget,
+    /// `--max-traffic-buffer-size`: the largest traffic record, which the byte budget must hold
+    /// twice over (half of it may be reserved for control records).
+    pub max_record_bytes: u32,
 }
 
 impl KafkaConfig {
@@ -203,6 +233,20 @@ impl KafkaConfig {
             return Err(KafkaConfigError::ProducerCount { value });
         }
 
+        let budget = inputs.publication_budget;
+        let minimum_bytes = u64::from(inputs.max_record_bytes).saturating_mul(2).max(1);
+        if !(minimum_bytes..=MAX_PUBLICATION_BUDGET_BYTES).contains(&budget.bytes) {
+            return Err(KafkaConfigError::PublicationBudgetBytes {
+                value: budget.bytes,
+                minimum: minimum_bytes,
+            });
+        }
+        if budget.records < MIN_PUBLICATION_BUDGET_RECORDS {
+            return Err(KafkaConfigError::PublicationBudgetRecords {
+                value: budget.records,
+            });
+        }
+
         let username = non_empty(inputs.username);
         let password = inputs.password.filter(|password| !password.is_empty());
 
@@ -235,7 +279,14 @@ impl KafkaConfig {
                 .filter(|path| !path.as_os_str().is_empty()),
             required_topic_partitions: inputs.required_topic_partitions,
             producer_count: inputs.producer_count,
+            publication_budget: budget,
         })
+    }
+
+    /// The publication budget (OD-13).
+    #[must_use]
+    pub fn publication_budget(&self) -> PublicationBudget {
+        self.publication_budget
     }
 
     /// How many independent traffic producers to run (OD-12).
@@ -443,6 +494,25 @@ pub enum KafkaConfigError {
     /// The `client.id` is blank.
     #[error("--kafka-client-id must not be empty")]
     EmptyClientId,
+    /// The byte budget cannot hold two maximum-size records, or exceeds the guard.
+    #[error(
+        "--kafka-publication-budget-bytes must be between {minimum} (twice \
+         --max-traffic-buffer-size) and {MAX_PUBLICATION_BUDGET_BYTES}, got {value}"
+    )]
+    PublicationBudgetBytes {
+        /// The rejected value.
+        value: u64,
+        /// The smallest accepted value for this configuration.
+        minimum: u64,
+    },
+    /// The record budget is too small.
+    #[error(
+        "--kafka-publication-budget-records must be at least {MIN_PUBLICATION_BUDGET_RECORDS}, got {value}"
+    )]
+    PublicationBudgetRecords {
+        /// The rejected value.
+        value: u64,
+    },
     /// The producer count is outside `1..=MAX_PRODUCER_COUNT`.
     #[error("--kafka-producer-count must be between 1 and {MAX_PRODUCER_COUNT}, got {value}")]
     ProducerCount {
@@ -500,6 +570,7 @@ mod tests {
             brokers: Some("b-1:9096,b-2:9096".to_owned()),
             topic: crate::cli::DEFAULT_KAFKA_TOPIC.to_owned(),
             client_id: crate::cli::DEFAULT_KAFKA_CLIENT_ID.to_owned(),
+            max_record_bytes: 1024 * 1024,
             ..KafkaInputs::default()
         }
     }
@@ -524,6 +595,51 @@ mod tests {
             .expect("in range");
             assert_eq!(config.producer_count(), ProducerCount::Fixed(value));
         }
+    }
+
+    #[test]
+    fn the_publication_budget_defaults_to_64_mib_and_must_hold_two_records() {
+        let config = KafkaConfig::new(inputs()).expect("valid");
+        assert_eq!(
+            config.publication_budget(),
+            PublicationBudget {
+                bytes: 64 * 1024 * 1024,
+                records: 4_096
+            }
+        );
+        let too_small = KafkaConfig::new(KafkaInputs {
+            publication_budget: PublicationBudget {
+                bytes: 2 * 1024 * 1024 - 1,
+                records: 4_096,
+            },
+            ..inputs()
+        })
+        .expect_err("cannot hold two 1 MiB records");
+        assert!(matches!(
+            too_small,
+            KafkaConfigError::PublicationBudgetBytes { minimum, .. } if minimum == 2 * 1024 * 1024
+        ));
+        let records = KafkaConfig::new(KafkaInputs {
+            publication_budget: PublicationBudget {
+                bytes: 64 * 1024 * 1024,
+                records: MIN_PUBLICATION_BUDGET_RECORDS - 1,
+            },
+            ..inputs()
+        })
+        .expect_err("too few records");
+        assert!(matches!(
+            records,
+            KafkaConfigError::PublicationBudgetRecords { .. }
+        ));
+        let raised = KafkaConfig::new(KafkaInputs {
+            publication_budget: PublicationBudget {
+                bytes: 1024 * 1024 * 1024,
+                records: 100_000,
+            },
+            ..inputs()
+        })
+        .expect("a larger budget is the escape hatch");
+        assert_eq!(raised.publication_budget().bytes, 1024 * 1024 * 1024);
     }
 
     #[test]

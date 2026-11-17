@@ -438,6 +438,11 @@ fn resolve_sink(cli: &CliArgs, env: &dyn EnvLookup) -> Result<CaptureSink, Confi
                     property_file: cli.kafka_property_file.clone(),
                     required_topic_partitions: cli.require_kafka_topic_partitions,
                     producer_count: cli.kafka_producer_count,
+                    publication_budget: crate::kafka::PublicationBudget {
+                        bytes: cli.kafka_publication_budget_bytes,
+                        records: cli.kafka_publication_budget_records,
+                    },
+                    max_record_bytes: cli.max_traffic_buffer_size,
                 },
             )?)))
         }

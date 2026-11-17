@@ -50,6 +50,12 @@ pub const DEFAULT_KAFKA_TOPIC: &str = "logging-traffic-topic";
 /// Default `--kafka-producer-count` (owner decision OD-12): sized automatically, capped at four.
 pub const DEFAULT_KAFKA_PRODUCER_COUNT: &str = "auto";
 
+/// Default `--kafka-publication-budget-bytes` (owner decision OD-13): 64 MiB.
+pub const DEFAULT_KAFKA_PUBLICATION_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Default `--kafka-publication-budget-records` (owner decision OD-13).
+pub const DEFAULT_KAFKA_PUBLICATION_BUDGET_RECORDS: u64 = 4_096;
+
 /// Default Kafka producer `client.id` (`KafkaConfig.java:16`).
 pub const DEFAULT_KAFKA_CLIENT_ID: &str = "HttpCaptureProxyProducer";
 
@@ -644,6 +650,16 @@ pub const PARAMETERS: &[ParamSpec] = &[
         kind: ParamKind::Value,
     },
     ParamSpec {
+        flag: "kafka-publication-budget-bytes",
+        aliases: &[],
+        kind: ParamKind::Value,
+    },
+    ParamSpec {
+        flag: "kafka-publication-budget-records",
+        aliases: &[],
+        kind: ParamKind::Value,
+    },
+    ParamSpec {
         flag: "require-kafka-topic-partitions",
         aliases: &[
             "minimumKafkaTopicPartitions",
@@ -1014,6 +1030,28 @@ pub struct CliArgs {
         value_name = "auto|COUNT"
     )]
     pub kafka_producer_count: crate::kafka::ProducerCount,
+
+    /// Most capture bytes held awaiting Kafka acknowledgement (owner decision OD-13).
+    ///
+    /// When the budget is full the proxy stops reading from clients until acknowledgements free
+    /// space, so a slow broker slows clients instead of growing memory or dropping captures. Must
+    /// hold at least two maximum-size records (`--max-traffic-buffer-size`).
+    #[arg(
+        long = "kafka-publication-budget-bytes",
+        env = "CAPTURE_PROXY_KAFKA_PUBLICATION_BUDGET_BYTES",
+        default_value_t = DEFAULT_KAFKA_PUBLICATION_BUDGET_BYTES,
+        value_name = "BYTES"
+    )]
+    pub kafka_publication_budget_bytes: u64,
+
+    /// Most capture records held awaiting Kafka acknowledgement (owner decision OD-13).
+    #[arg(
+        long = "kafka-publication-budget-records",
+        env = "CAPTURE_PROXY_KAFKA_PUBLICATION_BUDGET_RECORDS",
+        default_value_t = DEFAULT_KAFKA_PUBLICATION_BUDGET_RECORDS,
+        value_name = "RECORDS"
+    )]
+    pub kafka_publication_budget_records: u64,
 
     /// Partition count the traffic topic must already have. `0` disables the check.
     ///
