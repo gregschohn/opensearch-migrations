@@ -86,7 +86,9 @@ pub enum KafkaWiringError {
     ClientConfig(#[from] capture_kafka::ClientConfigError),
     /// `--kafka-auth-type msk-iam` was selected but no AWS region is available.
     #[error(
-        "--kafka-auth-type msk-iam requires an AWS region; set AWS_REGION or AWS_DEFAULT_REGION"
+        "--kafka-auth-type msk-iam requires an AWS region and neither AWS_REGION nor \
+         AWS_DEFAULT_REGION is set; the Kubernetes deployment takes AWS_REGION from the \
+         `aws-metadata` ConfigMap (key `region`), so check that it exists in this namespace"
     )]
     MissingAwsRegion,
     /// Kafka refused to become ready, so the listener must never open.
@@ -95,6 +97,27 @@ pub enum KafkaWiringError {
     /// The recorder configuration derived from the Kafka settings is unusable.
     #[error(transparent)]
     Wire(#[from] capture_wire::WireError),
+}
+
+impl KafkaWiringError {
+    /// Whether this is an operator configuration mistake (exit 2) rather than a failure to bring
+    /// capture to readiness (exit 78).
+    ///
+    /// A missing region, a malformed or disallowed property, or an impossible derived limit cannot
+    /// be fixed by retrying, so the process reports a configuration error. A broker that refuses
+    /// readiness, or credentials that cannot be obtained from the environment at this moment, are
+    /// capture failures.
+    #[must_use]
+    pub fn is_configuration_error(&self) -> bool {
+        match self {
+            Self::NotCaptureMode | Self::MissingAwsRegion | Self::Wire(_) => true,
+            Self::ClientConfig(error) => !matches!(
+                error,
+                capture_kafka::ClientConfigError::AuthUnavailable { .. }
+            ),
+            Self::Refused(_) => false,
+        }
+    }
 }
 
 /// Builds the Kafka client settings and, when the auth mode needs one, the MSK IAM token source.
@@ -833,10 +856,15 @@ mod tests {
     #[test]
     fn msk_iam_without_a_region_is_refused_at_startup() {
         let config = config(&["--kafka-auth-type", "msk-iam"]);
-        assert!(matches!(
-            kafka_settings(&config, &StubEnv::default()),
-            Err(KafkaWiringError::MissingAwsRegion)
-        ));
+        let Err(error) = kafka_settings(&config, &StubEnv::default()) else {
+            panic!("no region is a wiring error");
+        };
+        assert!(matches!(error, KafkaWiringError::MissingAwsRegion));
+        assert!(
+            error.is_configuration_error(),
+            "a missing region is exit 2, not 78"
+        );
+        assert!(error.to_string().contains("aws-metadata"));
     }
 
     #[test]

@@ -292,6 +292,14 @@ async fn serve(
             tokio::task::block_in_place(|| CaptureMode::start(config, &telemetry, &ProcessEnv));
         match started {
             Ok(mode) => CaptureTarget::Kafka(Arc::new(mode)),
+            Err(error) if error.is_configuration_error() => {
+                tracing::error!(
+                    event = "capture_configuration_rejected",
+                    %error,
+                    "the capture configuration is invalid; refusing to start"
+                );
+                return capture_config::CONFIG_ERROR_EXIT_CODE;
+            }
             Err(error) => {
                 tracing::error!(
                     event = "capture_startup_refused",
