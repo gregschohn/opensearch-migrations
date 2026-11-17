@@ -143,7 +143,7 @@ if [ "$TARGET_COUNT" = "$NUM_DOCS" ]; then
     echo "SUCCESS: All $NUM_DOCS documents replayed to target!"
     echo ""
     echo "This confirms:"
-    echo "  - Capture proxy: max.request.size=8MB prevents RecordTooLargeException"
+    echo "  - Capture proxy: splits the request across records within its Kafka payload limit"
     echo "  - Kafka broker: message.max.bytes=8MB accepts large records"
     echo "  - Replayer: max.partition.fetch.bytes=8MB fetches large records"
     echo "  - Accumulator: reassembles fragments correctly"

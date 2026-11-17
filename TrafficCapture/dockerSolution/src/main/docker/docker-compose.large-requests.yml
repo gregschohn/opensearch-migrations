@@ -58,8 +58,11 @@ services:
     ports:
       - "127.0.0.1:9200:9200"
     volumes:
-      - ./kafka-producer.properties:/tmp/kafka-producer.properties
       - captureProxyTls:/usr/share/captureProxy/config:ro
+    # No --kafkaPropertyFile. The Java proxy needed max.request.size=8388608 to send its large
+    # records; that is a Java-client property, and the Rust proxy refuses to start (exit 78) on a
+    # producer property it does not allow. It owns message.max.bytes itself and splits a large
+    # request across records that fit its payload limit, which is what this stack exercises.
     command:
       - "--kafkaConnection"
       - "kafka:9092"
@@ -76,8 +79,6 @@ services:
       - "130"
       - "--suppressCaptureForMethod"
       - "GET"
-      - "--kafkaPropertyFile"
-      - "/tmp/kafka-producer.properties"
     depends_on:
       capture-proxy-tls:
         condition: service_completed_successfully
