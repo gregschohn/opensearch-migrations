@@ -77,8 +77,8 @@ import org.junit.jupiter.params.provider.MethodSource;
  * decoder on the Rust side; its reconstructed bytes come from the scenario inputs, never from decoding. A
  * disagreement is a WIRE or PROTOCOL divergence to report, not an expectation to adjust.
  *
- * <p>The goldens live outside this project, so Gradle does not track them as test inputs: after regenerating
- * them, run this test with {@code --rerun} or Gradle reports it up to date without running it.
+ * <p>The goldens live outside this project; {@code build.gradle} declares them as test-task inputs, so
+ * regenerating them re-runs this test.
  */
 class RustGoldenRecordCompatibilityTest {
 
