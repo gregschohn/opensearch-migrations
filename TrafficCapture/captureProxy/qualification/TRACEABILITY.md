@@ -186,7 +186,7 @@ Evidence suites: PROTO, WIRE, HTTP, KMODEL, KREAL, TRANSPORT, TLS, OPS, DEPLOY, 
 | DEPLOY-05 | TODO | |
 | DEPLOY-06 | TODO | |
 | DEPLOY-07 | TODO | |
-| DEPLOY-08 | TODO | Scope decision required: Kubernetes only, or Kubernetes + CDK/ECS |
+| DEPLOY-08 | N/A | OD-14: Kubernetes only; CDK/ECS not qualified (accepted risk) |
 | DEPLOY-09 | TODO | |
 | PERF-00 | TODO | |
 | PERF-01 | TODO | |
@@ -198,7 +198,7 @@ Tracked here so they are not silently resolved by implementation choice.
 | # | Decision | Raised by | Status |
 |---|---|---|---|
 | D1 | Production HTTP strictness | Plan "Design improvements" §4 | **RESOLVED** OD-2: strict default + explicit opt-in lenient mode |
-| D2 | Is bounded lossless Kafka backpressure mandatory in the parity release | Plan §2 | OPEN |
-| D3 | Qualified deployment targets: Kubernetes only, or + CDK/ECS | DEPLOY-08 | OPEN |
+| D2 | Is bounded lossless Kafka backpressure mandatory in the parity release | Plan §2 | **RESOLVED** OD-13: bounded lossless backpressure ships, budget configurable |
+| D3 | Qualified deployment targets: Kubernetes only, or + CDK/ECS | DEPLOY-08 | **RESOLVED** OD-14: Kubernetes only; CDK/ECS left as is (accepted risk) |
 | D4 | Publisher sharding deferral confirmed until single-owner is measured | Plan §3 | **RESOLVED** OD-12: several producers, fixed `p mod N` partition mapping; single publisher actor kept |
 | D5 | MSK IAM proof infrastructure | Phase 1 risk | **RESOLVED**: proved against a real MSK Serverless cluster. SigV4 `kafka-cluster` token through librdkafka OAUTHBEARER. |

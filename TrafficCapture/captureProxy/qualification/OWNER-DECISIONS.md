@@ -363,13 +363,71 @@ of this.
 
 ---
 
+## OD-13 — Bounded, lossless Kafka backpressure ships, with a configurable budget (D2)
+
+**Evidence.** Java buffers capture records with no bound; under a 750 ms broker delay its memory grew
+to 347 MiB. The Rust publisher holds at most a fixed publication budget (64 MiB, 4,096 records) of
+records awaiting acknowledgement; when it is full, client reads pause until acknowledgements free
+space, so nothing is dropped. Gate 6 measured it lossless with a 15 MiB peak.
+
+**Ruling.** Keep it, but make it configurable.
+
+**Implementation.** The budget stays on by default at 64 MiB / 4,096 records. Two flags set it:
+`--kafka-publication-budget-bytes` and `--kafka-publication-budget-records`, validated against the
+control-traffic reservation and the maximum record size. There is no "unbounded" setting: a larger
+budget is the escape hatch.
+
+---
+
+## OD-14 — Kubernetes is the only qualified deployment target (D3)
+
+**Ruling.** Qualify the Kubernetes/Argo path only; leave the CDK/ECS stack as it is.
+
+**Implementation.** `orchestrationSpecs` generates the Rust command line and is tested in Phase 5.
+`deployment/cdk/opensearch-service-migration/lib/service-stacks/capture-proxy-stack.ts` is not
+modified and not qualified. Because the Rust binary replaces the Java image under the same name and
+its command line differs, the CDK capture-proxy stack may not start the Rust proxy correctly. This is
+a known, accepted risk, recorded in the release notes and the CDK `options.md`.
+
+---
+
+## OD-15 — Orchestration grants the full shutdown budget (D6)
+
+**Evidence.** The capture-proxy pod sets no `terminationGracePeriodSeconds`
+(`setupCapture.ts:829-852`), so Kubernetes sends `SIGKILL` 30 s after `SIGTERM`. That pre-empts the
+proxy's tested orderly shutdown. The proxy stops accepting at 60 s, drains to 240/270 s and hard-stops
+at 300 s, the same timings Java uses. So capture drain and writer retirement never complete in
+production, for Java or Rust.
+
+**Ruling.** Fix the orchestration.
+
+**Implementation.** The capture-proxy pod gets `terminationGracePeriodSeconds` equal to the shutdown
+budget plus a margin: 330 s. The 60/240/270/300 s sequence is unchanged. Rolling replacements take
+longer but drain cleanly.
+
+---
+
+## OD-16 — The controller-acknowledged compromise state is deferred (D5)
+
+**Evidence.** `proxyCaptureProtocol.md` §7.3 and `managedFleetCaptureRecovery.md` describe
+`COMPROMISED_AWAITING_CONTROLLER_ACK`, where fail-open forwarding waits for an authenticated
+acknowledgement from a controller. No Java code implements it and no controller exists.
+
+**Ruling.** Defer; implement unmanaged behaviour only.
+
+**Implementation.** On capture failure, fail-closed exits (78) and fail-open passes traffic through
+immediately with a loud, persistent alarm. Neither claims retirement. The managed-fleet state stays
+documented as future work.
+
+---
+
 ## Open items still awaiting a ruling
 
 | # | Item |
 |---|---|
-| D2 | Is bounded, lossless Kafka backpressure mandatory in the parity release? |
-| D3 | Qualified deployment targets: Kubernetes only, or Kubernetes plus the older CDK/ECS path? |
+| ~~D2~~ | **RESOLVED by OD-13.** Is bounded, lossless Kafka backpressure mandatory in the parity release? |
+| ~~D3~~ | **RESOLVED by OD-14.** Qualified deployment targets: Kubernetes only, or Kubernetes plus the older CDK/ECS path? |
 | ~~D4~~ | **RESOLVED by OD-12** (producers; the publisher actor stays single). Confirm publisher sharding stays deferred until the single-owner implementation is measured. **Now measured** (Phase 1 review §5.5): a single librdkafka producer saturates its 5-request in-flight window because librdkafka sends one partition per request; the recommended fix is several producers with a fixed partition → producer mapping, keeping the single publisher actor. |
-| D5 | `proxyCaptureProtocol.md` §7.3 specifies a controller-managed `COMPROMISED_AWAITING_CONTROLLER_ACK` state that blocks uncaptured forwarding until a controller durably acknowledges. Whether Java implements it, and whether Rust must, is unresolved. |
-| D6 | Production Kubernetes sets no `terminationGracePeriodSeconds` (`setupCapture.ts:829-852`), so the default 30 s `SIGKILL` pre-empts the entire tested 60/240/270/300 s shutdown sequence. Does the orchestration get fixed, or does the Rust shutdown budget shrink to fit 30 s? |
+| ~~D5~~ | **RESOLVED by OD-16.** `proxyCaptureProtocol.md` §7.3 specifies a controller-managed `COMPROMISED_AWAITING_CONTROLLER_ACK` state that blocks uncaptured forwarding until a controller durably acknowledges. Whether Java implements it, and whether Rust must, is unresolved. |
+| ~~D6~~ | **RESOLVED by OD-15.** Production Kubernetes sets no `terminationGracePeriodSeconds` (`setupCapture.ts:829-852`), so the default 30 s `SIGKILL` pre-empts the entire tested 60/240/270/300 s shutdown sequence. Does the orchestration get fixed, or does the Rust shutdown budget shrink to fit 30 s? |
 | ~~D7~~ | **RESOLVED by OD-11.** HTTP/2 prior knowledge (`h2c`). The plan lists "HTTP/2 traffic is forwarded but suppressed from capture" as current behaviour. Java achieves it only by accident: Netty parses `PRI * HTTP/2.0`, the hardcoded `HTTP/2.*` pattern suppresses its capture, and the following `SM` line drives the decoder into `BAD_MESSAGE`, which then tunnels every later byte raw and uncaptured — the same path OD-1 removed. Measured on Rust (`/tmp/rust-proxy-qual/h2c_probe.py`): the connection is closed as `malformed_framing` and the origin receives 0 bytes. Options: (a) recognise the exact 24-byte preface at connection start and tunnel that connection uncaptured, restoring Java's observable behaviour and adding no capture; (b) keep refusing, since uncaptured HTTP/2 mutations would bypass capture-before-forward. HTTP/1.1 `Upgrade` → `101` (WebSocket, `h2c` upgrade) is unaffected: Rust tunnels it byte-exact after the `101`, as Java does. |
