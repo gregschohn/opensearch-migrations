@@ -143,10 +143,36 @@ pub struct DeliveryOpaqueData {
     deadline: Option<Arc<crate::ack_deadline::AcknowledgementDeadline>>,
 }
 
+/// Where delivery reports go.
+///
+/// Until the publisher actor exists, reports go to the startup channel
+/// ([`CaptureClients::deliveries`]), which the capability probe reads. Once
+/// [`KafkaProducerSink::route_deliveries_to`] installs the actor, each report goes **directly**
+/// from librdkafka's callback thread to the actor's mailbox, saving a thread hand-off per record (a
+/// relay thread used to sit in between; R2, Phase 1 review §5.6).
+///
+/// The switch happens after the probe completes and before the first routing generation, when no
+/// record is in flight, so no report can be split across the two paths or reordered.
+struct DeliveryRoute {
+    actor: std::sync::OnceLock<crate::publisher_actor::PublisherHandle>,
+    startup: mpsc::Sender<DeliveryNotice>,
+}
+
+impl DeliveryRoute {
+    fn send(&self, notice: DeliveryNotice) {
+        match self.actor.get() {
+            // A closed actor needs no delivery reports; the publication futures it owned were
+            // already failed by its own failure path.
+            Some(actor) => drop(actor.deliver(notice)),
+            None => drop(self.startup.send(notice)),
+        }
+    }
+}
+
 /// The producer context. Its `delivery` runs on librdkafka's polling thread.
 pub struct CaptureProducerContext {
     base: CaptureClientContext,
-    deliveries: mpsc::Sender<DeliveryNotice>,
+    deliveries: Arc<DeliveryRoute>,
     budget: Arc<PublicationBudget>,
     metrics: Arc<dyn CaptureMetrics>,
     reports: AtomicU64,
@@ -207,14 +233,14 @@ impl ProducerContext for CaptureProducerContext {
             .submit_to_delivery(opaque.kind, opaque.submitted_at.elapsed());
 
         // Only now is the actor involved, and only for state it alone may mutate.
-        drop(self.deliveries.send(DeliveryNotice {
+        self.deliveries.send(DeliveryNotice {
             send_id: opaque.send_id,
             partition,
             timestamp,
             error,
             deadline_claimed,
             deadline_status,
-        }));
+        });
     }
 }
 
@@ -243,7 +269,7 @@ pub struct KafkaProducerSink {
 /// What it takes to build one more producer identical to the first.
 struct ProducerFactory {
     config: ClientConfig,
-    deliveries: mpsc::Sender<DeliveryNotice>,
+    deliveries: Arc<DeliveryRoute>,
     budget: Arc<PublicationBudget>,
     metrics: Arc<dyn CaptureMetrics>,
     oauth: Option<Arc<MskIamTokenSource>>,
@@ -253,7 +279,7 @@ impl ProducerFactory {
     fn create(&self) -> Result<Arc<ThreadedProducer<CaptureProducerContext>>, ClientConfigError> {
         let context = CaptureProducerContext {
             base: CaptureClientContext::new("producer", self.oauth.clone()),
-            deliveries: self.deliveries.clone(),
+            deliveries: Arc::clone(&self.deliveries),
             budget: Arc::clone(&self.budget),
             metrics: Arc::clone(&self.metrics),
             reports: AtomicU64::new(0),
@@ -286,6 +312,15 @@ impl std::fmt::Debug for KafkaProducerSink {
 }
 
 impl KafkaProducerSink {
+    /// Sends every later delivery report straight to `publisher`, bypassing the startup channel.
+    ///
+    /// Call once, after the capability probe has completed and before any routing generation
+    /// starts, so that no record is in flight across the switch. Returns `false` if a target was
+    /// already installed.
+    pub fn route_deliveries_to(&self, publisher: crate::publisher_actor::PublisherHandle) -> bool {
+        self.factory.deliveries.actor.set(publisher).is_ok()
+    }
+
     /// How many producers this sink owns now.
     #[must_use]
     pub fn producer_count(&self) -> usize {
@@ -659,7 +694,10 @@ pub fn connect(
     let (deliveries_tx, deliveries_rx) = mpsc::channel();
     let factory = ProducerFactory {
         config: producer_config,
-        deliveries: deliveries_tx,
+        deliveries: Arc::new(DeliveryRoute {
+            actor: std::sync::OnceLock::new(),
+            startup: deliveries_tx,
+        }),
         budget,
         metrics,
         oauth: oauth.clone(),
@@ -695,7 +733,11 @@ pub fn connect(
     })
 }
 
-/// Forwards delivery reports from the producer's polling thread to the publisher actor.
+/// Forwards delivery reports from the startup channel to the publisher actor on a relay thread.
+///
+/// The production startup no longer uses this: it installs the actor as the direct delivery target
+/// ([`KafkaProducerSink::route_deliveries_to`]) and saves the hand-off. It remains for callers that
+/// assemble the pieces themselves, such as the real-broker tests.
 ///
 /// The forwarder is a plain relay and deliberately does **no** work: every decision that must
 /// happen before the actor — claiming the acknowledgement deadline, releasing the publication
@@ -881,7 +923,6 @@ pub struct CaptureRuntime {
     publisher_runtime: crate::publisher_actor::PublisherRuntime,
     deadline_clock: crate::ack_deadline::DeadlineClock,
     membership: crate::membership::Membership,
-    delivery_relay: Option<std::thread::JoinHandle<()>>,
 }
 
 impl std::fmt::Debug for CaptureRuntime {
@@ -910,9 +951,6 @@ impl CaptureRuntime {
         drop(self.publisher.close());
         self.publisher_runtime.join();
         self.deadline_clock.stop();
-        if let Some(relay) = self.delivery_relay.take() {
-            drop(relay.join());
-        }
     }
 }
 
@@ -994,10 +1032,17 @@ pub fn start_capture(config: &CaptureStartupConfig) -> Result<CaptureRuntime, St
             StartupRefusal::FirstGeneration(format!("could not start the publisher: {error}"))
         })?;
     let publisher = publisher_runtime.handle.clone();
-    let delivery_relay =
-        spawn_delivery_forwarder(clients.deliveries, publisher.clone()).map_err(|error| {
-            StartupRefusal::FirstGeneration(format!("could not start the delivery relay: {error}"))
-        })?;
+    // Reports now go straight from librdkafka's callback to the actor. Nothing is in flight here:
+    // the probe has completed and no generation has started. Anything already queued on the
+    // startup channel (a duplicate probe report, say) is handed over in order first.
+    for straggler in clients.deliveries.try_iter() {
+        drop(publisher.deliver(straggler));
+    }
+    if !clients.producer.route_deliveries_to(publisher.clone()) {
+        return Err(StartupRefusal::FirstGeneration(
+            "delivery reports were already routed to another publisher".to_owned(),
+        ));
+    }
 
     // Steps 8 and 9: membership produces the first assignment, and the first routing
     // generation must activate before readiness is reported.
@@ -1029,7 +1074,6 @@ pub fn start_capture(config: &CaptureStartupConfig) -> Result<CaptureRuntime, St
         publisher_runtime,
         deadline_clock,
         membership,
-        delivery_relay: Some(delivery_relay),
     })
 }
 
@@ -1311,6 +1355,20 @@ mod tests {
             PublicationBudget::new(BudgetLimits::for_lanes(1024 * 1024, 128, 4))
                 .expect("valid budget"),
         )
+    }
+
+    #[test]
+    fn delivery_reports_can_be_routed_to_an_actor_exactly_once() {
+        let settings = KafkaClientSettings::new("localhost:9092");
+        let clients = connect(&settings, budget(), Arc::new(NoopMetrics), None)
+            .expect("clients construct without a reachable broker");
+        let first = crate::publisher_actor::PublisherHandle::detached_for_tests();
+        let second = crate::publisher_actor::PublisherHandle::detached_for_tests();
+        assert!(clients.producer.route_deliveries_to(first));
+        assert!(
+            !clients.producer.route_deliveries_to(second),
+            "a second target would split one partition's reports across two actors"
+        );
     }
 
     #[test]

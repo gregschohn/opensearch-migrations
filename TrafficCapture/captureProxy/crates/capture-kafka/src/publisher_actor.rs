@@ -294,6 +294,17 @@ impl std::fmt::Debug for PublisherHandle {
 }
 
 impl PublisherHandle {
+    /// A handle connected to no actor; every command it sends is discarded. Tests only.
+    #[cfg(test)]
+    pub(crate) fn detached_for_tests() -> Self {
+        let (commands, _receiver) = mpsc::channel();
+        Self {
+            commands,
+            failure: Arc::new(Mutex::new(None)),
+            closed: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
     /// The terminal failure, once the publisher has one.
     #[must_use]
     pub fn failure(&self) -> Option<CaptureFailure> {
