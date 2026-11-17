@@ -19,3 +19,7 @@ tracing.workspace = true
 tracing-opentelemetry.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+# Reads the shipped dashboards (tests/dashboard_contract.rs).
+serde_json.workspace = true

@@ -233,7 +233,9 @@ pub enum Exposure {
     /// A shipped dashboard, an operator script, or an integration test reads this series.
     ///
     /// Renaming or re-uniting it breaks a checked-in consumer. See the module-level list in
-    /// [`crate::contract`] tests for the per-instrument consumer citations.
+    /// [`crate::contract`] tests for the per-instrument consumer citations, and
+    /// `tests/dashboard_contract.rs`, which reads the shipped consumers and fails if one queries a
+    /// series, unit suffix, or dimension the contract does not export.
     ExternallyConsumed,
     /// Named in the operations runbook's metric inventory but not plotted.
     ///
@@ -1300,7 +1302,8 @@ mod tests {
     fn externally_consumed_set_is_exactly_the_verified_list() {
         // Independently verified by grepping every instrument name across *.py, *.sh, *.md, *.json,
         // *.yaml, *.ts outside Java source. Changing this set means a dashboard, operator script,
-        // or integration test must change in the same commit.
+        // or integration test must change in the same commit. tests/dashboard_contract.rs
+        // re-derives this set from the shipped dashboards and scripts and requires equality.
         let expected: BTreeSet<&str> = [
             "fullRequest",
             "bytesRead",
