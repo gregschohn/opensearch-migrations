@@ -3,8 +3,6 @@ package org.opensearch.migrations.utils.kafka;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 
-import org.opensearch.migrations.trafficcapture.kafkaoffloader.KafkaConfig;
-
 import com.beust.jcommander.JCommander;
 import com.beust.jcommander.Parameter;
 import com.beust.jcommander.ParameterException;

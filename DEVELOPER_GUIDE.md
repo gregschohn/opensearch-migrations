@@ -126,7 +126,7 @@ repositories {
 }
 
 dependencies {
-    implementation group: "org.opensearch.migrations.trafficcapture", name: "captureKafkaOffloader", version: "0.1.0-SNAPSHOT"
+    implementation group: "org.opensearch.migrations.trafficcapture", name: "captureProtobufs", version: "0.1.0-SNAPSHOT"
     //... other dependencies
 }
 ```

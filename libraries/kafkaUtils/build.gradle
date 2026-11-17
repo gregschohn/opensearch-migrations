@@ -10,10 +10,13 @@ configurations {
 }
 
 dependencies {
-    implementation project(':TrafficCapture:captureKafkaOffloader')
     implementation libs.jcommander
     implementation libs.kafka.clients
     implementation libs.slf4j.api
+    // KafkaConfig names the MSK IAM login module and callback handler only as strings, so without this
+    // the CLI compiles and then fails with ClassNotFoundException when it talks to MSK.
+    // KafkaUtilsRuntimeClasspathTest checks the shipped runtime classpath carries them.
+    runtimeOnly libs.aws.msk.iam.auth
 
     byocFixtureGenerator testFixtures(project(':testHelperFixtures'))
     testImplementation testFixtures(project(':testHelperFixtures'))
@@ -43,4 +46,11 @@ tasks.register('generateByocPutTrafficFixture', JavaExec) {
     def outputFile = layout.buildDirectory.file("byoc-fixtures/byoc-put.proto.gz")
     outputs.file(outputFile)
     args outputFile.get().asFile.absolutePath
+}
+
+tasks.withType(Test).configureEach {
+    doFirst {
+        // KafkaUtilsRuntimeClasspathTest loads classes from exactly what installDist ships.
+        systemProperty 'kafkaUtilsMainRuntimeClasspath', sourceSets.main.runtimeClasspath.asPath
+    }
 }
