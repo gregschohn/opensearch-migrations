@@ -581,3 +581,40 @@ The capture-path CPU item (R2) is therefore the lever on F2.
 
 Automatic sizing on `rust-e84c1750c` (5 pairs, Gate 5 flat out, 4 partitions): ack p99 **0.82**
 [0.67–0.98] PASS, records per core 1.39 PASS, proxy-added p99 0.50, 1.81× Java's total requests.
+
+### 8.4 A per-connection memory leak, found by soak and fixed
+
+A ten-minute soak (plaintext capture flat out, 24 partitions, about 43K req/s) showed anonymous
+memory rising **linearly from 6 MiB to 700 MiB**, about 1.15 MiB/s. The 45-second gate runs could
+not show it. A 150-second growth test on every image back to the Phase 1 head measured 24–34 bytes
+per request on all of them, so the leak predates every Phase 1 measurement.
+
+**Cause.** Each connection carries two publish chains: the recorder's, and `capture-kafka`'s
+`ConnectionCapture`'s. Each chain logged one outcome per acknowledged record for
+`poll_outcome`/`poll_publication_outcome`. Neither production owner ever read that log; both learn
+outcomes from their own transport. So every connection grew by one log entry per record for its
+whole life. Keep-alive connections never shed it. Churned connections did, on close, which hid the
+leak on the churn profiles.
+
+**Fix.**
+
+* `3f367707e`: the capture sink drains the recorder's log.
+* `c533e8763`: `ConnectionCapture` uses the new `PublishChain::without_outcome_log()`, which cannot
+  accumulate.
+
+Each fix has a regression test that fails without it.
+
+| 150 s, about 45K req/s, 24 partitions | Growth | Bytes per request | Peak anon |
+|---|---|---|---|
+| Phase 1 head (`rust-03ddf2ab2`) and four later images | 0.6–1.3 MiB/s | 24–34 | 113–233 MiB |
+| First fix only (`rust-afb6beac9`) | 0.54 MiB/s | 12.6 | 109 MiB |
+| Both fixes (`rust-c533e8763`) | **0.007 MiB/s** | **0.2** | **15 MiB** |
+
+Ten-minute soak on `rust-c533e8763`: 46.8K req/s, 0 errors, no capture failures, and anon flat at
+**12–13 MiB** (p50 12.6, max 16.1) from the first minute to the last.
+
+**Consequence for reported memory.** Every Rust capture-profile memory figure in this report
+(Gate 4 anon 0.097–0.141, §5.3 "Anon MiB", and §8.1) includes leak growth accumulated during the
+run, so those figures overstate Rust's steady memory. On the fixed build, steady memory under load
+is about **13–16 MiB**, against Java's 480–540 MiB, roughly 3%. The gate verdicts do not change. Their
+ratios move further in Rust's favour.
