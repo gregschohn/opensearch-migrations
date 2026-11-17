@@ -493,3 +493,67 @@ change. The cost is that Phase 2 qualifies a delivery path that is about to chan
 - My test containers `capture-kafka-rust` (paused), `wpkafka-wp1` and `wpsrc-wp1` are still present.
 - `auth-kafka` and `kreal-kafka` are stopped.
 - All AWS resources created for the MSK proof are deleted.
+
+---
+
+## 8. Rework addendum — producer window fixes (after the owner review)
+
+Owner direction: use multiple producers (OD-12). Investigation then found two librdkafka defects in
+the idempotent producer, both reported upstream with open, unmerged fixes; the proxy now builds
+librdkafka 2.12.1 with those two PRs applied (`third_party/rdkafka-sys/`, commit `428ef064c`).
+
+| Defect | Upstream | Effect before the patch |
+|---|---|---|
+| Per-partition in-flight cap counted **records**, not requests (`RD_KAFKA_IDEMP_MAX_INFLIGHT - rktp_msgs_inflight`) | issue #5632, PR #5636 | a partition with five records in flight could not start another request; about one request per partition per round trip under load |
+| Broker thread armed an immediate wake-up before the cap refused to send | issue #5617, PR #5622 (draft) | busy spin: 2.4 proxy cores at 70 req/s with four producers under a slow broker (`rust-cf1eb57ff`) |
+
+Raising `max.in.flight` above 5 was rejected: librdkafka and kafka-clients refuse it with
+idempotence on, and the broker de-duplicates only five batches per producer and partition.
+
+### 8.1 Measurements on `rust-428ef064c` (patched), 4 partitions, both arms
+
+Four partitions so that four producers is exactly one partition per producer; this also matches
+production's four partitions per proxy. Ratios are Rust ÷ Java paired medians unless noted.
+
+| Profile (pairs per setting) | Metric | 1 producer | 4 producers |
+|---|---|---|---|
+| Gate 5 saturating (10) | ack p99 ≤ 1.10 | 1.18 [1.00–1.35] FAIL | **0.74 [0.63–0.84] PASS** |
+| | records/core ≥ 0.90 | 1.48 PASS | 1.38 PASS |
+| Gate 5 rate-matched 15K (9 / 10) | ack p99 ≤ 1.10 | **0.98 [0.89–1.06] PASS** | **0.54 [0.45–0.63] PASS** |
+| | records/core ≥ 0.90 | 1.01 INCONCLUSIVE | 1.04 PASS |
+| Gate 6, 750 ms broker delay (5) | client p50 | 1.94 (two round trips) | **0.99 (one)** |
+| | throughput | 0.83 | **1.23** |
+| | peak memory | 0.045 | 0.049 |
+| Gate 4 saturating (5) | req/s per core ≥ 1.15 | 1.56 PASS | 1.43 PASS |
+| | anon memory ≤ 0.75 | 0.108 PASS | 0.141 PASS |
+| Plaintext capture at 11,371 req/s (5) | req/s per core | 1.18 [1.10–1.25] | 1.03 [0.93–1.12] |
+| Production shape at 2,848 req/s (5) | req/s per core | 1.47 [1.38–1.56] | 1.38 [1.32–1.45] |
+| | ack p99 | 0.42 | 0.33 |
+
+Gate 1 on the patched image: Java j1 vs Rust r4 (1 producer) and vs r5 (4 producers, 8 partitions):
+**0 differences** each, 12/12 per-run assertions.
+
+**Direct 1 vs 4 producers** (10 alternating pairs, Gate 5 saturating, same conditions; 4 ÷ 1):
+total req/s **1.22×**, cores 1.23×, req/s per core **0.975** [0.94–1.01], ack p99 **0.63×**
+[0.57–0.70], proxy-added p99 0.77×, anon memory 1.48× (47 → 70 MiB, about 8 MiB per extra
+producer). The Java-paired batches above suggested a 6–13% per-core cost for four producers; the
+direct pairs show about 2.5%. The difference is host drift: the four-producer Java-paired batches
+ran in a slower host period that affected Java's acknowledgement latency more than Rust's.
+
+Integrity: one rate-matched Java arm was rejected three times for a host stall (a 45 s run spanning
+130–357 s of wall clock with connection errors) and that pair was abandoned. The production-shape
+ratio here (1.47) is not comparable with §5.8's 2.03: that batch used 8 partitions, and Java's own CPU
+at the same rate differs between the two layouts (2.67 vs 1.42 cores); this is being checked.
+
+### 8.2 Reading
+
+- The record-count cap was the main cause of Gate 5's and Gate 6's latency failures. With it fixed,
+  the remaining limit is the five-request window **per producer per broker**, because librdkafka sends
+  one partition per request (upstream issue #1700, long open).
+- More producers only help when several of a proxy's busy partitions share a leader broker. In the
+  production layout (4 partitions per proxy, 12 brokers) that is rare, so one producer should be
+  enough; on this single-broker bench, four producers is clearly better.
+- Proposed: compute the producer count when partitions are assigned, as
+  `min(cap, most assigned partitions led by one broker)`, with a starting cap of 4 to be confirmed by a
+  scaling study, and spread each broker's partitions across producers (the current `p mod N` mapping
+  collapses onto one producer when N divides the broker count). Awaiting owner approval.
