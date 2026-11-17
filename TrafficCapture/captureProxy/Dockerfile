@@ -17,10 +17,15 @@
 # `WITH_SASL_OAUTHBEARER=1` pulls in, and that includes `curl/curl.h`. Omitting it fails with
 # `fatal error: curl/curl.h: No such file or directory` in `rdkafka_conf.c`.
 
+# Both stages must stay AL2023 (see above). The image pipeline (buildImages/build.gradle) passes the
+# same image through its registry pull-through cache when one is configured.
+ARG BUILDER_IMAGE=public.ecr.aws/amazonlinux/amazonlinux:2023
+ARG RUNTIME_IMAGE=public.ecr.aws/amazonlinux/amazonlinux:2023
+
 # ---------------------------------------------------------------------------------------------
 # Build stage
 # ---------------------------------------------------------------------------------------------
-FROM public.ecr.aws/amazonlinux/amazonlinux:2023 AS builder
+FROM ${BUILDER_IMAGE} AS builder
 
 # cmake and a C/C++ toolchain are required because rdkafka is built with the `cmake-build` feature,
 # which compiles the vendored librdkafka from source rather than trusting a system package.
@@ -81,7 +86,7 @@ RUN third_party/rdkafka-sys/prepare.sh \
 # ---------------------------------------------------------------------------------------------
 # Runtime stage
 # ---------------------------------------------------------------------------------------------
-FROM public.ecr.aws/amazonlinux/amazonlinux:2023
+FROM ${RUNTIME_IMAGE}
 
 # The SASL mechanism plugins must be present at runtime: librdkafka loads them dynamically, so a
 # missing plugin surfaces as an authentication failure against the broker rather than a link error

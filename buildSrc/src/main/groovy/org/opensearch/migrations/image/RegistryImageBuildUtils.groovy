@@ -3,11 +3,37 @@ package org.opensearch.migrations.image
 import groovy.json.JsonOutput
 import org.gradle.api.GradleException
 import org.gradle.api.Project
+import org.gradle.api.Task
 import org.gradle.api.tasks.Exec
 import org.opensearch.migrations.common.CommonUtils
 
 class RegistryImageBuildUtils {
     private static boolean builderWarningShown = false
+
+    static final String DEFAULT_DOCKERFILE = "Dockerfile"
+
+    /** A BuildKit project's Dockerfile, relative to its contextDir. */
+    static String dockerfileOf(Map cfg) {
+        return cfg.get("dockerfile", DEFAULT_DOCKERFILE).toString()
+    }
+
+    /**
+     * What a BuildKit task's up-to-date fingerprint covers: inputPaths when the project names them,
+     * otherwise its whole contextDir. A context shared with other builds (TrafficCapture/ for the
+     * capture proxy) names the paths its image actually reads, so Gradle does not fingerprint
+     * unrelated trees and build output on every run.
+     */
+    static void declareContextInputs(Project project, Task task, Map cfg) {
+        def paths = (List) cfg.get("inputPaths", [cfg.get("contextDir", ".")])
+        paths.each { path ->
+            def file = project.file(path)
+            if (file.isFile()) {
+                task.inputs.file(file)
+            } else {
+                task.inputs.dir(file)
+            }
+        }
+    }
 
     static class Registry { // Helper object
         final String hostUrl      // For Jib, which runs in the JVM directly (e.g., localhost:5001)
@@ -457,6 +483,11 @@ class RegistryImageBuildUtils {
         def imageName = cfg.get("imageName").toString()
         def imageTag = cfg.get("imageTag", "latest").toString()
         def contextPath = project.file(cfg.get("contextDir", ".")).path
+        // Optional Dockerfile path relative to the context, for images whose build context must be
+        // wider than the Dockerfile's own directory. BuildKit then reads <dockerfile>.dockerignore
+        // beside it.
+        def dockerfileFlags = dockerfileOf(cfg) == DEFAULT_DOCKERFILE ? [] :
+                ["-f \"${new File(contextPath, dockerfileOf(cfg)).path}\""]
         def formatter = ImageRegistryFormatterFactory.getFormatter(registryEndpoint)
 
         def pushTags = imageTags(imageTag, versionTag, imageVersionOnly(project), intermediateBaseImages.contains(imageName))
@@ -508,7 +539,8 @@ class RegistryImageBuildUtils {
         }
 
         def commonInputs = { task, String archSuffix = "" ->
-            task.inputs.dir(project.file(cfg.get("contextDir", ".")))
+            declareContextInputs(project, task, cfg)
+            task.inputs.property("dockerfile", dockerfileOf(cfg))
             task.inputs.property("registryEndpoint", registryEndpoint)
             task.inputs.property("repoName", (repoName ?: "").toString())
             task.inputs.property("imageName", imageName)
@@ -564,6 +596,7 @@ class RegistryImageBuildUtils {
                         ]
                         staticBuildArgFlags.each { fullArgs.add(it) }
                         resolveIntermediateArgs(suffix).each { fullArgs.add(it) }
+                        dockerfileFlags.each { fullArgs.add(it) }
                         fullArgs.add("\"${contextPath}\"")
                         commandLine 'sh', '-c', fullArgs.join(" ")
                     }
@@ -602,6 +635,7 @@ class RegistryImageBuildUtils {
                     ]
                     staticBuildArgFlags.each { fullArgs.add(it) }
                     resolveIntermediateArgs("").each { fullArgs.add(it) }
+                    dockerfileFlags.each { fullArgs.add(it) }
                     fullArgs.add("\"${contextPath}\"")
                     commandLine 'sh', '-c', fullArgs.join(" ")
                 }
@@ -764,7 +798,7 @@ class RegistryImageBuildUtils {
                         )[0].toString()
                         bakeDefinition.target[targetName] = [
                                 context     : project.file(cfg.get("contextDir", ".")).absolutePath,
-                                dockerfile  : "Dockerfile",
+                                dockerfile  : dockerfileOf(cfg),
                                 tags        : ([primaryDest] + extraDests),
                                 args        : buildArgs,
                                 platforms   : architecture == "multi" ? ["linux/amd64", "linux/arm64"] : ["linux/${architecture}".toString()],
@@ -853,8 +887,9 @@ class RegistryImageBuildUtils {
             }
 
             includedProjects.each { cfg ->
-                inputs.dir(project.file(cfg.get("contextDir", ".")))
+                declareContextInputs(project, task, cfg)
                 inputs.property("${cfg.serviceName}.contextDir".toString(), cfg.get("contextDir", ".").toString())
+                inputs.property("${cfg.serviceName}.dockerfile".toString(), dockerfileOf(cfg))
                 inputs.property("${cfg.serviceName}.imageName".toString(), cfg.get("imageName").toString())
                 inputs.property("${cfg.serviceName}.imageTag".toString(), cfg.get("imageTag", "latest").toString())
                 inputs.property("${cfg.serviceName}.buildArgs".toString(), cfg.get("buildArgs", [:]).collectEntries { key, value ->

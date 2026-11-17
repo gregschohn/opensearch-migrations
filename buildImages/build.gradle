@@ -58,22 +58,40 @@ def jibProjects = [
                     ":TrafficCapture:transformationShim": ["syncVersionFile_transformation_shim", "stageTransformsForImage"]
                 ]
         ],
-        "TrafficCapture:trafficCaptureProxyServer": correttoBase + [
-                // purposefully omit '-Dio.netty.handler.codec.http.defaultStrictLineParsing=false'
-                imageName      : "capture_proxy",
-                imageTag       : "latest",
-                jvmFlags      : defaultJvmFlags,
-                extraPermissions: ['/runJavaWithClasspath.sh': '755'],
-                requiredDependencies: [
-                    ":TrafficCapture:trafficCaptureProxyServer": ["generateSelfSignedCerts", "syncVersionFile_capture_proxy"]
-                ]
-        ]
+        // capture_proxy is no longer a Jib image: the Rust proxy below replaces the Java
+        // TrafficCapture:trafficCaptureProxyServer image under the same name and tags.
 ]
 jibProjects.values().each { cfg ->
     cfg.repoName = getRepoNameIfPublishing(cfg)
 }
 
 def buildKitProjects = [
+        [
+                // The Rust capture proxy, under the capture_proxy image identity the Java proxy had.
+                // Its build context is TrafficCapture/ because capture-wire compiles the capture
+                // schema in TrafficCapture/captureProtobufs; captureProxy/Dockerfile.dockerignore
+                // keeps the rest of that tree out of the context.
+                serviceName: "captureProxy",
+                contextDir: "TrafficCapture",
+                dockerfile: "captureProxy/Dockerfile",
+                inputPaths: [
+                        "TrafficCapture/captureProxy/Dockerfile",
+                        "TrafficCapture/captureProxy/Dockerfile.dockerignore",
+                        "TrafficCapture/captureProxy/Cargo.toml",
+                        "TrafficCapture/captureProxy/Cargo.lock",
+                        "TrafficCapture/captureProxy/rust-toolchain.toml",
+                        "TrafficCapture/captureProxy/crates",
+                        "TrafficCapture/captureProxy/third_party/rdkafka-sys/prepare.sh",
+                        "TrafficCapture/captureProxy/third_party/rdkafka-sys/patches",
+                        "TrafficCapture/captureProtobufs/src/main/proto",
+                ],
+                imageName:  "capture_proxy",
+                imageTag:   "latest",
+                buildArgs: [
+                        BUILDER_IMAGE: ptc.rewrite("public.ecr.aws/amazonlinux/amazonlinux:2023"),
+                        RUNTIME_IMAGE: ptc.rewrite("public.ecr.aws/amazonlinux/amazonlinux:2023"),
+                ]
+        ],
         [
                 serviceName: "elasticsearchTestConsole",
                 contextDir: "TrafficCapture/dockerSolution/src/main/docker/elasticsearchTestConsole",
