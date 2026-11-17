@@ -557,3 +557,27 @@ at the same rate differs between the two layouts (2.67 vs 1.42 cores); this is b
   `min(cap, most assigned partitions led by one broker)`, with a starting cap of 4 to be confirmed by a
   scaling study, and spread each broker's partitions across producers (the current `p mod N` mapping
   collapses onto one producer when N divides the broker count). Awaiting owner approval.
+
+### 8.3 Correction: production-shape efficiency at fixed rate
+
+§2.2, §5.3 and §5.8 report the production shape at a fixed 2,848 req/s as **2.03×** per core
+(`rust-03ddf2ab2`, 8 partitions, one unpatched producer). Later batches do not reproduce it. In that
+batch Java needed **2.67** cores for the same traffic; in every later batch it needed 1.41–1.53
+cores, and Rust 1.05–1.08 instead of 1.49. That batch therefore ran during a host slowdown that hurt
+Java more than Rust, which pairing does not cancel.
+
+| Batch | Image, producers, partitions | Req/s per core [CI95] | Cores J → R |
+|---|---|---|---|
+| `gprodrate` (superseded) | `rust-03ddf2ab2`, 1 unpatched, 8 | 2.03 [1.73–2.34] | 2.67 → 1.49 |
+| `pm-gprod-n1` | `rust-428ef064c`, 1, 4 | 1.47 [1.38–1.56] | 1.42 → 0.98 |
+| `pm-gprod-n4` | `rust-428ef064c`, 4, 4 | 1.38 [1.32–1.45] | 1.46 → 1.06 |
+| `ac-gprod-p8` | `rust-e84c1750c`, auto (4), 8 | 1.29 [1.19–1.38] | 1.41 → 1.08 |
+| `ac-gprod-p4` | `rust-e84c1750c`, auto (4), 4 | 1.40 [1.34–1.46] | 1.53 → 1.05 |
+
+The consistent figure is **1.29–1.47×** per core (Rust uses 0.68–0.78× Java's cores for the same
+traffic). That is at F2's ≥1.30× target on this bench, not comfortably above it. On a single broker,
+`auto` picks four producers, which costs a few percent of CPU; production's layout would pick one.
+The capture-path CPU item (R2) is therefore the lever on F2.
+
+Automatic sizing on `rust-e84c1750c` (5 pairs, Gate 5 flat out, 4 partitions): ack p99 **0.82**
+[0.67–0.98] PASS, records per core 1.39 PASS, proxy-added p99 0.50, 1.81× Java's total requests.
