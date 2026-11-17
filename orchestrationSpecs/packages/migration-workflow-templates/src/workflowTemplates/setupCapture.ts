@@ -60,6 +60,16 @@ const KAFKA_AUTH_CONFIG_FILE_PATH = `${KAFKA_AUTH_CONFIG_MOUNT_PATH}/client.prop
 const KAFKA_CA_MOUNT_PATH = "/config/kafka-ca";
 const CAPTURE_PROXY_SSL_TRUST_CERT_PEM_ENV_VAR = "CAPTURE_PROXY_SSL_TRUST_CERT_PEM";
 
+/**
+ * How long Kubernetes waits after SIGTERM before it SIGKILLs a capture-proxy pod.
+ *
+ * The proxy's orderly shutdown stops accepting at 60 s, drains until 240/270 s and hard-stops at
+ * 300 s. Kubernetes' default of 30 s killed the pod long before capture drain and writer
+ * retirement could finish, so this is the 300 s budget plus a 30 s margin (owner decision OD-15).
+ * Rolling replacements take longer, but they drain cleanly.
+ */
+export const CAPTURE_PROXY_TERMINATION_GRACE_PERIOD_SECONDS = 330;
+
 function makeOwnerReferences(
     ownerName: BaseExpression<string>,
     ownerUid: BaseExpression<string>,
@@ -393,6 +403,7 @@ function makeProxyDeploymentManifest(args: {
                     [MIGRATION_RESOURCE_UID_LABEL]: makeStringTypeProxy(args.ownerUid),
                 }},
                 spec: {
+                    terminationGracePeriodSeconds: CAPTURE_PROXY_TERMINATION_GRACE_PERIOD_SECONDS,
                     nodeSelector: makeDirectTypeProxy(workloadNodeSelector(args.workloadNodePoolName)),
                     tolerations: makeDirectTypeProxy(workloadNodeTolerations(args.workloadNodePoolName)),
                     topologySpreadConstraints: makeDirectTypeProxy(
