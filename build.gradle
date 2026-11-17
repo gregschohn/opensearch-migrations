@@ -62,7 +62,11 @@ def commonExclusions = ['.gradle/**',
                         '**/opensearch-cluster-cdk/**',
                         '**/cdk.out/**',
                         '**/cdk.out-minified/**',
-                        '**/transformation/standardJavascriptTransforms/node_modules/**']
+                        '**/transformation/standardJavascriptTransforms/node_modules/**',
+                        // Git-ignored Rust capture-proxy build output, and the third-party librdkafka
+                        // sources that third_party/rdkafka-sys/prepare.sh unpacks; neither is ours to format.
+                        'TrafficCapture/captureProxy/target/**',
+                        'TrafficCapture/captureProxy/third_party/rdkafka-sys/crate/**']
 spotless {
     format 'misc', {
         target fileTree('.') {
