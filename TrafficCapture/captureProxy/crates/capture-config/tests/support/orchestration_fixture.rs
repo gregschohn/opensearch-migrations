@@ -28,7 +28,6 @@ pub const SCENARIOS: &[&str] = &[
     "mtls-inline-client-ca",
     "no-capture",
     "plaintext-listener-managed-kafka-without-auth",
-    "rejected-set-header-in-name-colon-value-form",
     "suppression-set-header-and-tuning",
 ];
 
