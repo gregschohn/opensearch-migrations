@@ -387,7 +387,7 @@ budget is the escape hatch.
 `deployment/cdk/opensearch-service-migration/lib/service-stacks/capture-proxy-stack.ts` is not
 modified and not qualified. Because the Rust binary replaces the Java image under the same name and
 its command line differs, the CDK capture-proxy stack may not start the Rust proxy correctly. This is
-a known, accepted risk, recorded in the release notes and the CDK `options.md`.
+a known, accepted risk, recorded in the release notes and the `TrafficCapture` README. No file under `deployment/cdk/` is edited.
 
 ---
 
