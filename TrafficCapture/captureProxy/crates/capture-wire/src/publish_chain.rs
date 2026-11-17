@@ -216,6 +216,12 @@ impl PublishChain {
         self.outcomes.pop_front()
     }
 
+    /// How many completed outcomes are waiting in [`Self::poll_outcome`].
+    #[must_use]
+    pub fn pending_outcomes(&self) -> usize {
+        self.outcomes.len()
+    }
+
     /// The record currently awaiting acknowledgement.
     #[must_use]
     pub fn in_flight(&self) -> Option<PublishTicket> {

@@ -498,6 +498,17 @@ impl<S: RecordSink> ConnectionRecorder<S> {
         self.chain.poll_outcome()
     }
 
+    /// How many completed publication outcomes are waiting in
+    /// [`Self::poll_publication_outcome`].
+    ///
+    /// Every acknowledgement and failure adds one. An owner that learns outcomes some other way
+    /// must still drain them: on a long-lived connection they otherwise accumulate for its whole
+    /// life, one per record (the Phase 6 soak found 700 MiB after ten minutes).
+    #[must_use]
+    pub fn pending_publication_outcomes(&self) -> usize {
+        self.chain.pending_outcomes()
+    }
+
     /// The latched publication failure, if the chain is poisoned.
     #[must_use]
     pub fn publication_failure(&self) -> Option<&PublishFailure> {

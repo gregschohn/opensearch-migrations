@@ -295,6 +295,14 @@ impl<S: PublishingRecordSink> RecordingCaptureSink<S> {
     /// Acknowledging is what releases the next queued record, so this must run before any
     /// observation that could need a new record — otherwise a connection whose first record is
     /// still in flight would queue forever.
+    fn discard_chain_outcomes(&mut self) {
+        // This sink learns every outcome from its own publication sink (`take_outcomes`) and acts
+        // on it there; the chain's copy exists for owners that do not. Left undrained it grows by
+        // one entry per record for the life of the connection, which on a keep-alive connection
+        // is an unbounded leak.
+        while self.recorder.poll_publication_outcome().is_some() {}
+    }
+
     fn pump(&mut self) -> Result<(), CaptureFailure> {
         let outcomes = self.recorder.sink_mut().take_outcomes();
         let mut first_failure = None;
@@ -312,6 +320,7 @@ impl<S: PublishingRecordSink> RecordingCaptureSink<S> {
                 }
             }
         }
+        self.discard_chain_outcomes();
         match first_failure {
             None => Ok(()),
             Some(reason) => Err(CaptureFailure::required(format!(
@@ -395,6 +404,7 @@ impl<S: PublishingRecordSink> RecordingCaptureSink<S> {
                     }
                 }
             }
+            self.discard_chain_outcomes();
             if let Some(reason) = failure {
                 return Err(CaptureFailure::required(format!(
                     "capture publication failed before forwarding Critical Mutation Traffic on \
@@ -802,6 +812,25 @@ mod tests {
         assert_eq!(sink.gate_critical_mutation().await, GateOutcome::Forward);
         assert!(sink.should_capture());
         assert_eq!(sink.recorder_mut().sink().submitted_record_count(), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn acknowledged_records_leave_nothing_behind_on_a_long_lived_connection() {
+        // Regression: every acknowledgement used to leave one outcome in the connection's publish
+        // chain that nothing drained, so a keep-alive connection grew by one entry per record for
+        // its whole life (the Phase 6 soak: 6 MiB -> 700 MiB in ten minutes at 42K req/s).
+        let mut sink = recording(CaptureFailurePolicy::FailClosed);
+        for _ in 0..500 {
+            observe_one_request(&mut sink);
+            sink.recorder_mut().sink_mut().acknowledge_next();
+            assert_eq!(sink.gate_critical_mutation().await, GateOutcome::Forward);
+        }
+        assert!(sink.recorder_mut().sink().submitted_record_count() >= 500);
+        assert_eq!(
+            sink.recorder_mut().pending_publication_outcomes(),
+            0,
+            "the chain's outcome log must not grow with every acknowledged record"
+        );
     }
 
     #[test]
