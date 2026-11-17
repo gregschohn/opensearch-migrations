@@ -133,7 +133,21 @@ pub struct KafkaConfig {
     required_topic_partitions: u32,
     producer_count: ProducerCount,
     publication_budget: PublicationBudget,
+    /// `--kafka-linger-ms`, in whole microseconds so the configuration stays `Eq`.
+    linger_us: u64,
 }
+
+/// Rounds a validated `--kafka-linger-ms` to whole microseconds.
+fn linger_microseconds(linger_ms: f64) -> u64 {
+    // Validated finite and within 0..=MAX_KAFKA_LINGER_MS, so the product fits easily.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let micros = (linger_ms * 1_000.0).round() as u64;
+    micros
+}
+
+/// Largest accepted `--kafka-linger-ms`. librdkafka allows far more, but anything near a second
+/// would stall every captured mutation; this guards against unit mistakes (seconds for ms).
+pub const MAX_KAFKA_LINGER_MS: f64 = 1_000.0;
 
 /// `--kafka-publication-budget-bytes` / `--kafka-publication-budget-records` (OD-13).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -191,6 +205,8 @@ pub struct KafkaInputs {
     /// `--max-traffic-buffer-size`: the largest traffic record, which the byte budget must hold
     /// twice over (half of it may be reserved for control records).
     pub max_record_bytes: u32,
+    /// `--kafka-linger-ms`.
+    pub linger_ms: f64,
 }
 
 impl KafkaConfig {
@@ -247,6 +263,13 @@ impl KafkaConfig {
             });
         }
 
+        if !inputs.linger_ms.is_finite() || !(0.0..=MAX_KAFKA_LINGER_MS).contains(&inputs.linger_ms)
+        {
+            return Err(KafkaConfigError::LingerMs {
+                value: inputs.linger_ms.to_string(),
+            });
+        }
+
         let username = non_empty(inputs.username);
         let password = inputs.password.filter(|password| !password.is_empty());
 
@@ -280,7 +303,17 @@ impl KafkaConfig {
             required_topic_partitions: inputs.required_topic_partitions,
             producer_count: inputs.producer_count,
             publication_budget: budget,
+            linger_us: linger_microseconds(inputs.linger_ms),
         })
+    }
+
+    /// Producer `linger.ms` from `--kafka-linger-ms`, at microsecond resolution.
+    #[must_use]
+    pub fn linger_ms(&self) -> f64 {
+        // Exact for every value below 2^53 µs, far beyond MAX_KAFKA_LINGER_MS.
+        #[allow(clippy::cast_precision_loss)]
+        let micros = self.linger_us as f64;
+        micros / 1_000.0
     }
 
     /// The publication budget (OD-13).
@@ -494,6 +527,12 @@ pub enum KafkaConfigError {
     /// The `client.id` is blank.
     #[error("--kafka-client-id must not be empty")]
     EmptyClientId,
+    /// `--kafka-linger-ms` is negative, not a number, or above the guard.
+    #[error("--kafka-linger-ms must be between 0 and {MAX_KAFKA_LINGER_MS}, got {value}")]
+    LingerMs {
+        /// The rejected value, as written.
+        value: String,
+    },
     /// The byte budget cannot hold two maximum-size records, or exceeds the guard.
     #[error(
         "--kafka-publication-budget-bytes must be between {minimum} (twice \
@@ -640,6 +679,25 @@ mod tests {
         })
         .expect("a larger budget is the escape hatch");
         assert_eq!(raised.publication_budget().bytes, 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn linger_defaults_to_zero_accepts_fractions_and_rejects_nonsense() {
+        assert!(KafkaConfig::new(inputs()).expect("valid").linger_ms().abs() < f64::EPSILON);
+        let half = KafkaConfig::new(KafkaInputs {
+            linger_ms: 0.5,
+            ..inputs()
+        })
+        .expect("fractions are allowed");
+        assert!((half.linger_ms() - 0.5).abs() < f64::EPSILON);
+        for bad in [-0.1, f64::NAN, f64::INFINITY, MAX_KAFKA_LINGER_MS + 1.0] {
+            let error = KafkaConfig::new(KafkaInputs {
+                linger_ms: bad,
+                ..inputs()
+            })
+            .expect_err("out of range");
+            assert!(matches!(error, KafkaConfigError::LingerMs { .. }), "{bad}");
+        }
     }
 
     #[test]

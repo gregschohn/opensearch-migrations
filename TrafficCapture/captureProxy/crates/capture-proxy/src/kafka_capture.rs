@@ -145,6 +145,7 @@ pub fn kafka_settings(
     kafka.client_id().clone_into(&mut settings.client_id);
     settings.properties = file_properties;
     settings.auth = auth_mode(kafka, environment)?;
+    settings.linger_ms = kafka.linger_ms();
     settings.producer_sizing = match kafka.producer_count() {
         capture_config::kafka::ProducerCount::Auto => {
             capture_kafka::client_config::ProducerSizing::Auto {

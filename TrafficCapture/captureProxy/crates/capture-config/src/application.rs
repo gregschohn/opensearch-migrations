@@ -443,6 +443,7 @@ fn resolve_sink(cli: &CliArgs, env: &dyn EnvLookup) -> Result<CaptureSink, Confi
                         records: cli.kafka_publication_budget_records,
                     },
                     max_record_bytes: cli.max_traffic_buffer_size,
+                    linger_ms: cli.kafka_linger_ms,
                 },
             )?)))
         }

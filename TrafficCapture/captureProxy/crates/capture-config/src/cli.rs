@@ -62,6 +62,9 @@ pub const DEFAULT_KAFKA_TOPIC: &str = "logging-traffic-topic";
 /// Default `--kafka-producer-count` (owner decision OD-12): sized automatically, capped at four.
 pub const DEFAULT_KAFKA_PRODUCER_COUNT: &str = "auto";
 
+/// Default `--kafka-linger-ms`: 0, the Java client's effective default.
+pub const DEFAULT_KAFKA_LINGER_MS: f64 = 0.0;
+
 /// Default `--kafka-publication-budget-bytes` (owner decision OD-13): 64 MiB.
 pub const DEFAULT_KAFKA_PUBLICATION_BUDGET_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -662,6 +665,11 @@ pub const PARAMETERS: &[ParamSpec] = &[
         kind: ParamKind::Value,
     },
     ParamSpec {
+        flag: "kafka-linger-ms",
+        aliases: &[],
+        kind: ParamKind::Value,
+    },
+    ParamSpec {
         flag: "kafka-publication-budget-bytes",
         aliases: &[],
         kind: ParamKind::Value,
@@ -1042,6 +1050,20 @@ pub struct CliArgs {
         value_name = "auto|COUNT"
     )]
     pub kafka_producer_count: crate::kafka::ProducerCount,
+
+    /// Kafka producer `linger.ms`: how long librdkafka may wait to batch records into a request.
+    ///
+    /// `0` sends at once (the Java client's default). A small value such as `0.5` sends fewer,
+    /// larger requests and cuts the proxy's CPU, at the cost of about 1 ms on each acknowledgement
+    /// (and so on each captured mutation). Fractions are allowed. A `linger.ms` in the Kafka
+    /// property file overrides this.
+    #[arg(
+        long = "kafka-linger-ms",
+        env = "CAPTURE_PROXY_KAFKA_LINGER_MS",
+        default_value_t = DEFAULT_KAFKA_LINGER_MS,
+        value_name = "MILLISECONDS"
+    )]
+    pub kafka_linger_ms: f64,
 
     /// Most capture bytes held awaiting Kafka acknowledgement (owner decision OD-13).
     ///

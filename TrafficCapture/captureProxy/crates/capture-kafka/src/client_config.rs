@@ -80,6 +80,9 @@ pub const DEFAULT_CLIENT_ID: &str = "HttpCaptureProxyProducer";
 
 pub use crate::producer_pool::{AUTO_PRODUCER_CAP, MAX_FIXED_PRODUCERS, ProducerSizing};
 
+/// Default producer `linger.ms`: 0, the Java client's effective default (see `role_defaults`).
+pub const DEFAULT_LINGER_MS: f64 = 0.0;
+
 /// The default traffic topic, matching `KafkaCaptureFactory.java:53`.
 pub const DEFAULT_TOPIC: &str = "logging-traffic-topic";
 
@@ -214,6 +217,9 @@ pub struct KafkaClientSettings {
     /// How many independent traffic producers to run, and how partitions are spread over them
     /// (OD-12; see [`crate::producer_pool`]).
     pub producer_sizing: ProducerSizing,
+    /// Producer `linger.ms` (`--kafka-linger-ms`). A property file that sets `linger.ms` (or its
+    /// alias `queue.buffering.max.ms`) still wins, like every overridable default.
+    pub linger_ms: f64,
 }
 
 impl KafkaClientSettings {
@@ -228,6 +234,7 @@ impl KafkaClientSettings {
             max_message_bytes: 1024 * 1024,
             properties: BTreeMap::new(),
             producer_sizing: ProducerSizing::default(),
+            linger_ms: DEFAULT_LINGER_MS,
         }
     }
 
@@ -718,7 +725,7 @@ fn is_allowed_for_any_role(key: &str) -> bool {
 ///
 /// These are the Java `putIfAbsent` values that have a librdkafka equivalent: a property file wins
 /// over them, matching Java's precedence exactly.
-fn role_defaults(role: ClientRole, _settings: &KafkaClientSettings) -> Vec<(&'static str, String)> {
+fn role_defaults(role: ClientRole, settings: &KafkaClientSettings) -> Vec<(&'static str, String)> {
     match role {
         ClientRole::Producer => vec![
             // KafkaConfig.java:123-124.
@@ -748,13 +755,25 @@ fn role_defaults(role: ClientRole, _settings: &KafkaClientSettings) -> Vec<(&'st
             // happens whenever records are genuinely concurrent, because a batch forms from
             // whatever is queued when the producer thread wakes.
             //
-            // Overridable: a deployment that is bandwidth-bound rather than latency-bound may
-            // legitimately raise it.
-            ("linger.ms", "0".to_owned()),
+            // Overridable: `--kafka-linger-ms` sets it, and a property file still wins. Measured on
+            // the Rust proxy (Phase 1 review §8): 0.5 ms cuts proxy CPU by about 30% at a fixed
+            // plaintext-capture rate, because librdkafka sends fewer, larger requests, and adds
+            // about 1 ms to each acknowledgement (librdkafka's broker thread waits in whole
+            // milliseconds).
+            ("linger.ms", format_linger(settings.linger_ms)),
         ],
         // Java sets none of session.timeout.ms, heartbeat.interval.ms, or max.poll.interval.ms, so
         // neither does this.
         ClientRole::MembershipConsumer => Vec::new(),
+    }
+}
+
+/// `linger.ms` as librdkafka parses it: an integer when whole, otherwise a decimal.
+fn format_linger(linger_ms: f64) -> String {
+    if linger_ms.fract() == 0.0 {
+        format!("{linger_ms:.0}")
+    } else {
+        format!("{linger_ms}")
     }
 }
 
@@ -1030,6 +1049,28 @@ mod tests {
         assert_eq!(
             settings.payload_size_limit().expect("valid"),
             8 * 1024 * 1024 - KAFKA_MESSAGE_OVERHEAD_BYTES
+        );
+    }
+
+    #[test]
+    fn the_linger_flag_sets_the_default_and_a_property_file_still_wins() {
+        let mut settings = KafkaClientSettings::new("localhost:9092");
+        settings.linger_ms = 0.5;
+        let config = settings.build(ClientRole::Producer).expect("valid");
+        assert_eq!(effective(&config, "linger.ms"), "0.5");
+
+        settings.linger_ms = 2.0;
+        let config = settings.build(ClientRole::Producer).expect("valid");
+        assert_eq!(effective(&config, "linger.ms"), "2");
+
+        settings
+            .properties
+            .insert("linger.ms".to_owned(), "7".to_owned());
+        let config = settings.build(ClientRole::Producer).expect("valid");
+        assert_eq!(
+            effective(&config, "linger.ms"),
+            "7",
+            "the property file wins"
         );
     }
 
