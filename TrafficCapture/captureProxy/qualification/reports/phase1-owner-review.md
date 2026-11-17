@@ -8,8 +8,8 @@ Status: **FOR OWNER REVIEW. Phase 2 is not started and will not start without ex
 | Item | Value |
 |---|---|
 | Baseline | `opensearch-project/opensearch-migrations` `main` @ `059d7b6483f29759b1ee108b87b87c61b0ce3432` (matches the plan's analyzed baseline) |
-| Branch | `rust-capture-proxy` |
-| Phase 1 code head | `03ddf2ab2` (later commits are reports and harness only) |
+| Branch | `rust-capture-proxy` (history rewritten before first push to add DCO sign-off; image tags keep pre-rewrite SHAs, mapped in `commit-map.md`) |
+| Phase 1 code head | `b42890373` (later commits are reports and harness only) |
 | Measurement images | Gates 2–4, 6: `rust-b60dc220e` (`sha256:3e3cd935…3b62`), the first image recording the same instrument set as Java. Gate 5, production shape, fixed-rate runs and confirmations: `rust-03ddf2ab2` (`sha256:90f39c70…1ddb`). Earlier primary results on `rust-748379d05` (Gate 2) and `rust-2ff6080df` (Gate 4) are reported with their confirmations. linux/arm64, AL2023, 62.6 MB image, 13.7 MB stripped binary, user 10001 |
 | Java comparison image | `localhost:5001/migrations/capture_proxy:latest_arm64`, `sha256:8abd1f4d91e9db138da3909f1092ec8428b695491fc17da5c9b81ebca6008357`, Jib `:TrafficCapture:trafficCaptureProxyServer:jib_arm64` at the baseline |
 | Host | Apple M5 Pro, 18 cores, 64 GiB, macOS (Darwin 25.6.0), Docker Desktop 29.7.2 Linux/arm64 VM |
@@ -17,9 +17,9 @@ Status: **FOR OWNER REVIEW. Phase 2 is not started and will not start without ex
 | Kafka | Apache Kafka 4.0.0 KRaft single broker per test, `message.timestamp.type=LogAppendTime`; plus a live AWS MSK Serverless cluster for IAM (torn down) |
 | Harness | `qualification/perf/` (committed with this report): generator, runners, validator, paired-ratio analysis, and the full measurement specification |
 
-The commits after `2ff6080df` (`6d9dac9ed`, `6a2edd703`) change Kafka TLS property translation and
+The commits after `2a81acaa3` (`f9a59ffa7`, `55b6ad35a`) change Kafka TLS property translation and
 the capture-compromise paths only; neither is exercised by the steady-state performance profiles.
-`03ddf2ab2` adds the HTTP/2 tunnel (OD-11), the remaining connection metrics, and removes a
+`b42890373` adds the HTTP/2 tunnel (OD-11), the remaining connection metrics, and removes a
 duplicate ack-latency sample; Gate 2 and Gate 4 were re-confirmed on it (§5.3).
 
 Size: 48.2K lines of Rust under `crates/*/src`, 7.3K under `crates/*/tests`. Workspace at the code head: **906 tests
@@ -42,10 +42,10 @@ brackets. Proxy pinned to 5 cores / 5,000 MiB, same topology for both arms.
 | Gate | Requirement | Result | Pairs clearing | Verdict |
 |---|---|---|---|---|
 | 1 | Zero exercised WIRE or PROTOCOL divergence | 3 Rust passes, 0 differences vs calibrated Java (§3) | — | **PASS** |
-| 2 | Plaintext scan-and-forward req/s per used core ≥ 1.20 | **2.93** [2.80–3.05]; confirmations 3.04, 2.83, and **2.81** [2.56–3.06] on `03ddf2ab2` | 9/9, 3/3 | **PASS** |
+| 2 | Plaintext scan-and-forward req/s per used core ≥ 1.20 | **2.93** [2.80–3.05]; confirmations 3.04, 2.83, and **2.81** [2.56–3.06] on `b42890373` | 9/9, 3/3 | **PASS** |
 | 3 | Double TLS: req/s per core ≥ 0.95; proxy-added p99 ≤ 1.05 | **1.54** [1.45–1.62]; p99 **0.54** [0.49–0.60] | 10/10, 10/10 | **PASS** |
 | 3 | 23% churn + TLS: same | **1.27** [1.21–1.34]; p99 **0.56** [0.52–0.60] | 10/10, 10/10 | **PASS** |
-| 4 | Capture slice req/s per core ≥ 1.15; steady RSS ≤ 0.75 | **1.46** [1.40–1.51]; anon **0.097** [0.090–0.103]; confirmation on `03ddf2ab2` 1.36 [1.18–1.54], anon 0.082 | 10/10, 3/3 | **PASS** as specified (flat out); 0.93 at 70% load (§5.8) |
+| 4 | Capture slice req/s per core ≥ 1.15; steady RSS ≤ 0.75 | **1.46** [1.40–1.51]; anon **0.097** [0.090–0.103]; confirmation on `b42890373` 1.36 [1.18–1.54], anon 0.082 | 10/10, 3/3 | **PASS** as specified (flat out); 0.93 at 70% load (§5.8) |
 | 5 | Kafka records/core and MiB/core ≥ 0.90 | **1.37** [1.31–1.43] / **1.37** [1.31–1.43] saturating; **1.09** [1.02–1.16] / **1.09** [1.02–1.16] rate-matched | 10/10, 10/10 | **PASS** |
 | 5 | Kafka ack p99 ≤ 1.10 | **1.36** [1.20–1.53] saturating; **1.45** [1.21–1.68] rate-matched (§5.4) | 1/10, 3/10 | **FAIL** |
 | 6 | Delayed Kafka: bounded memory, lossless backpressure, recovery | Peak 15.4 MiB (Java 347), 0 errors, recovers to 12.5 MiB | — | **PASS** on its clauses, with a **2× latency defect** (§5.5) |
@@ -113,7 +113,7 @@ Segmentation through the Java replayer: a 3 MiB response (forcing size-triggered
 segmented write observations) captured by Rust reconstructs as `RSP[3145863]` (3,145,728 body + 135
 header bytes) plus its `REQ` and `CLOSED`.
 
-`03ddf2ab2` was not re-run through the differential. Its changes are outside the recorded stream for
+`b42890373` was not re-run through the differential. Its changes are outside the recorded stream for
 HTTP/1 (metrics only, and one fewer histogram sample); the HTTP/2 tunnel it adds records only the
 connection's terminal `CloseObservation`, as Java does. A Phase 2 re-run of the differential on the
 final image is planned regardless.
@@ -146,7 +146,7 @@ broker cannot exercise it. Phase 3 owns it.
 | none | All real-broker tests above | PASS |
 | TLS (`ssl`) | Real SSL listener, orchestration's exact `client.properties` shape: capture + PUT/GET 200, exit 0; missing CA → refuses, exit 78 | PASS after fix (§4) |
 | SCRAM-SHA-512 | Real SASL_SSL listener: capture + PUT/GET 200, exit 0; wrong password → refuses, exit 78 | PASS after fix (§4) |
-| MSK IAM | **Proxy release code, run on an in-VPC EC2 client against the live MSK Serverless cluster**, credentials from the instance profile via IMDSv2 through `aws-config`'s default chain (no static keys in the environment): capture-ready in 4.4 s, assignment `[0, 1, 2]`, PUT and GET 200 through the capture gate, SIGTERM exit 0 `outcome=completed`, 3 writer lanes retired. The CreateTime topic on the same cluster refused startup in 1.6 s with exit 78 and never bound: *"the capability probe for partition 2 was acknowledged with CreateTime(1794840361641), so broker time cannot be proven and capture would be unsound"* (OD-5). Built from commit `6d9dac9ed` shipped as a git bundle over SSM; no AWS resources created for this step. All MSK and EC2 test resources have since been deleted and verified gone | PASS |
+| MSK IAM | **Proxy release code, run on an in-VPC EC2 client against the live MSK Serverless cluster**, credentials from the instance profile via IMDSv2 through `aws-config`'s default chain (no static keys in the environment): capture-ready in 4.4 s, assignment `[0, 1, 2]`, PUT and GET 200 through the capture gate, SIGTERM exit 0 `outcome=completed`, 3 writer lanes retired. The CreateTime topic on the same cluster refused startup in 1.6 s with exit 78 and never bound: *"the capability probe for partition 2 was acknowledged with CreateTime(1794840361641), so broker time cannot be proven and capture would be unsound"* (OD-5). Built from commit `f9a59ffa7` shipped as a git bundle over SSM; no AWS resources created for this step. All MSK and EC2 test resources have since been deleted and verified gone | PASS |
 | MSK IAM from EKS IRSA | Same code path as IMDS (`aws-config` default chain), but the web-identity provider, SA→role trust, pod reachability and token-rotation soak are unproved; EKS changes were not authorised | NOT RUN |
 
 ## 4. Defects found and fixed during Phase 1
@@ -156,17 +156,17 @@ test. None required a WIRE or PROTOCOL deviation.
 
 | # | Defect | Impact | Commit |
 |---|---|---|---|
-| 1 | F flush deadline had no driver (prior attempt's blocker #3, recurring) | idle records waited for the next observation | `3bcf18e81`, `748379d05` |
-| 2 | Terminal record stranded behind an in-flight record when the connection task exited | lost `CloseObservation`, connection never deregistered, shutdown exit 70 after 72 s | `9568cb3b0` |
-| 3 | Capture gate polled with a "200 µs" sleep that tokio's ~1 ms timer resolution turned into ~1 ms | critical-mutation latency **1.47 → 0.73 ms** median after fix; would have roughly halved capture throughput | `2ff6080df` |
-| 4 | Java `ssl.truststore.*` keys passed to librdkafka | **every SCRAM deployment refused to start** (`No such configuration property: ssl.truststore.type`) | `6d9dac9ed` |
-| 5 | fail-closed never terminated | process alive, listener open, refusing traffic | `6a2edd703` |
-| 6 | fail-open refused new connections | violated unmanaged pass-through | `6a2edd703` |
-| 7 | No bridge from Kafka terminal failure to the capture gate | an idle proxy's heartbeat expiry left it silently refusing traffic | `6a2edd703` |
-| 8 | librdkafka `linger.ms` default 5 ms vs Java 0 | 4–9× throughput regression on the measured ack-latency curve | `b00c8670d` |
-| 9 | librdkafka `message.max.bytes` default 1,000,000 < 1,048,076 default payload limit | maximum-size record = terminal capture failure out of the box | `b00c8670d` |
-| 10 | h2c prior-knowledge connections closed as malformed (origin got 0 bytes) where Java forwards them | production surprise for any HTTP/2 client | `03ddf2ab2` (OD-11) |
-| 11 | Ack latency sampled twice per record (callback thread and actor) | double-counted `kafkaCommitCount`, inflated tail | `03ddf2ab2` |
+| 1 | F flush deadline had no driver (prior attempt's blocker #3, recurring) | idle records waited for the next observation | `3e0d623c9`, `5f642891b` |
+| 2 | Terminal record stranded behind an in-flight record when the connection task exited | lost `CloseObservation`, connection never deregistered, shutdown exit 70 after 72 s | `ba9872c10` |
+| 3 | Capture gate polled with a "200 µs" sleep that tokio's ~1 ms timer resolution turned into ~1 ms | critical-mutation latency **1.47 → 0.73 ms** median after fix; would have roughly halved capture throughput | `2a81acaa3` |
+| 4 | Java `ssl.truststore.*` keys passed to librdkafka | **every SCRAM deployment refused to start** (`No such configuration property: ssl.truststore.type`) | `f9a59ffa7` |
+| 5 | fail-closed never terminated | process alive, listener open, refusing traffic | `55b6ad35a` |
+| 6 | fail-open refused new connections | violated unmanaged pass-through | `55b6ad35a` |
+| 7 | No bridge from Kafka terminal failure to the capture gate | an idle proxy's heartbeat expiry left it silently refusing traffic | `55b6ad35a` |
+| 8 | librdkafka `linger.ms` default 5 ms vs Java 0 | 4–9× throughput regression on the measured ack-latency curve | `12a5122ed` |
+| 9 | librdkafka `message.max.bytes` default 1,000,000 < 1,048,076 default payload limit | maximum-size record = terminal capture failure out of the box | `12a5122ed` |
+| 10 | h2c prior-knowledge connections closed as malformed (origin got 0 bytes) where Java forwards them | production surprise for any HTTP/2 client | `b42890373` (OD-11) |
+| 11 | Ack latency sampled twice per record (callback thread and actor) | double-counted `kafkaCommitCount`, inflated tail | `b42890373` |
 
 Java defects found and deliberately not reproduced (owner rulings OD-1…OD-10): malformed framing
 tunnelled uncaptured past the capture gate (incl. any >4096-byte request line); header removal leaked
@@ -220,19 +220,19 @@ Medians of the paired arms. Ratio is the paired median, not the ratio of medians
 
 | Profile | Image | Java req/s/core | Rust req/s/core | Ratio [CI95] | Cores used J → R | Proxy-added p99 J → R | Anon MiB J → R |
 |---|---|---:|---:|---|---|---|---|
-| Plaintext no-capture (G2) | b60dc220e | 21,102 | 61,561 | 2.93 [2.80–3.05] | 1.75 → 1.88 | 4.52 → 0.66 ms | 233 → 6.2 |
-| Plaintext no-capture (G2 confirm) | 03ddf2ab2 | 10,988 | 30,831 | 2.81 [2.56–3.06] | 1.79 → 2.29 | — | — |
-| Plaintext capture (G4) | b60dc220e | 12,189 | 17,673 | 1.46 [1.40–1.51] | 2.38 → 2.40 | 6.19 → 4.13 ms | 484 → 46.6 |
-| Plaintext capture (G4 confirm) | 03ddf2ab2 | 6,766 | 9,580 | 1.36 [1.18–1.54] | 2.41 → 2.45 | — | 482 → 39.7 |
-| Double TLS (G3) | b60dc220e | 10,906 | 16,420 | 1.54 [1.45–1.62] | 2.31 → 2.65 | 6.67 → 3.64 ms | 473 → 48.7 |
-| 23% churn + TLS (G3) | b60dc220e | 1,823 | 2,369 | 1.27 [1.21–1.34] | 3.65 → 4.23 | 23.76 → 13.32 ms | 487 → 30.7 |
-| Kafka healthy, saturating (G5) | 03ddf2ab2 | 7,680 | 10,547 | 1.37 [1.31–1.43] | 2.42 → 2.60 | 10.25 → 6.98 ms | 491 → 40.1 |
-| Kafka healthy, 15K req/s (G5) | 03ddf2ab2 | 6,226 | 7,144 | **1.09** [1.02–1.16] | 2.27 → 2.10 | 11.60 → 8.12 ms | 487 → 27.3 |
-| Production shape, saturating | 03ddf2ab2 | 1,092 | 1,959 | 1.85 [1.79–1.92] | 3.79 → 3.97 | 34.50 → 15.48 ms | 541 → 30.4 |
-| Production shape, 2,848 req/s | 03ddf2ab2 | 1,066 | 1,915 | **2.03** [1.73–2.34] | 2.67 → 1.49 | 29.70 → 13.56 ms | 540 → 25.1 |
-| Plaintext capture, 11,371 req/s | 03ddf2ab2 | 7,241 | 6,549 | **0.93** [0.80–1.06] | 1.57 → 1.74 | 8.01 → 7.86 ms | 482 → 25.9 |
+| Plaintext no-capture (G2) | 12ffd2374 | 21,102 | 61,561 | 2.93 [2.80–3.05] | 1.75 → 1.88 | 4.52 → 0.66 ms | 233 → 6.2 |
+| Plaintext no-capture (G2 confirm) | b42890373 | 10,988 | 30,831 | 2.81 [2.56–3.06] | 1.79 → 2.29 | — | — |
+| Plaintext capture (G4) | 12ffd2374 | 12,189 | 17,673 | 1.46 [1.40–1.51] | 2.38 → 2.40 | 6.19 → 4.13 ms | 484 → 46.6 |
+| Plaintext capture (G4 confirm) | b42890373 | 6,766 | 9,580 | 1.36 [1.18–1.54] | 2.41 → 2.45 | — | 482 → 39.7 |
+| Double TLS (G3) | 12ffd2374 | 10,906 | 16,420 | 1.54 [1.45–1.62] | 2.31 → 2.65 | 6.67 → 3.64 ms | 473 → 48.7 |
+| 23% churn + TLS (G3) | 12ffd2374 | 1,823 | 2,369 | 1.27 [1.21–1.34] | 3.65 → 4.23 | 23.76 → 13.32 ms | 487 → 30.7 |
+| Kafka healthy, saturating (G5) | b42890373 | 7,680 | 10,547 | 1.37 [1.31–1.43] | 2.42 → 2.60 | 10.25 → 6.98 ms | 491 → 40.1 |
+| Kafka healthy, 15K req/s (G5) | b42890373 | 6,226 | 7,144 | **1.09** [1.02–1.16] | 2.27 → 2.10 | 11.60 → 8.12 ms | 487 → 27.3 |
+| Production shape, saturating | b42890373 | 1,092 | 1,959 | 1.85 [1.79–1.92] | 3.79 → 3.97 | 34.50 → 15.48 ms | 541 → 30.4 |
+| Production shape, 2,848 req/s | b42890373 | 1,066 | 1,915 | **2.03** [1.73–2.34] | 2.67 → 1.49 | 29.70 → 13.56 ms | 540 → 25.1 |
+| Plaintext capture, 11,371 req/s | b42890373 | 7,241 | 6,549 | **0.93** [0.80–1.06] | 1.57 → 1.74 | 8.01 → 7.86 ms | 482 → 25.9 |
 
-The `03ddf2ab2` G2/G4 confirmations (3 pairs each) ran with a host load average of 8–16 from other
+The `b42890373` G2/G4 confirmations (3 pairs each) ran with a host load average of 8–16 from other
 work, and their absolute req/s/core is about half the primaries'; their **ratios** agree with the
 primaries, which is what pairing protects.
 
@@ -251,7 +251,7 @@ corroborates the memory result (0.074); its throughput result is inconclusive at
 The first measurement (`rust-b60dc220e`, 1.47 [1.38–1.55]) was invalid: Rust sampled each record's
 latency twice, once on librdkafka's callback thread and again on the publisher actor three thread
 hops later, and the generator, being closed-loop, drove the faster Rust proxy's broker 1.48× harder.
-`03ddf2ab2` samples once, on the delivery callback, exactly where Java's `KafkaRecordContext` span
+`b42890373` samples once, on the delivery callback, exactly where Java's `KafkaRecordContext` span
 ends, and the re-measurement adds pairs rate-matched on both arms.
 
 | 10 pairs each, `rust-03ddf2ab2` | Offered req/s J → R | Ack mean J → R | Ack p99 J → R | Ack p99 ratio [CI95] | Pairs ≤ 1.10 |
@@ -378,7 +378,7 @@ any gate, but the per-record hand-off fix below should be checked for allocation
   variance.
 - Rate-matched Java arms reached 14,347 of the 15,000 req/s target (Rust 15,002); the offered-load
   ratio was 1.04, which slightly favours Java on ack latency and slightly favours Rust on per-core.
-- Host speed drifted during the session: the `03ddf2ab2` G2/G4 confirmations ran at about half the
+- Host speed drifted during the session: the `b42890373` G2/G4 confirmations ran at about half the
   earlier per-core throughput on **both** arms, with VM CPU unchanged (cause unconfirmed). Ratios
   held. As a result the 15,000 req/s Gate 5 rate was ~81% of Java's saturation in that window rather
   than the intended 75%. Later fixed-rate targets were derived from the immediately preceding Java
@@ -435,7 +435,7 @@ this attribution at partial load is inferred, not measured.
 | R7 | Host fidelity: arm64 macOS Docker VM, single broker; absolute numbers do not transfer, ratios do | Accepted | — |
 | R8 | Phase 5 deployment work (image wiring, orchestration args, dashboards, Java module deletion) not started, by design | — | Phase 5 |
 | R9 | Source comments cite Java file:line heavily; many should become behaviour statements | Low | Phase 2 cleanup |
-| R10 | Gate 1 differential last run on `2ff6080df`; `03ddf2ab2` changes are outside the HTTP/1 stream (§3.1) | Low | Re-run on the reworked image |
+| R10 | Gate 1 differential last run on `2a81acaa3`; `b42890373` changes are outside the HTTP/1 stream (§3.1) | Low | Re-run on the reworked image |
 | R11 | The proxy binds `0.0.0.0` by default, compliant only because the Service is an internal LB by default; `internetFacing=true` without client auth is OD-10's recorded, unactioned remediation | Recorded | OD-10 |
 
 ## 7. Recommendation
@@ -500,7 +500,7 @@ change. The cost is that Phase 2 qualifies a delivery path that is about to chan
 
 Owner direction: use multiple producers (OD-12). Investigation then found two librdkafka defects in
 the idempotent producer, both reported upstream with open, unmerged fixes; the proxy now builds
-librdkafka 2.12.1 with those two PRs applied (`third_party/rdkafka-sys/`, commit `428ef064c`).
+librdkafka 2.12.1 with those two PRs applied (`third_party/rdkafka-sys/`, commit `82f92cd26`).
 
 | Defect | Upstream | Effect before the patch |
 |---|---|---|

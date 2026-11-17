@@ -517,7 +517,7 @@ complete by HTTP framing or by the following request, never only by the close.
 Attempted so as to report something concrete rather than nothing. The only Rust
 image present locally is
 `localhost:5001/migrations/capture_proxy:rust-phase1-059d7b6483f2`, built from
-commit `059d7b6483f2`; the branch is now at `0a95b97ac`. It starts and exits
+commit `059d7b6483f2`; the branch is now at `bb630783c`. It starts and exits
 immediately:
 
 ```

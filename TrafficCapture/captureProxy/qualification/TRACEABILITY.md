@@ -41,7 +41,7 @@ A row is only `PROVED` when a named command and its output exist in a report und
 |---|---|---|
 | Exact starting commit recorded | PROVED | `059d7b6483f29759b1ee108b87b87c61b0ce3432`; fresh clone, clean tree |
 | Java baseline test run | PROVED | 294 standard + 294 slow + 35 isolated tests, 0 failures/errors/skips. `reports/phase0-java-baseline.md` |
-| Cargo workspace + prost generation from unchanged `.proto` | PROVED | All field numbers/oneof tags preserved; see commit `a9188bce3` |
+| Cargo workspace + prost generation from unchanged `.proto` | PROVED | All field numbers/oneof tags preserved; see commit `1f6e7c332` |
 | librdkafka (ssl/sasl/zstd) links on target toolchain | PROVED | WITH_SSL/SASL/SASL_OAUTHBEARER/SASL_SCRAM/ZLIB/ZSTD all =1. AL2023 image build needs `libcurl-devel`. |
 | Normative contract read and frozen | PROVED | `proxyCaptureProtocol.md` §§1-10 reviewed by integrator; 4 subsystem specs produced with file:line citations |
 | Contract-vs-code discrepancies resolved | PROVED | 5 verified Java defects + 5 doc/code disagreements; rulings in `OWNER-DECISIONS.md` (OD-1..OD-7) |
@@ -53,7 +53,7 @@ A row is only `PROVED` when a named command and its output exist in a report und
 | # | Gate | Status | Measured |
 |---|---|---|---|
 | 1 | Zero exercised WIRE or PROTOCOL divergence | **PASS** | Rust r1/r2/r3 vs Java j1: 0 differences; negative control validated; rebalance + failure-policy + auth proved on real brokers |
-| 2 | Plaintext scan-and-forward throughput/used core >= Java x 1.20 | **PASS** | 2.93 [2.80–3.05], 9/9 pairs; confirmed 2.81 on `03ddf2ab2` |
+| 2 | Plaintext scan-and-forward throughput/used core >= Java x 1.20 | **PASS** | 2.93 [2.80–3.05], 9/9 pairs; confirmed 2.81 on `b42890373` |
 | 3 | Double TLS + churn: throughput/core and proxy-added p99 within 5% of Java | **PASS** | double TLS 1.54 / p99 0.54; churn+TLS 1.27 / p99 0.56; 10/10 pairs each |
 | 4 | Thin capture slice: requests/core >= Java x 1.15 and steady RSS <= Java x 0.75 | **PASS** as specified | 1.46 / anon 0.097 flat out; **0.93 [0.80–1.06] at 70% fixed load** (risk R2) |
 | 5 | Kafka records/core and MiB/core >= Java x 0.90; ack p99 <= Java x 1.10 | **FAIL** (ack p99) | records/MiB per core 1.37 PASS; ack p99 1.36 [1.20–1.53] saturating, 1.45 [1.21–1.68] rate-matched; root cause: librdkafka in-flight window (R1) |

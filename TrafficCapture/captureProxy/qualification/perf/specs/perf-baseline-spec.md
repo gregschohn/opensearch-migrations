@@ -41,7 +41,7 @@ Every modified and untracked path in the working tree is inside `TrafficCapture/
 | Check | Result |
 |---|---|
 | HEAD when the Java image was built (19:22-19:26 local) | `059d7b648` |
-| HEAD at the end of this work | `29306b1b1`, branch `rust-capture-proxy` (other owners committing Rust work) |
+| HEAD at the end of this work | `37c95750d`, branch `rust-capture-proxy` (other owners committing Rust work) |
 | Is `059d7b6` an ancestor of HEAD? | yes |
 | `git diff 059d7b6 HEAD -- TrafficCapture/trafficCaptureProxyServer TrafficCapture/captureKafkaOffloader TrafficCapture/nettyWireLogging TrafficCapture/captureOffloader coreUtilities buildImages` | **empty** |
 
