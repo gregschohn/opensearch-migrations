@@ -88,6 +88,10 @@ def buildKitProjects = [
                 buildArgs: [
                         BUILDER_IMAGE: ptc.rewrite("public.ecr.aws/amazonlinux/amazonlinux:2023"),
                         RUNTIME_IMAGE: ptc.rewrite("public.ecr.aws/amazonlinux/amazonlinux:2023"),
+                        // The repository VERSION, outside this image's build context: compiled into
+                        // `capture-proxy --version` and written to /VERSION, as the Jib images did.
+                        CAPTURE_PROXY_VERSION: providers.fileContents(
+                                rootProject.layout.projectDirectory.file("VERSION")).asText.get().trim(),
                 ]
         ],
         [

@@ -38,6 +38,18 @@ use clap::{ArgAction, Parser};
 
 use crate::policy::{CaptureFailurePolicy, HttpStrictness};
 
+/// The version `capture-proxy --version` reports.
+///
+/// The image build passes the repository's `VERSION` file as the `CAPTURE_PROXY_VERSION` build
+/// argument, which reaches this crate as an environment variable read at **compile** time, so an
+/// image's binary reports the release it shipped in (`TrafficCapture/captureProxy/Dockerfile`
+/// also writes the same value to `/VERSION`, as the Java images did). A plain `cargo build` has no
+/// such variable, or an empty one, and reports the Cargo package version instead.
+pub const PROXY_VERSION: &str = match option_env!("CAPTURE_PROXY_VERSION") {
+    Some(version) if !version.is_empty() => version,
+    _ => env!("CARGO_PKG_VERSION"),
+};
+
 /// What a redacted value renders as, in logs and in `Debug` output.
 pub const REDACTED: &str = "<redacted>";
 
@@ -793,7 +805,7 @@ pub fn parameter_for_json_key(key: &str) -> Option<&'static ParamSpec> {
 #[derive(Debug, Clone, Parser)]
 #[command(
     name = "capture-proxy",
-    version,
+    version = PROXY_VERSION,
     about = "OpenSearch migrations traffic capture proxy",
     long_about = None,
 )]
@@ -1277,6 +1289,21 @@ mod tests {
         ];
         argv.extend_from_slice(extra);
         CliArgs::try_parse_from(argv).expect("valid arguments")
+    }
+
+    #[test]
+    fn version_reports_the_build_version_with_the_cargo_version_as_fallback() {
+        let shown = CliArgs::try_parse_from(["capture-proxy", "--version"])
+            .expect_err("--version stops parsing");
+        assert_eq!(shown.kind(), clap::error::ErrorKind::DisplayVersion);
+        assert_eq!(
+            shown.to_string(),
+            format!("capture-proxy {PROXY_VERSION}\n")
+        );
+        let expected = option_env!("CAPTURE_PROXY_VERSION")
+            .filter(|version| !version.is_empty())
+            .unwrap_or(env!("CARGO_PKG_VERSION"));
+        assert_eq!(PROXY_VERSION, expected);
     }
 
     #[test]

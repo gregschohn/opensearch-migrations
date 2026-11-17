@@ -74,14 +74,27 @@ WORKDIR /build/captureProxy
 # CARGO_PROFILE=profiling builds the same code with release code generation but keeps symbols, for
 # CPU profiling only. Performance gates are measured on the default `release` profile.
 ARG CARGO_PROFILE=release
+# The release the binary reports (`capture-proxy --version`) and the image carries at /VERSION, as
+# the Java images did. buildImages/build.gradle passes the repository VERSION file; the build
+# context (TrafficCapture/) does not contain that file, hence a build argument. Cargo reads it at
+# compile time (capture-config's PROXY_VERSION); without it the binary reports its Cargo package
+# version and /VERSION says the same, so the two can never disagree.
+ARG CAPTURE_PROXY_VERSION=
 # librdkafka 2.12.1 plus two upstream idempotent-producer fixes, recreated from the checksum-pinned
 # crate and the committed patches (third_party/rdkafka-sys/README.md).
 RUN third_party/rdkafka-sys/prepare.sh \
- && cargo build --profile "${CARGO_PROFILE}" --locked --bin capture-proxy \
+ && CAPTURE_PROXY_VERSION="${CAPTURE_PROXY_VERSION}" \
+      cargo build --profile "${CARGO_PROFILE}" --locked --bin capture-proxy \
  && mkdir -p /build/out \
  && cp "target/${CARGO_PROFILE}/capture-proxy" /build/out/capture-proxy \
  && if [ "${CARGO_PROFILE}" = "release" ]; then strip /build/out/capture-proxy; fi \
- && /build/out/capture-proxy --version
+ && reported="$(/build/out/capture-proxy --version)" \
+ && echo "${reported}" \
+ && version="${reported#capture-proxy }" \
+ && if [ -n "${CAPTURE_PROXY_VERSION}" ] && [ "${version}" != "${CAPTURE_PROXY_VERSION}" ]; then \
+      echo "capture-proxy reports '${version}', expected '${CAPTURE_PROXY_VERSION}'" >&2; exit 1; \
+    fi \
+ && printf '%s\n' "${version}" > /build/out/VERSION
 
 # ---------------------------------------------------------------------------------------------
 # Runtime stage
@@ -115,6 +128,10 @@ RUN dnf -y install shadow-utils \
  && rm -rf /var/cache/dnf
 
 COPY --from=builder /build/out/capture-proxy /usr/local/bin/capture-proxy
+# Where the Java proxy image, like every Jib image (the replayer's included), carried the repository
+# VERSION file. Nothing in this repository reads it from the proxy image; it is kept so an operator
+# inspecting the image finds the release where they found it before.
+COPY --from=builder /build/out/VERSION /VERSION
 
 USER 10001:10001
 
