@@ -41,6 +41,15 @@
 //! ```sh
 //! CAPTURE_GOLDENS_UPDATE=1 cargo test -p capture-test-support --test golden_records
 //! ```
+//!
+//! then re-run the Java side from the repository root. `--rerun` is required: the goldens live
+//! outside the replayer project, so Gradle does not see them as test inputs and would otherwise
+//! report the test task up to date without running it.
+//!
+//! ```sh
+//! ./gradlew :TrafficCapture:trafficReplayer:test --rerun \
+//!   --tests 'org.opensearch.migrations.replay.kafka.RustGoldenRecordCompatibilityTest'
+//! ```
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -1657,8 +1666,8 @@ fn goldens_are_current() {
         stale.is_empty(),
         "stale golden records: {stale:?}. If the change is intended, regenerate with \
          `{UPDATE_ENV}=1 cargo test -p capture-test-support --test golden_records`, review the \
-         diff, and run the Java RustGoldenRecordCompatibilityTest. A wire change needs an owner \
-         decision first."
+         diff, and run the Java RustGoldenRecordCompatibilityTest with `--rerun` (see the module \
+         docs). A wire change needs an owner decision first."
     );
 }
 
