@@ -181,7 +181,10 @@ impl ConnectionCaptureFactory {
         let (outcomes_tx, outcomes_rx) = mpsc::channel();
         let outcome_notify = Arc::new(tokio::sync::Notify::new());
         Ok(ConnectionCapture {
-            chain: PublishChain::new(),
+            // This owner learns every outcome from its own channel (`drain_outcomes`) and never
+            // polls the chain's log; keeping one would grow by a record per record for the life of
+            // a keep-alive connection.
+            chain: PublishChain::without_outcome_log(),
             sink: KafkaRecordSink {
                 route: route.clone(),
                 publisher: self.publisher.clone(),

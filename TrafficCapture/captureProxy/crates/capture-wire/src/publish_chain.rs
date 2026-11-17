@@ -106,6 +106,10 @@ pub struct PublishChain {
     poison: Option<PublishFailure>,
     next_ticket: u64,
     outcomes: VecDeque<(PublishTicket, PublishOutcome)>,
+    /// Whether completed outcomes are kept for [`Self::poll_outcome`]. An owner that learns every
+    /// outcome some other way must not keep them: on a long-lived connection the log otherwise
+    /// grows by one entry per record for the connection's whole life.
+    log_outcomes: bool,
 }
 
 impl Default for PublishChain {
@@ -124,6 +128,25 @@ impl PublishChain {
             poison: None,
             next_ticket: 1,
             outcomes: VecDeque::new(),
+            log_outcomes: true,
+        }
+    }
+
+    /// An empty chain that keeps no outcome log: [`Self::poll_outcome`] always returns `None`.
+    ///
+    /// For an owner that learns every acknowledgement and failure from its own transport, which
+    /// would otherwise have to drain the log after every record or leak it.
+    #[must_use]
+    pub fn without_outcome_log() -> Self {
+        Self {
+            log_outcomes: false,
+            ..Self::new()
+        }
+    }
+
+    fn record_outcome(&mut self, ticket: PublishTicket, outcome: PublishOutcome) {
+        if self.log_outcomes {
+            self.outcomes.push_back((ticket, outcome));
         }
     }
 
@@ -143,8 +166,7 @@ impl PublishChain {
         if let Some(failure) = self.poison.clone() {
             // Rejection path: dropping the record releases its buffer exactly once.
             drop(record);
-            self.outcomes
-                .push_back((ticket, PublishOutcome::Failed(failure)));
+            self.record_outcome(ticket, PublishOutcome::Failed(failure));
             return ticket;
         }
         if self.in_flight.is_some() {
@@ -166,8 +188,7 @@ impl PublishChain {
             Err(error) => {
                 // The sink already consumed and released the record.
                 let failure = PublishFailure::new(error);
-                self.outcomes
-                    .push_back((ticket, PublishOutcome::Failed(failure.clone())));
+                self.record_outcome(ticket, PublishOutcome::Failed(failure.clone()));
                 self.poison_with(failure);
             }
         }
@@ -178,8 +199,7 @@ impl PublishChain {
     /// Returns the acknowledged ticket, or `None` if nothing was in flight.
     pub fn acknowledge<S: RecordSink + ?Sized>(&mut self, sink: &mut S) -> Option<PublishTicket> {
         let ticket = self.in_flight.take()?;
-        self.outcomes
-            .push_back((ticket, PublishOutcome::Acknowledged));
+        self.record_outcome(ticket, PublishOutcome::Acknowledged);
         if let Some((next_ticket, next_record)) = self.queue.pop_front() {
             self.dispatch(next_ticket, next_record, sink);
         }
@@ -192,8 +212,7 @@ impl PublishChain {
     /// failure instance, and every later submission does too.
     pub fn fail(&mut self, failure: PublishFailure) {
         if let Some(ticket) = self.in_flight.take() {
-            self.outcomes
-                .push_back((ticket, PublishOutcome::Failed(failure.clone())));
+            self.record_outcome(ticket, PublishOutcome::Failed(failure.clone()));
         }
         self.poison_with(failure);
     }
@@ -206,8 +225,7 @@ impl PublishChain {
         self.in_flight = None;
         while let Some((ticket, record)) = self.queue.pop_front() {
             drop(record);
-            self.outcomes
-                .push_back((ticket, PublishOutcome::Failed(latched.clone())));
+            self.record_outcome(ticket, PublishOutcome::Failed(latched.clone()));
         }
     }
 
@@ -275,6 +293,38 @@ mod tests {
         );
         encoder.write_observation(&plan, &body);
         encoder.finish(false).expect("non-final record")
+    }
+
+    #[test]
+    fn a_chain_without_an_outcome_log_retains_nothing_however_many_records_it_carries() {
+        // Regression for the per-connection leak: an owner that learns outcomes elsewhere must not
+        // accumulate one log entry per record over a long-lived connection.
+        let mut sink = CollectingSink::new();
+        let mut quiet = PublishChain::without_outcome_log();
+        let mut logged = PublishChain::new();
+        for index in 0..1_000 {
+            let a = record(&mut sink, index);
+            let b = record(&mut sink, index);
+            quiet.submit(a, &mut sink);
+            logged.submit(b, &mut sink);
+            assert!(quiet.acknowledge(&mut sink).is_some());
+            assert!(logged.acknowledge(&mut sink).is_some());
+        }
+        assert_eq!(quiet.pending_outcomes(), 0);
+        assert!(quiet.poll_outcome().is_none());
+        assert_eq!(
+            logged.pending_outcomes(),
+            1_000,
+            "the default chain still logs for its owner"
+        );
+
+        // Failures are still applied without a log: the chain poisons and refuses later records.
+        quiet.submit(record(&mut sink, 1_000), &mut sink);
+        quiet.fail(PublishFailure::new(crate::record_sink::SinkError::new(
+            "broker gone",
+        )));
+        assert!(quiet.failure().is_some());
+        assert_eq!(quiet.pending_outcomes(), 0);
     }
 
     #[test]
