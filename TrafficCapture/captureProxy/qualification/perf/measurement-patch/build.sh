@@ -17,7 +17,7 @@
 # correctness or compatibility claim.
 set -euo pipefail
 M="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-IMAGE="${JAVA_PROXY_IMAGE:-localhost:5001/migrations/capture_proxy:latest_arm64}"
+IMAGE="${JAVA_PROXY_IMAGE:-localhost:5001/migrations/capture_proxy@sha256:8abd1f4d91e9db138da3909f1092ec8428b695491fc17da5c9b81ebca6008357}"  # pinned; see ../README.md
 JH="${JAVA_HOME:-$(/usr/libexec/java_home -v 21)}"
 LOMBOK="${LOMBOK_JAR:-$(find "$HOME/.gradle/caches" -name 'lombok-1.*.jar' 2>/dev/null | grep -v sources | head -1)}"
 [[ -n "$LOMBOK" && -f "$LOMBOK" ]] || { echo "cannot find a lombok jar" >&2; exit 1; }

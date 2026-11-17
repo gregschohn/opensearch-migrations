@@ -55,20 +55,20 @@ conflict with the current design contracts linked above, the design contracts ar
                   │                                                                  │
   ┌──────────┐    │  ┌─────────────────────────────┐      ┌───────────────────────┐  │
   │          │HTTP│  │       CAPTURE PROXY         │ HTTP │     SOURCE CLUSTER    │  │
-  │  Traffic │───►│  │ trafficCaptureProxyServer   │─────►│   (OpenSearch /       │  │
-  │Generator │    │  │ Netty; NettyScanningHttp-   │◄─────│    Elasticsearch)     │  │
-  │          │    │  │ Proxy                       │      │                       │  │
+  │  Traffic │───►│  │ captureProxy (Rust)         │─────►│   (OpenSearch /       │  │
+  │Generator │    │  │ tokio; capture-transport    │◄─────│    Elasticsearch)     │  │
+  │          │    │  │ + capture-http-scan         │      │                       │  │
   └──────────┘    │  │ • Critical Mutation Traffic │      └───────────────────────┘  │
                   │  │   waits for Kafka ack before│                                 │
                   │  │   forwarding to source      │                                 │
                   │  │ • GETs forwarded now,       │                                 │
                   │  │   offloaded async           │                                 │
-                  │  │ memory: LOW while Kafka     │                                 │
-                  │  │ keeps up                    │                                 │
+                  │  │ memory: bounded by the      │                                 │
+                  │  │ publication budget          │                                 │
                   │  └─────────────┬───────────────┘                                 │
                   │                │ TrafficStream protobufs (observed HTTP bytes)  │
                   └────────────────┼─────────────────────────────────────────────────┘
-                                   │  KafkaCaptureFactory (captureKafkaOffloader)
+                                   │  capture-kafka publisher (librdkafka)
                                    ▼
                   ┌────────────────────────────────────┐
                   │                KAFKA               │
@@ -231,7 +231,7 @@ is important not to confuse them:
 - **System under test (already exists).** The Capture Proxy, Kafka, and the Traffic Replayer are the
   existing pipeline. We do **not** build these — the load test *exercises* them. The harness does
   need to deploy, scale, and chaos-test them (e.g. underscale Kafka brokers), but the components
-  themselves are already in the repo (`trafficCaptureProxyServer`, Apache Kafka in the
+  themselves are already in the repo (`captureProxy`, Apache Kafka in the
   `dockerSolution` compose, `trafficReplayer`). These are listed below only where the test harness
   must *control* them; their internal behaviour is covered in the architecture sections above.
 - **Test scaffolding (new, or assembled from existing parts).** The Traffic Generator, the
@@ -469,7 +469,7 @@ and OpenSearch Benchmark tooling where it fits.
 - [`Architecture.md`](./Architecture.md) — end-to-end migration architecture and where this pipeline
   fits.
 - [`../TrafficCapture/README.md`](../TrafficCapture/README.md) — module overview for the
-  TrafficCapture tools (`trafficCaptureProxyServer`, `trafficReplayer`, `captureKafkaOffloader`, …).
+  TrafficCapture tools (`captureProxy`, `trafficReplayer`, …).
 - [`../DataGenerator`](../DataGenerator) — existing OpenSearch workload data generation.
 
 ---

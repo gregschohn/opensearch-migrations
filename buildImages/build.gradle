@@ -58,8 +58,6 @@ def jibProjects = [
                     ":TrafficCapture:transformationShim": ["syncVersionFile_transformation_shim", "stageTransformsForImage"]
                 ]
         ],
-        // capture_proxy is no longer a Jib image: the Rust proxy below replaces the Java
-        // TrafficCapture:trafficCaptureProxyServer image under the same name and tags.
 ]
 jibProjects.values().each { cfg ->
     cfg.repoName = getRepoNameIfPublishing(cfg)

@@ -9,7 +9,7 @@
         - [Docker Solution](#docker-solution)
         - [Traffic Capture Proxy Server](#traffic-capture-proxy-server)
         - [Traffic Replayer](#traffic-replayer)
-        - [Capture Kafka Offloader](#capture-kafka-offloader)
+        - [Capture Kafka Publisher](#capture-kafka-publisher)
     - [Building](#building)
         - [Gradle Scans](#gradle-scans)
     - [Publishing](#publishing)
@@ -32,7 +32,16 @@ The Traffic Capture Proxy Server acts as a middleman, capturing traffic going to
 
 This tool can be attached to coordinator nodes in clusters with a minimum of two coordinator nodes and start capturing traffic
 while having zero downtime on the cluster. Be aware that zero downtime is only achievable **if** the remaining nodes in-service can handle the additional load on the cluster. 
-More details on attaching a Capture Proxy can be found here: [Capture Proxy](trafficCaptureProxyServer/README.md).
+The proxy is written in Rust; building, running, its parameters and its Kafka publisher are described in the [Capture Proxy README](captureProxy/README.md).
+It replaces the Java proxy (`trafficCaptureProxyServer`, `nettyWireLogging`, `captureOffloader` and `captureKafkaOffloader`), which has been removed, under the same `capture_proxy` image name.
+
+> **Known, accepted risk: the CDK/ECS deployment (owner decision OD-14).** Only the Kubernetes/Argo deployment is qualified with the Rust proxy.
+> The CDK capture-proxy stack (`deployment/cdk/opensearch-service-migration/lib/service-stacks/capture-proxy-stack.ts`) is unchanged: it still
+> builds the Java proxy's command line, and its `options.md` still links to the deleted Java source. Because the Rust binary replaces the Java
+> image under the same name and its command line differs, that stack may not start the Rust proxy correctly. In particular it always passes
+> `--sslCertChainFile /usr/share/captureProxy/config/pub.pem` and `--sslKeyFile .../key.pem`, a self-signed pair that only the Java image
+> contained; the Rust proxy exits with status 70 when it cannot read TLS material. The stack is not tested with the Rust image, and the CDK
+> files are deliberately left as they are.
 
 ### Traffic Replayer
 
@@ -317,11 +326,13 @@ end at the captured response timestamps. Target times come from when the replaye
 received the response's packets, so they reflect the replay's load and speedup. Both fields are absent when they
 can't be determined, for example when the source responded before the request was fully forwarded.
 
-### Capture Kafka Offloader
+### Capture Kafka Publisher
 
-The Capture Kafka Offloader will act as a Kafka Producer for offloading captured traffic logs to the configured Kafka cluster.
+The capture proxy's Kafka publisher (the `capture-kafka` crate, built on librdkafka) writes the captured traffic to the configured Kafka topic.
+It probes the topic at startup, holds a bounded publication budget of records awaiting acknowledgement, and lets a mutating request through to
+the source only once its capture is acknowledged. It replaces the Java Capture Kafka Offloader.
 
-Learn more about its functionality and setup here: [Capture Kafka Offloader](captureKafkaOffloader/README.md)
+Learn more about its configuration here: [Capture Proxy](captureProxy/README.md)
 
 ## Building
 

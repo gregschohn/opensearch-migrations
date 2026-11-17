@@ -329,6 +329,48 @@ jobs:
           path: |
             **/build/reports/tests/
 
+  # The Rust capture proxy (TrafficCapture/captureProxy) is a Cargo workspace, not a Gradle project, so
+  # none of the Gradle jobs build or test it. With the Java proxy deleted, this job is its unit-test,
+  # lint and formatting coverage; capture-proxy-image-tests runs its image against the replayer.
+  rust-capture-proxy:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: TrafficCapture/captureProxy
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install librdkafka build dependencies
+        # librdkafka is compiled from source (rdkafka's cmake-build feature) with TLS, SASL, zlib and
+        # zstd; libcurl's headers are needed even though curl itself is disabled.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake pkg-config libssl-dev libsasl2-dev libcurl4-openssl-dev zlib1g-dev libzstd-dev
+      - name: Install the pinned Rust toolchain
+        # rust-toolchain.toml pins the version and the clippy and rustfmt components.
+        run: |
+          rustup toolchain install
+          rustup show active-toolchain
+          cargo --version
+      - name: Cache the Cargo registry
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-${{ runner.os }}-${{ hashFiles('TrafficCapture/captureProxy/Cargo.lock') }}
+          restore-keys: |
+            cargo-registry-${{ runner.os }}-
+      - name: Prepare the patched rdkafka-sys crate
+        run: third_party/rdkafka-sys/prepare.sh
+      - name: cargo fmt
+        run: cargo fmt --check
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: cargo test
+        run: cargo test --workspace --locked
+
   node-tests:
     runs-on: ubuntu-22.04
     strategy:
@@ -578,6 +620,7 @@ jobs:
       - seed-gradle-test-docker-cache
       - gradle-tests
       - capture-proxy-image-tests
+      - rust-capture-proxy
       - link-checker
       - node-tests
       - mountable-transforms-k8s-test

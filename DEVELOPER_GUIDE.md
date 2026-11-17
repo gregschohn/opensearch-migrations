@@ -7,6 +7,7 @@
 - [Project Structure](#project-structure)
 - [Building the Project](#building-the-project)
 - [Running Tests](#running-tests)
+- [Building the Capture Proxy (Rust)](#building-the-capture-proxy-rust)
 - [Code Style](#code-style)
 - [Pre-Commit Hooks](#pre-commit-hooks)
 - [Publishing](#publishing)
@@ -22,6 +23,7 @@
 - [Helm](https://helm.sh/docs/intro/install/)
 - [AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html#getting-started-install-instructions) (for AWS deployment)
 - Node.js v22 (downloaded automatically by Gradle)
+- [rustup](https://rustup.rs), cmake and C/C++ build tools (only to build or test the Rust capture proxy; see [below](#building-the-capture-proxy-rust))
 - [AWS Cloud Development Kit (CDK)](https://docs.aws.amazon.com/cdk/v2/guide/getting_started.html) (for AWS deployment, downloaded automatically by Gradle)
 
 ## Kubernetes Quick Start
@@ -77,6 +79,35 @@ dependency cache, including for Spotless and `buildSrc`, see
 
 ```bash
 ./gradlew test
+```
+
+Docker-backed tests are tagged `isolatedTest` and run with `./gradlew isolatedTest` (or `allTests`). The
+replayer's tests that read a topic written by the capture proxy (tagged `requiresProxyImage`) run the
+proxy's image, which has to be built first; see
+[Building the capture proxy (Rust)](#building-the-capture-proxy-rust).
+
+## Building the Capture Proxy (Rust)
+
+The capture proxy is a Cargo workspace in [`TrafficCapture/captureProxy`](TrafficCapture/captureProxy/README.md),
+not a Gradle project. It needs [rustup](https://rustup.rs): `rust-toolchain.toml` pins the toolchain
+and its `clippy` and `rustfmt` components, and rustup installs them on first use (`rustup toolchain
+install` does it explicitly). librdkafka is compiled from source, so you also need `cmake`, a C/C++
+compiler, and the OpenSSL, Cyrus SASL, libcurl, zlib and zstd development headers.
+
+```bash
+cd TrafficCapture/captureProxy
+third_party/rdkafka-sys/prepare.sh   # once, before any cargo command: builds the patched rdkafka-sys
+cargo fmt --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+```
+
+CI runs exactly these (job `rust-capture-proxy` in `.github/workflows/CI.yml`); clippy warnings fail
+the build. To build the image and run the replayer tests against it:
+
+```bash
+docker build --file TrafficCapture/captureProxy/Dockerfile --tag migrations/capture_proxy:dev TrafficCapture
+./gradlew :TrafficCapture:trafficReplayer:isolatedTest -PcaptureProxyImage=migrations/capture_proxy:dev
 ```
 
 ## Building Images

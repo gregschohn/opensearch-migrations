@@ -34,7 +34,7 @@ LOGS="$ROOT/logs"
 PROFILES_DIR="$ROOT/profiles"
 CERTS="$ROOT/certs"
 
-JAVA_PROXY_IMAGE="${JAVA_PROXY_IMAGE:-localhost:5001/migrations/capture_proxy:latest_arm64}"
+JAVA_PROXY_IMAGE="${JAVA_PROXY_IMAGE:-localhost:5001/migrations/capture_proxy@sha256:8abd1f4d91e9db138da3909f1092ec8428b695491fc17da5c9b81ebca6008357}"  # pinned; see README
 RUST_PROXY_IMAGE="${RUST_PROXY_IMAGE:-localhost:5001/migrations/capture_proxy:rust-748379d05}"
 KAFKA_IMAGE="${KAFKA_IMAGE:-apache/kafka:3.9.1}"
 TOXI_IMAGE="${TOXI_IMAGE:-ghcr.io/shopify/toxiproxy:2.12.0}"

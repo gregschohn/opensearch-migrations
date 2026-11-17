@@ -19,6 +19,14 @@ the only qualified target), OD-15 (330 s grace period).
 The in-cluster build job (`deployment/k8s/charts/components/buildImages`, which runs
 `buildImagesToRegistry`) was not run: it needs a cluster with the EKS BuildKit backend.
 
+Sections 1-3 below have since been carried out:
+
+| Commit | Section | Notes |
+|---|---|---|
+| `14b769c43` | §1 `KafkaConfig` into `libraries/kafkaUtils` | Copied rather than moved in this commit, because the Java proxy still compiled against the original until §3 deleted it. `aws-msk-iam-auth` is a direct `runtimeOnly` dependency, guarded by `KafkaUtilsRuntimeClasspathTest` |
+| `5e6819a46` | §2 `RustCaptureProxyContainer` | Tag `requiresProxyImage`; `-PcaptureProxyImage`, `-PproxyImageTests=include\|exclude\|only`; CI job `capture-proxy-image-tests` builds the image once and the stripes exclude those tests. The last commit that has the Java modules |
+| the §3 commit | §3 delete the four modules | §3.1 below is the ground-truth check done before it. `TrafficCapture/dockerSolution/` (the docker-compose item) is owned elsewhere and was not changed |
+
 ## 1. Move the Java Kafka configuration that `libraries/kafkaUtils` uses
 
 `libraries/kafkaUtils` is the only surviving consumer of `captureKafkaOffloader`. It uses exactly
@@ -130,8 +138,8 @@ and 2, nothing outside the four depends on them.
 
 Not changed (OD-14): `deployment/cdk/opensearch-service-migration/options.md:18` links to
 `CaptureProxy.java`, and `lib/service-stacks/capture-proxy-stack.ts` builds a Java-style command
-line. Both become stale; OD-14 accepts that and requires a release note and a note in the CDK
-`options.md` — which is a CDK file, so it needs an explicit owner go-ahead before anyone edits it.
+line. Both become stale; OD-14 accepts that. As amended (`a5672d249`), the accepted-risk note goes
+in the release notes and `TrafficCapture/README.md`, and no file under `deployment/cdk/` is edited.
 
 Risks:
 
@@ -148,9 +156,66 @@ Risks:
 - **Qualification tooling.** `qualification/perf/` and its specs build the Java comparison image
   with `:TrafficCapture:trafficCaptureProxyServer:jib_arm64` (that task no longer exists after this
   change). Pin the comparison image by digest (`phase1-owner-review.md` records
-  `sha256:8abd1f4d…8357`) so Phase 6 comparisons still run.
+  `sha256:8abd1f4d…8357`) so Phase 6 comparisons still run. Done: `perf/lib.sh` and
+  `perf/measurement-patch/build.sh` default `JAVA_PROXY_IMAGE` to the digest, and `perf/README.md`
+  documents it.
 - **Gradle build cache and IDE metadata** reference the module paths; harmless, but a clean
   checkout must build.
+
+### 3.1 Lost Java ground truth: the check done before the delete
+
+Checked against `5e6819a46`, the last commit that has the four Java modules (read a
+cited Java file with `git show 5e6819a46:<path>`). Paths below are relative to
+`TrafficCapture/captureProxy/crates/`.
+
+**Result.** Nothing in the Cargo workspace reads, runs or regenerates from a file in the four
+modules, at build time or test time. No `include_str!`/`include_bytes!`, `CARGO_MANIFEST_DIR`-relative
+or `../..` path reaches them. The only path out of the workspace is `capture-wire/build.rs` to
+`TrafficCapture/captureProtobufs`, which stays. Every expected value taken from a Java test is
+written into the Rust test source or into a committed fixture. None is regenerated from Java.
+
+Every Rust test that cites a Java test as its source (CO = `captureOffloader`, CKO =
+`captureKafkaOffloader`, NWL = `nettyWireLogging`, TCPS = `trafficCaptureProxyServer`; all the cited
+Java files were in those modules):
+
+| Rust file | Tests | Cited Java test | Where the expected values are |
+|---|---|---|---|
+| `capture-wire/tests/record_encoding.rs` | whole file (B1-B21, K2) | `StreamChannelConnectionCaptureSerializerTest`, `KafkaCaptureFactoryTest` (CO, CKO) | Literal expected `TrafficStream` structs (e.g. B11 at :118-163); byte identity is checked against prost re-encoding, not against stored bytes |
+| `capture-wire/tests/protobuf_size_vectors.rs` | T1-T11, `CSV_SOURCE` rows, boundary table | `CodedOutputStreamSizeUtilTest`, `StreamChannelConnectionCaptureSerializerTest` (CO) | Literal: the T vectors, the 38-row `CSV_SOURCE` (:136-177), the table (:287-310). The test at :187 checks invariants against a Rust port of the Java test's oracle |
+| `capture-wire/tests/flush_deadline.rs` | B13-B15 | `StreamChannelConnectionCaptureSerializerTest` (CO) | Literal, with a manual clock |
+| `capture-wire/tests/publish_chain_ordering.rs` | O1, O2 | `OrderedStreamLifecyleManagerTest` (CO) | Literal |
+| `capture-kafka/tests/publisher_model.rs` | whole file | `CaptureKafkaPublisherTest`, `KafkaCaptureFactoryTest`, `CaptureRoutingStateTest`, `CapturePublishingMetricsTest` (CKO) | Literal, driven by a scripted producer |
+| `capture-kafka/src/routing_state.rs` (tests) | 15 tests | `CaptureRoutingStateTest` (CKO) | Literal (one deliberate deviation, OD-6) |
+| `capture-kafka/src/records.rs`, `write_gate.rs`, `membership.rs`, `topic_metadata.rs`, `capability_probe.rs` (tests) | 2, 2, 6, 3, 4 tests | `CaptureKafkaPublisherTest`, `CaptureKafkaCapabilityProbeTest`, `CaptureKafkaWriteGateTest`, `CaptureKafkaMembershipTest`, `TrafficTopicMetadataTest` (CKO) | Literal |
+| `capture-kafka/src/client_config.rs` (tests) | 4 tests (:839, :1112, :1142, :1160) | `KafkaConfigTest` (CKO), including the two membership-consumer cases that stayed with the proxy when `KafkaConfigTest` moved to `libraries/kafkaUtils` | Literal |
+| `capture-transport/src/request_pump.rs`, `response_pump.rs`, `connection.rs` (tests) | 3, 4, 7 tests | `RequestForwardedCaptureTest`, `SourceInterimResponseCaptureTest`, `ConditionallyReliableLoggingHttpHandlerTest` (NWL) | Literal. `connection.rs:1752` uses 60/40/60 ms where the cited Java test used 10/6/5 ms |
+| `capture-transport/src/tls.rs` (tests) | cases 1-6, destination peer name | `FrontsideMtlsTest`, `BacksideConnectionPoolTest` (TCPS) | Literal; the PEMs are inline constants |
+| `capture-transport/src/listener.rs` | worker sizing | `CaptureProxyNumThreadsTest` (TCPS) | Computed (`available_parallelism() * 2`) |
+| `capture-config/src/kafka.rs`, `endpoint.rs`, `application.rs` | legacy auth conflict; Java URI vectors; explicit worker count | `CaptureProxySetupTest`, `CaptureProxyNumThreadsTest` (TCPS) | Literal (the URI vectors copied verbatim from `CaptureProxySetupTest.java:296-320`) |
+| `capture-observability/tests/operational_events.rs` | startup summary line | `CaptureProxySetupTest` (TCPS) | Literal `JAVA_STARTUP_LINE` |
+| `capture-observability/src/process_metrics.rs`, `log_deduper.rs` (tests) | 3, 1 tests | `CaptureProcessMetricsTest`, `UnauthenticatedClientLogDeduperTest` (TCPS) | Literal |
+| `capture-http-scan/tests/framing_vectors.rs` | T1, T2, T5, T6 and the request vectors | `ChunkedTransferEncodingCaptureTest`, `RequestForwardedCaptureTest`, `ConditionallyReliableLoggingHttpHandlerTest` with `SimpleRequests.java` (NWL); `NettyScanningHttpProxyTest` (TCPS) | Literal byte vectors |
+| `capture-http-scan/tests/fragmentation_properties.rs` | baseline; 3 property tests | `HeaderRemoverHandlerTest` (TCPS) | Literal baseline; the property tests compare fragmented runs with the Rust baseline (Java's `new Random(i)` seeds were not ported) |
+| `capture-http-scan/src/response_classifier.rs`, `rewrite/remove.rs`, `rewrite/add.rs`, `suppression.rs` (tests) | 4, 3, 2, 2 tests | `SourceInterimResponseCaptureTest`, `HeaderValueFilteringCapturePredicateTest`, `ConditionallyReliableLoggingHttpHandlerTest` (NWL); `HeaderRemoverHandlerTest`, `TestHeaderRewrites`, `HeaderAdderHandlerTest` (TCPS) | Literal |
+
+Two fixtures are not ports of a Java test but matter here:
+
+- `capture-test-support/fixtures/murmur2-golden.json` (read by `capture-kafka/tests/routing_hash_golden.rs`)
+  is the cross-language ground truth for routing. Its murmur2 values come from kafka-clients 4.2.0, not
+  from the deleted modules, and `qualification/java-fixtures/GenVectors.java` (kafka-clients and `java.*`
+  only) still regenerates it. Its `selected` partitions are computed inside `GenVectors.java:49`
+  (`pos % parts.size()`), mirroring the deleted `CaptureRoutingState.java`.
+- `capture-test-support/fixtures/goldens/*.json` are **not** Java-derived. `CAPTURE_GOLDENS_UPDATE=1`
+  rewrites them from the Rust encoder; the Java replayer's `RustGoldenRecordCompatibilityTest` checks
+  them and survives.
+
+What is lost is the ability to re-check these values against Java, not the values:
+`protobuf_size_vectors.rs:187` becomes a check against a Rust port of the oracle only, and every
+`...Test.java:NN` line citation now resolves only through `git show`. The specifications behind
+the case labels (wire spec §11, kafka spec §17.1, transport-http spec §15) are not in the
+repository. Corrections to the risk text above: `record_encoding.rs` embeds expected decoded
+structs, not bytes; `rewrite/remove.rs:339` cites `makeThinMessage :201-209`, which was at
+`HeaderRemoverHandlerTest.java:196-203`.
 
 ## 4. Metric contracts used by dashboards and alarms
 

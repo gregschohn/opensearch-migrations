@@ -22,9 +22,18 @@ report can be reproduced. It is **qualification tooling, not product code**.
 
 - Paths are rooted at `/tmp/rust-proxy-qual` (`ROOT` in `lib.sh`; `run-paired.sh` hard-codes it). Copy
   this directory to `/tmp/rust-proxy-qual/harness` before running.
-- Images: `JAVA_PROXY_IMAGE` (Jib `:TrafficCapture:trafficCaptureProxyServer:jib_arm64`) and
-  `RUST_PROXY_IMAGE` (built from `captureProxy/Dockerfile`, context `TrafficCapture/`), in a local
-  registry at `localhost:5001`.
+- Images: `JAVA_PROXY_IMAGE` and `RUST_PROXY_IMAGE` (built from `captureProxy/Dockerfile`, context
+  `TrafficCapture/`), in a local registry at `localhost:5001`.
+- **The Java comparison image is pinned by digest, not rebuilt.** The Java proxy and its Jib task
+  `:TrafficCapture:trafficCaptureProxyServer:jib_arm64` have been deleted from the repository, so
+  `JAVA_PROXY_IMAGE` defaults (in `lib.sh` and `measurement-patch/build.sh`) to the image every
+  Phase 1 comparison used:
+  `localhost:5001/migrations/capture_proxy@sha256:8abd1f4d91e9db138da3909f1092ec8428b695491fc17da5c9b81ebca6008357`
+  (linux/arm64, built at the baseline `059d7b6483f2`; provenance in
+  `specs/perf-baseline-spec.md` §3 and `../reports/phase1-owner-review.md`). Phase 6 comparisons must
+  use the same digest. Do not resolve it through a tag: `capture_proxy:latest` and `latest_arm64` are
+  now Rust builds or may become them. If the digest is missing from a registry, rebuild it from the
+  baseline commit, where the Jib task still exists, and check that the digest matches before using it.
 - All containers run on per-run private Docker networks with unique names derived from the run id;
   nothing publishes a host port.
 - Host: an 18-core arm64 machine; core sets are assigned in `lib.sh`. Absolute numbers do not transfer

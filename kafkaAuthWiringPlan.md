@@ -1,5 +1,11 @@
 # Kafka Auth Type Wiring Plan
 
+> **Historical.** This plan was carried out against the Java capture proxy, which the Rust proxy in
+> `TrafficCapture/captureProxy/` replaces; the Java proxy modules (`trafficCaptureProxyServer`,
+> `captureKafkaOffloader` and their dependencies) are deleted. `KafkaConfig` now lives in
+> `libraries/kafkaUtils` (path below), without the proxy-only membership-consumer properties. Java proxy
+> tests named below, such as `CaptureProxySetupTest.java`, went with the proxy.
+
 ## Current State
 
 New CLI flags have been added to both `TrafficReplayer.Parameters` and `KafkaConfig.KafkaParameters`:
@@ -30,7 +36,7 @@ Add kafka password arg names and update `POSSIBLE_CREDENTIALS_ARG_FLAG_NAMES` an
 
 Add `kafkaPassword` `@Parameter` field. `EnvVarParameterPuller` will automatically map `CAPTURE_PROXY_KAFKA_PASSWORD` from the environment (K8s secret mounted as env var).
 
-**File:** `TrafficCapture/captureKafkaOffloader/src/main/java/org/opensearch/migrations/trafficcapture/kafkaoffloader/KafkaConfig.java`
+**File:** `libraries/kafkaUtils/src/main/java/org/opensearch/migrations/utils/kafka/KafkaConfig.java` (originally `TrafficCapture/captureKafkaOffloader/.../kafkaoffloader/KafkaConfig.java`)
 
 ---
 
@@ -45,7 +51,7 @@ Merge order:
 2. Property file (if provided) — overrides defaults
 3. CLI/env-derived properties (brokers, client ID, auth config) — wins over property file
 
-**File:** `TrafficCapture/captureKafkaOffloader/src/main/java/org/opensearch/migrations/trafficcapture/kafkaoffloader/KafkaConfig.java`
+**File:** `libraries/kafkaUtils/src/main/java/org/opensearch/migrations/utils/kafka/KafkaConfig.java` (originally `TrafficCapture/captureKafkaOffloader/.../kafkaoffloader/KafkaConfig.java`)
 
 ---
 

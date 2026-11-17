@@ -76,12 +76,12 @@ pub struct PolicyParseError {
 ///
 /// # Owner decision OD-2
 ///
-/// `buildImages/build.gradle:62` deliberately omits Netty's
-/// `-Dio.netty...defaultStrictLineParsing=false`, with a comment saying so, making production
-/// **strict**. But `trafficCaptureProxyServer/build.gradle:115-118` sets it false for that module's
-/// tests while `nettyWireLogging`'s tests leave it strict, so the two Java suites covering
-/// `LoggingHttpHandler` run under two different HTTP grammars and nothing tests
-/// `InvalidLineSeparatorException` at all.
+/// The Java proxy's image (its Jib entry in `buildImages/build.gradle`, line 62 at the time)
+/// deliberately omitted Netty's `-Dio.netty...defaultStrictLineParsing=false`, with a comment
+/// saying so, making production **strict**. But `trafficCaptureProxyServer/build.gradle:115-118`
+/// set it false for that module's tests while `nettyWireLogging`'s tests left it strict, so the two
+/// Java suites covering `LoggingHttpHandler` ran under two different HTTP grammars and nothing
+/// tested `InvalidLineSeparatorException` at all. (Those Java modules have since been deleted.)
 ///
 /// The owner ruled: strict by default, matching the production image, with an explicit opt-in
 /// lenient mode as a documented escape hatch for a non-conforming client. The lenient mode is never
