@@ -1,0 +1,269 @@
+{
+  "format": "capture-golden-v1",
+  "scenario": "suppressed_request_dropped",
+  "description": "A request whose capture policy suppresses it, between two captured GETs. Two reads of its prefix were captured before the read completing its headers decided suppression, so the stream carries requestDropped; the replayer discards the prefix and the suppressed request still consumes ordinal 1.",
+  "generator": "TrafficCapture/captureProxy/crates/capture-test-support/tests/golden_records.rs",
+  "topic": "capture-golden",
+  "records": [
+    {
+      "partition": 5,
+      "offset": 0,
+      "logAppendTimeMillis": 1794800000022,
+      "key": "golden-host_00000000-0000-4000-8000-000000000001-0000000000000005",
+      "valueBase64": "CpUOCkFnb2xkZW4taG9zdF8wMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDEtMDAwMDAwMDAwMDAwMDAwNRLjAQoGCIDz6dcGItUBCtIBR0VUIC9jNC9iZWZvcmUgSFRUUC8xLjENCkhvc3Q6IGdvbGRlbi5pbnZhbGlkDQpYLUdvbGRlbjogYzQvMA0KVXNlci1BZ2VudDogY2FwdHVyZS1nb2xkZW4vMS4wIChjcm9zcy1sYW5ndWFnZSkNCkFjY2VwdDogYXBwbGljYXRpb24vanNvbg0KQWNjZXB0LUVuY29kaW5nOiBpZGVudGl0eQ0KQ29ubmVjdGlvbjoga2VlcC1hbGl2ZQ0KQ29udGVudC1MZW5ndGg6IDANCg0KkAEBEhYKCgiA8+nXBhDNpkx6BQgXEKkBkAECEhIKCwiA8+nXBhCazZgBMgCQAQMShgMKCwiA8+nXBhDn8+QBQvMCCvACSFRUUC8xLjEgMjAwIE9LDQpDb250ZW50LVR5cGU6IGFwcGxpY2F0aW9uL2pzb24NClgtR29sZGVuOiBjNC8wDQpDb250ZW50LUxlbmd0aDogMjgwDQoNCnsidGFnIjoiYzQvMCIsInBhZCI6Inh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4In2QAQQSkAEKCwiA8+nXBhC0mrECIn4KfEdFVCAvX3N1cHByZXNzZWQvaGVhbHRoIEhUVFAvMS4xDQpIb3N0OiBnb2xkZW4uaW52YWxpZA0KWC1Hb2xkZW46IGM0LzENClVzZXItQWdlbnQ6IGNhcHR1cmUtZ29sZGVuLzEuMCAoY3Jvc3MtbGFuZ3VhZ2UpDQpBY2OQAQUSQQoLCIDz6dcGEIHB/QIiLwotZXB0OiBhcHBsaWNhdGlvbi9qc29uDQpBY2NlcHQtRW5jb2Rpbmc6IGlkZW50kAEGEhMKCwiA8+nXBhDO58kDggEAkAEHEhgKCwiA8+nXBhCbjpYEIgYKBEdFVCCQAQgSJAoLCIDz6dcGEOi04gQiEgoQL2M0L2FmdGVyIEhUVFAvMZABCRKYAQoLCIDz6dcGELXbrgUihQEKggEuMQ0KSG9zdDogZ29sZGVuLmludmFsaWQNClgtR29sZGVuOiBjNC8yDQpVc2VyLUFnZW50OiBjYXB0dXJlLWdvbGRlbi8xLjAgKGNyb3NzLWxhbmd1YWdlKQ0KQWNjZXB0OiBhcHBsaWNhdGlvbi9qc29uDQpBY2NlcHQtRW5jb2RpkAEKEj8KCwiA8+nXBhCCgvsFIi0KK25nOiBpZGVudGl0eQ0KQ29ubmVjdGlvbjoga2VlcC1hbGl2ZQ0KQ29udGWQAQsSGQoLCIDz6dcGEM+oxwYiBwoFbnQtTGWQAQwSHwoLCIDz6dcGEJzPkwciDQoLbmd0aDogMA0KDQqQAQ0SFwoLCIDz6dcGEOn13wd6BQgWEKkBkAEOEhIKCwiA8+nXBhC2nKwIMgCQAQ8ShgMKCwiA8+nXBhCDw/gIQvMCCvACSFRUUC8xLjEgMjAwIE9LDQpDb250ZW50LVR5cGU6IGFwcGxpY2F0aW9uL2pzb24NClgtR29sZGVuOiBjNC8yDQpDb250ZW50LUxlbmd0aDogMjgwDQoNCnsidGFnIjoiYzQvMiIsInBhZCI6Inh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4In2QARASEgoLCIDz6dcGENDpxAlaAJABESABKiYwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMGMwZGU6MQ=="
+    }
+  ],
+  "expected": {
+    "records": [
+      {
+        "payload": "trafficStream",
+        "connectionId": "golden-host_00000000-0000-4000-8000-000000000001-0000000000000005",
+        "nodeId": "00000000-0000-4000-8000-00000000c0de:1",
+        "index": {
+          "field": "numberOfThisLastChunk",
+          "value": 1
+        },
+        "priorRequestsReceived": null,
+        "lastObservationWasUnterminatedRead": null,
+        "observations": [
+          {
+            "sequence": 1,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 0
+            },
+            "capture": "read",
+            "dataLength": 210
+          },
+          {
+            "sequence": 2,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 1250125
+            },
+            "capture": "endOfMessageIndicator",
+            "firstLineByteLength": 23,
+            "headersByteLength": 169
+          },
+          {
+            "sequence": 3,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 2500250
+            },
+            "capture": "requestForwarded"
+          },
+          {
+            "sequence": 4,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 3750375
+            },
+            "capture": "write",
+            "dataLength": 368
+          },
+          {
+            "sequence": 5,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 5000500
+            },
+            "capture": "read",
+            "dataLength": 124
+          },
+          {
+            "sequence": 6,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 6250625
+            },
+            "capture": "read",
+            "dataLength": 45
+          },
+          {
+            "sequence": 7,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 7500750
+            },
+            "capture": "requestDropped"
+          },
+          {
+            "sequence": 8,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 8750875
+            },
+            "capture": "read",
+            "dataLength": 4
+          },
+          {
+            "sequence": 9,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 10001000
+            },
+            "capture": "read",
+            "dataLength": 16
+          },
+          {
+            "sequence": 10,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 11251125
+            },
+            "capture": "read",
+            "dataLength": 130
+          },
+          {
+            "sequence": 11,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 12501250
+            },
+            "capture": "read",
+            "dataLength": 43
+          },
+          {
+            "sequence": 12,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 13751375
+            },
+            "capture": "read",
+            "dataLength": 5
+          },
+          {
+            "sequence": 13,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 15001500
+            },
+            "capture": "read",
+            "dataLength": 11
+          },
+          {
+            "sequence": 14,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 16251625
+            },
+            "capture": "endOfMessageIndicator",
+            "firstLineByteLength": 22,
+            "headersByteLength": 169
+          },
+          {
+            "sequence": 15,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 17501750
+            },
+            "capture": "requestForwarded"
+          },
+          {
+            "sequence": 16,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 18751875
+            },
+            "capture": "write",
+            "dataLength": 368
+          },
+          {
+            "sequence": 17,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 20002000
+            },
+            "capture": "close"
+          }
+        ]
+      }
+    ],
+    "connections": [
+      {
+        "connectionId": "golden-host_00000000-0000-4000-8000-000000000001-0000000000000005",
+        "nodeId": "00000000-0000-4000-8000-00000000c0de:1",
+        "partition": 5,
+        "events": [
+          {
+            "kind": "REQ",
+            "ordinal": 0,
+            "message": {
+              "firstLine": "GET /c4/before HTTP/1.1",
+              "byteLength": 210,
+              "packetCount": 1,
+              "bytesBase64": "R0VUIC9jNC9iZWZvcmUgSFRUUC8xLjENCkhvc3Q6IGdvbGRlbi5pbnZhbGlkDQpYLUdvbGRlbjogYzQvMA0KVXNlci1BZ2VudDogY2FwdHVyZS1nb2xkZW4vMS4wIChjcm9zcy1sYW5ndWFnZSkNCkFjY2VwdDogYXBwbGljYXRpb24vanNvbg0KQWNjZXB0LUVuY29kaW5nOiBpZGVudGl0eQ0KQ29ubmVjdGlvbjoga2VlcC1hbGl2ZQ0KQ29udGVudC1MZW5ndGg6IDANCg0K"
+            },
+            "firstByteTs": {
+              "seconds": 1794800000,
+              "nanos": 0
+            },
+            "endOfMessageTs": {
+              "seconds": 1794800000,
+              "nanos": 1250125
+            },
+            "completingLogAppendTimeMillis": 1794800000022
+          },
+          {
+            "kind": "RSP",
+            "ordinal": 0,
+            "message": {
+              "firstLine": "HTTP/1.1 200 OK",
+              "byteLength": 368,
+              "packetCount": 1,
+              "bytesBase64": "SFRUUC8xLjEgMjAwIE9LDQpDb250ZW50LVR5cGU6IGFwcGxpY2F0aW9uL2pzb24NClgtR29sZGVuOiBjNC8wDQpDb250ZW50LUxlbmd0aDogMjgwDQoNCnsidGFnIjoiYzQvMCIsInBhZCI6Inh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4In0="
+            },
+            "evidence": "HTTP_FRAMING",
+            "requestForwardedTs": {
+              "seconds": 1794800000,
+              "nanos": 2500250
+            }
+          },
+          {
+            "kind": "REQ",
+            "ordinal": 2,
+            "message": {
+              "firstLine": "GET /c4/after HTTP/1.1",
+              "byteLength": 209,
+              "packetCount": 6,
+              "bytesBase64": "R0VUIC9jNC9hZnRlciBIVFRQLzEuMQ0KSG9zdDogZ29sZGVuLmludmFsaWQNClgtR29sZGVuOiBjNC8yDQpVc2VyLUFnZW50OiBjYXB0dXJlLWdvbGRlbi8xLjAgKGNyb3NzLWxhbmd1YWdlKQ0KQWNjZXB0OiBhcHBsaWNhdGlvbi9qc29uDQpBY2NlcHQtRW5jb2Rpbmc6IGlkZW50aXR5DQpDb25uZWN0aW9uOiBrZWVwLWFsaXZlDQpDb250ZW50LUxlbmd0aDogMA0KDQo="
+            },
+            "firstByteTs": {
+              "seconds": 1794800000,
+              "nanos": 8750875
+            },
+            "endOfMessageTs": {
+              "seconds": 1794800000,
+              "nanos": 16251625
+            },
+            "completingLogAppendTimeMillis": 1794800000022
+          },
+          {
+            "kind": "RSP",
+            "ordinal": 2,
+            "message": {
+              "firstLine": "HTTP/1.1 200 OK",
+              "byteLength": 368,
+              "packetCount": 1,
+              "bytesBase64": "SFRUUC8xLjEgMjAwIE9LDQpDb250ZW50LVR5cGU6IGFwcGxpY2F0aW9uL2pzb24NClgtR29sZGVuOiBjNC8yDQpDb250ZW50LUxlbmd0aDogMjgwDQoNCnsidGFnIjoiYzQvMiIsInBhZCI6Inh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4In0="
+            },
+            "evidence": "HTTP_FRAMING",
+            "requestForwardedTs": {
+              "seconds": 1794800000,
+              "nanos": 17501750
+            }
+          },
+          {
+            "kind": "CLOSED",
+            "ordinal": 3,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 20002000
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

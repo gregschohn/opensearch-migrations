@@ -1,0 +1,135 @@
+{
+  "format": "capture-golden-v1",
+  "scenario": "writer_partition_heartbeat",
+  "description": "A routing generation's initial heartbeat on each of eight partitions, then a later heartbeat on partition 0 with emittedAtMillis absent. Each is keyed writerNodeId:heartbeat:partition and carries no partition in its payload.",
+  "generator": "TrafficCapture/captureProxy/crates/capture-test-support/tests/golden_records.rs",
+  "topic": "capture-golden",
+  "records": [
+    {
+      "partition": 0,
+      "offset": 0,
+      "logAppendTimeMillis": 1794800000001,
+      "key": "00000000-0000-4000-8000-00000000c0de:1:heartbeat:0",
+      "valueBase64": "EjIKJjAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwYzBkZToxGJBOIIC4qpOeNA=="
+    },
+    {
+      "partition": 1,
+      "offset": 0,
+      "logAppendTimeMillis": 1794800000002,
+      "key": "00000000-0000-4000-8000-00000000c0de:1:heartbeat:1",
+      "valueBase64": "EjIKJjAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwYzBkZToxGJBOIIG4qpOeNA=="
+    },
+    {
+      "partition": 2,
+      "offset": 0,
+      "logAppendTimeMillis": 1794800000003,
+      "key": "00000000-0000-4000-8000-00000000c0de:1:heartbeat:2",
+      "valueBase64": "EjIKJjAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwYzBkZToxGJBOIIK4qpOeNA=="
+    },
+    {
+      "partition": 3,
+      "offset": 0,
+      "logAppendTimeMillis": 1794800000004,
+      "key": "00000000-0000-4000-8000-00000000c0de:1:heartbeat:3",
+      "valueBase64": "EjIKJjAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwYzBkZToxGJBOIIO4qpOeNA=="
+    },
+    {
+      "partition": 4,
+      "offset": 0,
+      "logAppendTimeMillis": 1794800000005,
+      "key": "00000000-0000-4000-8000-00000000c0de:1:heartbeat:4",
+      "valueBase64": "EjIKJjAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwYzBkZToxGJBOIIS4qpOeNA=="
+    },
+    {
+      "partition": 5,
+      "offset": 0,
+      "logAppendTimeMillis": 1794800000006,
+      "key": "00000000-0000-4000-8000-00000000c0de:1:heartbeat:5",
+      "valueBase64": "EjIKJjAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwYzBkZToxGJBOIIW4qpOeNA=="
+    },
+    {
+      "partition": 6,
+      "offset": 0,
+      "logAppendTimeMillis": 1794800000007,
+      "key": "00000000-0000-4000-8000-00000000c0de:1:heartbeat:6",
+      "valueBase64": "EjIKJjAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwYzBkZToxGJBOIIa4qpOeNA=="
+    },
+    {
+      "partition": 7,
+      "offset": 0,
+      "logAppendTimeMillis": 1794800000008,
+      "key": "00000000-0000-4000-8000-00000000c0de:1:heartbeat:7",
+      "valueBase64": "EjIKJjAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwYzBkZToxGJBOIIe4qpOeNA=="
+    },
+    {
+      "partition": 0,
+      "offset": 1,
+      "logAppendTimeMillis": 1794800010009,
+      "key": "00000000-0000-4000-8000-00000000c0de:1:heartbeat:0",
+      "valueBase64": "EisKJjAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwYzBkZToxGJBO"
+    }
+  ],
+  "expected": {
+    "records": [
+      {
+        "payload": "writerPartitionHeartbeat",
+        "writerNodeId": "00000000-0000-4000-8000-00000000c0de:1",
+        "heartbeatIntervalMillis": 10000,
+        "emittedAtMillis": 1794800000000
+      },
+      {
+        "payload": "writerPartitionHeartbeat",
+        "writerNodeId": "00000000-0000-4000-8000-00000000c0de:1",
+        "heartbeatIntervalMillis": 10000,
+        "emittedAtMillis": 1794800000001
+      },
+      {
+        "payload": "writerPartitionHeartbeat",
+        "writerNodeId": "00000000-0000-4000-8000-00000000c0de:1",
+        "heartbeatIntervalMillis": 10000,
+        "emittedAtMillis": 1794800000002
+      },
+      {
+        "payload": "writerPartitionHeartbeat",
+        "writerNodeId": "00000000-0000-4000-8000-00000000c0de:1",
+        "heartbeatIntervalMillis": 10000,
+        "emittedAtMillis": 1794800000003
+      },
+      {
+        "payload": "writerPartitionHeartbeat",
+        "writerNodeId": "00000000-0000-4000-8000-00000000c0de:1",
+        "heartbeatIntervalMillis": 10000,
+        "emittedAtMillis": 1794800000004
+      },
+      {
+        "payload": "writerPartitionHeartbeat",
+        "writerNodeId": "00000000-0000-4000-8000-00000000c0de:1",
+        "heartbeatIntervalMillis": 10000,
+        "emittedAtMillis": 1794800000005
+      },
+      {
+        "payload": "writerPartitionHeartbeat",
+        "writerNodeId": "00000000-0000-4000-8000-00000000c0de:1",
+        "heartbeatIntervalMillis": 10000,
+        "emittedAtMillis": 1794800000006
+      },
+      {
+        "payload": "writerPartitionHeartbeat",
+        "writerNodeId": "00000000-0000-4000-8000-00000000c0de:1",
+        "heartbeatIntervalMillis": 10000,
+        "emittedAtMillis": 1794800000007
+      },
+      {
+        "payload": "writerPartitionHeartbeat",
+        "writerNodeId": "00000000-0000-4000-8000-00000000c0de:1",
+        "heartbeatIntervalMillis": 10000,
+        "emittedAtMillis": null
+      }
+    ],
+    "connections": [],
+    "writerTimeTransitions": {
+      "EXACT_HEARTBEAT_STARTED": 8,
+      "TIMELY_HEARTBEAT_ACCEPTED": 1
+    }
+  }
+}

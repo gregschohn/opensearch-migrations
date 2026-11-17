@@ -615,7 +615,9 @@ dependencies = [
 name = "capture-test-support"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "bytes",
+ "capture-kafka",
  "capture-wire",
  "prost",
  "rand 0.9.5",

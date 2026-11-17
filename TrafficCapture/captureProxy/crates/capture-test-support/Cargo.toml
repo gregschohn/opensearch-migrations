@@ -18,3 +18,10 @@ rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+
+[dev-dependencies]
+# The golden-record generator (`tests/golden_records.rs`) drives the real heartbeat and probe
+# builders and the real Java-compatible routing hash. A dev-dependency only: capture-kafka itself
+# dev-depends on this crate, so a normal dependency would link a second copy into its tests.
+base64.workspace = true
+capture-kafka.workspace = true

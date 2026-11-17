@@ -1,0 +1,191 @@
+{
+  "format": "capture-golden-v1",
+  "scenario": "close_terminal_record",
+  "description": "A response delimited only by the connection close. The F deadline detaches the record holding it, so the terminal record carries a single CloseObservation with numberOfThisLastChunk, and that close completes the response unproven. A second connection is accepted and closed with no traffic, as a readiness probe is: one record, one close, and no transaction.",
+  "generator": "TrafficCapture/captureProxy/crates/capture-test-support/tests/golden_records.rs",
+  "topic": "capture-golden",
+  "records": [
+    {
+      "partition": 2,
+      "offset": 0,
+      "logAppendTimeMillis": 1794800005001,
+      "key": "golden-host_00000000-0000-4000-8000-000000000001-0000000000000009",
+      "valueBase64": "CpsECkFnb2xkZW4taG9zdF8wMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDEtMDAwMDAwMDAwMDAwMDAwORLjAQoGCIDz6dcGItUBCtIBR0VUIC9jOC9zdHJlYW0gSFRUUC8xLjENCkhvc3Q6IGdvbGRlbi5pbnZhbGlkDQpYLUdvbGRlbjogYzgvMA0KVXNlci1BZ2VudDogY2FwdHVyZS1nb2xkZW4vMS4wIChjcm9zcy1sYW5ndWFnZSkNCkFjY2VwdDogYXBwbGljYXRpb24vanNvbg0KQWNjZXB0LUVuY29kaW5nOiBpZGVudGl0eQ0KQ29ubmVjdGlvbjoga2VlcC1hbGl2ZQ0KQ29udGVudC1MZW5ndGg6IDANCg0KkAEBEhYKCgiA8+nXBhDNpkx6BQgXEKkBkAECEhIKCwiA8+nXBhCazZgBMgCQAQMSVAoLCIDz6dcGEOfz5AFCQgpASFRUUC8xLjEgMjAwIE9LDQpDb250ZW50LVR5cGU6IHRleHQvcGxhaW4NCkNvbm5lY3Rpb246IGNsb3NlDQoNCpABBBJECgsIgPPp1wYQtJqxAkIyCjBzdHJlYW1lZCB1bnRpbCB0aGUgc291cmNlIGNsb3NlcyB0aGUgY29ubmVjdGlvbgqQAQUYASomMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDBjMGRlOjE="
+    },
+    {
+      "partition": 2,
+      "offset": 1,
+      "logAppendTimeMillis": 1794800005003,
+      "key": "golden-host_00000000-0000-4000-8000-000000000001-0000000000000009",
+      "valueBase64": "CoIBCkFnb2xkZW4taG9zdF8wMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDEtMDAwMDAwMDAwMDAwMDAwORIRCgoIhfPp1wYQwIQ9WgCQAQYgAiomMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDBjMGRlOjEwAQ=="
+    },
+    {
+      "partition": 0,
+      "offset": 0,
+      "logAppendTimeMillis": 1794800005005,
+      "key": "golden-host_00000000-0000-4000-8000-000000000001-000000000000000a",
+      "valueBase64": "CoEBCkFnb2xkZW4taG9zdF8wMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDEtMDAwMDAwMDAwMDAwMDAwYRISCgsIhfPp1wYQza/GAVoAkAEBIAEqJjAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwYzBkZTox"
+    }
+  ],
+  "expected": {
+    "records": [
+      {
+        "payload": "trafficStream",
+        "connectionId": "golden-host_00000000-0000-4000-8000-000000000001-0000000000000009",
+        "nodeId": "00000000-0000-4000-8000-00000000c0de:1",
+        "index": {
+          "field": "number",
+          "value": 1
+        },
+        "priorRequestsReceived": null,
+        "lastObservationWasUnterminatedRead": null,
+        "observations": [
+          {
+            "sequence": 1,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 0
+            },
+            "capture": "read",
+            "dataLength": 210
+          },
+          {
+            "sequence": 2,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 1250125
+            },
+            "capture": "endOfMessageIndicator",
+            "firstLineByteLength": 23,
+            "headersByteLength": 169
+          },
+          {
+            "sequence": 3,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 2500250
+            },
+            "capture": "requestForwarded"
+          },
+          {
+            "sequence": 4,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 3750375
+            },
+            "capture": "write",
+            "dataLength": 64
+          },
+          {
+            "sequence": 5,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 5000500
+            },
+            "capture": "write",
+            "dataLength": 48
+          }
+        ]
+      },
+      {
+        "payload": "trafficStream",
+        "connectionId": "golden-host_00000000-0000-4000-8000-000000000001-0000000000000009",
+        "nodeId": "00000000-0000-4000-8000-00000000c0de:1",
+        "index": {
+          "field": "numberOfThisLastChunk",
+          "value": 2
+        },
+        "priorRequestsReceived": 1,
+        "lastObservationWasUnterminatedRead": null,
+        "observations": [
+          {
+            "sequence": 6,
+            "ts": {
+              "seconds": 1794800005,
+              "nanos": 1000000
+            },
+            "capture": "close"
+          }
+        ]
+      },
+      {
+        "payload": "trafficStream",
+        "connectionId": "golden-host_00000000-0000-4000-8000-000000000001-000000000000000a",
+        "nodeId": "00000000-0000-4000-8000-00000000c0de:1",
+        "index": {
+          "field": "numberOfThisLastChunk",
+          "value": 1
+        },
+        "priorRequestsReceived": null,
+        "lastObservationWasUnterminatedRead": null,
+        "observations": [
+          {
+            "sequence": 1,
+            "ts": {
+              "seconds": 1794800005,
+              "nanos": 3250125
+            },
+            "capture": "close"
+          }
+        ]
+      }
+    ],
+    "connections": [
+      {
+        "connectionId": "golden-host_00000000-0000-4000-8000-000000000001-0000000000000009",
+        "nodeId": "00000000-0000-4000-8000-00000000c0de:1",
+        "partition": 2,
+        "events": [
+          {
+            "kind": "REQ",
+            "ordinal": 0,
+            "message": {
+              "firstLine": "GET /c8/stream HTTP/1.1",
+              "byteLength": 210,
+              "packetCount": 1,
+              "bytesBase64": "R0VUIC9jOC9zdHJlYW0gSFRUUC8xLjENCkhvc3Q6IGdvbGRlbi5pbnZhbGlkDQpYLUdvbGRlbjogYzgvMA0KVXNlci1BZ2VudDogY2FwdHVyZS1nb2xkZW4vMS4wIChjcm9zcy1sYW5ndWFnZSkNCkFjY2VwdDogYXBwbGljYXRpb24vanNvbg0KQWNjZXB0LUVuY29kaW5nOiBpZGVudGl0eQ0KQ29ubmVjdGlvbjoga2VlcC1hbGl2ZQ0KQ29udGVudC1MZW5ndGg6IDANCg0K"
+            },
+            "firstByteTs": {
+              "seconds": 1794800000,
+              "nanos": 0
+            },
+            "endOfMessageTs": {
+              "seconds": 1794800000,
+              "nanos": 1250125
+            },
+            "completingLogAppendTimeMillis": 1794800005001
+          },
+          {
+            "kind": "RSP",
+            "ordinal": 0,
+            "message": {
+              "firstLine": "HTTP/1.1 200 OK",
+              "byteLength": 112,
+              "packetCount": 2,
+              "bytesBase64": "SFRUUC8xLjEgMjAwIE9LDQpDb250ZW50LVR5cGU6IHRleHQvcGxhaW4NCkNvbm5lY3Rpb246IGNsb3NlDQoNCnN0cmVhbWVkIHVudGlsIHRoZSBzb3VyY2UgY2xvc2VzIHRoZSBjb25uZWN0aW9uCg=="
+            },
+            "evidence": "CONNECTION_CLOSE",
+            "requestForwardedTs": {
+              "seconds": 1794800000,
+              "nanos": 2500250
+            }
+          },
+          {
+            "kind": "CLOSED",
+            "ordinal": 1,
+            "ts": {
+              "seconds": 1794800005,
+              "nanos": 1000000
+            }
+          }
+        ]
+      },
+      {
+        "connectionId": "golden-host_00000000-0000-4000-8000-000000000001-000000000000000a",
+        "nodeId": "00000000-0000-4000-8000-00000000c0de:1",
+        "partition": 0,
+        "events": []
+      }
+    ]
+  }
+}

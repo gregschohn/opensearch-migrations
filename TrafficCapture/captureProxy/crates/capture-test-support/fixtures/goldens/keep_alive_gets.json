@@ -1,0 +1,367 @@
+{
+  "format": "capture-golden-v1",
+  "scenario": "keep_alive_gets",
+  "description": "Three GETs on one keep-alive connection, each request fragmented across several reads. No GET is a critical mutation, so the whole connection is one terminal record.",
+  "generator": "TrafficCapture/captureProxy/crates/capture-test-support/tests/golden_records.rs",
+  "topic": "capture-golden",
+  "records": [
+    {
+      "partition": 0,
+      "offset": 0,
+      "logAppendTimeMillis": 1794800000031,
+      "key": "golden-host_00000000-0000-4000-8000-000000000001-0000000000000001",
+      "valueBase64": "CqgVCkFnb2xkZW4taG9zdF8wMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDEtMDAwMDAwMDAwMDAwMDAwMRIrCgYIgPPp1wYiHgocR0VUIC9jMC9kb2MwP3ByZXR0eT10cnVlIEhUVJABARKcAwoKCIDz6dcGEM2mTCKKAwqHA1AvMS4xDQpIb3N0OiBnb2xkZW4uaW52YWxpZA0KWC1Hb2xkZW46IGMwLzANClVzZXItQWdlbnQ6IGNhcHR1cmUtZ29sZGVuLzEuMCAoY3Jvc3MtbGFuZ3VhZ2UpDQpBY2NlcHQ6IGFwcGxpY2F0aW9uL2pzb24NCkFjY2VwdC1FbmNvZGluZzogaWRlbnRpdHkNCkNvbm5lY3Rpb246IGtlZXAtYWxpdmUNCngtT0RELUNhU2lOZzogTWl4ZWRDYXNlVmFsdWUNClgtUmVwZWF0ZWQ6IGZpcnN0DQpYLVJlcGVhdGVkOiBzZWNvbmQNClgtTG9uZzogYWJjZGVmZ2hpamFiY2RlZmdoaWphYmNkZWZnaGlqYWJjZGVmZ2hpamFiY2RlZmdoaWphYmNkZWZnaGlqYWJjZGVmZ2hpamFiY2RlZmdoaWphYmNkZWZnaGlqYWJjZGVmZ2hpamFiY2RlZmdoaWphYmNkZWZnaGlqYWJjZGVmZ2hpamFiY2RlZmdoaWphYmOQAQISjAEKCwiA8+nXBhCazZgBInoKeGRlZmdoaWphYmNkZWZnaGlqYWJjZGVmZ2hpamFiY2RlZmdoaWphYmNkZWZnaGlqYWJjZGVmZ2hpamFiY2RlZmdoaWphYmNkZWZnaGlqYWJjZGVmZ2hpamFiY2RlZmdoaWoNCkNvbnRlbnQtTGVuZ3RoOiAwDQoNCpABAxIXCgsIgPPp1wYQ5/PkAXoFCCEQ4AOQAQQSEgoLCIDz6dcGELSasQIyAJABBRKGAwoLCIDz6dcGEIHB/QJC8wIK8AJIVFRQLzEuMSAyMDAgT0sNCkNvbnRlbnQtVHlwZTogYXBwbGljYXRpb24vanNvbg0KWC1Hb2xkZW46IGMwLzANCkNvbnRlbnQtTGVuZ3RoOiAyODANCg0KeyJ0YWciOiJjMC8wIiwicGFkIjoieHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHgifZABBhJtCgsIgPPp1wYQzufJAyJbCllHRVQgL2MwL2RvYzE/cHJldHR5PXRydWUgSFRUUC8xLjENCkhvc3Q6IGdvbGRlbi5pbnZhbGlkDQpYLUdvbGRlbjogYzAvMQ0KVXNlci1BZ2VudDogY2FwdJABBxJECgsIgPPp1wYQm46WBCIyCjB1cmUtZ29sZGVuLzEuMCAoY3Jvc3MtbGFuZ3VhZ2UpDQpBY2NlcHQ6IGFwcGxpY2GQAQgSIQoLCIDz6dcGEOi04gQiDwoNdGlvbi9qc29uDQpBY5ABCRI8CgsIgPPp1wYQtduuBSIqCihjZXB0LUVuY29kaW5nOiBpZGVudGl0eQ0KQ29ubmVjdGlvbjoga2VlkAEKEi0KCwiA8+nXBhCCgvsFIhsKGXAtYWxpdmUNCkNvbnRlbnQtTGVuZ3RoOiCQAQsSGQoLCIDz6dcGEM+oxwYiBwoFMA0KDQqQAQwSFwoLCIDz6dcGEJzPkwd6BQghEKkBkAENEhIKCwiA8+nXBhDp9d8HMgCQAQ4ShgMKCwiA8+nXBhC2nKwIQvMCCvACSFRUUC8xLjEgMjAwIE9LDQpDb250ZW50LVR5cGU6IGFwcGxpY2F0aW9uL2pzb24NClgtR29sZGVuOiBjMC8xDQpDb250ZW50LUxlbmd0aDogMjgwDQoNCnsidGFnIjoiYzAvMSIsInBhZCI6Inh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4In2QAQ8SKwoLCIDz6dcGEIPD+AgiGQoXR0VUIC9jMC9kb2MyP3ByZXR0eT10cnWQARASbwoLCIDz6dcGENDpxAkiXQpbZSBIVFRQLzEuMQ0KSG9zdDogZ29sZGVuLmludmFsaWQNClgtR29sZGVuOiBjMC8yDQpVc2VyLUFnZW50OiBjYXB0dXJlLWdvbGRlbi8xLjAgKGNyb3NzLWxhbpABERIvCgsIgPPp1wYQnZCRCiIdChtndWFnZSkNCkFjY2VwdDogYXBwbGljYXRpb26QARISSQoLCIDz6dcGEOq23QoiNwo1L2pzb24NCkFjY2VwdC1FbmNvZGluZzogaWRlbnRpdHkNCkNvbm5lY3Rpb246IGtlZXAtYWyQARMSLgoLCIDz6dcGELfdqQsiHAoaaXZlDQpDb250ZW50LUxlbmd0aDogMA0KDQqQARQSFwoLCIDz6dcGEISE9gt6BQghEKkBkAEVEhIKCwiA8+nXBhDRqsIMMgCQARYShgMKCwiA8+nXBhCe0Y4NQvMCCvACSFRUUC8xLjEgMjAwIE9LDQpDb250ZW50LVR5cGU6IGFwcGxpY2F0aW9uL2pzb24NClgtR29sZGVuOiBjMC8yDQpDb250ZW50LUxlbmd0aDogMjgwDQoNCnsidGFnIjoiYzAvMiIsInBhZCI6Inh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4In2QARcSEgoLCIDz6dcGEOv32g1aAJABGCABKiYwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMGMwZGU6MQ=="
+    }
+  ],
+  "expected": {
+    "records": [
+      {
+        "payload": "trafficStream",
+        "connectionId": "golden-host_00000000-0000-4000-8000-000000000001-0000000000000001",
+        "nodeId": "00000000-0000-4000-8000-00000000c0de:1",
+        "index": {
+          "field": "numberOfThisLastChunk",
+          "value": 1
+        },
+        "priorRequestsReceived": null,
+        "lastObservationWasUnterminatedRead": null,
+        "observations": [
+          {
+            "sequence": 1,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 0
+            },
+            "capture": "read",
+            "dataLength": 28
+          },
+          {
+            "sequence": 2,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 1250125
+            },
+            "capture": "read",
+            "dataLength": 391
+          },
+          {
+            "sequence": 3,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 2500250
+            },
+            "capture": "read",
+            "dataLength": 120
+          },
+          {
+            "sequence": 4,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 3750375
+            },
+            "capture": "endOfMessageIndicator",
+            "firstLineByteLength": 33,
+            "headersByteLength": 480
+          },
+          {
+            "sequence": 5,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 5000500
+            },
+            "capture": "requestForwarded"
+          },
+          {
+            "sequence": 6,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 6250625
+            },
+            "capture": "write",
+            "dataLength": 368
+          },
+          {
+            "sequence": 7,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 7500750
+            },
+            "capture": "read",
+            "dataLength": 89
+          },
+          {
+            "sequence": 8,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 8750875
+            },
+            "capture": "read",
+            "dataLength": 48
+          },
+          {
+            "sequence": 9,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 10001000
+            },
+            "capture": "read",
+            "dataLength": 13
+          },
+          {
+            "sequence": 10,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 11251125
+            },
+            "capture": "read",
+            "dataLength": 40
+          },
+          {
+            "sequence": 11,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 12501250
+            },
+            "capture": "read",
+            "dataLength": 25
+          },
+          {
+            "sequence": 12,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 13751375
+            },
+            "capture": "read",
+            "dataLength": 5
+          },
+          {
+            "sequence": 13,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 15001500
+            },
+            "capture": "endOfMessageIndicator",
+            "firstLineByteLength": 33,
+            "headersByteLength": 169
+          },
+          {
+            "sequence": 14,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 16251625
+            },
+            "capture": "requestForwarded"
+          },
+          {
+            "sequence": 15,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 17501750
+            },
+            "capture": "write",
+            "dataLength": 368
+          },
+          {
+            "sequence": 16,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 18751875
+            },
+            "capture": "read",
+            "dataLength": 23
+          },
+          {
+            "sequence": 17,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 20002000
+            },
+            "capture": "read",
+            "dataLength": 91
+          },
+          {
+            "sequence": 18,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 21252125
+            },
+            "capture": "read",
+            "dataLength": 27
+          },
+          {
+            "sequence": 19,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 22502250
+            },
+            "capture": "read",
+            "dataLength": 53
+          },
+          {
+            "sequence": 20,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 23752375
+            },
+            "capture": "read",
+            "dataLength": 26
+          },
+          {
+            "sequence": 21,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 25002500
+            },
+            "capture": "endOfMessageIndicator",
+            "firstLineByteLength": 33,
+            "headersByteLength": 169
+          },
+          {
+            "sequence": 22,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 26252625
+            },
+            "capture": "requestForwarded"
+          },
+          {
+            "sequence": 23,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 27502750
+            },
+            "capture": "write",
+            "dataLength": 368
+          },
+          {
+            "sequence": 24,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 28752875
+            },
+            "capture": "close"
+          }
+        ]
+      }
+    ],
+    "connections": [
+      {
+        "connectionId": "golden-host_00000000-0000-4000-8000-000000000001-0000000000000001",
+        "nodeId": "00000000-0000-4000-8000-00000000c0de:1",
+        "partition": 0,
+        "events": [
+          {
+            "kind": "REQ",
+            "ordinal": 0,
+            "message": {
+              "firstLine": "GET /c0/doc0?pretty=true HTTP/1.1",
+              "byteLength": 539,
+              "packetCount": 3,
+              "bytesBase64": "R0VUIC9jMC9kb2MwP3ByZXR0eT10cnVlIEhUVFAvMS4xDQpIb3N0OiBnb2xkZW4uaW52YWxpZA0KWC1Hb2xkZW46IGMwLzANClVzZXItQWdlbnQ6IGNhcHR1cmUtZ29sZGVuLzEuMCAoY3Jvc3MtbGFuZ3VhZ2UpDQpBY2NlcHQ6IGFwcGxpY2F0aW9uL2pzb24NCkFjY2VwdC1FbmNvZGluZzogaWRlbnRpdHkNCkNvbm5lY3Rpb246IGtlZXAtYWxpdmUNCngtT0RELUNhU2lOZzogTWl4ZWRDYXNlVmFsdWUNClgtUmVwZWF0ZWQ6IGZpcnN0DQpYLVJlcGVhdGVkOiBzZWNvbmQNClgtTG9uZzogYWJjZGVmZ2hpamFiY2RlZmdoaWphYmNkZWZnaGlqYWJjZGVmZ2hpamFiY2RlZmdoaWphYmNkZWZnaGlqYWJjZGVmZ2hpamFiY2RlZmdoaWphYmNkZWZnaGlqYWJjZGVmZ2hpamFiY2RlZmdoaWphYmNkZWZnaGlqYWJjZGVmZ2hpamFiY2RlZmdoaWphYmNkZWZnaGlqYWJjZGVmZ2hpamFiY2RlZmdoaWphYmNkZWZnaGlqYWJjZGVmZ2hpamFiY2RlZmdoaWphYmNkZWZnaGlqYWJjZGVmZ2hpamFiY2RlZmdoaWphYmNkZWZnaGlqDQpDb250ZW50LUxlbmd0aDogMA0KDQo="
+            },
+            "firstByteTs": {
+              "seconds": 1794800000,
+              "nanos": 0
+            },
+            "endOfMessageTs": {
+              "seconds": 1794800000,
+              "nanos": 3750375
+            },
+            "completingLogAppendTimeMillis": 1794800000031
+          },
+          {
+            "kind": "RSP",
+            "ordinal": 0,
+            "message": {
+              "firstLine": "HTTP/1.1 200 OK",
+              "byteLength": 368,
+              "packetCount": 1,
+              "bytesBase64": "SFRUUC8xLjEgMjAwIE9LDQpDb250ZW50LVR5cGU6IGFwcGxpY2F0aW9uL2pzb24NClgtR29sZGVuOiBjMC8wDQpDb250ZW50LUxlbmd0aDogMjgwDQoNCnsidGFnIjoiYzAvMCIsInBhZCI6Inh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4In0="
+            },
+            "evidence": "HTTP_FRAMING",
+            "requestForwardedTs": {
+              "seconds": 1794800000,
+              "nanos": 5000500
+            }
+          },
+          {
+            "kind": "REQ",
+            "ordinal": 1,
+            "message": {
+              "firstLine": "GET /c0/doc1?pretty=true HTTP/1.1",
+              "byteLength": 220,
+              "packetCount": 6,
+              "bytesBase64": "R0VUIC9jMC9kb2MxP3ByZXR0eT10cnVlIEhUVFAvMS4xDQpIb3N0OiBnb2xkZW4uaW52YWxpZA0KWC1Hb2xkZW46IGMwLzENClVzZXItQWdlbnQ6IGNhcHR1cmUtZ29sZGVuLzEuMCAoY3Jvc3MtbGFuZ3VhZ2UpDQpBY2NlcHQ6IGFwcGxpY2F0aW9uL2pzb24NCkFjY2VwdC1FbmNvZGluZzogaWRlbnRpdHkNCkNvbm5lY3Rpb246IGtlZXAtYWxpdmUNCkNvbnRlbnQtTGVuZ3RoOiAwDQoNCg=="
+            },
+            "firstByteTs": {
+              "seconds": 1794800000,
+              "nanos": 7500750
+            },
+            "endOfMessageTs": {
+              "seconds": 1794800000,
+              "nanos": 15001500
+            },
+            "completingLogAppendTimeMillis": 1794800000031
+          },
+          {
+            "kind": "RSP",
+            "ordinal": 1,
+            "message": {
+              "firstLine": "HTTP/1.1 200 OK",
+              "byteLength": 368,
+              "packetCount": 1,
+              "bytesBase64": "SFRUUC8xLjEgMjAwIE9LDQpDb250ZW50LVR5cGU6IGFwcGxpY2F0aW9uL2pzb24NClgtR29sZGVuOiBjMC8xDQpDb250ZW50LUxlbmd0aDogMjgwDQoNCnsidGFnIjoiYzAvMSIsInBhZCI6Inh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4In0="
+            },
+            "evidence": "HTTP_FRAMING",
+            "requestForwardedTs": {
+              "seconds": 1794800000,
+              "nanos": 16251625
+            }
+          },
+          {
+            "kind": "REQ",
+            "ordinal": 2,
+            "message": {
+              "firstLine": "GET /c0/doc2?pretty=true HTTP/1.1",
+              "byteLength": 220,
+              "packetCount": 5,
+              "bytesBase64": "R0VUIC9jMC9kb2MyP3ByZXR0eT10cnVlIEhUVFAvMS4xDQpIb3N0OiBnb2xkZW4uaW52YWxpZA0KWC1Hb2xkZW46IGMwLzINClVzZXItQWdlbnQ6IGNhcHR1cmUtZ29sZGVuLzEuMCAoY3Jvc3MtbGFuZ3VhZ2UpDQpBY2NlcHQ6IGFwcGxpY2F0aW9uL2pzb24NCkFjY2VwdC1FbmNvZGluZzogaWRlbnRpdHkNCkNvbm5lY3Rpb246IGtlZXAtYWxpdmUNCkNvbnRlbnQtTGVuZ3RoOiAwDQoNCg=="
+            },
+            "firstByteTs": {
+              "seconds": 1794800000,
+              "nanos": 18751875
+            },
+            "endOfMessageTs": {
+              "seconds": 1794800000,
+              "nanos": 25002500
+            },
+            "completingLogAppendTimeMillis": 1794800000031
+          },
+          {
+            "kind": "RSP",
+            "ordinal": 2,
+            "message": {
+              "firstLine": "HTTP/1.1 200 OK",
+              "byteLength": 368,
+              "packetCount": 1,
+              "bytesBase64": "SFRUUC8xLjEgMjAwIE9LDQpDb250ZW50LVR5cGU6IGFwcGxpY2F0aW9uL2pzb24NClgtR29sZGVuOiBjMC8yDQpDb250ZW50LUxlbmd0aDogMjgwDQoNCnsidGFnIjoiYzAvMiIsInBhZCI6Inh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4In0="
+            },
+            "evidence": "HTTP_FRAMING",
+            "requestForwardedTs": {
+              "seconds": 1794800000,
+              "nanos": 26252625
+            }
+          },
+          {
+            "kind": "CLOSED",
+            "ordinal": 3,
+            "ts": {
+              "seconds": 1794800000,
+              "nanos": 28752875
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

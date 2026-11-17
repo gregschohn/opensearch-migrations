@@ -1,0 +1,27 @@
+{
+  "format": "capture-golden-v1",
+  "scenario": "capture_capability_probe",
+  "description": "The startup capability probe on a representative partition. Its writer identity is captureActivationId:PROBE, which no routing generation can produce, and replay intake creates no writer or connection state for it.",
+  "generator": "TrafficCapture/captureProxy/crates/capture-test-support/tests/golden_records.rs",
+  "topic": "capture-golden",
+  "records": [
+    {
+      "partition": 0,
+      "offset": 0,
+      "logAppendTimeMillis": 1794800000001,
+      "key": "00000000-0000-4000-8000-00000000c0de:PROBE:00000000-0000-4000-8000-0000000000aa",
+      "valueBase64": "GlIKKjAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwYzBkZTpQUk9CRRIkMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMGFh"
+    }
+  ],
+  "expected": {
+    "records": [
+      {
+        "payload": "captureCapabilityProbe",
+        "writerNodeId": "00000000-0000-4000-8000-00000000c0de:PROBE",
+        "probeId": "00000000-0000-4000-8000-0000000000aa"
+      }
+    ],
+    "connections": [],
+    "writerTimeTransitions": {}
+  }
+}
