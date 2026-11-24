@@ -77,15 +77,25 @@ CHARTS_FILE="$TMPDIR/charts.txt"
 # Parse charts from both migrationAssistantWithArgo and testClusters
 for vf in "$CHART_DIR/values.yaml" "$TEST_CHART_DIR/values.yaml"; do
   [ -f "$vf" ] || continue
-  # Extract name|version|repo triples. Strip quotes from a copy of $2: editing $2 in place rebuilds
-  # $0 without its indentation, which then matches the top-level-key rule and ends the charts section.
-  # That rule also skips the commented-out entries at column 0 inside charts:.
+  # Extract name|version|repo|imageTag, where imageTag is the chart's values.image.tag override
+  # (e.g. fluent-bit, localstack) so discovery reports the image that is actually deployed. Fields are
+  # unquoted from copies, and commented-out entries at column 0 inside charts: do not end the section.
   awk '
-    /^  [a-zA-Z].*:$/ && in_charts { name=$1; gsub(/:$/,"",name) }
-    /version:/ && in_charts && name { ver=$2; gsub(/["'\'' ]/,"",ver) }
-    /repository:/ && in_charts && name && /http|oci/ { repo=$2; gsub(/["'\'' ]/,"",repo); print name"|"ver"|"repo; name="" }
-    /^charts:/ { in_charts=1 }
-    /^[^ #]/ && !/^charts:/ { in_charts=0 }
+    function unquote(s) { gsub(/["'\'' ]/, "", s); return s }
+    function flush() {
+      if (name != "" && repo != "") print name "|" ver "|" repo "|" tag
+      name = ""; ver = ""; repo = ""; tag = ""; in_values = 0; in_image = 0
+    }
+    /^charts:/ { in_charts = 1; next }
+    in_charts && /^[^ #]/ { flush(); in_charts = 0 }
+    !in_charts { next }
+    /^  [a-zA-Z][^ ]*:[[:space:]]*$/ { flush(); name = $1; sub(/:$/, "", name); next }
+    /^    version:/ { ver = unquote($2); next }
+    /^    repository:/ && /http|oci/ { repo = unquote($2); next }
+    /^    [a-zA-Z]/ { in_values = ($1 == "values:"); in_image = 0; next }
+    in_values && /^      [a-zA-Z]/ { in_image = ($1 == "image:"); next }
+    in_image && /^        tag:/ { tag = unquote($2); next }
+    END { flush() }
   ' "$vf" >> "$CHARTS_FILE"
 done
 
@@ -97,9 +107,9 @@ ALL_IMAGES="$TMPDIR/all_images.txt"
 touch "$ALL_IMAGES"
 MANAGED_KAFKA_VERSION=$(sed -n 's/^export const MANAGED_KAFKA_VERSION = "\(.*\)";$/\1/p' "$MANAGED_KAFKA_FILE" 2>/dev/null || true)
 
-while IFS='|' read -r name version repo; do
+while IFS='|' read -r name version repo image_tag; do
   [ -z "$name" ] && continue
-  echo "  Pulling $name $version..."
+  echo "  Pulling $name $version${image_tag:+ (image.tag $image_tag)}..."
   # Untar into a per-chart directory: the archive is named after the chart, which can differ from
   # the values.yaml key (e.g. ack-cloudwatch-controller is the cloudwatch-chart OCI artifact).
   pull_dir="$TMPDIR/pull-$name"
@@ -116,7 +126,8 @@ while IFS='|' read -r name version repo; do
     # Some charts (e.g. opentelemetry-operator) reject their own defaults via values.schema.json; keep
     # going so one chart cannot abort discovery under set -e, and flag it for a manual check.
     RENDERED="$TMPDIR/rendered.yaml"
-    if ! helm template test "$dir/" > "$RENDERED" 2>/dev/null; then
+    # Render with the values.yaml image.tag override (if any) so the deployed tag is reported.
+    if ! helm template test "$dir/" ${image_tag:+--set-string "image.tag=$image_tag"} > "$RENDERED" 2>/dev/null; then
       echo "    WARN: helm template failed for $name with default values; check its images manually"
       : > "$RENDERED"
     fi
