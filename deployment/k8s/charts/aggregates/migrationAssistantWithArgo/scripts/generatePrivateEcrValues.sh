@@ -89,22 +89,32 @@ charts:
   kube-prometheus-stack:
     repository: "oci://${ECR}/charts/kube-prometheus-stack"
     values:
+      crds:
+        upgradeJob:
+          image:
+            busybox:
+              registry: "${M}/mirror.gcr.io"
+              repository: library/busybox
+            kubectl:
+              registry: "${M}/registry.k8s.io"
       prometheusOperator:
         image:
           registry: "${M}/quay.io"
         admissionWebhooks:
           patch:
             image:
-              registry: "${M}/registry.k8s.io"
+              registry: "${M}/ghcr.io"
         prometheusConfigReloader:
           image:
             registry: "${M}/quay.io"
+        thanosImage:
+          registry: "${M}/quay.io"
       prometheus:
         prometheusSpec:
           image:
             registry: "${M}/quay.io"
           thanos:
-            image: "${M}/quay.io/thanos/thanos:v0.38.0"
+            image: "${M}/quay.io/thanos/thanos:v0.42.5"
       alertmanager:
         alertmanagerSpec:
           image:
@@ -128,10 +138,6 @@ charts:
         sidecar:
           image:
             registry: "${M}/quay.io"
-        testFramework:
-          image:
-            repository: "${M}/mirror.gcr.io/bats/bats"
-            tag: "v1.4.1"
 
   opentelemetry-operator:
     repository: "oci://${ECR}/charts/opentelemetry-operator"
@@ -160,10 +166,6 @@ charts:
       sidecar:
         image:
           registry: "${M}/quay.io"
-      testFramework:
-        image:
-          repository: "${M}/mirror.gcr.io/bats/bats"
-          tag: "v1.4.1"
 
   jaeger:
     repository: "oci://${ECR}/charts/jaeger"

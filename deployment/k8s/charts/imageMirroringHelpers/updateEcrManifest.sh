@@ -79,6 +79,7 @@ for vf in "$CHART_DIR/values.yaml" "$TEST_CHART_DIR/values.yaml"; do
   [ -f "$vf" ] || continue
   # Extract name|version|repo triples. Strip quotes from a copy of $2: editing $2 in place rebuilds
   # $0 without its indentation, which then matches the top-level-key rule and ends the charts section.
+  # That rule also skips the commented-out entries at column 0 inside charts:.
   awk '
     /^  [a-zA-Z].*:$/ && in_charts { name=$1; gsub(/:$/,"",name) }
     /version:/ && in_charts && name { ver=$2; gsub(/["'\'' ]/,"",ver) }
@@ -121,6 +122,9 @@ while IFS='|' read -r name version repo; do
     fi
     { grep -E '^\s+image:' "$RENDERED" || true; } | \
       sed 's/.*image:\s*//' | tr -d '"' | tr -d "'" | sed 's/^[[:space:]]*//' >> "$ALL_IMAGES"
+    # prometheus-operator receives the config-reloader and thanos images as flags, not image: fields
+    grep -oE -- '--(prometheus-config-reloader|thanos-default-base-image)=[^[:space:]"]+' "$RENDERED" | \
+      sed 's/^[^=]*=//' >> "$ALL_IMAGES" || true
     if [ "$name" = "strimzi-kafka-operator" ]; then
       # The operator starts these at runtime, so they appear only in its env, not in image: fields.
       # Of the Kafka images, mirror only the version that workflow-managed clusters run.
@@ -144,7 +148,11 @@ quay.io/coreos/etcd:v3.5.12
 public.ecr.aws/aws-observability/aws-otel-collector:v0.49.0
 mirror.gcr.io/amazon/aws-cli:2.25.11
 mirror.gcr.io/amazon/aws-cli:latest
+mirror.gcr.io/library/busybox:latest
+registry.k8s.io/kubectl:v1.35.3
 RUNTIME
+# The last two are the kube-prometheus-stack CRD upgrade job images. The job is off in the chart's
+# defaults, so the template render above does not show them; values.yaml enables it and pins kubectl.
 
 # Deduplicate and sort
 sort -u "$ALL_IMAGES" | grep -v '^$' > "$TMPDIR/unique_images.txt"
