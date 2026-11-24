@@ -135,7 +135,10 @@ COPY lib /root/lib
 COPY cluster_tools /root/cluster_tools
 RUN rm -rf /root/cluster_tools/.venv
 COPY Pipfile Pipfile.lock /root/
-RUN pipenv install --deploy
+# pip check fails the build if this lock and the packages the base image already put in
+# /.venv (from the test console's Pipfile.lock) have incompatible requirements.
+RUN pipenv install --deploy && \
+    pip check
 
 RUN mkdir -p /usr/share/bash-completion/completions && \
     _CONSOLE_COMPLETE=bash_source console > /usr/share/bash-completion/completions/console && \
