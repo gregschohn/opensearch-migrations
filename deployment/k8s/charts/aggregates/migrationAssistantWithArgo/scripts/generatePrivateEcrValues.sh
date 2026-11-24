@@ -89,13 +89,21 @@ charts:
   kube-prometheus-stack:
     repository: "oci://${ECR}/charts/kube-prometheus-stack"
     values:
+      crds:
+        upgradeJob:
+          image:
+            busybox:
+              registry: "${M}/mirror.gcr.io"
+              repository: library/busybox
+            kubectl:
+              registry: "${M}/registry.k8s.io"
       prometheusOperator:
         image:
           registry: "${M}/quay.io"
         admissionWebhooks:
           patch:
             image:
-              registry: "${M}/registry.k8s.io"
+              registry: "${M}/ghcr.io"
         prometheusConfigReloader:
           image:
             registry: "${M}/quay.io"
@@ -104,7 +112,7 @@ charts:
           image:
             registry: "${M}/quay.io"
           thanos:
-            image: "${M}/quay.io/thanos/thanos:v0.38.0"
+            image: "${M}/quay.io/thanos/thanos:v0.42.5"
       alertmanager:
         alertmanagerSpec:
           image:
