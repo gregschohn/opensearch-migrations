@@ -45,6 +45,11 @@ FROM ${RUNTIME_IMAGE}
 ENV PIP_ROOT_USER_ACTION=ignore
 ENV LANG=C.UTF-8
 
+# Move to the newest AL2023 release (also for later installs here and in the console images).
+# OS_UPGRADE_DATE (set daily by the build) keeps the layer cache from replaying an old upgrade.
+ARG OS_UPGRADE_DATE=unset
+RUN dnf upgrade -y --releasever=latest && dnf clean all && rm -rf /var/cache/dnf
+
 # Minimal runtime deps (no compilers, no *-devel)
 RUN dnf install -y \
       --setopt=install_weak_deps=False \

@@ -1,10 +1,10 @@
 # Using same base image as other Java containers in this repo
-ARG BASE_IMAGE=docker.io/library/amazoncorretto:21-al2023-headless
+ARG BASE_IMAGE=migrations/java_runtime_base:latest
 FROM ${BASE_IMAGE}
 
 # Install procps to use pgrep in entrypoint.sh
-RUN dnf install -y procps && \
-    dnf clean all && \
+RUN microdnf install -y --setopt=install_weak_deps=0 --nodocs procps-ng && \
+    microdnf clean all && \
     rm -rf /var/cache/dnf
 
 # Requires Gradle to genearte runtime jars initially
