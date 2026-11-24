@@ -3,15 +3,8 @@ url = "https://pypi.org/simple"
 verify_ssl = true
 name = "pypi"
 
-# One environment for everything installed into the migration console image
-# (console_link, cluster_tools and the integ_test suite), so the image has exactly
-# one resolved version of every package. Run pipenv from this directory or any
-# project directory below it (pipenv searches parent directories for this Pipfile).
-#
-# The local projects use the `file` key rather than `path`: Dependabot fetches the
-# setup.py of `path` dependencies and then runs `git init` in this directory, which
-# breaks its grouped multi-directory updates. pipenv treats both keys the same way
-# for a local directory.
+# Shared by console_link, cluster_tools and integ_test (all installed into the console image).
+# Local projects use `file`, not `path`: Dependabot runs `git init` for `path` deps' setup.py.
 
 [packages]
 console-link = {file = "lib/console_link", editable = true}

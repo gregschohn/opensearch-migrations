@@ -46,9 +46,6 @@ To install the Cluster Tools run:
 pipenv install
 ```
 
-Cluster Tools shares `migrationConsole/Pipfile` and Pipfile.lock with `console_link` and the `integ_test` suite;
-pipenv finds them by searching parent directories.
-
 ## Usage
 
 ### Command Line Interface
@@ -88,7 +85,7 @@ src/migration_console/: Main CLI application.
 src/tools/: Individual tool scripts.
 tests/: Unit tests for the tools.
 setup.py: Installation script.
-../Pipfile & ../Pipfile.lock: Dependency management (shared with console_link and integ_test).
+Pipfile & Pipfile.lock: Dependency management.
 .gitignore: Specifies intentionally untracked files.
 README.md: Project documentation.
 ```

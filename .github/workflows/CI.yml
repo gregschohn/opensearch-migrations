@@ -68,8 +68,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The migrationConsole projects have no Pipfile of their own: pipenv finds the shared
-        # migrationConsole/Pipfile (the same lock the console image installs) in a parent directory.
         py-project:
           - migrationConsole/lib/console_link
           - migrationConsole/cluster_tools

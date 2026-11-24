@@ -6,8 +6,6 @@ To install the required dependencies
 ```
 pipenv install
 ```
-The dependencies are declared in the shared `migrationConsole/Pipfile`, which pipenv finds by searching parent
-directories. It also installs `console_link` and `cluster_tools`, matching the migration console image.
 
 ### Creating an E2E test case
 Test cases created within the `test_cases` directory are performed by the `ma_workflow_test.py` test structure. The link between these two are created in the pytest 
