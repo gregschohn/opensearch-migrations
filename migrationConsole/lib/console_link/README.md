@@ -197,6 +197,11 @@ Create the development environment from this directory:
 pipenv install --dev
 ```
 
+console_link, `cluster_tools` and the `integ_test` suite share one Pipfile and
+Pipfile.lock in `migrationConsole/`, the same environment that the migration
+console image installs. pipenv finds it from this directory by searching parent
+directories, so add or change dependencies in `migrationConsole/Pipfile`.
+
 Run the unit tests:
 
 ```shell

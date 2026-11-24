@@ -126,21 +126,16 @@ RUN chmod ug+x /root/loadServicesFromParameterStore.sh
 COPY start-console.sh /root/
 RUN chmod +x /root/start-console.sh
 
-# Copy Python libraries and install dependencies
+# Copy the Python projects, then install console_link, cluster_tools and the integ_test
+# dependencies into /.venv from the single migrationConsole Pipfile.lock. The projects are
+# installed editable, so their sources must be in place before the install.
 # Note: .dockerignore should exclude .venv, but we ensure clean install
 WORKDIR /root
 COPY lib /root/lib
-
-WORKDIR /root/lib/console_link
-RUN pipenv install --deploy
-WORKDIR /root/lib/integ_test
-RUN pipenv install --deploy
-
 COPY cluster_tools /root/cluster_tools
 RUN rm -rf /root/cluster_tools/.venv
-WORKDIR /root/cluster_tools
-RUN pipenv install
-WORKDIR /root
+COPY Pipfile Pipfile.lock /root/
+RUN pipenv install --deploy
 
 RUN mkdir -p /usr/share/bash-completion/completions && \
     _CONSOLE_COMPLETE=bash_source console > /usr/share/bash-completion/completions/console && \
