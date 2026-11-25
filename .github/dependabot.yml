@@ -105,10 +105,24 @@ updates:
           - "*"
 
   - package-ecosystem: "pip"
+    directory: "/migrationConsole"   # shared console lock
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2
+    groups:
+      console-pip-version:
+        applies-to: version-updates
+        patterns: ["*"]
+        exclude-patterns: ["awscli", "boto3", "botocore", "s3transfer"]
+      console-pip-aws-sdk-version:
+        applies-to: version-updates
+        patterns: ["awscli", "boto3", "botocore", "s3transfer"]
+      console-pip-security:
+        applies-to: security-updates
+        patterns: ["*"]
+
+  - package-ecosystem: "pip"
     directories:
-      - "/migrationConsole/lib/console_link"
-      - "/migrationConsole/cluster_tools"
-      - "/migrationConsole/lib/integ_test"
       - "/libraries/testAutomation"
       - "/test/cleanupDeployment"
       - "/TrafficCapture/dockerSolution/src/main/docker/elasticsearchTestConsole"
@@ -116,13 +130,15 @@ updates:
       - "/transformation/transformationPlugins/jsonMessageTransformers/jsonPythonTransformerProvider/custom_transform"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 1
+    open-pull-requests-limit: 2
     groups:
       pip-version:
         applies-to: version-updates
-        patterns:
-          - "*"
+        patterns: ["*"]
+        exclude-patterns: ["awscli", "boto3", "botocore", "s3transfer"]
+      pip-aws-sdk-version:
+        applies-to: version-updates
+        patterns: ["awscli", "boto3", "botocore", "s3transfer"]
       pip-security:
         applies-to: security-updates
-        patterns:
-          - "*"
+        patterns: ["*"]
