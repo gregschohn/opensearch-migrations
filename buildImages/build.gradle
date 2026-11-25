@@ -37,9 +37,6 @@ def getRepoNameIfPublishing = { Map cfg ->
     return publishedRepoByImageName[imageName]
 }
 
-// Changes daily so the registry layer cache can't replay an old 'dnf upgrade' layer
-def osUpgradeDate = java.time.LocalDate.now(java.time.ZoneOffset.UTC).toString()
-
 // Jib can't run 'dnf upgrade', so the Jib images build on java_runtime_base
 def javaRuntimeBase = [
         baseImageRegistryEndpoint: intermediateRegistry.hostUrl,
@@ -92,8 +89,8 @@ def buildKitProjects = [
                 imageName:  "java_runtime_base",
                 imageTag:   "latest",
                 buildArgs: [
-                        BASE_IMAGE: ptc.rewrite("public.ecr.aws/amazonlinux/amazonlinux:2023-minimal"),
-                        OS_UPGRADE_DATE: osUpgradeDate,
+                        // The Dockerfile pins the image; only its registry goes through the cache
+                        BASE_REGISTRY: ptc.rewrite("public.ecr.aws/amazonlinux"),
                 ]
         ],
         [
@@ -102,9 +99,7 @@ def buildKitProjects = [
                 imageName:  "elasticsearch_test_console",
                 imageTag:   "latest",
                 buildArgs: [
-                        BUILDER_IMAGE: ptc.rewrite("docker.io/library/amazonlinux:2023"),
-                        RUNTIME_IMAGE: ptc.rewrite("docker.io/library/amazonlinux:2023"),
-                        OS_UPGRADE_DATE: osUpgradeDate,
+                        BASE_REGISTRY: ptc.rewrite("docker.io/library"),
                 ]
         ],
         [
