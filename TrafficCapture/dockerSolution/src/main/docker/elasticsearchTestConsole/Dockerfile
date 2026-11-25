@@ -45,10 +45,11 @@ FROM ${RUNTIME_IMAGE}
 ENV PIP_ROOT_USER_ACTION=ignore
 ENV LANG=C.UTF-8
 
-# Upgrade to the pinned AL2023 release (al2023Releasever in gradle.properties); later installs
-# here and in the console images then come from that release too.
-ARG AL2023_RELEASEVER=2023.12.20261120
-RUN dnf upgrade -y --releasever=${AL2023_RELEASEVER} && dnf clean all && rm -rf /var/cache/dnf
+# Upgrade to the pinned AL2023 release; the value comes only from gradle.properties
+# (al2023Releasever). Later installs here and in the console images then come from that release.
+ARG AL2023_RELEASEVER
+RUN test -n "${AL2023_RELEASEVER}" || { echo "AL2023_RELEASEVER build arg is required; Gradle passes it from gradle.properties (al2023Releasever)" >&2; exit 1; } && \
+    dnf upgrade -y --releasever=${AL2023_RELEASEVER} && dnf clean all && rm -rf /var/cache/dnf
 
 # Minimal runtime deps (no compilers, no *-devel)
 RUN dnf install -y \

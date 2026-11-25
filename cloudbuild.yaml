@@ -45,13 +45,16 @@ steps:
         ls /workspace/migrationConsole/nodeStaging/migrationResources/
 
   # Build the Java runtime base that reindex-from-snapshot builds on
+  # (AL2023_RELEASEVER comes from al2023Releasever in gradle.properties)
   - name: 'gcr.io/cloud-builders/docker'
+    entrypoint: 'bash'
     args:
-      - 'build'
-      - '--no-cache'
-      - '-t'
-      - 'migrations/java_runtime_base:latest'
-      - 'TrafficCapture/dockerSolution/src/main/docker/javaRuntimeBase'
+      - '-c'
+      - |
+        docker build --no-cache \
+          --build-arg AL2023_RELEASEVER="$$(sed -n 's/^al2023Releasever=//p' gradle.properties)" \
+          -t migrations/java_runtime_base:latest \
+          TrafficCapture/dockerSolution/src/main/docker/javaRuntimeBase
 
   # Build reindex-from-snapshot image (independent of console chain)
   - name: 'gcr.io/cloud-builders/docker'
@@ -64,12 +67,14 @@ steps:
 
   # Layer 1: Build elasticsearch_client_test_console (base linux + java + python venv)
   - name: 'gcr.io/cloud-builders/docker'
+    entrypoint: 'bash'
     args:
-      - 'build'
-      - '--no-cache'
-      - '-t'
-      - 'migrations/elasticsearch_client_test_console:latest'
-      - 'TrafficCapture/dockerSolution/src/main/docker/elasticsearchTestConsole'
+      - '-c'
+      - |
+        docker build --no-cache \
+          --build-arg AL2023_RELEASEVER="$$(sed -n 's/^al2023Releasever=//p' gradle.properties)" \
+          -t migrations/elasticsearch_client_test_console:latest \
+          TrafficCapture/dockerSolution/src/main/docker/elasticsearchTestConsole
 
   # Layer 2: Build migration_console_base (extends test console with Python libs, Node, scripts)
   - name: 'gcr.io/cloud-builders/docker'
