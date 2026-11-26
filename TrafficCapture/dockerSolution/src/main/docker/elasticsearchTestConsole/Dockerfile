@@ -1,6 +1,7 @@
 # Global ARGs (must be before first FROM to be usable in FROM lines)
-ARG BUILDER_IMAGE=docker.io/library/amazonlinux:2023
-ARG RUNTIME_IMAGE=docker.io/library/amazonlinux:2023
+# Pinned by release tag and digest; dnf installs from that image's own AL2023 release.
+ARG BUILDER_IMAGE=docker.io/library/amazonlinux:2023.12.20261120.0@sha256:edd3297df7d444ab9a7896b763d5305d4bab57d2fb3943e831c1713b97d32d9d
+ARG RUNTIME_IMAGE=docker.io/library/amazonlinux:2023.12.20261120.0@sha256:edd3297df7d444ab9a7896b763d5305d4bab57d2fb3943e831c1713b97d32d9d
 
 # ---------- 1) Builder ----------
 FROM ${BUILDER_IMAGE} AS builder
@@ -44,11 +45,6 @@ FROM ${RUNTIME_IMAGE}
 
 ENV PIP_ROOT_USER_ACTION=ignore
 ENV LANG=C.UTF-8
-
-# Move to the newest AL2023 release (also for later installs here and in the console images).
-# OS_UPGRADE_DATE (set daily by the build) keeps the layer cache from replaying an old upgrade.
-ARG OS_UPGRADE_DATE=unset
-RUN dnf upgrade -y --releasever=latest && dnf clean all && rm -rf /var/cache/dnf
 
 # Minimal runtime deps (no compilers, no *-devel)
 RUN dnf install -y \
